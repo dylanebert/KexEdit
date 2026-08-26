@@ -157,7 +157,7 @@ import {
     setSectionLength,
     setStrip,
     setStripKeyframe,
-    keyframeTaken,
+    keyframeRoom,
     stripAt,
     Strip,
     stripBoundsAt,
@@ -1305,8 +1305,8 @@ $effect(() => {
 // display not content. the caller excludes the dragged point and picks whether its own
 // moving edge (the track end) is a target.
 // `sameSection` names the dragged anchor's own section: its keys are dropped from the pool
-// because a station one of them occupies is a landing the write refuses (`track.stationTaken`),
-// and a gesture never snaps to a target it can't reach (editor-ui.md Snapping — the same law
+// because a station one of them occupies is a landing the Δd cap holds short of
+// (`track.keyframeRoom`, S5b), and a gesture never snaps to a target it can't reach (editor-ui.md Snapping — the same law
 // that keeps the extent trim off its own moving edge). Keys in OTHER sections stay: a boundary
 // coincidence is legal and is exactly what a cut plants, so they remain reachable landmarks.
 function sTargets(opts: {
@@ -1442,6 +1442,10 @@ function chartCreate(e: MouseEvent): void {
 // drag: the per-axis gesture-start magnet is the "change just one axis" affordance, so a
 // dominant-axis lock is redundant here.
 type KfKind = "force" | "strip";
+// the Δd-cap overlap refusal's "strictly short" margin (S5b) — small against `S_GRID = 1`
+// (a whole grid step), far above f32 station-precision noise at drag-reachable magnitudes, so
+// a capped landing never round-trips onto the occupied station it was held short of.
+const OVERLAP_CAP_EPS = 1e-3;
 let dragKf: { kind: KfKind; id: number } | null = $state(null); // the ANCHOR keyframe
 // the cursor's axis coordinate at pointerdown -- the grab origin the anchor's arclength is
 // measured DELTA-FROM, projected through the GESTURE-FROZEN s↔t table (`s = s0 + (dOf(u) -
@@ -1462,7 +1466,6 @@ let dragKfV0 = 0;
 // offsets preserved exactly, unbounded by any strip/segment extent (S5, F2: no rigid-clamp
 // bounds carried here anymore — a keyframe drags freely past its container).
 let dragKfMembers: { id: number; s0: number; v0: number; section: number }[] = [];
-let dragKfLastDs = 0;
 let dragKfMemberSet: Set<number> = new Set();
 // the v-to-pixel and pixel-to-v projections, kind-specific: force uses yOf/yToG (g axis),
 // strip uses vOf/its inverse (v axis). set at drag start.
@@ -1514,14 +1517,30 @@ function applyKeyframeDrag(): void {
     // set moves by the SAME Δs regardless of any member's own strip/segment extent.
     const ds = sAnchor - dragKfS0;
     const dv = vAnchor - dragKfV0;
-    // overlap refusal (applied to the BLOCK): `keyframeTaken` checks both kinds through one path
+    // Δd-cap overlap refusal (S5b, Locked decision), applied to the BLOCK: `keyframeRoom`
+    // reads each member's own directional room to the nearest sibling station NOT in the
+    // dragged group, and the shared Δd is capped strictly short of the tightest member's
+    // room — never an equality test (the pre-S5b `keyframeTaken` block check only ever fired
+    // by accident, off the now-deleted extent clamp; discrete pointer sampling sweeps past a
+    // bare equality target). `dir` is the sign of the desired move; a zero `ds` caps to
+    // itself either way.
     const owner = kind === "force" ? -1 : dragKfStrip;
-    const landed = dragKfMembers.every(
-        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, m.s0 + ds, m.id),
-    );
-    if (landed) dragKfLastDs = ds;
-    else snapX = null;
-    const dsWrite = landed ? ds : dragKfLastDs;
+    const dir: 1 | -1 = ds < 0 ? -1 : 1;
+    let cap = Infinity;
+    for (const m of dragKfMembers) {
+        const room = keyframeRoom(
+            ecs,
+            kind,
+            kind === "force" ? m.section : owner,
+            m.s0,
+            dragKfMemberSet,
+            dir,
+        );
+        if (room < cap) cap = room;
+    }
+    const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room
+    const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);
+    if (dsWrite !== ds) snapX = null; // the cap engaged: the snap guide would point past it
     for (const m of dragKfMembers) {
         const s = m.s0 + dsWrite;
         const v = m.v0 + dv;
@@ -1616,7 +1635,6 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     }
     // common drag setup
     dragKfMemberSet = new Set(dragKfMembers.map((m) => m.id));
-    dragKfLastDs = 0;
     const rect = canvas.getBoundingClientRect();
     dragKfCx = e.clientX - rect.left;
     dragKfCy = e.clientY - rect.top;

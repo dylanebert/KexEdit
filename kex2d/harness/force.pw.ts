@@ -1243,20 +1243,17 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     await expect(fpt.nth(3)).toHaveClass(/sel/);
     await expect(fpt.nth(3)).toHaveClass(/active/); // re-added → active again
 
-    // ── 3. MULTI-DRAG, RIGID CLAMP + THE STATION REFUSAL: grab the CREST (a member, but NOT the
+    // ── 3. MULTI-DRAG, THE Δd-CAP OVERLAP REFUSAL (S5b): grab the CREST (a member, but NOT the
     // active one — a plain click on a set member drags the whole block without collapsing it) and
-    // drag it FAR right — past the tightest member's own room. `clampDelta` alone would bind the
-    // shared Δs to that member's own [0, len] exactly: the s=0.8·len shoulder has the least room
-    // (0.2·len), so the bare clamp math lands it EXACTLY at the section's extent — precisely where
-    // the untouched trailing seed already sits. But `setForcePoint` refuses a taken station PER KEY
-    // (`track.ts stationTaken`, "refuse rather than overwrite"), and the block tests the whole
-    // shared step together before committing it (`Timeline.svelte applyKeyframeDrag`'s own comment: "which
-    // would tear a multi-drag apart… the block holds at the last landed Δs") — so this drag
-    // exercises the refusal APPLIED TO THE BLOCK, not just the raw clamp: the shoulder never
-    // reaches the occupied station, and the group holds one step short instead (every member's
-    // OFFSET from the others still preserved, the AE comp-start block); the two unselected seeds
-    // never move. (Was asserted the other way — exact coincidence, "no auto-merge" — before the
-    // station refusal was generalized to the block path; that premise no longer holds.) ──
+    // drag it FAR right — past the tightest member's own room. No extent clamp binds keyframes on
+    // grab (S5, F2), so the raw shared Δs is unbounded by the section's own [0, len]; the s=0.8·len
+    // shoulder's room to its nearest un-dragged sibling — the untouched trailing seed sitting at
+    // the section's extent — is the tightest (0.2·len), so `keyframeRoom` (`track.ts`) caps the
+    // BLOCK's shared Δd strictly short of it (`Timeline.svelte applyKeyframeDrag`'s Δd-cap block) —
+    // every member's OFFSET from the others still preserved (the AE comp-start block, `clampDelta`
+    // unrelated here); the two unselected seeds never move. (Was asserted the other way — exact
+    // coincidence, "no auto-merge" — before the refusal became a directional room cap; that premise
+    // no longer holds.) ──
     const before = await forces();
     const clipBox = await page.locator(".clip").first().boundingBox();
     if (!clipBox) throw new Error("force clip not laid out");
@@ -1272,15 +1269,19 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     expect(ds).toBeGreaterThan(2); // a real, clamped-but-substantial shift
     expect(after[2].s - before[2].s).toBeCloseTo(ds, 5); // the crest — the SAME shared offset
     const len = before[4].s; // the section's own extent, read off the pre-drag (unambiguous) snapshot
-    const room = len - before[3].s; // the tightest member's own room — what the bare clamp math allows
-    // the refusal holds the block STRICTLY short of the room the clamp alone would grant: landing
-    // exactly on `room` is exactly the collision `stationTaken` exists to refuse, so a landed Δs
-    // that reached it would mean the refusal never fired. Qualitative, not a captured pixel-derived
-    // number — the discrete mouse-move sampling picks WHICH pre-collision Δs the block holds at,
-    // never whether it holds short (that's the write-path law, not an artifact of the drive).
+    const room = len - before[3].s; // the tightest member's own room — the shoulder's directional room
+    // the Δd cap holds the block STRICTLY short of `room`: landing exactly on it is exactly the
+    // collision `keyframeRoom` exists to prevent, so a landed Δs that reached it would mean the cap
+    // never fired. Qualitative, not a captured pixel-derived number — the discrete mouse-move
+    // sampling picks WHICH pre-collision Δs the block holds at, never whether it holds short
+    // (that's the write-path law, not an artifact of the drive).
     expect(ds).toBeLessThan(room);
     expect(before[3].s + ds).toBeLessThan(len); // never reaches the occupied station…
-    const atLen = after.filter((p) => Math.abs(p.s - len) < 1e-3);
+    // the cap holds the shoulder within `OVERLAP_CAP_EPS` of the room's own edge
+    // (`Timeline.svelte`), so a wide "at len" band would also catch the shoulder itself — exclude
+    // it by index (order is preserved under the cap, S5b's own sibling-refusal law, so `after[3]`
+    // is still the shoulder) and check the REST for a coincidence.
+    const atLen = after.filter((p, i) => i !== 3 && Math.abs(p.s - len) < 1e-2);
     expect(atLen.length).toBe(1); // …so only the untouched trailing seed sits there — no coincidence
     expect(atLen[0]).toEqual(before[4]); // …and it's byte-identical to its pre-drag self
     await page.keyboard.press("Control+z"); // one entry reverts the whole group

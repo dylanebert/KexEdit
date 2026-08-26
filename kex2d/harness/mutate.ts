@@ -116,8 +116,8 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe overlap refusal",
         mutations: [
             {
-                old: '    const landed = dragKfMembers.every(\n        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, m.s0 + ds, m.id),\n    );',
-                new: "    const landed = true; // MUTATED: overlap refusal disabled",
+                old: "    const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room\n    const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);",
+                new: "    const dsWrite = ds; // MUTATED: Δd cap disabled — the raw delta lands unbounded",
             },
         ],
     },

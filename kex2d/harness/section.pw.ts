@@ -2564,23 +2564,25 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     ).toBeLessThan(1e-5); // snapped to the landmark v
 });
 
-// S1 capture arm: strip-keyframe OVERLAP REFUSAL on a multi-member drag. `applyKeyframeDrag`'s
-// block-level overlap check (Timeline.svelte:1471-1477) calls `keyframeTaken` for every member
-// before committing the shared delta — if any member would land on an occupied station, the
-// BLOCK holds at the last landed delta (`dragKfLastDs`), preserving offsets. Without this
-// check, `setStripKeyframe`'s own per-keyframe refusal would still block the overlapping
-// member's s write, but the non-overlapping member would move freely — the block tears apart.
-// This flow constructs a multi-member set, drags it toward a non-selected keyframe's station
-// (so one member would overlap), and asserts the block held (both members moved by the same
-// delta). The drag is a single-step move to the end keyframe's station, so the
-// overlap check fires at the final position — without the block check, the
-// overlapping member's s write is refused by `setStripKeyframe` but the other
-// member moves, tearing the block.
+// S1/S5b capture arm: strip-keyframe OVERLAP REFUSAL on a multi-member drag. `applyKeyframeDrag`'s
+// block-level Δd cap (Timeline.svelte, S5b's Locked decision) reads each member's own directional
+// room to the nearest sibling NOT in the dragged set (`track.keyframeRoom`) and holds the whole
+// block's shared Δd strictly short of the tightest member's room — never an equality test. Without
+// this check, `setStripKeyframe`'s own per-keyframe exact-equality guard would still block the
+// overlapping member's s write, but the non-overlapping member would move freely — the block
+// tears apart. This flow constructs a multi-member set, drags it toward a non-selected keyframe's
+// station (so one member would overlap), and asserts BOTH that the block held (both members moved
+// by the same delta, offset preserved) AND that the would-overlap member landed STRICTLY SHORT of
+// the target station — the discriminating half: pre-S5b, with the extent clamp already deleted
+// (F2) and no cap in its place, the raw delta lands unbounded and BOTH selected members move by
+// the full drag distance (offset preserved AND the member lands exactly on the target), so the
+// offset-only assertion passed vacuously in both directions. The "held short" assertion is what a
+// deleted cap can no longer satisfy.
 //
-// RED-FIRST WITNESS: replaced the `landed` check at Timeline.svelte:1473-1476 with
-// `const landed = true;` (overlap refusal disabled). The flow red at the offset-preserved
-// assert: the overlapping member stayed at its pre-drag s while the other moved — the delta
-// difference was the full drag distance, not within tolerance. Restored the check; green.
+// RED-FIRST WITNESS (S5b): mutated `dsWrite` to the raw `ds` (cap disabled — the same mutation
+// `harness/mutate.ts`'s "overlap refusal" pair runs). The flow red at the "held short" assert: the
+// start keyframe landed exactly at the end keyframe's station (0 distance, not held short).
+// Restored the cap; green.
 test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await boot();
     await seedHill(page);
@@ -2645,11 +2647,10 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await page.mouse.up();
 
     // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
-    // tie) to ~30% of the WIDENED extent (never to the strip's own end — that would leave no
-    // room past it for the third selected keyframe's own clamp bound, the mechanism that
-    // silently absorbed this arm's overlap in earlier attempts: `clampDelta` shrank the shared
-    // delta to keep the OTHER member inside ITS OWN [lo, len] before the anchor ever reached
-    // the overlap station, so `keyframeTaken` never fired — for either tree).
+    // tie) to ~30% of the WIDENED extent (never to the strip's own end — S5b's Δd cap reads
+    // directional room to the nearest SIBLING, not a container extent, but the third keyframe
+    // below still needs its own room to the end keyframe generously larger than the drag
+    // distance, or its tighter room — not the target member's — would bind the block's cap).
     await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
     let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
     const sharedPx = kfPxAll.find((k) => seededIds.has(k.id))!;
@@ -2726,9 +2727,10 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     const startSBefore = kfs.find((k) => k.id === startKf.id)!.s;
     const midSBefore = kfs.find((k) => k.id === midKf.id)!.s;
 
-    // Read the END keyframe's pixel position — the drag target. The start keyframe's new s
+    // Read the END keyframe's pixel position — the drag target. The start keyframe's raw target
     // would be `endS` (the end keyframe's station) if the block moved by `ds = endS - startS`.
-    // The end keyframe is NOT in the dragged set, so `keyframeTaken` would detect the overlap.
+    // The end keyframe is NOT in the dragged set, so `keyframeRoom` reads it as the occupant that
+    // caps the block's Δd.
     kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
     const endKfPx = kfPxAll.find((k) => k.id === endKf.id)!;
 
@@ -2744,12 +2746,12 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await page.mouse.up();
     await page.keyboard.up("Control");
 
-    // Assert the BLOCK held: both selected keyframes moved by the same delta (offset preserved).
-    // Without the mutation: `landed = false` (overlap at `endS`), `dsWrite = dragKfLastDs = 0`,
-    // both stay → deltas are both 0 → offset preserved.
-    // With the mutation: `landed = true`, `dsWrite = ds`. Start: `setStripKeyframe(endS)`
-    // refuses (overlap with end keyframe) → stays. Mid: `setStripKeyframe(midS + ds)` succeeds
-    // (not occupied) → moves. Deltas differ → offset NOT preserved → red.
+    // Assert the BLOCK held: both selected keyframes moved by the same delta (offset preserved) —
+    // AND that the would-overlap member landed STRICTLY SHORT of the target station. The second
+    // assert is what discriminates: with the cap disabled (S5b's mutation), the raw Δd is
+    // unbounded and BOTH members move by the full drag distance (the start member lands EXACTLY
+    // on the end keyframe's station), so offset-preservation alone passes vacuously either way —
+    // deleting the cap makes the block "hold together" by moving fully together, not by holding.
     kfs = (await stripKeyframesOf(strip.id)) as { id: number; s: number; v: number }[];
     const startSAfter = kfs.find((k) => k.id === startKf.id)!.s;
     const midSAfter = kfs.find((k) => k.id === midKf.id)!.s;
@@ -2757,12 +2759,18 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     const midDelta = midSAfter - midSBefore;
     const tol = 0.5 / pxPerU; // sub-pixel tolerance — tight enough that a 1px drag reds
     // the drag was real (the cursor moved a substantial distance) — the separation and the
-    // third keyframe's placement (see comments above) keep this well clear of any member's
-    // own [lo, len] clamp, so the shared delta reaches the overlap station unclamped.
+    // third keyframe's placement (see comments above) keep this well clear of the third member's
+    // own room, so the shared delta reaches the overlap-target's neighbourhood uncapped by it.
     const expectedDs = (endKfPx.x - startKfPx.x) / pxPerU;
     expect(Math.abs(expectedDs)).toBeGreaterThan(tol);
     // the block held: both members moved by the same delta (offset preserved)
     expect(Math.abs(startDelta - midDelta)).toBeLessThan(tol);
+    // the discriminating half: the start member never reached the end keyframe's station — the
+    // Δd cap held it strictly short, within a small station-unit margin of the room's own edge
+    // (`OVERLAP_CAP_EPS`, Timeline.svelte) rather than merely "less than its pre-drag position".
+    const gapToOccupied = endKf.s - startSAfter;
+    expect(gapToOccupied).toBeGreaterThan(0); // strictly short — never reaches the occupied station
+    expect(gapToOccupied).toBeLessThan(0.01); // ...but held right at the room's edge, not far short
 });
 
 // S5 capture arm (F1): a strip BODY drag carries its keyframes — the same Δd `bandMove`'s
