@@ -26,7 +26,7 @@ import { detectDisplay } from "./wsl";
 
 // Wall-clock origin for the phase stamps `RUN.json` records. Taken before anything is parsed so
 // `total` is the whole process, and the stamped phases summing under it is what makes the
-// unattributed remainder visible rather than absorbed (`kex2d-iteration-speed` S1's decomposition).
+// unattributed remainder visible rather than absorbed.
 const started = performance.now();
 
 // kex2d's screenshot harness — boot the vite dev server, drive the Playwright flow under the host's

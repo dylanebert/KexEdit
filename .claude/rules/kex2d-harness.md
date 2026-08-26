@@ -92,7 +92,9 @@ restating it, since the spec that carried these numbers is deleted at close.
   2. **Same-pass base run** — does not reproduce ⇒ one `bun run capture` on the base tree, spent
      now rather than inherited, to place the red on a side.
   3. **Record and ship** — still unattributed ⇒ record the failing title to the across-ship
-     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship. A
+     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship.
+     Reading the roster is part of this step: run `bun run trend` in the same pass — recording
+     into a roster nobody reads is burial, not escalation. A
      roster entry is a defect with an owner, never weather (below, "A *single*-flow red…") — this
      step records it for that ownership to reach, not a verdict that it has none. Escalation is
      by *accumulation across ships*, never by a batch manufactured inside one pass: the
@@ -187,7 +189,13 @@ job is to summon a person rather than to fail a run.
   starts empty every time and can never accumulate the across-ship roster the escalation ladder
   depends on. `bun run capture` is also display-gated to the one GPU-bridge host, so every run in
   the population comes off the same seat regardless — a durations column pooled across two
-  machines would compare hosts, not trees.
+  machines would compare hosts, not trees. **That shared path is also now a shared write target
+  across every worktree on the host, and `appendRun` takes no lock** — "one capture at a time per
+  port" (Iteration discipline, above) is the standing premise that makes an unlocked append safe;
+  it isn't enforced here, it's inherited. A concurrent writer would tear a line, and `parseHistory`
+  throws loud on the resulting malformed line for every consumer, not just the racing pair — which
+  is correct (`coding.md`: no silent swallowing), so the fix for a torn write is holding the
+  premise, never a lock added here or a reader that skips malformed lines.
 
 ## Flow-authoring laws
 

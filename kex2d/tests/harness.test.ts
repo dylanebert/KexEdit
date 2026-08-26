@@ -836,7 +836,7 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         // derives from it, so the two can never disagree — which is exactly why a DROPPED entry is
         // invisible to that sweep (the reader stops requiring it and the sweep stops testing it, in
         // lockstep). This is the registry's own membership pin, the only leg that reds on a shrink.
-        expect([...FIELDS]).toEqual([
+        expect(FIELDS.map((f) => f.name)).toEqual([
             "at",
             "head",
             "selective",
@@ -854,11 +854,11 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         // from `FIELDS` reds this arm's `durations`/`failedTitles` legs rather than going unnoticed.
         for (const field of FIELDS) {
             const dropped = { ...run() } as Record<string, unknown>;
-            delete dropped[field];
+            delete dropped[field.name];
             expect(
                 () => parseHistory(`${JSON.stringify(dropped)}\n`),
-                `dropping "${field}" did not red the reader`,
-            ).toThrow(`runs.jsonl line 1: missing field "${field}"`);
+                `dropping "${field.name}" did not red the reader`,
+            ).toThrow(`runs.jsonl line 1: missing field "${field.name}"`);
         }
         for (const phase of PHASES) {
             const partial = { ...run().durations } as Record<string, unknown>;
@@ -868,6 +868,32 @@ describe("trend — the recorded run distribution and its tripwires", () => {
             ).toThrow(`runs.jsonl line 1: missing field "durations.${phase}"`);
         }
         expect(() => parseHistory("not json\n")).toThrow("runs.jsonl line 1: not JSON");
+    });
+
+    test("a wrongly-typed top-level field fails loud, naming the field and its expected type", () => {
+        // The presence check alone (`field in raw`) never inspects what's IN the field —
+        // `exitCode: "0"` passes it and then reads `"0" !== 0` as true anywhere a consumer
+        // compares against the number 0, flipping a pass into a red count; the CLI accepts an
+        // arbitrary path (`process.argv[2] ?? HISTORY`), so a hand-edited or legacy-format file
+        // is a sanctioned input, not a hypothetical one. `FIELDS` carries each field's type, so
+        // this check derives from the same registry the presence check already walks.
+        const cases: [keyof RunRecord, unknown, string][] = [
+            ["at", 123, "a string"],
+            ["head", 7, "a string or null"],
+            ["selective", "false", "a boolean"],
+            ["defaultKnobs", 1, "a boolean"],
+            ["exitCode", "0", "a finite number or null"],
+            ["failedTitles", "none", "an array of strings"],
+            ["failedTitles", [1, 2], "an array of strings"],
+            ["durations", "nope", "an object"],
+        ];
+        for (const [field, value, expectedType] of cases) {
+            const bad = { ...run(), [field]: value };
+            expect(
+                () => parseHistory(`${JSON.stringify(bad)}\n`),
+                `"${field}" = ${JSON.stringify(value)} did not red the reader`,
+            ).toThrow(`runs.jsonl line 1: "${field}" is not ${expectedType}`);
+        }
     });
 
     test("a non-finite duration fails loud rather than defeating the tripwire's comparison", () => {
@@ -951,6 +977,27 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         const breach = tripwires(summarize([red("aaaaaaa"), red("bbbbbbb")]));
         expect(breach).toHaveLength(1);
         expect(breach[0]).toContain("2 distinct heads");
+    });
+
+    test("a red run with an unresolved HEAD is a loud tripwire, never a silent roster drop", () => {
+        // `git rev-parse --short HEAD` returning empty (`capture.ts` maps it to `null` at both
+        // `RUN.json` and `appendRun`) makes `head: null` a live input, not a hypothetical one.
+        // The roster's per-head bucketing (`if (r.head !== null && ...) seen.push(r.head)`) can
+        // never place a null head into a distinct-heads count, so a title that keeps reddening
+        // on unresolved heads would otherwise read identically to "not yet recurring" forever —
+        // the exact miscategorization `coding.md`'s no-silent-swallowing clause names: an
+        // unpopulated signal reading as a healthy, sanctioned state rather than the broken-git
+        // wiring it actually is. Verdict: loud, not silent — a red run with no resolvable HEAD
+        // gets its own tripwire, since it can never earn one through the roster.
+        const redNull = (): RunRecord =>
+            run({ head: null, exitCode: 1, failedTitles: ["section.pw.ts:2017 › deselect"] });
+        const summary = summarize([redNull(), redNull()]);
+        // the roster mechanism alone stays silent — no head ever gets bucketed
+        expect(summary.roster).toEqual([{ title: "section.pw.ts:2017 › deselect", heads: [] }]);
+        // which is exactly why the count exists as its own signal
+        expect(summary.unresolvedHeadReds).toBe(2);
+        const breaches = tripwires(summary);
+        expect(breaches.some((b) => b.startsWith("head:"))).toBe(true);
     });
 
     test("capture.ts stamps every phase the reader consumes", () => {
@@ -1074,7 +1121,13 @@ describe("kex2d-harness.md's Recorded distribution section says what trend.ts im
     })();
 
     test("names the artifacts a reader has to find", () => {
-        for (const token of ["harness/runs.jsonl", "trend.ts", "bun run trend", "WINDOW"])
+        // `resolveHistory`, not `harness/runs.jsonl`: the latter is the RETIRED per-checkout
+        // shape and the section still contains that literal string inside the clause that names
+        // it as retired (`kex2d-iteration-speed` close) — a token match on it would pass for the
+        // wrong reason, pinning a foil rather than the current mechanism. `resolveHistory` is
+        // reachable only from the section's live description of where the history actually
+        // lives.
+        for (const token of ["resolveHistory", "trend.ts", "bun run trend", "WINDOW"])
             expect(section).toContain(token);
     });
 

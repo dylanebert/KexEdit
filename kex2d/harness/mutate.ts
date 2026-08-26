@@ -40,11 +40,6 @@
 //  - The final assertion checks byte-identity against the snapshot AND `git status` — the
 //    prototype's own law, kept.
 //  - `KEX_WORKERS=1` (capture is display-gated and runs one-at-a-time).
-//  - `geo.pw.ts:61` is a `test.fail()` pin — Playwright prints its per-test line with the ✘
-//    mark on a GREEN run. This gate filters to one flow per mutation (`-g "<title>"`), so the
-//    pin is never collected; a reader scraping ✘ lines over a wider run must exclude it by
-//    location (`kex2d-harness.md` § Ship protocol; the tally.ts instrument that once did this
-//    is retired — `kex2d-iteration-speed` close, orphaned once N-run batches were).
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
