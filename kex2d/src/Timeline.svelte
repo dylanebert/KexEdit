@@ -77,7 +77,6 @@ import { redoRouted, undoRouted } from "./pin";
 import { convertDomain, convertFailed, pickable } from "./domain";
 import { Domain } from "./section";
 import {
-    clampDelta,
     clampView,
     composeTangent,
     creationTargets,
@@ -847,7 +846,8 @@ interface ForcePt {
     startU: number; // the section's entry, likewise projected (`Clip.u0`)
     startD: number; // the section's entry in arclength (`Clip.s0`) -- the base every WRITE
     // (drag/field/scrub) adds a `dOf`-converted delta to; never mix with `startU`.
-    len: number; // the section's authored extent, arclength ALWAYS (drag/field clamp domain)
+    len: number; // the section's authored extent, arclength ALWAYS (the typed-field's own
+    // clamp domain, `kfFieldEdit` -- NOT the drag's: a grab drags freely past it, S5 F2)
 }
 // One projection for force-keyframe points from the ECS — the shared computation both the
 // `forcePts` `$derived` (paced by `void tick` for the render) and the `forceU` `__kex` hook
@@ -1452,17 +1452,16 @@ let dragKfU0 = 0;
 let dragKfStartD = 0; // the ANCHOR's section entry in arclength -- the WRITE base
 let dragKfSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
 let dragKfStrip = -1; // the ANCHOR's strip id (strip kind only — for overlap check scope)
-let dragKfLen = 0; // the ANCHOR's clamp upper bound (section extent or strip end)
-let dragKfLo = 0; // the ANCHOR's clamp lower bound (0 for force, strip.start for strip)
 let dragKfCx = 0; // last cursor, canvas-local px
 let dragKfCy = 0;
 let dragKfMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
 let dragKfS0 = 0; // the grab s / v — each axis's gesture-start landmark (always-on magnet)
 let dragKfV0 = 0;
-// the dragged SET, captured at gesture start: every selected member's start s/v + its own
-// clamp bounds (the rigid-clamp bounds). single-select is the size-1 case (just the anchor).
-// the whole set moves by ONE shared (Δs, Δv) — relative offsets preserved exactly.
-let dragKfMembers: { id: number; s0: number; v0: number; len: number; lo: number; section: number }[] = [];
+// the dragged SET, captured at gesture start: every selected member's start s/v. single-select
+// is the size-1 case (just the anchor). the whole set moves by ONE shared (Δs, Δv) — relative
+// offsets preserved exactly, unbounded by any strip/segment extent (S5, F2: no rigid-clamp
+// bounds carried here anymore — a keyframe drags freely past its container).
+let dragKfMembers: { id: number; s0: number; v0: number; section: number }[] = [];
 let dragKfLastDs = 0;
 let dragKfMemberSet: Set<number> = new Set();
 // the v-to-pixel and pixel-to-v projections, kind-specific: force uses yOf/yToG (g axis),
@@ -1476,8 +1475,12 @@ function applyKeyframeDrag(): void {
     const kind = dragKf.kind;
     // both axes clamp the cursor to the chart
     const cx = clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w));
-    // s-axis: same projection for both kinds (arclength through the gesture-frozen table)
-    let sAnchor = clamp(dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0)), dragKfLo, dragKfLen);
+    // s-axis: same projection for both kinds (arclength through the gesture-frozen table).
+    // NO extent clamp (S5, F2): a keyframe grab never snaps back into its strip/segment
+    // window — the container bound retired everywhere along this one shared path, both
+    // kinds, so a keyframe left outside its container by a resize stays exactly where the
+    // cursor puts it.
+    let sAnchor = dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0));
     // v-axis: kind-specific mapping
     let vAnchor = dragKfYToVal(clamp(dragKfCy, TOP, h - BOT_PAD));
     snapX = null;
@@ -1493,13 +1496,10 @@ function applyKeyframeDrag(): void {
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
         if (r.guide !== null) {
-            const local = r.guide === startPx ? dragKfS0 : dOf(r.value) - dragKfStartD;
-            if (local >= dragKfLo && local <= dragKfLen) {
-                sAnchor = local;
-                snapX = r.guide;
-            }
+            sAnchor = r.guide === startPx ? dragKfS0 : dOf(r.value) - dragKfStartD;
+            snapX = r.guide;
         } else {
-            sAnchor = clamp(dOf(r.value) - dragKfStartD, dragKfLo, dragKfLen);
+            sAnchor = dOf(r.value) - dragKfStartD;
         }
     }
     // v-axis snap — same `snapAxis` call, kind-specific targets and grid
@@ -1510,21 +1510,20 @@ function applyKeyframeDrag(): void {
         vAnchor = r.guide === startPy ? dragKfV0 : r.value;
         snapY = r.guide;
     }
-    // shared delta + rigid group clamp
-    const dsRaw = sAnchor - dragKfS0;
+    // shared delta — no rigid group clamp against a container bound (S5, F2): the whole
+    // set moves by the SAME Δs regardless of any member's own strip/segment extent.
+    const ds = sAnchor - dragKfS0;
     const dv = vAnchor - dragKfV0;
-    const ds = clampDelta(dragKfMembers.map((m) => ({ s: m.s0, len: m.len, lo: m.lo })), dsRaw);
-    if (ds !== dsRaw) snapX = null;
     // overlap refusal (applied to the BLOCK): `keyframeTaken` checks both kinds through one path
     const owner = kind === "force" ? -1 : dragKfStrip;
     const landed = dragKfMembers.every(
-        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, clamp(m.s0 + ds, m.lo, m.len), m.id),
+        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, m.s0 + ds, m.id),
     );
     if (landed) dragKfLastDs = ds;
     else snapX = null;
     const dsWrite = landed ? ds : dragKfLastDs;
     for (const m of dragKfMembers) {
-        const s = clamp(m.s0 + dsWrite, m.lo, m.len);
+        const s = m.s0 + dsWrite;
         const v = m.v0 + dv;
         if (kind === "force")
             setForcePoint(ecs, m.id, s, v);
@@ -1541,7 +1540,8 @@ let lastFdownT = 0;
 let lastFdownId = -1;
 // the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1).
 // `pt` carries the kind-specific fields; `kind` selects the value-axis mapping, snap targets,
-// overlap scope, setter, and clamp domain.
+// overlap scope, and setter. No clamp domain (S5, F2): a grabbed keyframe drags freely past
+// its strip/segment extent, both kinds, through this one shared path.
 function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): void {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -1571,14 +1571,12 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         const set = editor.forces.ids;
         const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
         dragKfMembers = members.map((fp) => ({
-            id: fp.id, s0: fp.s, v0: fp.g, len: fp.len, lo: 0, section: fp.section,
+            id: fp.id, s0: fp.s, v0: fp.g, section: fp.section,
         }));
         dragKfS0 = p.s;
         dragKfV0 = p.g;
         dragKfStartD = p.startD;
         dragKfSection = p.section;
-        dragKfLen = p.len;
-        dragKfLo = 0;
         dragKfValToY = yOf;
         dragKfYToVal = yToG;
         dragKfVGrid = G_GRID;
@@ -1603,15 +1601,13 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         const set = editor.stripKfs.ids;
         const members = set.size > 1 ? stripKfPts.filter((sp) => set.has(sp.id)) : [k];
         dragKfMembers = members.map((sp) => ({
-            id: sp.id, s0: sp.s, v0: sp.v, len: sp.end, lo: sp.start, section: sp.section,
+            id: sp.id, s0: sp.s, v0: sp.v, section: sp.section,
         }));
         dragKfS0 = k.s;
         dragKfV0 = k.v;
         dragKfStartD = k.startD;
         dragKfSection = k.section;
         dragKfStrip = k.strip;
-        dragKfLen = k.end;
-        dragKfLo = k.start;
         dragKfValToY = vOf;
         dragKfYToVal = (py: number) =>
             vView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
@@ -2746,6 +2742,10 @@ interface StripDrag {
     origEnd: number;
     origValue: number;
     grabStation: number;
+    // every keyframe on the strip, captured at gesture start (S5, F1: a BODY drag carries them
+    // — same Δd applied to each). Empty for "start"/"end" (an edge resize is non-sticking, S3/
+    // S4's own law: a keyframe never follows an edge it happens to sit on).
+    kfs: { id: number; s: number; v: number }[];
 }
 let stripDrag: StripDrag | null = $state(null);
 
@@ -2774,7 +2774,7 @@ function bandMove(e: PointerEvent): void {
     // through the gesture-frozen table -- `station` is track-global arclength (strips are
     // track-global, S2), never a raw (seconds-scaled in Time view) axis delta (S6 fix).
     const station = dOf(uAtPx(px));
-    const { mode, lo, hi, origStart, origEnd, origValue, id } = stripDrag;
+    const { mode, lo, hi, origStart, origEnd, origValue, id, kfs } = stripDrag;
     if (mode === "start") {
         setStrip(ecs, id, clamp(station, lo, hi), origEnd, origValue);
     } else if (mode === "end") {
@@ -2784,6 +2784,12 @@ function bandMove(e: PointerEvent): void {
         const delta = station - stripDrag.grabStation;
         const ns = clamp(origStart + delta, lo, hi - width);
         setStrip(ecs, id, ns, ns + width, origValue);
+        // S5, F1: a BODY drag carries its keyframes — the SAME Δd the strip's own edges just
+        // moved by, applied to every keyframe's gesture-start `s`. Relative order is preserved
+        // exactly (rigid translation), so this never collides with a sibling member of the
+        // SAME strip; `setStripKeyframe`'s own overlap refusal still guards it regardless.
+        const dd = ns - origStart;
+        for (const k of kfs) setStripKeyframe(ecs, k.id, k.s + dd, k.v);
     }
 }
 function bandUp(): void {
@@ -2889,6 +2895,7 @@ function bandDown(e: PointerEvent): void {
             origEnd: s.end,
             origValue: s.value,
             grabStation: at,
+            kfs: [], // an edge resize is non-sticking (S3/S4) -- no keyframe to carry
         };
     } else {
         const loB = stripBoundsAt(ecs, s.id, s.len, s.start);
@@ -2902,6 +2909,8 @@ function bandDown(e: PointerEvent): void {
             origEnd: s.end,
             origValue: s.value,
             grabStation: dOf(uAtPx(px)),
+            // S5, F1: every keyframe's gesture-start position, carried rigidly with the body.
+            kfs: stripKeyframes(ecs, s.id).map((k) => ({ id: k.id, s: k.s, v: k.v })),
         };
     }
     beginStripMove(ecs, s.id);

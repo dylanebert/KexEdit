@@ -632,10 +632,14 @@ export function deleteOneShot(h: History, ecs: State, id: number): void {
  *  edit), snapshotting the strip's full state. commit coalesces the live writes into
  *  one entry; a no-move release records nothing (`beginForceMove`'s span-shaped twin).
  *  the UI writes through `track.setStrip`, whose own overlap guard applies to every
- *  live write this gesture makes. Non-sticking (S3): `setStrip` never moves a keyframe,
- *  so `stripState`/`restoreStrip`'s `kfs` round-trip is a no-op over THIS gesture —
- *  carried anyway because both are the shared snapshot shape `deleteStrips` also uses;
- *  the no-op test stays position/value only, matching what a resize/body-drag can change. */
+ *  live write this gesture makes. Non-sticking on a RESIZE (S3): `setStrip` never moves
+ *  a keyframe on `start`/`end`, so `stripState`/`restoreStrip`'s `kfs` round-trip is a
+ *  no-op over THAT gesture. A BODY drag is the exception (S5, F1): the caller carries
+ *  every keyframe by the strip's own Δd alongside the `setStrip` write, so `kfs`' round-
+ *  trip is what makes THIS gesture's undo restore the keyframes too, not a no-op — the
+ *  no-op test (below) stays position/value only, which is exactly why it's correct here:
+ *  a body drag always changes `start`/`end` when `kfs` changes, so a no-op `start`/`end`
+ *  reading already implies no-op keyframes. */
 export function beginStripMove(ecs: State, id: number): void {
     begin(
         () => stripState(ecs, id),

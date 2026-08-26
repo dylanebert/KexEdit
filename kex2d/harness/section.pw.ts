@@ -2764,3 +2764,231 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     // the block held: both members moved by the same delta (offset preserved)
     expect(Math.abs(startDelta - midDelta)).toBeLessThan(tol);
 });
+
+// S5 capture arm (F1): a strip BODY drag carries its keyframes — the same Δd `bandMove`'s
+// "body" branch applies to `Strip.start`/`end` is applied to every `StripKeyframe.s` on it
+// (`Timeline.svelte`'s `bandMove`, the `kfs` capture at gesture start in `bandDown`). This flow
+// widens a freshly-created strip (seeded with two keyframes at its own start/end, S4), then
+// drags the BODY — not an edge — via a real pointer gesture on the header band, and asserts
+// BOTH seeded keyframes moved by the same Δd the strip's own `start` moved by.
+//
+// RED-FIRST WITNESS: reverted `bandMove`'s "body" branch to the pre-S5 shape (`setStrip` alone,
+// no `kfs` loop). The flow red at the per-keyframe assert: both keyframes' `s` stayed at their
+// pre-drag position while the strip's own `start`/`end` moved by the full drag distance — `dd`
+// was nonzero but every keyframe's own delta read 0. Restored the loop; green.
+test("strip body drag carries its keyframes (F1)", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    const uTotal = () => kexCall(page, "uTotal") as Promise<number>;
+
+    // create a strip (right-click on the band → Add velocity strip), the T1 flow's own idiom.
+    const beforeStrips = (await stripsOf()) as { id: number }[];
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.2;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
+    await frames(page, 2); // bandStrips/selStrip settle (the sibling flows' own documented race)
+
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = (
+        (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
+    ).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    const stripId0 = created.id;
+
+    // widen via a real edge drag, well clear of the track's own end — a min-extent creation is
+    // too narrow to safely grab the BODY clear of both edges (`velocity strip keyframe editing
+    // flow`'s own idiom), but this fixture's track is short (~20-25 m), so a fixed-pixel widen
+    // can overshoot the track's own end and jam the strip flush against it, leaving zero body
+    // headroom in EITHER direction (measured: uTotal === the widened strip's own end). Target a
+    // station instead of a pixel offset, so the widen always lands with headroom regardless of
+    // track length.
+    const [, pxPerU] = await xView();
+    const total = await uTotal();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const spBefore = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId0);
+    if (!spBefore) throw new Error("created strip has no band px");
+    const edgePx = chartCanvasBb.x + spBefore.x1;
+    const targetEnd = created.start + (total - created.start) * 0.5; // halfway to the track's end
+    const widenDxPx = (targetEnd - created.end) * pxPerU;
+    await page.mouse.move(edgePx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(edgePx + widenDxPx, bandY, { steps: 5 });
+    await page.mouse.up();
+
+    const kfsBefore = (await stripKeyframesOf(stripId0)) as { id: number; s: number; v: number }[];
+    expect(kfsBefore.length).toBe(2); // the two S4-seeded keyframes, at start/end
+    const stripBefore = ((await stripsOf()) as { id: number; start: number; end: number }[]).find(
+        (s) => s.id === stripId0,
+    );
+    if (!stripBefore) throw new Error("widened strip not found");
+    // both edges cleared the widen with room left over on both sides (never flush against 0 or
+    // the track's own end) — the precondition the body drag below needs to move freely.
+    const roomRight = total - stripBefore.end;
+    const roomLeft = stripBefore.start;
+    expect(Math.min(roomRight, roomLeft)).toBeGreaterThan(0.5);
+
+    // grab the BODY at its midpoint and drag it toward whichever side has more room, by a
+    // modest fraction of that room — the header band row, never the chart row a keyframe
+    // diamond drag targets, so this can't be mistaken for a keyframe grab.
+    const midS = (stripBefore.start + stripBefore.end) / 2;
+    const midPx = clipBb.x + midS * pxPerU;
+    const ds = (roomRight >= roomLeft ? Math.min(roomRight, 3) : -Math.min(roomLeft, 3)) * 0.5;
+    const DxPx = ds * pxPerU;
+    await page.mouse.move(midPx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(midPx + DxPx, bandY, { steps: 5 });
+    await page.mouse.up();
+
+    const stripAfter = ((await stripsOf()) as { id: number; start: number; end: number }[]).find(
+        (s) => s.id === stripId0,
+    );
+    if (!stripAfter) throw new Error("dragged strip not found");
+    const dd = stripAfter.start - stripBefore.start;
+    const tol = 2 / pxPerU;
+    expect(Math.abs(dd - ds)).toBeLessThan(tol); // the body actually moved by the intended Δd
+
+    const kfsAfter = (await stripKeyframesOf(stripId0)) as { id: number; s: number; v: number }[];
+    for (const before of kfsBefore) {
+        const after = kfsAfter.find((k) => k.id === before.id);
+        if (!after) throw new Error(`keyframe ${before.id} vanished across the body drag`);
+        expect(Math.abs(after.s - (before.s + dd))).toBeLessThan(tol);
+    }
+});
+
+// S5 capture arm (F2): a keyframe left outside its strip's extent by a resize is never
+// clamped back inside on grab — `applyKeyframeDrag`/`setStripKeyframe` no longer carry a
+// `[start, end]` clamp bound (Timeline.svelte, track.ts). This flow widens a strip, authors a
+// keyframe near its right portion (`placeStripKf`, the same direct-authoring SETUP convention
+// `sectionForceCounts`'s own docblock documents for `setLen`), then SHRINKS the strip's end
+// past that keyframe's own station via a real edge drag — `setStrip` never touches a keyframe
+// (non-sticking, S3/S4), so the keyframe stays exactly where it was, now outside the new
+// extent. Grabbing it and dragging a small distance must move it BY the drag, never snap it
+// back to the strip's own edge.
+//
+// RED-FIRST WITNESS: restored the pre-S5 clamp (`clamp(m.s0 + dsWrite, m.lo, m.len)` in
+// `applyKeyframeDrag`, `Math.max(start, Math.min(end, s))` in `setStripKeyframe`). The flow
+// red at the post-grab assert: the keyframe's `s` read exactly `strip.end` (the buggy snap)
+// instead of `kfBefore.s + DxPx/pxPerU` — the very first move clamped it back inside.
+// Restored the fix; green.
+test("keyframe grab drags freely past its strip's extent after a resize leaves it outside (F2)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    const uTotal = () => kexCall(page, "uTotal") as Promise<number>;
+
+    const beforeStrips = (await stripsOf()) as { id: number }[];
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.2;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await frames(page, 2);
+
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = (
+        (await stripsOf()) as { id: number; start: number; end: number; value: number }[]
+    ).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+    const stripId0 = created.id;
+
+    // widen well clear of the min-extent floor, but STOP well short of the track's own end
+    // (a fixture-specific fixed-pixel widen can overshoot a short track and jam the strip
+    // flush against `uTotal`, leaving zero room for the shrink below — the sibling F1 arm's
+    // own finding). Target a station derived from `uTotal`, never a fixed pixel offset.
+    const [, pxPerU] = await xView();
+    const total = await uTotal();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    let sp = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripId0,
+    );
+    if (!sp) throw new Error("created strip has no band px");
+    const targetEnd = created.start + (total - created.start) * 0.7; // leaves ~30% of the track past it
+    const widenDxPx = (targetEnd - created.end) * pxPerU;
+    await page.mouse.move(chartCanvasBb.x + sp.x1, bandY);
+    await page.mouse.down();
+    await page.mouse.move(chartCanvasBb.x + sp.x1 + widenDxPx, bandY, { steps: 5 });
+    await page.mouse.up();
+
+    let strip = ((await stripsOf()) as { id: number; start: number; end: number }[]).find(
+        (s) => s.id === stripId0,
+    );
+    if (!strip) throw new Error("widened strip not found");
+
+    // author a keyframe near the strip's right portion, well inside its current extent.
+    const kfS = strip.end - (strip.end - strip.start) * 0.1;
+    const kfId = (await kexCall(page, "placeStripKf", stripId0, kfS, 6)) as number;
+    await expect
+        .poll(async () =>
+            (await stripKeyframesOf(stripId0)).some((k: { id: number }) => k.id === kfId),
+        )
+        .toBe(true);
+
+    // shrink the strip's END back below the keyframe's own station via a real edge drag.
+    sp = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripId0,
+    );
+    if (!sp) throw new Error("widened strip has no band px");
+    const shrinkPx = (strip.end - strip.start) * 0.5 * pxPerU;
+    await page.mouse.move(chartCanvasBb.x + sp.x1, bandY);
+    await page.mouse.down();
+    await page.mouse.move(chartCanvasBb.x + sp.x1 - shrinkPx, bandY, { steps: 5 });
+    await page.mouse.up();
+
+    strip = ((await stripsOf()) as { id: number; start: number; end: number }[]).find(
+        (s) => s.id === stripId0,
+    )!;
+    let kfs = (await stripKeyframesOf(stripId0)) as { id: number; s: number; v: number }[];
+    const kfBefore = kfs.find((k) => k.id === kfId)!;
+    // the resize left the keyframe outside the strip's new extent — the bug's own precondition.
+    expect(kfBefore.s).toBeGreaterThan(strip.end);
+
+    // GRAB the out-of-extent keyframe (its own drawn diamond, still projected truthfully at its
+    // real, unclamped `s` — `computeStripKfPts` never filters by extent) and drag it a small
+    // distance. Ctrl held to bypass snap; the per-axis gesture-start magnet still survives the
+    // bypass (`applyKeyframeDrag`'s own note), so DxPx stays well past `SNAP_PX` (8) — the
+    // sibling flows' own convention — or the magnet holds the result at the grab origin.
+    const kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const kfPx = kfPxAll.find((k) => k.id === kfId);
+    if (!kfPx) throw new Error("out-of-extent keyframe has no drawn diamond");
+    const DxPx = 20;
+    await page.mouse.move(kfPx.x, kfPx.y);
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(kfPx.x + DxPx, kfPx.y, { steps: 3 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+
+    kfs = (await stripKeyframesOf(stripId0)) as { id: number; s: number; v: number }[];
+    const kfAfter = kfs.find((k) => k.id === kfId)!;
+    const tol = 2 / pxPerU;
+    expect(Math.abs(kfAfter.s - (kfBefore.s + DxPx / pxPerU))).toBeLessThan(tol);
+    expect(kfAfter.s).toBeGreaterThan(strip.end); // still outside — never snapped back in
+});

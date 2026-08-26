@@ -1,6 +1,11 @@
 // kex2d's S1 mutation gate — the committed instrument that makes the gate exhaustive
 // rather than sampled. One (production strip-branch mutation, capture arm) pair per named
-// behavior: snap, deselect, modifier-extend, overlap refusal, nudge. For each pair, the gate
+// behavior: snap, deselect, modifier-extend, overlap refusal, nudge, plus S5's own addition
+// (F1: body-drag-carries-keyframes — a genuinely NEW production branch in the same shared
+// drag handler, not an S1 substrate behavior; F2's clamp DELETION carries no new branch to
+// pair, and its own arms (`force.pw.ts`, `section.pw.ts`) already record a manually witnessed
+// red-first mutation in their own docblocks, verified by this stage's executor). For each pair,
+// the gate
 // derives a mutated Timeline.svelte from a FRESH snapshot written at run start into a run-unique
 // directory, runs ONLY that pair's capture flow (`bun run capture -- -g "<flow title>"`), records
 // the verdict, and restores the snapshot in a `finally`. At the end it asserts the tracked tree
@@ -12,6 +17,8 @@
 // behavior deleted from `PAIRS` alone reads as absence from inside that same table, which is
 // exactly the silent shape this instrument exists to close, so the startup check reads BOTH
 // against the roster: every roster name has a pair, and every pair names a roster member.
+// (S5 note: adding "body-drag-carries-keyframes" widens the roster past S1's original five —
+// see the header comment above for why that one item and no other from F1/F2 belongs here.)
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a
@@ -57,8 +64,17 @@ interface Pair {
 // (checked at startup) and a pair naming no roster member are both refused, so `PAIRS` can
 // neither drop a name nor drift onto one the roster doesn't recognize without the gate itself
 // going red. Sourced from S1's own Validation bullet (`kex2d-event-substrate.md`), which names
-// these five and no others as the substrate's shared-path behaviors.
-const BEHAVIORS = ["snap", "deselect", "modifier-extend", "overlap refusal", "nudge"] as const;
+// these five and no others as the substrate's shared-path behaviors. "body-drag-carries-
+// keyframes" (S5, F1) extends the roster: `bandMove`'s body branch is a new production strip
+// branch in the same file this gate mutates, sourced from S5's own Validation bullet.
+const BEHAVIORS = [
+    "snap",
+    "deselect",
+    "modifier-extend",
+    "overlap refusal",
+    "nudge",
+    "body-drag-carries-keyframes",
+] as const;
 
 const PAIRS: Pair[] = [
     {
@@ -112,6 +128,16 @@ const PAIRS: Pair[] = [
             {
                 old: "                const members = stripKeyframes(ecs, editor.strip).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
                 new: "                const members: ReturnType<typeof stripKeyframes> = []; // MUTATED: nudge branch disabled",
+            },
+        ],
+    },
+    {
+        name: "body-drag-carries-keyframes",
+        flow: "strip body drag carries its keyframes",
+        mutations: [
+            {
+                old: "        const dd = ns - origStart;\n        for (const k of kfs) setStripKeyframe(ecs, k.id, k.s + dd, k.v);",
+                new: "        // MUTATED: body-drag keyframe carry deleted (F1)",
             },
         ],
     },
@@ -254,7 +280,9 @@ function runGate(): number {
         return 1;
     }
 
-    console.log(`\nGATE PASSED: all five pairs red (coupled), tree restored byte-identical.`);
+    console.log(
+        `\nGATE PASSED: all ${verdicts.length} pairs red (coupled), tree restored byte-identical.`,
+    );
     return 0;
 }
 

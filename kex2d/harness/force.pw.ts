@@ -415,6 +415,84 @@ test("force keyframe arrow-nudge", async ({ page, boot }) => {
     expect(after.s).toBeLessThan(sAfterRight); // it moved left
 });
 
+// S5 capture arm (F2): a force keyframe left outside its section's window by a length resize
+// is never clamped back inside on grab — `applyKeyframeDrag` no longer carries a `[0, len]`
+// clamp bound for the force kind either (`Timeline.svelte`, S5's one shared drag path — F2's
+// own text: "force keyframes clamp into their segment window the same way"). `setLen` authors
+// the shrink directly, as test SETUP (`sectionForceCounts`'s own docblock names this
+// convention: the real trim is already covered pointer-true elsewhere); the GRAB below is a
+// real pointer drag, the behavior under test.
+//
+// RED-FIRST WITNESS: restored the pre-S5 clamp (`clamp(m.s0 + dsWrite, m.lo, m.len)` in
+// `applyKeyframeDrag`, with `dragKfLen` reinstated to `p.len` for the force kind). The flow red
+// at the post-grab assert: the keyframe's `s` read exactly `shrunk` (the section's new length,
+// the buggy snap) instead of `before.s + DxPx/pxPerU` — the very first move clamped it back
+// inside. Restored the fix; green.
+test("force keyframe grab drags freely past its section's window after a resize leaves it outside (F2)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await kexCall(page, "convert");
+    await frameTimeline(page);
+
+    const forceU = () =>
+        kexCall(page, "forceU") as Promise<
+            { id: number; section: number; s: number; g: number; u: number }[]
+        >;
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    const gRange = () => kexCall(page, "gRange") as Promise<[number, number]>;
+
+    const len = 40;
+    await kexCall(page, "setLen", 0, len);
+    // author a keyframe well inside the section, near its own end.
+    const kfId = (await kexCall(page, "placeForce", len - 4, 0.6)) as number;
+    await expect.poll(async () => (await forceU()).some((p) => p.id === kfId)).toBe(true);
+
+    // shrink the section's own window well below the keyframe's station -- SETUP, not the
+    // behavior under test.
+    const shrunk = len - 10;
+    await kexCall(page, "setLen", 0, shrunk);
+    await frameTimeline(page);
+
+    let rows = await forceU();
+    const before = rows.find((p) => p.id === kfId);
+    if (!before) throw new Error("out-of-window keyframe vanished across the resize");
+    expect(before.s).toBeGreaterThan(shrunk); // the resize left it outside the new window
+
+    const [, pxPerU] = await xView();
+    const [gLo, gHi] = await gRange();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!clipBb || !dockBb) throw new Error("clip / dock body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    const gToY = (g: number): number =>
+        chartTop + (1 - (g - gLo) / (gHi - gLo)) * (chartBot - chartTop);
+    const kfX = clipBb.x + before.s * pxPerU;
+    const kfY = gToY(before.g);
+
+    // GRAB the out-of-window keyframe and drag it a small distance. Ctrl held to bypass snap,
+    // so `s` reads the raw cursor position; the per-axis gesture-start magnet still survives
+    // the bypass, so DxPx stays well past `SNAP_PX` (8) — the sibling strip-side F2 arm's own
+    // convention, discovered there first.
+    const DxPx = 20;
+    await page.mouse.move(kfX, kfY);
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(kfX + DxPx, kfY, { steps: 3 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+
+    rows = await forceU();
+    const after = rows.find((p) => p.id === kfId);
+    if (!after) throw new Error("out-of-window keyframe vanished across the grab");
+    const tol = 2 / pxPerU;
+    expect(Math.abs(after.s - (before.s + DxPx / pxPerU))).toBeLessThan(tol);
+    expect(after.s).toBeGreaterThan(shrunk); // still outside — never snapped back in
+});
+
 // Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C, extended at stage
 // E): seed a force section with keyframes → RIGHT-CLICK a diamond for the keyframe menu →
 // open the Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for
