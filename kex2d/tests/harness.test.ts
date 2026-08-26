@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -810,7 +810,7 @@ describe("stalePrune — a deleted flow file must not outlive the checkout in th
 });
 
 describe("trend — the recorded run distribution and its tripwires", () => {
-    // `kex2d-iteration-speed` S4. `RUN.json` records ONE run and the next full run wipes the shot
+    // `RUN.json` records ONE run and the next full run wipes the shot
     // set it lives in, so the distribution and the across-ship roster the Ship protocol's escalation
     // ladder records into can only exist in the appended history. These arms pin the reader's three
     // decisions: which population is comparable, what a missing field does, and what breaches.
@@ -887,6 +887,10 @@ describe("trend — the recorded run distribution and its tripwires", () => {
             ["failedTitles", [1, 2], "an array of strings"],
             ["durations", "nope", "an object"],
         ];
+        // the case table is a hand twin of `FIELDS`, so it derives its own coverage from the
+        // registry rather than restating it — a field added to `FIELDS` without a case here reds
+        // this leg instead of riding along type-unchecked.
+        expect(new Set(cases.map((c) => c[0]))).toEqual(new Set(FIELDS.map((f) => f.name)));
         for (const [field, value, expectedType] of cases) {
             const bad = { ...run(), [field]: value };
             expect(
@@ -1025,7 +1029,7 @@ describe("trend — the recorded run distribution and its tripwires", () => {
 });
 
 describe("resolveHistory — a machine-stable path, never a per-checkout one", () => {
-    // `kex2d-iteration-speed` close. Every unit's confirmation capture runs from its OWN fresh
+    // Every unit's confirmation capture runs from its OWN fresh
     // worktree, retired at ship — a history resolved from `import.meta.dir` starts empty every
     // time and can never accumulate the across-ship roster the escalation ladder depends on.
     //
@@ -1123,12 +1127,28 @@ describe("kex2d-harness.md's Recorded distribution section says what trend.ts im
     test("names the artifacts a reader has to find", () => {
         // `resolveHistory`, not `harness/runs.jsonl`: the latter is the RETIRED per-checkout
         // shape and the section still contains that literal string inside the clause that names
-        // it as retired (`kex2d-iteration-speed` close) — a token match on it would pass for the
+        // it as the retired per-checkout shape — a token match on it would pass for the
         // wrong reason, pinning a foil rather than the current mechanism. `resolveHistory` is
         // reachable only from the section's live description of where the history actually
         // lives.
         for (const token of ["resolveHistory", "trend.ts", "bun run trend", "WINDOW"])
             expect(section).toContain(token);
+    });
+
+    test("`bun run trend` resolves to a file that exists", () => {
+        // The doc and the ship ladder both instruct a person to run `bun run trend`; the script
+        // body is configuration, and a typo in it disables the whole reader in silence with every
+        // other arm here still green (`checks.md`: a gate supplied by configuration fails open
+        // when the configuration is wrong, so one arm resolves the named command to a file).
+        const pkg = JSON.parse(
+            readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"),
+        ) as { scripts: Record<string, string> };
+        const script = pkg.scripts.trend;
+        expect(script, "package.json has no `trend` script").toBeDefined();
+        const target = script.replace(/^bun run /, "");
+        expect(existsSync(join(import.meta.dir, "..", target)), `${target} does not exist`).toBe(
+            true,
+        );
     });
 
     test("carries no pasted wall-clock figure or run count", () => {

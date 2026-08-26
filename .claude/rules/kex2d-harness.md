@@ -24,7 +24,7 @@ there, not in the app. `bun check` self-provisions *that sub-package only*: the 
 script installs `--cwd harness --frozen-lockfile` when `harness/node_modules` is missing. It does
 not provision the app root — a fresh clone or worktree still has no `node_modules` there and reds
 `tsc` on missing app-level type defs (`@webgpu/types`, `vite/client`) until something installs at
-the `kex2d` root (witnessed twice: `kex2d-iteration-speed` S2b and S3). A root `bun install`
+the `kex2d` root (witnessed twice, 2026-08-26, in fresh worktrees). A root `bun install`
 resolves `@dylanebert/shallot` from npm, overwriting whatever is currently at
 `node_modules/@dylanebert/shallot` — so read what's there first (`file
 node_modules/@dylanebert/shallot`) rather than run it blind. A plain directory is already an
@@ -55,9 +55,9 @@ validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-
 
 ## Ship protocol
 
-Confirmation and escalation on `bun run capture`, re-priced 2026-08-26 (`kex2d-iteration-speed`
-S2b/S3 against a measured per-run wall clock and a measured flake rate), retiring the arms that
-pre-date those measurements. Self-contained — consuming specs inherit it by reference rather than
+Confirmation and escalation on `bun run capture`, re-priced 2026-08-26 against a measured per-run
+wall clock and a measured flake rate (both readings anchored below, trunk `a0a25d4`), retiring the
+arms that pre-date those measurements. Self-contained — consuming specs inherit it by reference rather than
 restating it, since the spec that carried these numbers is deleted at close.
 
 - **Ship confirmation is one full run, on the branch tree only.** The base-tree run moves from
@@ -190,12 +190,14 @@ job is to summon a person rather than to fail a run.
   depends on. `bun run capture` is also display-gated to the one GPU-bridge host, so every run in
   the population comes off the same seat regardless — a durations column pooled across two
   machines would compare hosts, not trees. **That shared path is also now a shared write target
-  across every worktree on the host, and `appendRun` takes no lock** — "one capture at a time per
-  port" (Iteration discipline, above) is the standing premise that makes an unlocked append safe;
-  it isn't enforced here, it's inherited. A concurrent writer would tear a line, and `parseHistory`
-  throws loud on the resulting malformed line for every consumer, not just the racing pair — which
-  is correct (`coding.md`: no silent swallowing), so the fix for a torn write is holding the
-  premise, never a lock added here or a reader that skips malformed lines.
+  across every worktree on the host, and `appendRun` takes no lock**. The premise that makes that
+  safe is the GPU bridge being one machine-level seat, so captures on this host never overlap at
+  all — **not** "one capture at a time per port" (Iteration discipline, above), which deliberately
+  *permits* a second session on another port and would put two sanctioned writers on this one file.
+  Nothing enforces either. A concurrent writer would tear a line, and `parseHistory` throws loud on
+  the resulting malformed line for every consumer, not just the racing pair — which is correct
+  (`coding.md`: no silent swallowing), so the fix for a torn write is holding the seat premise,
+  never a lock added here or a reader that skips malformed lines.
 
 ## Flow-authoring laws
 

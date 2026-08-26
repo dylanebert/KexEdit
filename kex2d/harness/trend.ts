@@ -128,15 +128,19 @@ export const HISTORY = resolveHistory(process.env);
  * parse the appended history, failing loud on a record missing a field the reader consumes — an
  * absent field is a writer that stopped recording, and a reader that defaults it silently reports a
  * healthy trend off a column nobody is filling.
+ *
+ * `label` names the file in every diagnostic. The CLI reads an arbitrary path (`process.argv[2]`),
+ * so a message hardcoding the default filename would send a reader at the wrong file exactly when
+ * the reader is being witnessed against a scratch history.
  * @example parseHistory(readFileSync(HISTORY, "utf8"))
  */
-export function parseHistory(text: string): RunRecord[] {
+export function parseHistory(text: string, label: string = "runs.jsonl"): RunRecord[] {
     const records: RunRecord[] = [];
     const lines = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line === "") continue;
-        const where = `runs.jsonl line ${i + 1}`;
+        const where = `${label} line ${i + 1}`;
         let raw: Record<string, unknown>;
         try {
             raw = JSON.parse(line) as Record<string, unknown>;
@@ -177,13 +181,14 @@ export function parseHistory(text: string): RunRecord[] {
  * append one run to the history; called by `capture.ts` once `RUN.json` is written.
  *
  * The default `path` (`HISTORY`) is now a machine-stable location every worktree on the host
- * shares, and this append takes no lock. That is safe only because `kex2d-harness.md`'s "one
- * capture at a time per port" is a standing premise on the host, not a guarantee this function
- * enforces — `appendFileSync` racing a second concurrent writer would interleave two partial
- * lines, and `parseHistory` throws loud on the resulting malformed line for every consumer, not
- * just the racing pair. Do not add a lock here or make the reader skip malformed lines; the loud
- * throw is correct, and the fix for a torn write is to hold the premise, not to paper over its
- * violation.
+ * shares, and this append takes no lock. What makes that safe is the GPU bridge being one
+ * machine-level seat, so captures on this host never overlap at all — NOT `kex2d-harness.md`'s
+ * "one capture at a time per port", which permits a second session on another port and would put
+ * two sanctioned writers on this one file. Neither is enforced here. `appendFileSync` racing a
+ * second concurrent writer would interleave two partial lines, and `parseHistory` throws loud on
+ * the resulting malformed line for every consumer, not just the racing pair. Do not add a lock
+ * here or make the reader skip malformed lines; the loud throw is correct, and the fix for a torn
+ * write is to hold the seat premise, not to paper over its violation.
  * @example appendRun(record)
  */
 export function appendRun(record: RunRecord, path: string = HISTORY): void {
@@ -301,7 +306,7 @@ if (import.meta.main) {
         console.log(`no runs recorded yet (${path}) — run \`bun run capture\``);
         process.exit(0);
     }
-    const summary = summarize(parseHistory(readFileSync(path, "utf8")));
+    const summary = summarize(parseHistory(readFileSync(path, "utf8"), path));
     const span = summary.span === null ? "" : ` — ${summary.span.since} to ${summary.span.until}`;
     console.log(
         `full default-knob runs recorded: ${summary.population} (${summary.red} red)${span}`,
