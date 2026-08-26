@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { COLOR_VELOCITY, DIM_WASH, hexToOklch, hovered, selected } from "../src/colors";
+import { COLOR_VELOCITY, DIM_WASH, dimmed, hexToOklch, hovered, selected } from "../src/colors";
 import { easeOut } from "../src/editor";
 
 // an independent sRGB #rrggbb reader (not the module under test).
@@ -243,13 +243,53 @@ describe("hovered — the rung below selection", () => {
     });
 });
 
+// kex2d-event-substrate S4, finding 4: an unselected velocity strip's fill wants a rung IN the
+// palette, never a bare alpha drop or an invented hex — `dimmed`'s the same OKLCH move `hovered`
+// makes, run the other way (darker, less saturated, hue held).
+describe("dimmed — the rung below base (S4, finding 4)", () => {
+    const kinds = ["#78a5d6", "#d49560", COLOR_VELOCITY];
+
+    test("drops lightness", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(dimmed(base)).l).toBeLessThan(hexToOklch(base).l);
+        }
+    });
+
+    test("preserves hue", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(dimmed(base)).h).toBeCloseTo(hexToOklch(base).h, 1);
+        }
+    });
+
+    test("reduces chroma too, never brightens or invents a hue", () => {
+        for (const base of kinds) {
+            expect(hexToOklch(dimmed(base)).c).toBeLessThan(hexToOklch(base).c);
+        }
+    });
+
+    test("returns a well-formed lowercase 6-digit hex", () => {
+        expect(dimmed("#010203")).toMatch(/^#[0-9a-f]{6}$/);
+    });
+});
+
+// the unselected strip fill must derive through `dimmed(COLOR_VELOCITY)`, not the bare
+// constant — a source-text pin, `colors.ts`'s own idiom for a canvas fillStyle with no cheap
+// behavioral read (the S1 Visibility comment beside it names the same constraint).
+describe("Timeline.svelte's unselected strip fill is dimmed, in-palette (S4, finding 4)", () => {
+    test("fillStyle derives dimmed(COLOR_VELOCITY) for the base (unselected, unhovered) rung", () => {
+        const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(tl).toContain("dimmed(COLOR_VELOCITY)");
+    });
+});
+
 // S3 (Affordances): the header band's hit zone used to carry a comment claiming the trim/
 // body-drag cursor was "set programmatically via `canvas.style.cursor` in the pointermove
 // handler" — no such handler exists anywhere in the file (`cursorSites()` below finds no
 // `canvas.style.cursor` assignment in `Timeline.svelte`, and the S3 premise correction in the
-// spec's Live log names this as the false claim it is). The hit zone stays `default`
-// throughout; the affordance is the hover-rung fill/stroke lift, never the cursor. Source-text
-// arm, the same idiom as the cursor allowlist below: the claim has no cheap behavioral read.
+// spec's Live log names this as the false claim it is). The declared-registry CSS classes
+// (`.hbandzone.body-hover`/`.edge-hover`) carry the affordance instead, alongside the
+// hover-rung fill/stroke lift, never a canvas-set style. Source-text arm, the same idiom as
+// the cursor allowlist below: the claim has no cheap behavioral read.
 describe("Timeline.svelte carries no false cursor-handler claim (S3)", () => {
     test("the retired `canvas.style.cursor` comment is gone", () => {
         const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
@@ -275,6 +315,11 @@ describe("Timeline.svelte carries no false cursor-handler claim (S3)", () => {
 // trim) before this stage added the velocity-strip span-edge trim as a fourth — an argued
 // registry extension, not a widened value ad hoc: every `ew-resize` site in the tree is real
 // trim/scrub chrome, none of them a regression.
+//
+// A span BODY joins `pointer` (kex2d-event-substrate S4, finding 1): the same mechanism as the
+// `ew-resize` extension above — a genuine registry addition, argued by the class it joins
+// (every other clickable/draggable body in the tree already carries `.clip`'s `cursor: pointer`)
+// rather than a widened value ad hoc.
 
 interface CursorSite {
     file: string;
@@ -286,10 +331,10 @@ interface CursorSite {
 // panning pair (`.nav-window` grab/grabbing, `.body.panning` grabbing while the drag is live), the
 // viewport's own pan-grabbing canvas assignment (`controls.ts`), every plain clickable affordance
 // that carries `cursor: pointer` (the rail's snap toggle, the section clip strip, its append
-// tail, the transport play button, the global scrubber, the two modal buttons, and the shared
-// menu-item class every context menu renders through), and every trim/scrub affordance that
-// carries `cursor: ew-resize` (the two field-row key scrubs, the nav-window pan edge, the
-// force-section extent trim, and the velocity-strip span-edge trim, S5).
+// tail, the transport play button, the global scrubber, the two modal buttons, the shared
+// menu-item class every context menu renders through, and the velocity-strip span body, S4), and
+// every trim/scrub affordance that carries `cursor: ew-resize` (the two field-row key scrubs, the
+// nav-window pan edge, the force-section extent trim, and the velocity-strip span-edge trim, S5).
 const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "App.svelte", selector: ".pinpanel button", value: "pointer" },
     { file: "App.svelte", selector: ".convert .cancel", value: "pointer" },
@@ -306,6 +351,7 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
     { file: "Timeline.svelte", selector: ".fld .key", value: "ew-resize" },
+    { file: "Timeline.svelte", selector: ".hbandzone.body-hover", value: "pointer" },
     { file: "Timeline.svelte", selector: ".hbandzone.edge-hover", value: "ew-resize" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
 ];

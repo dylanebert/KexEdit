@@ -81,6 +81,17 @@ export function hovered(base: string): string {
     );
 }
 
+/** the rung BELOW base: a step darker and less saturated, `hovered`'s exact OKLCH move run in
+ *  reverse, hue held. kex2d-event-substrate S4, finding 4 — an unselected velocity strip's fill
+ *  wants IN the palette (a derived rung off its own kind hue, the way selection and hover
+ *  already are), never a new hex or a bare alpha drop. `DIM_STEP` is its own knob, independent
+ *  of `HOVER_STEP`, so a feel round can retune the recess without touching the hover lift. */
+export const DIM_STEP = 0.4;
+export function dimmed(base: string): string {
+    const { l, c, h } = hexToOklch(base);
+    return oklchToHex(l - SELECT_L_LIFT * DIM_STEP, c * (1 - (SELECT_C_BOOST - 1) * DIM_STEP), h);
+}
+
 // ── OKLab / OKLCH (Björn Ottosson): sRGB hex ⇆ OKLCH, the perceptual space the selection
 // tone-variant derives in — a uniform white-mix in sRGB desaturates; OKLCH holds chroma. ──
 

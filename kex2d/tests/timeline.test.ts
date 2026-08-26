@@ -1566,12 +1566,14 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
 // `colors.test.ts`'s idiom for a Svelte-only claim with no unit-testable runtime seam; the real
 // rendered pixels/cursor are the capture flow's own job (`affordance.pw.ts`).
 describe("kex2d-event-lane S5: lane label retirement, default strip length, edge cursor, m/s unit (Validation's oracle)", () => {
-    // finding 7: the "vel" lane label retires — the lane is general, not typed. Typing moves to
-    // the item (the strip's own kind color below, and the "v" unit on its selected readout).
-    test('the retired "vel" lane label is gone; the general-lane label reads "events", untyped', () => {
+    // finding 7 (S5) retired the "vel" lane label in favor of a general "events" label; S4,
+    // finding 4 retires the LABEL ITSELF — the lane has no label at all, typing living entirely
+    // on the item (the strip's own kind color below, and the "v" unit on its selected readout).
+    // Both the old typed word and its S5 replacement must be gone.
+    test('neither the retired "vel" lane label nor its S5 "events" replacement survives (S4)', () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         expect(src).not.toContain('fillText("vel"');
-        expect(src).toContain('fillText("events"');
+        expect(src).not.toContain('fillText("events"');
     });
 
     // findings 4/5/6: default created strip length rises from min-extent to a brake-section-
@@ -1610,38 +1612,47 @@ describe("kex2d-event-lane S5: lane label retirement, default strip length, edge
     });
 });
 
-// S3 (Affordances): the velocity band becomes a lane at the clip lane's own height, not a
-// re-tuned literal — pinned as a derivation (`STRIP_H = GAP_H`) rather than a numeric equality,
-// so a future change to either constant can't silently drift the two apart again. Source-text
-// arm, `colors.test.ts`'s own idiom for a Svelte-only numeric layout constant with no
-// unit-testable runtime seam (the real rendered height is the capture flow's own job,
-// `affordance.pw.ts`).
-describe("Timeline.svelte's velocity band is a lane at the clip lane's own height (S3)", () => {
-    test("STRIP_H derives from GAP_H, not an independent literal", () => {
+// S4, finding 5 (Locked decision): the old S3 arm pinned `STRIP_H == GAP_H` — the 20px
+// CONTAINER band, never what actually painted. The segment clip the person sees renders at
+// `GAP_H − 2·CLIP_PAD` = 16px; the strip fill drifted from it, drawing the full container
+// height instead. The re-pin asserts the RENDERED rect quantity — one derived constant
+// (`CLIP_H`) both the segment clip and the strip fill draw at — rather than a numeric equality
+// between two container-band literals. Source-text arm, `colors.test.ts`'s own idiom for a
+// Svelte-only numeric layout constant with no unit-testable runtime seam (the real rendered
+// height is the capture flow's own job, `affordance.pw.ts`); `HBAND_H`'s harness mirror stays
+// a CONTAINER-band constant (hit-test click targeting, unaffected by this stage) and is not
+// re-pinned here.
+describe("Timeline.svelte's velocity strip fill renders at the segment clip's own rect height, not the container band (S4, finding 5)", () => {
+    test("CLIP_H derives from GAP_H and CLIP_PAD, not an independent literal", () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("const STRIP_H = GAP_H;");
+        expect(src).toContain("const CLIP_H = GAP_H - 2 * CLIP_PAD;");
     });
 
-    // `harness/flow.ts`'s `HBAND_H` hand-mirrors `Timeline.svelte`'s `GAP_H` (S3 residue: the
-    // harness can't import the Svelte module, so it carries its own literal copy of the band
-    // height, with no runtime seam of its own to pin it against). Read both files' own numbers
-    // and assert equality directly, so either side moving independently reds this rather than
-    // silently drifting the two apart — `colors.test.ts`'s cross-file idiom, not a fixed literal
-    // on either side.
-    test("harness/flow.ts's HBAND_H stays equal to Timeline.svelte's GAP_H (no independent drift)", () => {
-        const timelineSrc = readFileSync(
-            new URL("../src/Timeline.svelte", import.meta.url),
-            "utf8",
-        );
-        const gapMatch = timelineSrc.match(/const GAP_H = (\d+(?:\.\d+)?);/);
-        if (!gapMatch) throw new Error("GAP_H literal not found in Timeline.svelte");
-        const gapH = Number(gapMatch[1]);
+    // the segment clip (`.clip` — the section marker lane) and the strip fill (the canvas-drawn
+    // velocity strip) both draw at `CLIP_H`, never STRIP_H/GAP_H directly — one source of truth
+    // for the rendered quantity, so either drifting independently reds this.
+    test("the segment clip's SVG rect renders at CLIP_H", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        // the `.clip` rect block: from its own `class="clip …"` opening tag to its `/>` close —
+        // sliced rather than pattern-spanned, so a reordered attribute list can't defeat the read.
+        const start = src.indexOf('class="clip {isF');
+        expect(start).toBeGreaterThan(-1);
+        const block = src.slice(start, src.indexOf("/>", start));
+        expect(block).toContain("height={CLIP_H}");
+    });
 
-        const flowSrc = readFileSync(new URL("../harness/flow.ts", import.meta.url), "utf8");
-        const hbandMatch = flowSrc.match(/export const HBAND_H = (\d+(?:\.\d+)?);/);
-        if (!hbandMatch) throw new Error("HBAND_H literal not found in harness/flow.ts");
-        const hbandH = Number(hbandMatch[1]);
+    test("the strip fill's canvas fillRect renders at CLIP_H, inset CLIP_PAD from the band top", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).toContain("ctx.fillRect(cx0, RULER_H + GAP_H + CLIP_PAD, cw, CLIP_H);");
+    });
 
-        expect(hbandH).toBe(gapH);
+    // negative control: the strip fill's own draw call may not still be pinned against the
+    // container band's full height (STRIP_H) — the old fill call this stage replaced. `STRIP_H`
+    // legitimately survives elsewhere (the container band's own background fill, the hit-zone
+    // rect, the one-shot glyph's vertical center), so this checks the specific call site rather
+    // than the constant's absence from the file.
+    test("the strip fill's draw call no longer renders at the container band's full STRIP_H", () => {
+        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        expect(src).not.toContain("ctx.fillRect(cx0, RULER_H + GAP_H, cw, STRIP_H);");
     });
 });
