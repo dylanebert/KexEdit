@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test as base } from "@playwright/test";
+import { expect, type BrowserContext, type Page, test as base } from "@playwright/test";
 
 // kex2d's capture-flow staged helpers module. Past ~28 flows the harness rule (`kex2d-harness.md`
 // "Growth") calls for splitting the single `shot.pw.ts` into staged flow files + one staged helpers
@@ -55,18 +55,116 @@ export const SHOT_MS = intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000);
 // asserts nothing landed in it: an uncaught exception in the app is a defect, and without this the
 // flow screenshots straight past it. Console errors are deliberately NOT collected — the only live
 // traffic there is the lab pages' favicon 404s, and an error that matters throws.
+//
+// ── Boot amortization (S2 lever 1) ──
+//
+// The dominant cost (S1: ~49 % of summed test time) is a per-flow page boot floor: each test gets
+// a fresh browser context + page, and `page.goto` re-loads the app from scratch. The context and
+// page are now worker-scoped: one context + one page per worker, reused across every test that
+// worker runs. `boot()` still calls `page.goto` to reset all app state between tests — the app is a
+// Svelte SPA, so navigation re-evaluates every module and re-initializes all ECS state, history,
+// camera, and UI from defaults. No app state survives the navigation, so cross-flow state cannot
+// leak through the app layer.
+//
+// The remaining cross-flow carrier is browser-level state on the shared context (localStorage,
+// sessionStorage). The only localStorage usage is `settings.ts`'s snap-step preferences, which no
+// flow modifies — but `boot()` clears it before navigation as a standing guard, so a future flow
+// that does touch it cannot leak its write into the next test.
+//
+// The `pageerror` listener is per-test: attached in fixture setup, removed in teardown, with a
+// per-test `thrown` array. The listener ordering (before `goto`) is unchanged, so the standing pin
+// in `geo.pw.ts` still holds. One test — the pin itself — uses `page.addInitScript` to inject a
+// boot-time throw. `addInitScript` has no remove API and persists on the page it is added to, so
+// after that test the shared page is poisoned. The `boot` fixture detects this (a non-empty
+// `thrown` at teardown) and recreates the page from the shared context, so the next test gets a
+// clean page. The pin still uses the real `boot` fixture — it tests the same listener-before-
+// `goto` ordering it always did.
 type Boot = (path?: string) => Promise<void>;
 
-export const test = base.extend<{ boot: Boot }>({
+// MIRRORED from `capture.pw.config.ts`'s `use` block — the viewport and device scale the config
+// applies to the default context. A worker-scoped context must carry the same settings, or every
+// flow's pixel-true screenshot reads at a different scale. `actionTimeout` and `navigationTimeout`
+// are set on the page after creation (the config's `use` block applies them to the built-in `page`
+// fixture, which we override).
+const VW = 1440;
+const VH = 900;
+const DPR = 2;
+const ACTION_TIMEOUT = 15_000;
+const NAV_TIMEOUT = 15_000;
+
+// The worker-scoped shared context. One per worker, reused across every test the worker runs.
+// The `use` block's `headless`, `channel`, and `launchOptions` are browser-level — they stay on
+// the built-in `browser` fixture, which we do not override. We cannot override `context` itself
+// to worker scope (Playwright rejects re-scoping a built-in fixture), so this is a separate
+// fixture the `page` override reads instead.
+const shared = base.extend<{}, { sharedContext: BrowserContext }>({
+    sharedContext: [
+        async ({ browser }, use) => {
+            const context = await browser.newContext({
+                viewport: { width: VW, height: VH },
+                deviceScaleFactor: DPR,
+            });
+            await use(context);
+            await context.close();
+        },
+        { scope: "worker" },
+    ],
+});
+
+// Module-level page ref — the `page` fixture reads this and creates a new page when it is null or
+// closed. The `boot` fixture sets it to null after a poisoned page is closed, so the next test
+// gets a fresh page from the shared context. Per-worker because each worker has its own module
+// instance.
+let sharedPage: Page | null = null;
+
+export const test = shared.extend<{ boot: Boot }>({
+    page: async ({ sharedContext }, use) => {
+        if (!sharedPage || sharedPage.isClosed()) {
+            sharedPage = await sharedContext.newPage();
+            sharedPage.setDefaultTimeout(ACTION_TIMEOUT);
+            sharedPage.setDefaultNavigationTimeout(NAV_TIMEOUT);
+        }
+        const p: Page = sharedPage;
+        await use(p);
+    },
     boot: async ({ page }, use) => {
         mkdirSync(OUT, { recursive: true });
         const thrown: string[] = [];
-        page.on("pageerror", (e) => thrown.push(e.stack ?? e.message));
-        await use(async (path = "/") => {
-            await page.goto(`http://localhost:${PORT}${path}`, { waitUntil: "load" });
-            if (path === "/") await expect(page.locator(".dock")).toBeVisible();
-        });
-        expect(thrown, `the page threw an uncaught exception:\n${thrown.join("\n")}`).toEqual([]);
+        const listener = (e: Error) => thrown.push(e.stack ?? e.message);
+        page.on("pageerror", listener);
+        try {
+            await use(async (path = "/") => {
+                // Clear any errors from the previous test's teardown window (the page is idle
+                // between tests, so this is a guard, not an expected event).
+                thrown.length = 0;
+                // Clear browser-level state that could leak across flows on the shared context.
+                // try/catch: on the first test the page may still be on about:blank, where
+                // localStorage is not accessible.
+                await page.evaluate(() => {
+                    try {
+                        localStorage.clear();
+                    } catch {}
+                    try {
+                        sessionStorage.clear();
+                    } catch {}
+                });
+                await page.goto(`http://localhost:${PORT}${path}`, { waitUntil: "load" });
+                if (path === "/") await expect(page.locator(".dock")).toBeVisible();
+            });
+            expect(thrown, `the page threw an uncaught exception:\n${thrown.join("\n")}`).toEqual(
+                [],
+            );
+        } finally {
+            page.off("pageerror", listener);
+            // The pageerror pin test (`geo.pw.ts`) uses `addInitScript` to inject a boot-time
+            // throw. `addInitScript` has no remove API and persists on the page, so the shared
+            // page is poisoned after that test. Recreate it from the shared context so the next
+            // test gets a clean page. This is the ONLY path that sets `sharedPage` to null.
+            if (thrown.length > 0 && !page.isClosed()) {
+                await page.close();
+                sharedPage = null;
+            }
+        }
     },
 });
 
