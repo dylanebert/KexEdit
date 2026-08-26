@@ -199,7 +199,11 @@ test("section clip strip flow", async ({ page, boot }) => {
     await trim.hover(); // move to the handle center with actionability, then drag right
     // hold Ctrl to bypass the snapping magnet (default-on, kex2d-ux-foundations stage E) —
     // this flow tests the extent trim itself, not snapping, so the drag lands where the
-    // cursor does, deterministically. the snap resolver is unit-covered in timeline.test.ts.
+    // cursor does, deterministically. The un-bypassed snap grammar (grid + landmark, Ctrl
+    // bypass) is exercised through the production handler by its own capture arm
+    // (`segment and strip resize snap to grid increments (F4)`, S6) — never a unit arm alone
+    // (S1's own residue: a unit arm plus an all-sites Ctrl opt-out reads as coverage from
+    // either side and is neither).
     await page.keyboard.down("Control");
     await page.mouse.down();
     await page.mouse.move(tb.x + tb.width / 2 + 50, cy, { steps: 10 });
@@ -2853,14 +2857,20 @@ test("strip body drag carries its keyframes (F1)", async ({ page, boot }) => {
     // grab the BODY at its midpoint and drag it toward whichever side has more room, by a
     // modest fraction of that room — the header band row, never the chart row a keyframe
     // diamond drag targets, so this can't be mistaken for a keyframe grab.
+    // Ctrl held to bypass the grid/landmark snap (F4: strip body drag now snaps like every
+    // other drag on this chart) — this flow tests F1's keyframe-carry precision, not snap, so
+    // the drag lands at the deterministic raw pixel-derived station (`strip resize snap
+    // grammar (F4)`'s own arm exercises the un-bypassed snap).
     const midS = (stripBefore.start + stripBefore.end) / 2;
     const midPx = clipBb.x + midS * pxPerU;
     const ds = (roomRight >= roomLeft ? Math.min(roomRight, 3) : -Math.min(roomLeft, 3)) * 0.5;
     const DxPx = ds * pxPerU;
     await page.mouse.move(midPx, bandY);
+    await page.keyboard.down("Control");
     await page.mouse.down();
     await page.mouse.move(midPx + DxPx, bandY, { steps: 5 });
     await page.mouse.up();
+    await page.keyboard.up("Control");
 
     const stripAfter = ((await stripsOf()) as { id: number; start: number; end: number }[]).find(
         (s) => s.id === stripId0,
@@ -2999,4 +3009,190 @@ test("keyframe grab drags freely past its strip's extent after a resize leaves i
     const tol = 2 / pxPerU;
     expect(Math.abs(kfAfter.s - (kfBefore.s + DxPx / pxPerU))).toBeLessThan(tol);
     expect(kfAfter.s).toBeGreaterThan(strip.end); // still outside — never snapped back in
+});
+
+const S_GRID = 1; // `timeline.ts`'s own arclength quantum — the ONE home is the module; this
+// mirrors `strip keyframe snap landing`'s own hardcoded V_GRID convention (no `__kex` const export).
+const onGrid = (v: number): boolean => Math.abs(v / S_GRID - Math.round(v / S_GRID)) < 1e-6;
+
+// S6 capture arm (F4): the force-section extent trim (`applyLen`) and a strip resize
+// (`bandMove`) now route the RESULTING edge through the SAME shared resolver a keyframe drag
+// rides (`snapAxis`) — snapping ON lands both on an S_GRID (1 m) increment when no landmark is
+// in range (neither drag below has one reachable: the segment's own force points sit well
+// inside the ORIGINAL extent, behind the widened edge; the strip is created clear of the
+// S5-seeded start strip and nothing parks the playhead). The Ctrl twin below asserts the
+// bypass — this is the arm that discharges the Residue instance list (S1's own six recorded
+// `.clip-trim` Ctrl-bypass sites): the segment half here is the first `.clip-trim` flow that
+// does NOT hold Ctrl through the drag.
+//
+// RED-FIRST WITNESS: replaced `applyLen`'s `const r = snapAxis(...)` call with a raw
+// passthrough (`{ value: rawU, guide: null }`) and, separately, `bandMove`'s own call the same
+// way. Both mutations reded this flow at the `onGrid` assertion (exit 1 each, one at a time)
+// — the drag landed at the raw pixel-derived station instead of the nearest metre. Restored
+// both; green.
+test("segment and strip resize snap to grid increments (F4)", async ({ page, boot }) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    // widen the section well past its own default STRIP_DEFAULT_LEN (24 m, `track.ts`'s own
+    // `EXTEND_DIST` alias) -- the fixture's own default flat seed is exactly 24 m, so a strip
+    // created anywhere on it runs flush to the track's own end by construction
+    // (`stripDefaultExtentAt`'s own clamp), leaving no room for a body drag on either side. Test
+    // SETUP, the same `setLen` hook the domain flow uses for its own short-track fixture.
+    await kexCall(page, "setLen", 0, 80);
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const stripsOf = () =>
+        kexCall(page, "stripsOf", 0) as Promise<
+            { id: number; start: number; end: number; value: number }[]
+        >;
+
+    // ── strip resize FIRST (before any segment trim -- a trim widens/undoes the section's
+    // own extent, and the view's zoom never re-fits down after an undo, `commitLength`'s own
+    // note, so a fraction-of-clip-width strip placement done AFTER a trim can land past the
+    // reverted extent). Create a strip clear of the S5-seeded start strip, drag its BODY, no
+    // Ctrl. ──
+    const beforeStrips = await stripsOf();
+    const total = (await kexCall(page, "uTotal")) as number;
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.4; // clear of the S5-seeded start strip
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await frames(page, 2); // bandStrips/selStrip settle (the sibling flows' own documented race)
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = (await stripsOf()).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+
+    const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
+    const midS = (created.start + created.end) / 2;
+    const midPx = clipBb.x + midS * pxPerU;
+    // room to move without hitting the track's own end or the strip's own extent floor.
+    const room = Math.min(created.start, total - created.end);
+    expect(room).toBeGreaterThan(1); // the fixture's own precondition for a real body drag
+    const ds = Math.min(room * 0.5, 6.3); // an off-grid station, well past SNAP_PX
+    await page.mouse.move(midPx, bandY);
+    await page.mouse.down();
+    await page.mouse.move(midPx + ds * pxPerU, bandY, { steps: 8 });
+    await page.mouse.up();
+    const after = (await stripsOf()).find((s) => s.id === created.id);
+    if (!after) throw new Error("dragged strip not found");
+    expect(after.start).not.toBeCloseTo(created.start, 3); // it actually moved
+    expect(onGrid(after.start)).toBe(true); // the body's own rigidly-translated start landed
+    // on the grid, not the raw cursor station.
+
+    // ── segment resize: the force clip's right-edge extent trim handle, no Ctrl. ──
+    const sectionLengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
+    const before = await sectionLengths();
+    const trim = page.locator(".clip-trim");
+    await expect(trim).toHaveCount(1);
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const cy = tb.y + tb.height / 2;
+    await trim.hover();
+    await page.mouse.down();
+    // an off-grid px delta, well past SNAP_PX (8) — the grid quantum, not a coincidental raw
+    // landing, is what resolves this drag (no reachable landmark: the section's own force
+    // points sit well inside the ORIGINAL extent, behind the widened edge, and nothing parks
+    // the playhead).
+    await page.mouse.move(tb.x + tb.width / 2 + 63.4, cy, { steps: 11 });
+    await page.mouse.up();
+    const afterLen = (await sectionLengths())[0];
+    expect(afterLen).toBeGreaterThan(before[0]);
+    expect(onGrid(afterLen)).toBe(true); // the section's entry is d=0 (seedForceBump), so the
+    // landed length IS the landed edge station.
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(before[0], 3);
+});
+
+// S6 capture arm (F4), the Ctrl twin: the same two drags, Ctrl held throughout — the resolver's
+// bypass branch, exercised through the production handler rather than `snapAxis`'s own pure
+// unit arm (`tests/timeline.test.ts`). Landing is the raw, unsnapped station (within a
+// sub-pixel tolerance derived from `pxPerU`, matching every other deterministic-px arm in this
+// file) — proving the bypass reaches BOTH handlers, not just the (pre-existing) keyframe path.
+// This is the arm that discharges the Residue instance list (S1's own six recorded
+// `.clip-trim` Ctrl-bypass sites): the segment half here is a `.clip-trim` flow whose OWN
+// Ctrl hold is exercising the bypass itself, never citing a unit arm to opt out of it — its
+// sibling (above) is the un-bypassed trim snap the residue names.
+test("segment and strip resize Ctrl bypasses grid snap (F4)", async ({ page, boot }) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    // widen the section well past its own default STRIP_DEFAULT_LEN (24 m, `track.ts`'s own
+    // `EXTEND_DIST` alias) -- the fixture's own default flat seed is exactly 24 m, so a strip
+    // created anywhere on it runs flush to the track's own end by construction
+    // (`stripDefaultExtentAt`'s own clamp), leaving no room for a body drag on either side. Test
+    // SETUP, the same `setLen` hook the domain flow uses for its own short-track fixture.
+    await kexCall(page, "setLen", 0, 80);
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const stripsOf = () =>
+        kexCall(page, "stripsOf", 0) as Promise<
+            { id: number; start: number; end: number; value: number }[]
+        >;
+
+    // ── strip resize, Ctrl held, FIRST (see the sibling arm's own note on ordering). ──
+    const beforeStrips = await stripsOf();
+    const total = (await kexCall(page, "uTotal")) as number;
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.4;
+    await page.mouse.click(bandX, bandY, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
+    await frames(page, 2);
+    const beforeIds = new Set(beforeStrips.map((s) => s.id));
+    const created = (await stripsOf()).find((s) => !beforeIds.has(s.id));
+    if (!created) throw new Error("newly-created strip not found");
+
+    const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
+    const midS = (created.start + created.end) / 2;
+    const midPx = clipBb.x + midS * pxPerU;
+    const room = Math.min(created.start, total - created.end);
+    expect(room).toBeGreaterThan(1);
+    const ds = Math.min(room * 0.5, 6.3);
+    await page.mouse.move(midPx, bandY);
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(midPx + ds * pxPerU, bandY, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const after = (await stripsOf()).find((s) => s.id === created.id);
+    if (!after) throw new Error("dragged strip not found");
+    expect(Math.abs(after.start - (created.start + ds))).toBeLessThan(2 / pxPerU);
+    expect(onGrid(after.start)).toBe(false);
+
+    // ── segment resize, Ctrl held: lands at the raw pixel-derived length (Distance domain,
+    // section entry at d=0, so `dOf` is the identity — the length delta IS the raw px/pxPerU
+    // delta, no gesture-frozen-table conversion needed). ──
+    const sectionLengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
+    const [, pxPerU0] = (await kexCall(page, "xView")) as [number, number];
+    const before = await sectionLengths();
+    const trim = page.locator(".clip-trim");
+    await expect(trim).toHaveCount(1);
+    const tb = await trim.boundingBox();
+    if (!tb) throw new Error("trim handle not laid out");
+    const cy = tb.y + tb.height / 2;
+    const dragPx = 63.4;
+    await trim.hover();
+    await page.keyboard.down("Control");
+    await page.mouse.down();
+    await page.mouse.move(tb.x + tb.width / 2 + dragPx, cy, { steps: 11 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const afterLen = (await sectionLengths())[0];
+    const expectedLen = before[0] + dragPx / pxPerU0;
+    expect(Math.abs(afterLen - expectedLen)).toBeLessThan(2 / pxPerU0);
+    // the positive control: the bypass landed off the S_GRID quantum (the mutation this arm's
+    // sibling arm's own witness kills would have rounded it there instead).
+    expect(onGrid(afterLen)).toBe(false);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(before[0], 3);
 });

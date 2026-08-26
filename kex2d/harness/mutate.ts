@@ -67,6 +67,11 @@ interface Pair {
 // these five and no others as the substrate's shared-path behaviors. "body-drag-carries-
 // keyframes" (S5, F1) extends the roster: `bandMove`'s body branch is a new production strip
 // branch in the same file this gate mutates, sourced from S5's own Validation bullet.
+// "segment-resize-snap" and "strip-resize-snap" (S6, F4) extend it again: `applyLen` and
+// `bandMove` each grew a NEW call into the shared `snapAxis` resolver (grid quantum + landmark
+// snap for the extent trim and the strip move/resize, mirroring the keyframe drag's own call)
+// — two distinct production lines in the same file, each its own pair, sourced from S6's own
+// Validation bullet.
 const BEHAVIORS = [
     "snap",
     "deselect",
@@ -74,6 +79,8 @@ const BEHAVIORS = [
     "overlap refusal",
     "nudge",
     "body-drag-carries-keyframes",
+    "segment-resize-snap",
+    "strip-resize-snap",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -138,6 +145,26 @@ const PAIRS: Pair[] = [
             {
                 old: "        const dd = ns - origStart;\n        for (const k of kfs) setStripKeyframe(ecs, k.id, k.s + dd, k.v);",
                 new: "        // MUTATED: body-drag keyframe carry deleted (F1)",
+            },
+        ],
+    },
+    {
+        name: "segment-resize-snap",
+        flow: "segment and strip resize snap to grid increments (F4)",
+        mutations: [
+            {
+                old: "    const r = snapAxis(active, rawPx, rawU, targets, GRID, (px) => pxToU(cv, px), null);",
+                new: "    const r = { value: rawU, guide: null }; // MUTATED: segment resize snap call removed (F4)",
+            },
+        ],
+    },
+    {
+        name: "strip-resize-snap",
+        flow: "segment and strip resize snap to grid increments (F4)",
+        mutations: [
+            {
+                old: "    const r = snapAxis(\n        active,\n        uToPx(clamped, candidateU),\n        candidateU,\n        targets,\n        GRID,\n        (p) => pxToU(clamped, p),\n        null,\n    );",
+                new: "    const r = { value: candidateU, guide: null }; // MUTATED: strip resize snap call removed (F4)",
             },
         ],
     },
