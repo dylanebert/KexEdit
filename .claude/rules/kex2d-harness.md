@@ -20,11 +20,19 @@ pages (`geometry-lab.html`, `collocate-lab.html`, `loop-lab.html`, `fvd-lab.html
 `run()` acquires a WebGPU device even though kex2d is canvas2D). Display-gated.
 
 It's a **sub-package with its own `package.json` + committed `bun.lock`** — Playwright is declared
-there, not in the app. `bun check` self-provisions it: the `harness:deps` script installs
-`--cwd harness --frozen-lockfile` when `harness/node_modules` is missing, so a fresh clone or
-worktree type-checks without a manual step. **Never fix a missing `@playwright/test` with a root
-`bun install`**: that replaces the `node_modules/@dylanebert/shallot` dev symlink with npm shallot
-and the app stops mounting.
+there, not in the app. `bun check` self-provisions *that sub-package only*: the `harness:deps`
+script installs `--cwd harness --frozen-lockfile` when `harness/node_modules` is missing. It does
+not provision the app root — a fresh clone or worktree still has no `node_modules` there and reds
+`tsc` on missing app-level type defs (`@webgpu/types`, `vite/client`) until something installs at
+the `kex2d` root (witnessed twice: `kex2d-iteration-speed` S2b and S3). **The two cases a root
+`bun install` sits in take opposite verdicts, so name which one you're in before running it.** A
+tree that already has a working dev checkout carries `node_modules/@dylanebert/shallot` as a
+symlink into the local `shallot/` checkout — **never** run a root `bun install` there: it replaces
+the symlink with npm shallot and the app stops mounting. A freshly provisioned worktree has no
+symlink yet to lose, and no `node_modules` to type-check against at all — a root `bun install`
+there is the needed fix for `tsc`, not the hazard, but it resolves shallot from npm rather than
+the dev checkout: a session that goes on to mount the app locally still owes the dev symlink,
+re-linked the normal way, before that mount is trustworthy.
 
 The harness code IS under the project `tsconfig` + `biome`. Its pure pieces — `args.ts`'s CLI/env
 validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-tested in
@@ -69,11 +77,15 @@ restating it, since the spec that carried these numbers is deleted at close.
   empties" (below) already names this, and this section is that retirement taking effect. And it
   is underpowered at the rate this unit measured: the chance an N-run batch reads all-green on a
   tree flaking at rate r is `(1−r)^N`. Evaluate it with the rate a fresh N-run reading actually
-  produces (`kex2d-iteration-speed` S2b, 2026-08-26: 8 full `bun run capture` runs on trunk,
-  per-run exit codes read from the process, rate 1/8) rather than trust a quoted result here,
+  produces (`kex2d-iteration-speed` S2b, 2026-08-26: 8 full `bun run capture` runs on trunk
+  `a0a25d4`, per-run exit codes read from the process, rate 1/8) rather than trust a quoted result here,
   which would itself be a frozen figure that drifts the moment the rate is re-read. At that
   reading the batch is close enough to a coin flip on whether it even sees the flake that it
   cannot be trusted to conclude, for the cost of N full runs on both trees to try.
+- **A confirmation run reddening on several unrelated flows at once is the other measured
+  regime, and it runs first.** "A multi-flow red is presumptively host-level" (below) triages
+  that shape — re-run once before debugging any flow — and decides whether the ladder is even
+  entered. The ladder below is what a *single*-flow red enters.
 - **Escalation is a ladder, cheapest instrument first, run only against the one test a
   confirmation run reddened:**
   1. **Targeted repro** — `bun run capture -- -g "<pattern>" --repeat-each=<N>` on the branch
@@ -82,17 +94,19 @@ restating it, since the spec that carried these numbers is deleted at close.
   2. **Same-pass base run** — does not reproduce ⇒ one `bun run capture` on the base tree, spent
      now rather than inherited, to place the red on a side.
   3. **Record and ship** — still unattributed ⇒ record the failing title to the across-ship
-     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship.
-     Escalation is by *accumulation across ships*, never by a batch manufactured inside one pass:
-     the across-ship population grows for free with every ship's confirmation run and is strictly
+     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship. A
+     roster entry is a defect with an owner, never weather (below, "A *single*-flow red…") — this
+     step records it for that ownership to reach, not a verdict that it has none. Escalation is
+     by *accumulation across ships*, never by a batch manufactured inside one pass: the
+     across-ship population grows for free with every ship's confirmation run and is strictly
      more powerful, run for run, than any within-pass N — the N=8 shape spent N full runs to buy
      one rate reading, the roster reads the same rate for the cost of confirmation runs already
      being paid.
 - **A green targeted repro is inconclusive, never an acquittal.** `section.pw.ts:2017` read
   green 8/8 under `-g --repeat-each=8` and 25/25 whole-file, and red at full cross-file,
-  full-worker scale (`kex2d-iteration-speed` S2b, 2026-08-26) — the targeted instrument cannot
-  see whatever surfaces only at that scale. So step 1 not reproducing routes to step 2, never to
-  a clean bill.
+  full-worker scale (`kex2d-iteration-speed` S2b, 2026-08-26, trunk `a0a25d4`) — the targeted
+  instrument cannot see whatever surfaces only at that scale. So step 1 not reproducing routes to
+  step 2, never to a clean bill.
 
 ## Cost levers
 
