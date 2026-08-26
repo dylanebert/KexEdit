@@ -10,7 +10,7 @@ import {
     trackMapping,
     velocityCurve,
 } from "./cart";
-import { COLOR_VELOCITY, hovered, kindSegments } from "./colors";
+import { COLOR_VELOCITY, dimmed, hovered, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
@@ -229,6 +229,11 @@ const posUnit = $derived(timeDomain ? "s" : "m");
 const RULER_H = 26; // top scrub band: ticks, labels, playhead handle
 const GAP_H = 20; // marker lane between ruler and chart — the section clip strip
 const CLIP_PAD = 2; // px; vertical inset of a section clip inside the marker lane
+// the rendered rect height ONE clip language shares (S4, finding 5): the section clip and the
+// velocity strip fill both draw at this height, inset `CLIP_PAD` from their own band's top and
+// bottom — never the container band's full height, which is a drift the old `STRIP_H == GAP_H`
+// pin let stand (that pinned the BAND, never what actually painted).
+const CLIP_H = GAP_H - 2 * CLIP_PAD;
 // the velocity-strip band: band carries extent, graph carries and edits value (Locked
 // decision, superseding "header carries extent, chart carries value"). Authored strips
 // draw here as solid fills (the velocity hue, selected brightens); the red ghost spans
@@ -3316,21 +3321,9 @@ function render(ctx: CanvasRenderingContext2D): void {
     // An all-feasible bake leaves the band showing only authored strips, same as before.
     ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
     ctx.fillRect(0, RULER_H + GAP_H, w, STRIP_H);
-    // on-surface naming (root ui.md gate 3's affordance clause, corrected at R): the lane
-    // names itself the way the "v"/"1 g" chart channels do, quiet and always drawn — gate 2's
-    // quiet governs the lane's CONTENTS (the strips), never its container, so this draws
-    // whether or not a strip exists yet. Confined to the untouched left gutter: every strip and
-    // ghost span below clamps its own draw to `LEFT_GUT`, so the label never collides with one
-    // regardless of playback position. The label reads "events", not the retired "vel" (S5,
-    // Locked decision finding 7): the LANE is general — FMOD's logic-track shape, velocity the
-    // only item type today — so its own name can't be a per-type word, and it wears the same
-    // neutral tone the untyped "1 g" baseline does rather than `COLOR_VELOCITY`. Typing moved
-    // to the ITEM: the strip's own fill color below, and the "v" unit on its selected readout.
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.font = "9px 'JetBrains Mono', ui-monospace, monospace";
-    ctx.fillStyle = "rgba(205, 197, 188, 0.6)";
-    ctx.fillText("events", 4, RULER_H + GAP_H + STRIP_H / 2);
+    // the lane carries no label (S4, Locked decision finding 4: "events" retires with nothing
+    // in its place — typing lives on the item, the strip's own fill color below and the "v"
+    // unit on its selected readout, never a per-lane word).
 
     // authored velocity strips — solid fill, the strip's own kind color (the velocity hue,
     // `COLOR_VELOCITY`). Selected strips brighten. Boundary ticks disambiguate abutting strips.
@@ -3352,21 +3345,30 @@ function render(ctx: CanvasRenderingContext2D): void {
         // canvas 2D ignores `var(--…)` CSS custom properties — a `fillStyle`/`strokeStyle`
         // string is resolved once, at the value's own construction, never against a live
         // cascade, so the CSS token had no effect and every unselected strip drew invisible
-        // (S1 Visibility fix). `COLOR_VELOCITY` + `globalAlpha` is the canvas-side twin of the
-        // same selected/unselected split the CSS token would have driven.
+        // (S1 Visibility fix). `dimmed(COLOR_VELOCITY)` + `globalAlpha` is the canvas-side twin
+        // of the same selected/unselected split the CSS token would have driven — the base fill
+        // sits one rung DOWN from the raw hue (S4, finding 4: dimmer, in-palette — the same
+        // OKLCH move `hovered` makes upward, `colors.ts`), selection returning it to the full hue.
         // S3 (Affordances): the hover rung, in kex2d's own channel — color, never the cursor
         // (editor-ui.md Affordance typing). An AREA lifts its fill one `hovered()` rung
         // (editor-ui.md Kind color); never on a stronger register (selection already reads
         // brighter, the same `.fpt:hover:not(.sel)` precedence force keyframes use).
         const bodyHover = !sel && bandHit.kind === "body" && bandHit.id === s.id;
         ctx.globalAlpha = sel ? 0.85 : 0.55;
-        ctx.fillStyle = bodyHover ? hovered(COLOR_VELOCITY) : COLOR_VELOCITY;
-        ctx.fillRect(cx0, RULER_H + GAP_H, cw, STRIP_H);
+        ctx.fillStyle = bodyHover
+            ? hovered(COLOR_VELOCITY)
+            : sel
+              ? COLOR_VELOCITY
+              : dimmed(COLOR_VELOCITY);
+        // rendered rect height: the clip's own (S4, finding 5) — `CLIP_H`, never the container
+        // band's full `STRIP_H`, so the fill reads as one rect language with the section clip
+        // above it rather than a taller, ungrounded sliver.
+        ctx.fillRect(cx0, RULER_H + GAP_H + CLIP_PAD, cw, CLIP_H);
         ctx.globalAlpha = 1;
         if (sel) {
             ctx.strokeStyle = COLOR_VELOCITY;
             ctx.lineWidth = 1;
-            ctx.strokeRect(cx0 + 0.5, RULER_H + GAP_H + 0.5, cw - 1, STRIP_H - 1);
+            ctx.strokeRect(cx0 + 0.5, RULER_H + GAP_H + CLIP_PAD + 0.5, cw - 1, CLIP_H - 1);
         }
         // the RESIZE affordance: a hovered endpoint reads apart from a hovered body by which
         // STROKE it takes, never a cursor swap (the S3 premise correction — no `ew-resize` here,
@@ -3374,25 +3376,27 @@ function render(ctx: CanvasRenderingContext2D): void {
         // exactly the boundary, the force clip-trim's own hover-brightens-the-handle shape
         // (`.clip-trim:hover`) read onto a canvas-drawn edge instead of a DOM one. `!sel` for the
         // same reason `bodyHover` carries it: hover is invisible on an already-selected element
-        // (editor-ui.md Kind color) — unconditional, no exemption for the edge case.
+        // (editor-ui.md Kind color) — unconditional, no exemption for the edge case. Spans the
+        // fill's own rendered height (`CLIP_H`), the same inset the fill itself draws at.
         if (!sel && bandHit.kind === "endpoint" && bandHit.id === s.id) {
             const ex = bandHit.edge === "start" ? cx0 : cx0 + cw;
             ctx.strokeStyle = hovered(COLOR_VELOCITY);
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(ex, RULER_H + GAP_H);
-            ctx.lineTo(ex, RULER_H + GAP_H + STRIP_H);
+            ctx.moveTo(ex, RULER_H + GAP_H + CLIP_PAD);
+            ctx.lineTo(ex, RULER_H + GAP_H + CLIP_PAD + CLIP_H);
             ctx.stroke();
         }
     }
-    // boundary ticks: the abutment disambiguator between two same-section strips sharing an edge.
+    // boundary ticks: the abutment disambiguator between two same-section strips sharing an
+    // edge — spans the fill's own rendered height (`CLIP_H`), the same inset the fill draws at.
     for (const tx of stripTicks) {
         if (tx < LEFT_GUT || tx > w) continue;
         ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
         ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.moveTo(tx, RULER_H + GAP_H);
-        ctx.lineTo(tx, RULER_H + GAP_H + STRIP_H);
+        ctx.moveTo(tx, RULER_H + GAP_H + CLIP_PAD);
+        ctx.lineTo(tx, RULER_H + GAP_H + CLIP_PAD + CLIP_H);
         ctx.stroke();
     }
 
@@ -4324,7 +4328,7 @@ onMount(() => {
                                 x={x0 + 0.5}
                                 y={RULER_H + CLIP_PAD}
                                 width={Math.max(1, cw - 1)}
-                                height={GAP_H - 2 * CLIP_PAD}
+                                height={CLIP_H}
                                 rx="2"
                                 onpointerdown={(e) => selectClip(e, c)}
                                 oncontextmenu={(e) => clipMenu(e, c)}
@@ -4351,7 +4355,7 @@ onMount(() => {
                                     x={x0 + 0.5}
                                     y={RULER_H + CLIP_PAD}
                                     width={Math.max(1, cw - 1)}
-                                    height={GAP_H - 2 * CLIP_PAD}
+                                    height={CLIP_H}
                                     rx="2"
                                 />
                             {/if}
@@ -4362,7 +4366,7 @@ onMount(() => {
                                     x={x1 - 5}
                                     y={RULER_H + CLIP_PAD}
                                     width="10"
-                                    height={GAP_H - 2 * CLIP_PAD}
+                                    height={CLIP_H}
                                     onpointerdown={(e) => lenDown(e, c)}
                                     role="presentation"
                                     aria-label="Resize force section"
@@ -4392,7 +4396,7 @@ onMount(() => {
                                 x={gx0 + 0.5}
                                 y={RULER_H + CLIP_PAD}
                                 width={Math.max(1, gw - 1)}
-                                height={GAP_H - 2 * CLIP_PAD}
+                                height={CLIP_H}
                                 rx="2"
                             />
                         {/if}
@@ -4428,6 +4432,7 @@ onMount(() => {
                 <rect
                     class="hbandzone"
                     class:edge-hover={bandHit.kind === "endpoint"}
+                    class:body-hover={bandHit.kind === "body"}
                     x={LEFT_GUT}
                     y={RULER_H + GAP_H}
                     width={Math.max(0, w - LEFT_GUT)}
@@ -5533,19 +5538,21 @@ onMount(() => {
         fill: color-mix(in srgb, var(--accent) 40%, transparent);
     }
 
-    /* the velocity-strip header band hit zone (T1): transparent, captures pointer events
-       for the band-wide hit classifier. The visual strips are drawn on the canvas. Cursor
-       stays `default` over empty band space (deliberately inert, no create-drag) and over a
-       body drag (the hit zone names THAT gesture in the hover rung — the canvas-drawn body
-       highlight — never the cursor; S3's premise correction, `editor-ui.md` Affordance
-       typing). A span EDGE is the one exception (S5, finding 2): the resize affordance gets
-       its own cursor too, `.clip-trim`'s own treatment on the force-section extent trim,
-       kept alongside the hover-rung highlight rather than instead of it — `edge-hover`
-       mirrors `bandHit.kind === "endpoint"` live. */
+    /* the velocity-strip header band hit zone (T1): transparent, captures pointer events for
+       the band-wide hit classifier. The visual strips are drawn on the canvas. Cursor stays
+       `default` over empty band space (deliberately inert, no create-drag). A span BODY gets
+       the same pointer affordance a segment clip carries (S4, finding 1: the declared-registry
+       extension, below) alongside the hover-rung fill highlight, never instead of it —
+       `body-hover` mirrors `bandHit.kind === "body"` live. A span EDGE carries its own
+       affordance too (S5, finding 2), `.clip-trim`'s own treatment on the force-section extent
+       trim — `edge-hover` mirrors `bandHit.kind === "endpoint"`. */
     .hbandzone {
         fill: transparent;
         pointer-events: all;
         cursor: default;
+    }
+    .hbandzone.body-hover {
+        cursor: pointer;
     }
     .hbandzone.edge-hover {
         cursor: ew-resize;

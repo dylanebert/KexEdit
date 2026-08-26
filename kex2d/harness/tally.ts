@@ -13,9 +13,21 @@
 //        bun run tally . branch 4
 //
 // Output-parsing hazard (measured): `geo.pw.ts:61` is a `test.fail()` pin — Playwright prints
-// its per-test line with the ✘ mark on a GREEN run and counts it in `N passed`. Any ✘-scraping
-// logic must exclude it or every tree reads as a 4/4 red on that one test. This reader excludes
-// it by location (`geo.pw.ts:61`).
+// its per-test line with the failure mark on a GREEN run and counts it in `N passed`. Any
+// mark-scraping logic must exclude it or every tree reads as a 4/4 red on that one test. This
+// reader excludes it by location (`geo.pw.ts:61`).
+//
+// The failure mark is ENVIRONMENT-DEPENDENT, not the fixed `✘` this reader originally assumed:
+// a UTF-8-capable terminal prints `✘`, but the WSL→Windows bridge this harness actually runs
+// under prints plain ASCII `x` — witnessed directly off a saved capture log
+// (`/tmp/kex2d-s1r3/tally-branch/cap-branch-1.log:75`, kex2d-event-substrate S4 repair,
+// 2026-08-25): `  x   2 [chromium] › affordance.pw.ts:190:1 › …`. The original `✘`-only regex
+// read that line as a pass (0 matches on the same text `parseFailures` now catches), which is
+// how an 8/8 deterministic branch failure tallied as `failed=0` for an entire N=8 batch — the
+// per-run `exit=1` was the only visible signal, and it went unread alongside the mis-tallied
+// rate. The fix accepts either glyph, anchored to the line's own status column (`^\s*`, then a
+// mandatory `\s+\d+\s+\[chromium\]` right after the mark) so a literal `x` inside a test title
+// or path can never match — only Playwright's own per-test status token can.
 
 import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -51,9 +63,13 @@ function runCapture(
     };
 }
 
-// Parse Playwright's ✘-marked failure lines: "  ✘  N [chromium] › file:line:col › title"
+// Parse Playwright's failure-marked lines: "  ✘  N [chromium] › file:line:col › title" (a
+// UTF-8 terminal) or "  x   N [chromium] › file:line:col › title" (this harness's WSL→Windows
+// bridge, ASCII-only) — anchored to line start so a literal `x` elsewhere in a title/path can't
+// match: only whitespace may precede the mark, and `\s+\d+\s+\[chromium\]` must follow it
+// immediately, the exact shape of Playwright's own status column.
 function parseFailures(text: string): string[] {
-    const re = /✘\s+\d+\s+\[chromium\]\s+›\s+(\S+:\d+):\d+\s+›\s+(.+?)\s*(?:\(\d|$)/gm;
+    const re = /^\s*(?:✘|x)\s+\d+\s+\[chromium\]\s+›\s+(\S+:\d+):\d+\s+›\s+(.+?)\s*(?:\(\d|$)/gm;
     const out: string[] = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
