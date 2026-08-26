@@ -146,6 +146,41 @@ witnessed in its docblock.
   behavior-only mode could remove at most that total, never more, so the
   two levers are one measurement read twice, not two independent ones.
 
+## Recorded distribution
+
+The anti-rot instrument for both quantities the Ship protocol spends: how long a run costs, and
+how often one goes red. Recorded, never gated — a wall-clock threshold gates the host and not the
+artifact (`checks.md`), so nothing in `bun test`/`bun check` reds on a duration, and the tripwire's
+job is to summon a person rather than to fail a run.
+
+- **Every capturing run appends one line to `harness/runs.jsonl`** (`capture.ts`, via
+  `trend.ts`'s `appendRun`): the per-phase durations it also stamps into `RUN.json`
+  (`collect`/`server`/`run`/`total`), the exit code, and the failing titles. `RUN.json` alone
+  cannot carry this — it lives inside the shot set the next full run WIPES, so it records a run
+  and never a distribution.
+- **`bun run trend` is the reader**, and it is the consumer that makes the recorded fields
+  load-bearing rather than a table nothing opens: a record missing a field the reader consumes
+  fails loud, naming the field, instead of defaulting it and reporting a healthy trend off a
+  column nobody is filling. The population is full default-knob runs only — a selective or
+  knob-shifted run captured a different quantity.
+- **The roster half is what the escalation ladder depends on.** Ship protocol step 3 records an
+  unattributed failing title to the across-ship roster; that roster is only readable because
+  every run records its pass/fail here. A duration trend alone would read healthy while the red
+  rate climbed, which is why the recorded quantity is rate as well as duration.
+- **Both tripwires derive from the recorded data, never from a fitted constant.** Duration: the
+  recent window's median sitting **above** the prior window's whole observed range — the suite's own
+  run-to-run spread is the instrument's resolution, so the prior window's max is the bound, with no
+  multiplier to tune. One-sided on purpose: this guards against rot, and a suite that got faster is
+  the outcome rather than the breach — a speedup that bought its time by dropping work is the
+  suite-count oracle's to catch, not this reader's. Rate: one failing title recorded on two or more *distinct* heads, which is
+  this file's own definition of a roster entry ("A *single*-flow red…", below) rather than a rate
+  cutoff — distinct heads, so N repro runs inside one pass cannot manufacture a recurrence. The
+  window is a sample size (`trend.ts`'s `WINDOW`), not a threshold: a median over it must survive
+  the extreme readings this suite actually produces.
+- **The history is gitignored, so it is per-machine — deliberately.** `bun run capture` is
+  display-gated to the one GPU-bridge host, so every run in the population came off the same seat;
+  a durations column pooled across two machines would compare hosts, not trees.
+
 ## Flow-authoring laws
 
 - **The settle idiom.** Exactly one fixed wait exists: `SHOT_MS`, on the line immediately

@@ -21,7 +21,13 @@ import {
 } from "./args";
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
+import { appendRun } from "./trend";
 import { detectDisplay } from "./wsl";
+
+// Wall-clock origin for the phase stamps `RUN.json` records. Taken before anything is parsed so
+// `total` is the whole process, and the stamped phases summing under it is what makes the
+// unattributed remainder visible rather than absorbed (`kex2d-iteration-speed` S1's decomposition).
+const started = performance.now();
 
 // kex2d's screenshot harness — boot the vite dev server, drive the Playwright flow under the host's
 // real-GPU Chrome (shallot's runtime needs a device even though kex2d renders canvas2D), copy the
@@ -159,10 +165,13 @@ if (listing) {
 // The suite-count oracle's left-hand side: what the config COLLECTS for this run. Cheap (~3s, no
 // browser) and taken before anything is wiped, so a config that collects nothing fails loud with the
 // shot set intact. Both sides of the oracle parse in `args.ts`, where they are unit-tested.
+let collectMs: number | null = null;
 const collected = ((): number | null => {
     if (selective) return null;
     console.log("Collecting the suite (--list)...");
+    const listStart = performance.now();
     const list = launch(["--list"]);
+    collectMs = Math.round(performance.now() - listStart);
     if (list.exitCode !== 0) fail(`the suite did not collect (--list exit ${list.exitCode})`);
     const total = collectedCount(list.stdout);
     if (total === null) fail("the --list pre-pass reported no collected count");
@@ -172,7 +181,9 @@ const collected = ((): number | null => {
 if (!selective) rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
+const serverStart = performance.now();
 const server = await startServer(projectDir, port, "kex2d");
+const serverMs = Math.round(performance.now() - serverStart);
 const cleanup = (): void => {
     server.kill();
 };
@@ -187,7 +198,9 @@ process.on("SIGTERM", () => {
 });
 
 console.log("Running capture flow...");
+const runStart = performance.now();
 const run = launch(testArgs);
+const runMs = Math.round(performance.now() - runStart);
 
 if (run.staged) {
     const wslShots = join(run.staged.wsl, "shots");
@@ -199,13 +212,25 @@ if (run.staged) {
 // that change what the shot set IS reach it; the port and the stage dir are provenance (they change
 // where it ran, not what it captured).
 const counts = runCounts(run.stdout);
+// One resolved value: the gate reads it to decide whether the shots may be stamped `reference`, and
+// the recorded distribution reads it to decide whether this run's wall clock belongs in the same
+// population as the others (`trend.ts` — a non-default-knob run captured a different quantity).
+const defaultKnobs = workers === DEFAULT_WORKERS && !headed && shotMs === DEFAULT_SHOT_MS;
 const { reference, failure } = verdict({
     selective,
     exitCode: run.exitCode,
     collected,
     counts,
-    defaultKnobs: workers === DEFAULT_WORKERS && !headed && shotMs === DEFAULT_SHOT_MS,
+    defaultKnobs,
 });
+const titles = failedTitles(run.stdout);
+
+const durations = {
+    collect: collectMs,
+    server: serverMs,
+    run: runMs,
+    total: Math.round(performance.now() - started),
+};
 
 const git = (args: string[]): string =>
     new TextDecoder()
@@ -224,13 +249,29 @@ writeFileSync(
             // or flaky run's shape is what a post-mortem reads, and `runCounts` already computed it.
             // A summary that didn't parse leaves the categories absent, never zeroed.
             counts: { collected, ...counts },
-            failedTitles: failedTitles(run.stdout),
+            failedTitles: titles,
+            // What the run SPENT, per phase. A duration threshold gates the host and not the
+            // artifact (`checks.md`), so nothing reds on these — they are recorded, and
+            // `trend.ts` reads the distribution they accumulate into.
+            durations,
             reference,
         },
         null,
         2,
     )}\n`,
 );
+
+// Same run, appended to the history `trend.ts` reads: `RUN.json` lives inside the shot set the next
+// full run WIPES, so it can record a run but never a distribution or an across-ship roster.
+appendRun({
+    at: new Date().toISOString(),
+    head: git(["rev-parse", "--short", "HEAD"]) || null,
+    selective,
+    defaultKnobs,
+    exitCode: run.exitCode,
+    failedTitles: titles,
+    durations,
+});
 
 cleanup();
 if (failure !== null) {
