@@ -2093,6 +2093,116 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await expect.poll(async () => (await stripKfSelIds()).length).toBe(0);
 });
 
+// S7 (kex2d-event-substrate, F5): the velocity value popup. A strip keyframe's typed `v`
+// field and the one-shot's typed `v` field read/edit through the SAME popover substrate —
+// the `.ptip`/`.fld` markup and `kfFieldEdit`/`oneShotFieldEdit`'s shared begin/set/commit
+// gesture shape, never a parallel twin (this stage's own adversarial named subject). This
+// flow drives BOTH through the real pointer: selects a strip keyframe's diamond, types a new
+// `v`, and reads the bake move at that exact station (`vAtD`); selects the one-shot glyph —
+// its POSITION field is LOCKED (disabled, `d = 0`, Locked decision F5) while its `v` field
+// still edits — types a new `v`, and reads the bake move (`v0`, `entrySpeed`'s own readback).
+//
+// RED-FIRST WITNESS (2026-08-26): deleted the `setOneShotValue(ecs, os.id, v);` line from
+// `oneShotFieldEdit` (Timeline.svelte) — the flow reds at the `v0` poll (`exit 1`, timeout:
+// `v0()` never moved off `v0Before`). Restored; the flow returns to green. A second witness
+// on the strip-keyframe half: deleted the same line's twin in `kfFieldEdit`'s strip branch
+// (`setStripKeyframe(ecs, k.id, ...)`) — reds identically at the `vAtD` poll (`exit 1`).
+// Restored both.
+test("velocity value popup: typed edits move the bake, one-shot position stays locked (F5)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () => kexCall(page, "stripKfPx");
+    const vAtD = (d: number) => kexCall(page, "vAtD", d);
+    const v0 = () => kexCall(page, "v0");
+    const oneShotPx = () => kexCall(page, "oneShotPx");
+    const oneShotVal = () => kexCall(page, "oneShot");
+
+    // create a strip (right-click on the band → Add velocity strip, `seed()` authors none —
+    // only the track-start one-shot); creation seeds two keyframes at start/end (S4).
+    const bandBb0 = await page.locator(".hbandzone").boundingBox();
+    const clipBb = await page.locator(".clip").first().boundingBox();
+    if (!bandBb0 || !clipBb) throw new Error("header band / clip not laid out");
+    const bandY0 = bandBb0.y + bandBb0.height / 2;
+    const bandX = clipBb.x + clipBb.width * 0.5;
+    await page.mouse.click(bandX, bandY0, { button: "right" });
+    await expect(page.locator(".smenu")).toBeVisible();
+    await clickMenuItem(page, ".smenu", "Add velocity strip");
+    await expect.poll(async () => (await stripsOf()).length).toBe(1);
+    await frames(page, 2); // bandStrips/selStrip settle behind the RAF tick (`stripKfPx`'s own note)
+
+    // ── strip keyframe half: select the created strip's first keyframe, type a new v ──
+    const strips = (await stripsOf()) as { id: number; start: number; end: number }[];
+    const strip0 = strips[0];
+    if (!strip0) throw new Error("no seeded strip");
+    const kfs = (await stripKeyframesOf(strip0.id)) as { id: number; s: number; v: number }[];
+    const kf0 = kfs[0];
+    if (!kf0) throw new Error("seeded strip has no keyframes");
+
+    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
+    const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    const kf0Px = kfPx.find((k) => k.id === kf0.id);
+    if (!kf0Px) throw new Error("seeded keyframe not projected on screen");
+    await page.mouse.click(kf0Px.x, kf0Px.y);
+    console.log("DEBUG kf0", JSON.stringify(kf0), "kf0Px", JSON.stringify(kf0Px));
+    console.log("DEBUG stripKfSelIds", JSON.stringify(await kexCall(page, "stripKfSelIds")));
+    console.log("DEBUG stripKfSelActive", JSON.stringify(await kexCall(page, "stripKfSelActive")));
+
+    const vField = page.locator('.ptip input[aria-label="Keyframe velocity (m/s)"]');
+    await expect(vField).toBeVisible();
+    console.log("DEBUG vField initial value", await vField.inputValue());
+    const vBefore = (await vAtD(kf0.s)) as number;
+    const newKfV = kf0.v + 4;
+    await vField.fill(String(newKfV));
+    console.log("DEBUG vField after fill", await vField.inputValue());
+    await page.keyboard.press("Enter");
+    console.log("DEBUG vField after Enter", await vField.inputValue());
+    console.log("DEBUG stripKeyframesOf after", JSON.stringify(await stripKeyframesOf(strip0.id)));
+    await frames(page, 4); // the bake reads through `bakeOut`'s RAF-tick gate (Residue: one frame behind)
+    console.log("DEBUG vAtD after frames", await vAtD(kf0.s));
+    await page.waitForTimeout(1000);
+    console.log("DEBUG vAtD after 1s wait", await vAtD(kf0.s));
+    console.log("DEBUG strip after 1s", JSON.stringify(await stripsOf()));
+    await expect.poll(async () => vAtD(kf0.s), { timeout: 10000 }).not.toBeCloseTo(vBefore, 2);
+    await expect.poll(async () => vAtD(kf0.s)).toBeCloseTo(newKfV, 2);
+
+    await page.keyboard.press("Escape"); // clear the strip-keyframe popover before the one-shot's
+
+    // ── one-shot half: select the glyph, confirm the position field is LOCKED, type a new v ──
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!bandBb) throw new Error("header band not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const glyphLocalX = (await oneShotPx()) as number;
+    await page.mouse.click(chartCanvasBb.x + glyphLocalX, bandY);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
+
+    const posField = page.locator(".ptip .fld input[disabled]");
+    await expect(posField).toBeVisible();
+    await expect(posField).toBeDisabled();
+
+    const v0Before = (await v0()) as number;
+    const osVal = (await oneShotVal()) as { id: number; value: number };
+    const newV0 = osVal.value + 5;
+    const oneShotVField = page.locator('.ptip input[aria-label="Initial velocity (m/s)"]');
+    await expect(oneShotVField).toBeVisible();
+    await oneShotVField.fill(String(newV0));
+    await page.keyboard.press("Enter");
+    await expect.poll(v0).not.toBeCloseTo(v0Before, 2);
+    await expect.poll(v0).toBeCloseTo(newV0, 2);
+
+    // the position field never routed a write: still showing the locked station, never the
+    // typed v's station (there is none — the one-shot has no `s` to author).
+    await expect(posField).toBeDisabled();
+});
+
 // S1 capture arm: keyframeDown's multi-member drag for strip keyframes — the offset-preserving
 // path. keyframeDown (Timeline.svelte:1498) sets up the drag set from editor.stripKfs.ids:
 // when multiple strip keyframes are selected (shift-click toggles into the set), the drag

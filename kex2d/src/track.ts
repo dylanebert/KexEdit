@@ -642,6 +642,17 @@ export function destroyOneShot(ecs: State, id: number): void {
     if (eid !== null) ecs.destroy(eid);
 }
 
+/** the one-shot's live-authoring value writer (F5: the value popover's inline field edit)
+ *  — `setForcePoint`/`setStripKeyframe`'s single-scalar twin, floored at `MIN_V0` like
+ *  {@link setStartSpeed}. There is no position write here on purpose: the one-shot's axis
+ *  is LOCKED (Locked decision F5) — it lives at `d = 0`, `entryOneShot`'s own invariant —
+ *  so unlike a force point or a strip keyframe there is no `s` this writer could move. */
+export function setOneShotValue(ecs: State, id: number, value: number): void {
+    const eid = oneShotAt(ecs, id);
+    if (eid === null) return;
+    OneShot.value.set(eid, Math.max(MIN_V0, value));
+}
+
 /** a strip's undoable state, keyed by stable id — the drag/nudge/typed-field gesture
  *  snapshots this (`ForcePointState`'s own shape). `kfs` carries every child keyframe's
  *  `(id, s, v)`: a strip's keyframes never move through {@link setStrip} (S3, non-sticking),

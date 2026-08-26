@@ -55,6 +55,7 @@ import {
     beginForceMoves,
     beginForceTangent,
     beginLength,
+    beginOneShotMove,
     beginStripMove,
     beginStripKeyframeMove,
     beginStripKeyframeMoves,
@@ -154,6 +155,7 @@ import {
     allStrips,
     setForcePoint,
     setForceTangent,
+    setOneShotValue,
     setSectionLength,
     setStrip,
     setStripKeyframe,
@@ -1272,6 +1274,26 @@ const selStripKfLocked = $derived.by((): boolean => {
     void tick;
     const k = selStripKfPt;
     return k !== null && !sectionEditable(editor.pinning, k.section);
+});
+// the selected one-shot's own typed v field (F5) — `selPoint`/`selStripKfPt`'s point-kind
+// twin, but scalar-valued: a one-shot carries no keyframe curve, one number (S3), and its
+// position axis is LOCKED (Locked decision F5: it lives at `d = 0`, `entryOneShot`'s own
+// invariant), so unlike the other two this shape carries no `u`/position field at all — only
+// the id and the value the popover's `v` field reads/writes. Read straight off `entryOneShot`
+// (not a `bandStrips`-style RAF-projected list, `selPoint`'s own pattern) since the one-shot
+// has no `spans`-projected geometry to wait on.
+const selOneShotPt = $derived.by((): { id: number; value: number } | null => {
+    void tick;
+    if (!editor.oneShot) return null;
+    const os = entryOneShot(ecs);
+    return os ?? null;
+});
+// `stripEditableAt(0)`'s own reading — the pin-mode lockdown gates the one-shot's value field
+// exactly like `selLocked`/`selStripKfLocked` gate theirs (`deleteSelectedOneShot`'s own guard,
+// the same station).
+const selOneShotLocked = $derived.by((): boolean => {
+    void tick;
+    return selOneShotPt !== null && !stripEditableAt(0);
 });
 // a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
 const ptX = (p: ForcePt): number => uPx(p.u);
@@ -3081,6 +3103,21 @@ function onFieldKfV(e: Event): void {
         kfFieldEdit(k.s, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
     }
 }
+// the one-shot's own typed v field (F5) — `kfFieldEdit`'s single-scalar twin: no position
+// write, since the axis is LOCKED (`setOneShotValue`'s own docblock). Same gesture shape
+// (begin → set → commit) and the same pin-mode guard `deleteSelectedOneShot` uses.
+function oneShotFieldEdit(v: number): void {
+    const os = selOneShotPt;
+    if (os === null || !Number.isFinite(v)) return;
+    if (!stripEditableAt(0)) return;
+    skipLanding();
+    beginOneShotMove(ecs, os.id);
+    setOneShotValue(ecs, os.id, v);
+    commit(history);
+}
+function onFieldOneShotV(e: Event): void {
+    oneShotFieldEdit(Number.parseFloat((e.currentTarget as HTMLInputElement).value));
+}
 // ── the selected handle's typed (Δs, Δg) fields ── mirrors the keyframe fields, but the
 // commit goes through the shared tangent write path (composeTangent — x-clamp + Aligned
 // coupling), history-bracketed as one entry. a typed value on a still-derived handle
@@ -4834,6 +4871,52 @@ onMount(() => {
                             onfocus={(e) => e.currentTarget.select()}
                             onkeydown={(e) => fieldKeydown(e, vText)}
                             aria-label="Keyframe velocity (m/s)"
+                        />
+                        <span class="unit">m/s</span>
+                    </div>
+                </div>
+            {/if}
+        <!-- the one-shot's own typed v popover (F5, Locked decision): the value axis reads/
+             edits through the SAME popover surface a strip keyframe uses (one substrate — the
+             `.ptip`/`.fld` markup and the begin/set/commit gesture shape, never a parallel
+             twin), with the POSITION axis locked: the one-shot lives at `d = 0`
+             (`entryOneShot`'s own invariant), so the position field shows the fixed station,
+             always `disabled` (never conditioned on `sectionEditable`/pin-mode — locked is
+             locked) and carries no `onchange` at all, so a rejected keystroke has nothing to
+             route to even if the `disabled` attribute were somehow bypassed. Anchored at the
+             glyph's own fixed screen position (`oneShotGlyphX`/`cy`, Timeline's canvas draw) —
+             a one-shot has no value-axis curve to project onto, unlike a force/strip keyframe. -->
+        {:else if selOneShotPt}
+            {@const gx = oneShotGlyphX()}
+            {#if gx >= LEFT_GUT - FHIT_R && gx <= w + FHIT_R}
+                {@const ax = clamp(gx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
+                {@const ay = RULER_H + GAP_H + STRIP_H / 2}
+                {@const posText = fmt(uOf(0), 1)}
+                {@const vText = fmt(selOneShotPt.value, 2)}
+                <div class="ptip" class:below={ay < TOP + TIP_FLIP} style="left: {ax}px; top: {ay}px">
+                    <div class="fld">
+                        <span class="key" role="presentation">{posLabel}</span>
+                        <input
+                            type="number"
+                            value={posText}
+                            disabled
+                            aria-label={timeDomain
+                                ? "One-shot time (locked at track start)"
+                                : "One-shot distance (locked at track start)"}
+                        />
+                        <span class="unit">{posUnit}</span>
+                    </div>
+                    <div class="fld">
+                        <span class="key" role="presentation">v</span>
+                        <input
+                            type="number"
+                            step="0.1"
+                            value={vText}
+                            disabled={selOneShotLocked}
+                            onchange={onFieldOneShotV}
+                            onfocus={(e) => e.currentTarget.select()}
+                            onkeydown={(e) => fieldKeydown(e, vText)}
+                            aria-label="Initial velocity (m/s)"
                         />
                         <span class="unit">m/s</span>
                     </div>
