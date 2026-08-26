@@ -223,7 +223,6 @@ export interface Kex {
         | { kind: "endpoint"; id: number; edge: "start" | "end" }
         | { kind: "body"; id: number }
         | { kind: "empty" };
-    oneShotHover(): boolean;
     vAtD(d: number): number;
     spanMidAt(i: number): { x: number; y: number } | null;
     startAt(): { x: number; y: number } | null;

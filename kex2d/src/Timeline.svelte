@@ -4141,7 +4141,6 @@ onMount(() => {
             // determines when the paint has anything new to show, immune to a later
             // colour/height re-scheme of the paint itself.
             k.bandHit = (): StripHit => bandHit;
-            k.oneShotHover = (): boolean => oneShotHover;
             // the chart's own addressable-span end, on the ACTIVE axis (bounded past a stall in
             // Time, S2, finding 13) — distinct from `tTotal` (main.ts, the bake's unbounded
             // total) precisely so a flow can assert the chart clamps where the bake doesn't.
@@ -4172,7 +4171,6 @@ onMount(() => {
                 delete k.oneShotPx;
                 delete k.oneShotSelected;
                 delete k.bandHit;
-                delete k.oneShotHover;
                 delete k.uTotal;
                 delete k.stallU;
             }
