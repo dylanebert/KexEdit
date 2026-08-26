@@ -24,15 +24,13 @@ there, not in the app. `bun check` self-provisions *that sub-package only*: the 
 script installs `--cwd harness --frozen-lockfile` when `harness/node_modules` is missing. It does
 not provision the app root — a fresh clone or worktree still has no `node_modules` there and reds
 `tsc` on missing app-level type defs (`@webgpu/types`, `vite/client`) until something installs at
-the `kex2d` root (witnessed twice: `kex2d-iteration-speed` S2b and S3). **The two cases a root
-`bun install` sits in take opposite verdicts, so name which one you're in before running it.** A
-tree that already has a working dev checkout carries `node_modules/@dylanebert/shallot` as a
-symlink into the local `shallot/` checkout — **never** run a root `bun install` there: it replaces
-the symlink with npm shallot and the app stops mounting. A freshly provisioned worktree has no
-symlink yet to lose, and no `node_modules` to type-check against at all — a root `bun install`
-there is the needed fix for `tsc`, not the hazard, but it resolves shallot from npm rather than
-the dev checkout: a session that goes on to mount the app locally still owes the dev symlink,
-re-linked the normal way, before that mount is trustworthy.
+the `kex2d` root (witnessed twice: `kex2d-iteration-speed` S2b and S3). A root `bun install`
+resolves `@dylanebert/shallot` from npm, overwriting whatever is currently at
+`node_modules/@dylanebert/shallot` — so read what's there first (`file
+node_modules/@dylanebert/shallot`) rather than run it blind. A plain directory is already an
+npm-resolved copy, and a root install is safe; anything else (a symlink, a junction) is a
+hand-wired local checkout a root install destroys, and restoring that wiring is on whoever set it
+up — this repo doesn't create it and can't tell you how to get it back.
 
 The harness code IS under the project `tsconfig` + `biome`. Its pure pieces — `args.ts`'s CLI/env
 validators and the `--out` wipe guard, `wsl.ts`'s provisioning key — are unit-tested in
