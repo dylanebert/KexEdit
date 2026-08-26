@@ -116,7 +116,7 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe overlap refusal",
         mutations: [
             {
-                old: '    const landed = dragKfMembers.every(\n        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, clamp(m.s0 + ds, m.lo, m.len), m.id),\n    );',
+                old: '    const landed = dragKfMembers.every(\n        (m) => !keyframeTaken(ecs, kind, kind === "force" ? m.section : owner, m.s0 + ds, m.id),\n    );',
                 new: "    const landed = true; // MUTATED: overlap refusal disabled",
             },
         ],
