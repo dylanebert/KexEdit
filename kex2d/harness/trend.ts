@@ -14,10 +14,12 @@
 // are derived from the recorded data rather than fitted to it, because a fitted constant is a
 // threshold tuned to today's host:
 //
-//   - duration: the recent window's MEDIAN sits outside the prior window's whole observed RANGE.
+//   - duration: the recent window's MEDIAN sits ABOVE the prior window's whole observed range.
 //     The suite's own run-to-run spread is the noise bound (`kex2d-iteration-speed` S2 measured a
 //     spread several times any lever's effect), so the prior window's max IS the instrument's
-//     resolution — no multiplier, no fitted slack.
+//     resolution — no multiplier, no fitted slack. One-sided on purpose: this is an anti-ROT
+//     instrument, and a suite that got faster is the outcome, not the breach. A speedup that
+//     bought its time by dropping work is the suite-count oracle's to catch, not this reader's.
 //   - rate: one failing title recorded on two or more DISTINCT heads. That is the protocol's own
 //     definition of a roster entry ("a single-flow red recurring across runs is a defect with an
 //     owner, never weather"), not a rate cutoff. Distinct heads, so N repro runs inside one pass
@@ -60,6 +62,17 @@ export const PHASES = ["collect", "server", "run", "total"] as const;
  */
 export const WINDOW = 5;
 
+/** the top-level fields the reader consumes; exported so the arm sweeping them isn't a second hand list */
+export const FIELDS = [
+    "at",
+    "head",
+    "selective",
+    "defaultKnobs",
+    "exitCode",
+    "failedTitles",
+    "durations",
+] as const;
+
 export const HISTORY = join(import.meta.dir, "runs.jsonl");
 
 /**
@@ -81,15 +94,7 @@ export function parseHistory(text: string): RunRecord[] {
         } catch {
             throw new Error(`${where}: not JSON`);
         }
-        for (const field of [
-            "at",
-            "head",
-            "selective",
-            "defaultKnobs",
-            "exitCode",
-            "failedTitles",
-            "durations",
-        ])
+        for (const field of FIELDS)
             if (!(field in raw)) throw new Error(`${where}: missing field "${field}"`);
         const durations = raw.durations as Record<string, unknown> | null;
         if (durations === null || typeof durations !== "object")
@@ -119,6 +124,8 @@ export type Summary = {
     /** full default-knob runs — the only population whose durations and reds are comparable */
     population: number;
     red: number;
+    /** the population's first and last stamps — what window a person is being shown; null when empty */
+    span: { since: string; until: string } | null;
     phases: PhaseTrend[];
     /** failing titles by the distinct heads they were recorded on, most-recurrent first */
     roster: { title: string; heads: string[] }[];
@@ -170,6 +177,7 @@ export function summarize(records: RunRecord[]): Summary {
     return {
         population: full.length,
         red: full.filter((r) => r.exitCode !== 0).length,
+        span: full.length === 0 ? null : { since: full[0].at, until: full[full.length - 1].at },
         phases,
         roster: [...heads.entries()]
             .map(([title, hs]) => ({ title, heads: hs }))
@@ -205,7 +213,10 @@ if (import.meta.main) {
         process.exit(0);
     }
     const summary = summarize(parseHistory(readFileSync(path, "utf8")));
-    console.log(`full default-knob runs recorded: ${summary.population} (${summary.red} red)`);
+    const span = summary.span === null ? "" : ` — ${summary.span.since} to ${summary.span.until}`;
+    console.log(
+        `full default-knob runs recorded: ${summary.population} (${summary.red} red)${span}`,
+    );
     if (summary.phases.length === 0)
         console.log(
             `no duration trend yet — needs ${WINDOW * 2} full runs, two windows of ${WINDOW}`,

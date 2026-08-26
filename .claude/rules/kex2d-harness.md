@@ -168,9 +168,11 @@ job is to summon a person rather than to fail a run.
   every run records its pass/fail here. A duration trend alone would read healthy while the red
   rate climbed, which is why the recorded quantity is rate as well as duration.
 - **Both tripwires derive from the recorded data, never from a fitted constant.** Duration: the
-  recent window's median sitting outside the prior window's whole observed range — the suite's own
+  recent window's median sitting **above** the prior window's whole observed range — the suite's own
   run-to-run spread is the instrument's resolution, so the prior window's max is the bound, with no
-  multiplier to tune. Rate: one failing title recorded on two or more *distinct* heads, which is
+  multiplier to tune. One-sided on purpose: this guards against rot, and a suite that got faster is
+  the outcome rather than the breach — a speedup that bought its time by dropping work is the
+  suite-count oracle's to catch, not this reader's. Rate: one failing title recorded on two or more *distinct* heads, which is
   this file's own definition of a roster entry ("A *single*-flow red…", below) rather than a rate
   cutoff — distinct heads, so N repro runs inside one pass cannot manufacture a recurrence. The
   window is a sample size (`trend.ts`'s `WINDOW`), not a threshold: a median over it must survive

@@ -13,6 +13,7 @@ import {
     wipeable,
 } from "../harness/args";
 import {
+    FIELDS,
     parseHistory,
     PHASES,
     type RunRecord,
@@ -826,22 +827,42 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         expect(parseHistory("")).toEqual([]);
     });
 
+    test("the required-field registry cannot silently shrink", () => {
+        // `FIELDS` is one source of truth: the reader validates against it and the sweep below
+        // derives from it, so the two can never disagree — which is exactly why a DROPPED entry is
+        // invisible to that sweep (the reader stops requiring it and the sweep stops testing it, in
+        // lockstep). This is the registry's own membership pin, the only leg that reds on a shrink.
+        expect([...FIELDS]).toEqual([
+            "at",
+            "head",
+            "selective",
+            "defaultKnobs",
+            "exitCode",
+            "failedTitles",
+            "durations",
+        ]);
+    });
+
     test("a record missing a consumed field fails loud, naming the field", () => {
         // The witness the spec's Validation names: delete the field and the READER reds. A reader
-        // that defaulted it would report a healthy trend off a column nobody is filling.
-        const { durations: _dropped, ...noDurations } = run();
-        expect(() => parseHistory(`${JSON.stringify(noDurations)}\n`)).toThrow(
-            'runs.jsonl line 1: missing field "durations"',
-        );
-        const partial = { ...run(), durations: { collect: 1, server: 2, total: 4 } };
-        expect(() => parseHistory(`${JSON.stringify(partial)}\n`)).toThrow(
-            'runs.jsonl line 1: missing field "durations.run"',
-        );
-        const noRate = { ...run(), failedTitles: undefined };
-        delete (noRate as Record<string, unknown>).failedTitles;
-        expect(() => parseHistory(`${JSON.stringify(noRate)}\n`)).toThrow(
-            'runs.jsonl line 1: missing field "failedTitles"',
-        );
+        // that defaulted it would report a healthy trend off a column nobody is filling. Swept over
+        // the reader's OWN exported field list, not a second hand list here — dropping an entry
+        // from `FIELDS` reds this arm's `durations`/`failedTitles` legs rather than going unnoticed.
+        for (const field of FIELDS) {
+            const dropped = { ...run() } as Record<string, unknown>;
+            delete dropped[field];
+            expect(
+                () => parseHistory(`${JSON.stringify(dropped)}\n`),
+                `dropping "${field}" did not red the reader`,
+            ).toThrow(`runs.jsonl line 1: missing field "${field}"`);
+        }
+        for (const phase of PHASES) {
+            const partial = { ...run().durations } as Record<string, unknown>;
+            delete partial[phase];
+            expect(() =>
+                parseHistory(`${JSON.stringify({ ...run(), durations: partial })}\n`),
+            ).toThrow(`runs.jsonl line 1: missing field "durations.${phase}"`);
+        }
         expect(() => parseHistory("not json\n")).toThrow("runs.jsonl line 1: not JSON");
     });
 
@@ -854,6 +875,11 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         ]);
         expect(summary.population).toBe(2);
         expect(summary.red).toBe(1);
+        // `at` is a required field, so it owes a consumer: the span a person is being shown
+        expect(summary.span).toEqual({
+            since: "2026-08-26T00:00:00.000Z",
+            until: "2026-08-26T00:00:00.000Z",
+        });
         // the selective and knob-shifted reds carried the same title and contributed no head
         expect(summary.roster).toEqual([{ title: "t", heads: ["aaaaaaa"] }]);
     });
