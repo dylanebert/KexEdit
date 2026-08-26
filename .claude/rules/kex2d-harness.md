@@ -92,7 +92,9 @@ restating it, since the spec that carried these numbers is deleted at close.
   2. **Same-pass base run** — does not reproduce ⇒ one `bun run capture` on the base tree, spent
      now rather than inherited, to place the red on a side.
   3. **Record and ship** — still unattributed ⇒ record the failing title to the across-ship
-     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship. A
+     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship.
+     Reading the roster is part of this step: run `bun run trend` in the same pass — recording
+     into a roster nobody reads is burial, not escalation. A
      roster entry is a defect with an owner, never weather (below, "A *single*-flow red…") — this
      step records it for that ownership to reach, not a verdict that it has none. Escalation is
      by *accumulation across ships*, never by a batch manufactured inside one pass: the
@@ -153,11 +155,14 @@ how often one goes red. Recorded, never gated — a wall-clock threshold gates t
 artifact (`checks.md`), so nothing in `bun test`/`bun check` reds on a duration, and the tripwire's
 job is to summon a person rather than to fail a run.
 
-- **Every capturing run appends one line to `harness/runs.jsonl`** (`capture.ts`, via
+- **A run that reaches `RUN.json` appends one line to `runs.jsonl`** (`capture.ts`, via
   `trend.ts`'s `appendRun`): the per-phase durations it also stamps into `RUN.json`
-  (`collect`/`server`/`run`/`total`), the exit code, and the failing titles. `RUN.json` alone
-  cannot carry this — it lives inside the shot set the next full run WIPES, so it records a run
-  and never a distribution.
+  (`collect`/`server`/`run`/`total`), the exit code, and the failing titles. A run that dies
+  before that point — a `--list` collect failure, a bad-arg usage exit, a SIGINT/SIGTERM — never
+  reaches `appendRun`, so the recorded population is scoped to test-level reds only; a whole class
+  of failure (host-boot, kills) never reaches this instrument. `RUN.json` alone cannot carry the
+  distribution either way — it lives inside the shot set the next full run WIPES, so it records a
+  run and never a distribution.
 - **`bun run trend` is the reader**, and it is the consumer that makes the recorded fields
   load-bearing rather than a table nothing opens: a record missing a field the reader consumes
   fails loud, naming the field, instead of defaulting it and reporting a healthy trend off a
@@ -177,9 +182,20 @@ job is to summon a person rather than to fail a run.
   cutoff — distinct heads, so N repro runs inside one pass cannot manufacture a recurrence. The
   window is a sample size (`trend.ts`'s `WINDOW`), not a threshold: a median over it must survive
   the extreme readings this suite actually produces.
-- **The history is gitignored, so it is per-machine — deliberately.** `bun run capture` is
-  display-gated to the one GPU-bridge host, so every run in the population came off the same seat;
-  a durations column pooled across two machines would compare hosts, not trees.
+- **The history lives outside any checkout, at a machine-stable path** (`KEX2D_TREND_HISTORY`
+  wins outright, else `$XDG_STATE_HOME/kex2d/runs.jsonl` — `trend.ts`'s `resolveHistory`). Not
+  because it's gitignored: every unit's confirmation capture runs from its own fresh worktree,
+  retired at ship, so a path resolved from the checkout (`harness/runs.jsonl`, the earlier shape)
+  starts empty every time and can never accumulate the across-ship roster the escalation ladder
+  depends on. `bun run capture` is also display-gated to the one GPU-bridge host, so every run in
+  the population comes off the same seat regardless — a durations column pooled across two
+  machines would compare hosts, not trees. **That shared path is also now a shared write target
+  across every worktree on the host, and `appendRun` takes no lock** — "one capture at a time per
+  port" (Iteration discipline, above) is the standing premise that makes an unlocked append safe;
+  it isn't enforced here, it's inherited. A concurrent writer would tear a line, and `parseHistory`
+  throws loud on the resulting malformed line for every consumer, not just the racing pair — which
+  is correct (`coding.md`: no silent swallowing), so the fix for a torn write is holding the
+  premise, never a lock added here or a reader that skips malformed lines.
 
 ## Flow-authoring laws
 
