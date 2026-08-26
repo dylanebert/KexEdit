@@ -2,10 +2,11 @@
 //
 // `RUN.json` records what ONE run cost and whether it went red, but a full run wipes the shot set,
 // so the prior run's record is gone by the time anyone would compare against it. This module is the
-// history: `capture.ts` appends one line per capturing run to `harness/runs.jsonl`, and this reader
-// surfaces the two quantities the ship protocol depends on (`kex2d-harness.md` § Recorded
-// distribution) — per-phase duration trend, and the across-ship flake roster the escalation ladder's
-// step 3 records into.
+// history: `capture.ts` appends one line to `runs.jsonl` for every run that reaches `RUN.json` (a
+// collect-fail exit, a bad-arg exit, or a SIGINT/SIGTERM never gets there, so the recorded
+// population undercounts by that class), and this reader surfaces the two quantities the ship
+// protocol depends on (`kex2d-harness.md` § Recorded distribution) — per-phase duration trend, and
+// the across-ship flake roster the escalation ladder's step 3 records into.
 //
 //   bun run trend        → the recorded distribution, exit 1 if a tripwire breached
 //
@@ -25,12 +26,16 @@
 //     owner, never weather"), not a rate cutoff. Distinct heads, so N repro runs inside one pass
 //     cannot manufacture a recurrence.
 //
-// The history is gitignored, so it is per-machine — which is what it should be: `bun run capture`
-// is display-gated to the one GPU-bridge host, so every run in the population came off the same
-// seat, and a durations column pooled across two machines would compare hosts, not trees.
+// The history lives outside any checkout, at a machine-stable path (`resolveHistory`, below) — not
+// because it is gitignored (every unit's confirmation capture runs from a fresh worktree that starts
+// empty and is retired at ship, so a per-checkout path can never accumulate a distribution), but
+// because `bun run capture` is display-gated to the one GPU-bridge host: every run in the population
+// came off the same seat, so a durations column pooled across two machines would compare hosts, not
+// trees, and a path outside the checkout is what lets it survive past the worktree that wrote it.
 
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 /** the phases `capture.ts` stamps; `collect` is null on a selective run, which spends no --list pre-pass */
 export type Durations = {
@@ -73,7 +78,19 @@ export const FIELDS = [
     "durations",
 ] as const;
 
-export const HISTORY = join(import.meta.dir, "runs.jsonl");
+/**
+ * where the history lives: `KEX2D_TREND_HISTORY` wins outright, else `$XDG_STATE_HOME/kex2d` (or
+ * `~/.local/state/kex2d` when unset) — a fixed function of the environment alone, never of
+ * `import.meta.dir`, so the resolution can't vary with which checkout or worktree calls it.
+ * @example resolveHistory(process.env)
+ */
+export function resolveHistory(env: Record<string, string | undefined>): string {
+    if (env.KEX2D_TREND_HISTORY) return env.KEX2D_TREND_HISTORY;
+    const stateHome = env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+    return join(stateHome, "kex2d", "runs.jsonl");
+}
+
+export const HISTORY = resolveHistory(process.env);
 
 /**
  * parse the appended history, failing loud on a record missing a field the reader consumes — an
@@ -99,9 +116,23 @@ export function parseHistory(text: string): RunRecord[] {
         const durations = raw.durations as Record<string, unknown> | null;
         if (durations === null || typeof durations !== "object")
             throw new Error(`${where}: "durations" is not an object`);
-        for (const phase of PHASES)
+        for (const phase of PHASES) {
             if (!(phase in durations))
                 throw new Error(`${where}: missing field "durations.${phase}"`);
+            const value = durations[phase];
+            // `collect` is the one phase legitimately null (a selective run spends no --list
+            // pre-pass); every other value must be a finite number, or a NaN/string flows into
+            // `median` and the breach check `recentMedian > priorMax` false-branches to no
+            // breach — both sides of that comparison are false under NaN, so a two-sided check
+            // over a value that could be non-finite refuses nothing unless finiteness is checked
+            // here, at the boundary, rather than implied by the comparison downstream.
+            if (value === null) {
+                if (phase === "collect") continue;
+                throw new Error(`${where}: "durations.${phase}" is null`);
+            }
+            if (typeof value !== "number" || !Number.isFinite(value))
+                throw new Error(`${where}: "durations.${phase}" is not a finite number`);
+        }
         records.push(raw as unknown as RunRecord);
     }
     return records;
@@ -109,6 +140,7 @@ export function parseHistory(text: string): RunRecord[] {
 
 /** append one run to the history; called by `capture.ts` once `RUN.json` is written */
 export function appendRun(record: RunRecord, path: string = HISTORY): void {
+    mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(record)}\n`);
 }
 

@@ -153,11 +153,14 @@ how often one goes red. Recorded, never gated — a wall-clock threshold gates t
 artifact (`checks.md`), so nothing in `bun test`/`bun check` reds on a duration, and the tripwire's
 job is to summon a person rather than to fail a run.
 
-- **Every capturing run appends one line to `harness/runs.jsonl`** (`capture.ts`, via
+- **A run that reaches `RUN.json` appends one line to `runs.jsonl`** (`capture.ts`, via
   `trend.ts`'s `appendRun`): the per-phase durations it also stamps into `RUN.json`
-  (`collect`/`server`/`run`/`total`), the exit code, and the failing titles. `RUN.json` alone
-  cannot carry this — it lives inside the shot set the next full run WIPES, so it records a run
-  and never a distribution.
+  (`collect`/`server`/`run`/`total`), the exit code, and the failing titles. A run that dies
+  before that point — a `--list` collect failure, a bad-arg usage exit, a SIGINT/SIGTERM — never
+  reaches `appendRun`, so the recorded population is scoped to test-level reds only; a whole class
+  of failure (host-boot, kills) never reaches this instrument. `RUN.json` alone cannot carry the
+  distribution either way — it lives inside the shot set the next full run WIPES, so it records a
+  run and never a distribution.
 - **`bun run trend` is the reader**, and it is the consumer that makes the recorded fields
   load-bearing rather than a table nothing opens: a record missing a field the reader consumes
   fails loud, naming the field, instead of defaulting it and reporting a healthy trend off a
@@ -177,9 +180,14 @@ job is to summon a person rather than to fail a run.
   cutoff — distinct heads, so N repro runs inside one pass cannot manufacture a recurrence. The
   window is a sample size (`trend.ts`'s `WINDOW`), not a threshold: a median over it must survive
   the extreme readings this suite actually produces.
-- **The history is gitignored, so it is per-machine — deliberately.** `bun run capture` is
-  display-gated to the one GPU-bridge host, so every run in the population came off the same seat;
-  a durations column pooled across two machines would compare hosts, not trees.
+- **The history lives outside any checkout, at a machine-stable path** (`KEX2D_TREND_HISTORY`
+  wins outright, else `$XDG_STATE_HOME/kex2d/runs.jsonl` — `trend.ts`'s `resolveHistory`). Not
+  because it's gitignored: every unit's confirmation capture runs from its own fresh worktree,
+  retired at ship, so a path resolved from the checkout (`harness/runs.jsonl`, the earlier shape)
+  starts empty every time and can never accumulate the across-ship roster the escalation ladder
+  depends on. `bun run capture` is also display-gated to the one GPU-bridge host, so every run in
+  the population comes off the same seat regardless — a durations column pooled across two
+  machines would compare hosts, not trees.
 
 ## Flow-authoring laws
 
