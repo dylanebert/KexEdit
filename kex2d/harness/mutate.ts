@@ -68,7 +68,10 @@ interface Pair {
 // `bandMove` each grew a NEW call into the shared `snapAxis` resolver (grid quantum + landmark
 // snap for the extent trim and the strip move/resize, mirroring the keyframe drag's own call)
 // — two distinct production lines in the same file, each its own pair, sourced from S6's own
-// Validation bullet.
+// Validation bullet. "oneshot-hit-priority" (S8, F6) extends it again: `bandZoneX0` is a NEW
+// production branch widening the shared `.hbandzone` hit rect so the one-shot glyph's own
+// precedence check (`classifyOneShotHit`, checked first in `bandDown`/`bandContext`) is
+// reachable for the glyph's left half at all, sourced from S8's own Validation bullet.
 const BEHAVIORS = [
     "snap",
     "deselect",
@@ -78,6 +81,7 @@ const BEHAVIORS = [
     "body-drag-carries-keyframes",
     "segment-resize-snap",
     "strip-resize-snap",
+    "oneshot-hit-priority",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -162,6 +166,16 @@ const PAIRS: Pair[] = [
             {
                 old: "    const r = snapAxis(\n        active,\n        uToPx(clamped, candidateU),\n        candidateU,\n        targets,\n        GRID,\n        (p) => pxToU(clamped, p),\n        null,\n    );",
                 new: "    const r = { value: candidateU, guide: null }; // MUTATED: strip resize snap call removed (F4)",
+            },
+        ],
+    },
+    {
+        name: "oneshot-hit-priority",
+        flow: "one-shot glyph's left half selects it, even with a coincident strip at d = 0 (F6)",
+        mutations: [
+            {
+                old: "function bandZoneX0(): number {\n    if (!entryOneShot(ecs)) return LEFT_GUT;\n    const gx = oneShotGlyphX();\n    if (gx < LEFT_GUT) return LEFT_GUT;\n    return Math.min(LEFT_GUT, gx - STRIP_HIT_R);\n}",
+                new: "function bandZoneX0(): number {\n    return LEFT_GUT; // MUTATED: F6 widen removed\n}",
             },
         ],
     },

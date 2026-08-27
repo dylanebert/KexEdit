@@ -1579,16 +1579,12 @@ describe("kex2d-event-lane S5: lane label retirement, default strip length, edge
         expect(src).not.toContain('fillText("events"');
     });
 
-    // findings 4/5/6: default created strip length rises from min-extent to a brake-section-
-    // typical span, derived from EXTEND_DIST (`track.ts`'s own "existing section-length
-    // constant" — a fresh force section/geo chain seeds at the same value), never a new tuned
-    // literal, and the summoned-creation path (`createStripAt`) is what carries it; `canCreateAt`
-    // stays on the bare min extent (W7's own overlap gate, unchanged by this stage).
-    test("STRIP_DEFAULT_LEN derives from EXTEND_DIST, not an independent literal", () => {
-        const src = readFileSync(new URL("../src/track.ts", import.meta.url), "utf8");
-        expect(src).toContain("export const STRIP_DEFAULT_LEN = EXTEND_DIST;");
-    });
-
+    // F3 (feel-gate round 1, person's verdict 2026-08-26): default created strip length shrinks
+    // to ~10 m, an independent literal decoupled from EXTEND_DIST (`tests/track.test.ts`'s
+    // `stripDefaultExtentAt` describe block is the behavioral pin — the readback through the
+    // real creation path, never source presence); the summoned-creation path (`createStripAt`)
+    // is what carries it, `canCreateAt` stays on the bare min extent (W7's own overlap gate,
+    // unchanged by this stage).
     test("createStripAt authors the grown default extent, not the bare min extent", () => {
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         expect(src).toContain("function createStripAt(d: number): void {");

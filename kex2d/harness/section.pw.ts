@@ -2213,6 +2213,51 @@ test("velocity value popup: typed edits move the bake, one-shot position stays l
     await expect(posField).toBeDisabled();
 });
 
+// S8 (kex2d-event-substrate, F6): the one-shot glyph's own hit priority at `d = 0` — when a
+// velocity strip ALSO starts there, the glyph's own screen station and the band's own left
+// edge coincide at minimum pan (`bandZoneX0`, Timeline.svelte). A click on the glyph's LEFT
+// half (inside its own hit radius, `STRIP_HIT_R`, but past the pre-fix band rect's un-widened
+// `LEFT_GUT` edge) used to reach no DOM element at all — never `bandDown`, so
+// `classifyOneShotHit`'s own precedence check there (S3, already correct) was unreachable for
+// that half; the coincident strip's own edge was the only affordance left standing in the dead
+// zone. The fix widens `.hbandzone`'s own left edge to cover the glyph's full hit radius
+// instead of adding a second DOM element (the Locked-decision "ONE band-wide hit rect" stands).
+//
+// RED-FIRST WITNESS: reverted `bandZoneX0` to its pre-fix unconditional `return LEFT_GUT;` —
+// the flow reds at the `oneShotSelected` poll (exit 1, timeout: stays `false` — the click on
+// the glyph's left half never reaches `bandDown` at all). Restored byte-identical; green.
+test("one-shot glyph's left half selects it, even with a coincident strip at d = 0 (F6)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await frameTimeline(page);
+
+    // a strip starting exactly at d = 0 — the coincident-edge case the finding names. Direct
+    // ECS write (`addStripAt`, a real guarded `history.addStrip`): the pointer-driven "Add
+    // velocity strip" menu can't guarantee an exact station (`substrate.pw.ts`'s own reason).
+    await kexCall(page, "addStripAt", 0, 10, 7);
+    await expect
+        .poll(async () => ((await kexCall(page, "stripsOf", 0)) as unknown[]).length)
+        .toBe(1);
+    await frames(page, 2); // bandStrips settle behind the RAF tick (the F5 test's own note)
+
+    const glyphLocalX = (await kexCall(page, "oneShotPx")) as number;
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!bandBb) throw new Error("header band not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+
+    // the glyph's own LEFT half: 3px inside its 6px hit radius (`STRIP_HIT_R`), on the side
+    // the pre-fix band rect never covered (`bandBb.x` itself reads `LEFT_GUT`, unwidened, at
+    // minimum pan — the click below lands strictly left of it).
+    await page.mouse.click(chartCanvasBb.x + glyphLocalX - 3, bandY);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
+    // the coincident strip, never selected — the glyph won the hit test, not its edge.
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(null);
+});
+
 // S1 capture arm: keyframeDown's multi-member drag for strip keyframes — the offset-preserving
 // path. keyframeDown (Timeline.svelte:1498) sets up the drag set from editor.stripKfs.ids:
 // when multiple strip keyframes are selected (shift-click toggles into the set), the drag
@@ -3153,10 +3198,9 @@ const onGrid = (v: number): boolean => Math.abs(v / S_GRID - Math.round(v / S_GR
 test("segment and strip resize snap to grid increments (F4)", async ({ page, boot }) => {
     await boot();
     await kexCall(page, "seedForceBump");
-    // widen the section well past its own default STRIP_DEFAULT_LEN (24 m, `track.ts`'s own
-    // `EXTEND_DIST` alias) -- the fixture's own default flat seed is exactly 24 m, so a strip
-    // created anywhere on it runs flush to the track's own end by construction
-    // (`stripDefaultExtentAt`'s own clamp), leaving no room for a body drag on either side. Test
+    // widen the section past the fixture's own default flat seed (24 m, `EXTEND_DIST`) -- gives
+    // a strip created on it (STRIP_DEFAULT_LEN, 10 m as of F3, an independent literal) room to
+    // drag on either side without hitting the track's own end. Test
     // SETUP, the same `setLen` hook the domain flow uses for its own short-track fixture.
     await kexCall(page, "setLen", 0, 80);
     await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
@@ -3241,10 +3285,9 @@ test("segment and strip resize snap to grid increments (F4)", async ({ page, boo
 test("segment and strip resize Ctrl bypasses grid snap (F4)", async ({ page, boot }) => {
     await boot();
     await kexCall(page, "seedForceBump");
-    // widen the section well past its own default STRIP_DEFAULT_LEN (24 m, `track.ts`'s own
-    // `EXTEND_DIST` alias) -- the fixture's own default flat seed is exactly 24 m, so a strip
-    // created anywhere on it runs flush to the track's own end by construction
-    // (`stripDefaultExtentAt`'s own clamp), leaving no room for a body drag on either side. Test
+    // widen the section past the fixture's own default flat seed (24 m, `EXTEND_DIST`) -- gives
+    // a strip created on it (STRIP_DEFAULT_LEN, 10 m as of F3, an independent literal) room to
+    // drag on either side without hitting the track's own end. Test
     // SETUP, the same `setLen` hook the domain flow uses for its own short-track fixture.
     await kexCall(page, "setLen", 0, 80);
     await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);

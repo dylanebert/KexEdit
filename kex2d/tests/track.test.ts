@@ -2864,18 +2864,18 @@ describe("validCoefficient — the coefficient fields' negative/NaN refusal", ()
 // to the section and to the nearest neighboring strip — three branches, each pinned by its own
 // boundary case rather than a single happy-path read.
 describe("stripDefaultExtentAt (S5)", () => {
-    test("grows from the min-extent edge span to the full section on an otherwise-empty section", () => {
+    test("grows from the min-extent edge span to STRIP_DEFAULT_LEN, well short of the full section", () => {
         const { state, sec } = track();
-        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24 (= STRIP_DEFAULT_LEN)
+        convertSection(state, sec); // → force, default extent EXTEND_DIST = 24 (independent of STRIP_DEFAULT_LEN, F3)
         expect(stripMinExtentAt(state, 0)).toEqual({ start: 0, end: 0.5 });
-        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 24 });
+        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 10 });
     });
 
     test("clamps to a neighboring strip's start rather than overlapping it", () => {
         const { state, sec } = track();
         convertSection(state, sec);
-        createStrip(state, 10, 15, 5);
-        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 10 });
+        createStrip(state, 6, 9, 5);
+        expect(stripDefaultExtentAt(state, 0)).toEqual({ start: 0, end: 6 });
     });
 
     test("clamps to the section's own length when it's shorter than the default", () => {
