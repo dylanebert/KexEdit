@@ -737,51 +737,6 @@ export function deleteStripKeyframes(h: History, ecs: State, ids: readonly numbe
     );
 }
 
-/** delete a mixed set of force and strip keyframes as ONE undoable entry (S3: the mixed-set
- *  Delete). `deleteForces` and `deleteStripKeyframes` each record their own entry; a mixed set
- *  needs one gesture so a single undo restores every member across kinds. the member list is the
- *  same set the general `MemberSnap[]` snapshot carries — the deletion set IS the selected set —
- *  but the history gesture needs its own composition because `MemberSnap[]` carries only kind +
- *  id (and section/order for nodes), not the per-kind state (`ForcePointState`,
- *  `StripKeyframeState`) the reverse callback needs to re-spawn. ids already gone are skipped,
- *  and nothing records when both sets are empty. */
-export function deleteKeyframes(
-    h: History,
-    ecs: State,
-    forceIds: readonly number[],
-    stripKfIds: readonly number[],
-): void {
-    const pre = selHook?.snapshot(ecs);
-    const forceSts: ForcePointState[] = [];
-    for (const id of forceIds) {
-        const st = forcePointState(ecs, id);
-        if (st) forceSts.push(st);
-    }
-    const stripKfSts: StripKeyframeState[] = [];
-    for (const id of stripKfIds) {
-        const st = stripKeyframeState(ecs, id);
-        if (st) stripKfSts.push(st);
-    }
-    if (forceSts.length === 0 && stripKfSts.length === 0) return;
-    for (const st of forceSts) destroyForce(ecs, st.id);
-    for (const st of stripKfSts) destroyStripKeyframe(ecs, st.id);
-    record(
-        h,
-        {
-            apply: () => {
-                for (const st of forceSts) destroyForce(ecs, st.id);
-                for (const st of stripKfSts) destroyStripKeyframe(ecs, st.id);
-            },
-            reverse: () => {
-                for (const st of forceSts)
-                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent);
-                for (const st of stripKfSts) spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v);
-            },
-        },
-        pre,
-    );
-}
-
 /** Delete a mixed set of members across ALL kinds as ONE undoable entry (S3 repair: the
  *  general mixed-set Delete). The caller (`mixedSetDelete` in `acts.ts`) checks each kind's
  *  guard and builds the destruction callbacks; this function snapshots the whole track before

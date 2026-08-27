@@ -68,10 +68,8 @@ import {
     commit,
     commitLength,
     createForce,
-    deleteKeyframes,
     deleteOneShot,
     deleteStrips,
-    deleteStripKeyframes,
     history,
     materializeCustom,
     setForcesEase,
@@ -3176,19 +3174,7 @@ function createOneShotAt(): void {
     addOneShot(history, ecs, V0);
     selectOneShot(true); // there's only ever one — `selectOneShot`'s own boolean shape
 }
-// Delete removes the selected strip; Escape clears the selection.
-function deleteSelectedStrip(): void {
-    if (editor.strip === null) return;
-    // read the strip directly from the ECS — `selStrip` is a `$derived` behind `bandStrips`
-    // behind the RAF `void tick`, so a Delete pressed before the tick sees null and no-ops
-    // (section.pw.ts:1582). `stripAt` + `Strip.start.get` are synchronous.
-    const eid = stripAt(ecs, editor.strip);
-    if (eid === null) return;
-    if (!stripEditableAt(Strip.start.get(eid))) return;
-    deleteStrips(history, ecs, [...editor.strips.ids]);
-}
-// Delete removes the one-shot; Escape clears the selection (`deleteSelectedStrip`'s own
-// point-kind twin).
+// Delete removes the one-shot; Escape clears the selection.
 function deleteSelectedOneShot(): void {
     if (!editor.oneShot) return;
     if (!stripEditableAt(0)) return;
@@ -3197,24 +3183,6 @@ function deleteSelectedOneShot(): void {
     deleteOneShot(history, ecs, os.id);
     selectOneShot(false);
 }
-// Delete removes the WHOLE selected strip-keyframe SET (S4's booked multi-select, `deleteForces`'
-// own bulk shape); the strip stays selected (the force keyframe's own pattern — Delete acts on
-// the innermost selection, not the strip). single-select is the size-1 case.
-function deleteSelectedStripKf(): void {
-    if (editor.stripKf === null) return;
-    // read the owning strip directly from the ECS — `selStrip` is a `$derived` behind
-    // `bandStrips` behind the RAF `void tick`, so a Delete pressed before the tick sees null and
-    // no-ops (the same F1 race `deleteSelectedStrip` above already repairs). `editor.strip !==
-    // null` is `stripKfs`'s own invariant (a non-empty sub-selection implies an owning strip);
-    // `stripAt` + `Strip.start.get` are synchronous.
-    if (editor.strip === null) return;
-    const eid = stripAt(ecs, editor.strip);
-    if (eid === null) return;
-    if (!stripEditableAt(Strip.start.get(eid))) return;
-    deleteStripKeyframes(history, ecs, [...editor.stripKfs.ids]);
-    selectStripKf(null);
-}
-
 // ── the selected keyframe's typed s/v fields (unified — force and strip ride one path) ──
 // each field commits one undo entry through the drag gesture (begin → set → commit).
 function kfFieldEdit(s: number, v: number): void {
@@ -4269,8 +4237,8 @@ onMount(() => {
                 // one press = one undo entry.
                 //
                 // read the strip + its keyframes from the ECS directly, not `stripKfPts` (a
-                // `$derived` behind the RAF `void tick`, same class `deleteSelectedStrip`'s own
-                // note documents and the GEO nudge's `nodeLocal` already fixed, `controls.ts`):
+                // `$derived` behind the RAF `void tick`, same class the GEO nudge's `nodeLocal`
+                // already fixed, `controls.ts`):
                 // a second nudge fired before `tick` has advanced since the first nudge's write
                 // reads the PRE-write `s` as its base, rounds to the same grid point one step
                 // short, and commits a wrong value (section.pw.ts:2344, witnessed:
@@ -4295,7 +4263,19 @@ onMount(() => {
                     // S3: mixed-set nudge — station (ds) moves every member; value (dv) moves
                     // only the active kind's (stripKf), per the locked axis law. one gesture
                     // (`beginKeyframeMoves`) so one undo restores all.
-                    const forceMembers = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
+                    // synchronous ECS read — not `forcePts` (a `$derived` behind `void tick`):
+                    // a second nudge before the tick flushes reads pre-first-nudge state and
+                    // writes it back (the axis-law red: a vertical nudge rewinds a force's
+                    // station after a horizontal nudge changed it). `sections`/`sectionForces`
+                    // are synchronous ECS queries, same class as the stripKf handler's own
+                    // `stripKeyframes(ecs, ...)` read above.
+                    const forceMembers = sections(ecs)
+                        .filter((s) => s.kind === SectionKind.Force)
+                        .flatMap((s) =>
+                            sectionForces(ecs, s.id)
+                                .filter((f) => editor.forces.ids.has(f.id))
+                                .map((f) => ({ id: f.id, s: f.s, g: f.g, len: s.length })),
+                        );
                     if (forceMembers.length > 0 && forceSetEditable(ecs)) {
                         beginKeyframeMoves(
                             ecs,
@@ -4384,7 +4364,19 @@ onMount(() => {
                     // field grid (pre-multiselect semantics); a multi-set moves by one shared delta
                     // under the rigid clamp, offsets preserved (`nudgeKeyframes`, timeline.ts). Shift
                     // coarse; one press = one undo entry.
-                    const members = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
+                    // synchronous ECS read — not `forcePts` (a `$derived` behind `void tick`):
+                    // a second nudge before the tick flushes reads pre-first-nudge state and
+                    // writes it back (the axis-law red: a vertical nudge rewinds a force's
+                    // station after a horizontal nudge changed it). `sections`/`sectionForces`
+                    // are synchronous ECS queries, same class as the stripKf handler's own
+                    // `stripKeyframes(ecs, ...)` read.
+                    const members = sections(ecs)
+                        .filter((s) => s.kind === SectionKind.Force)
+                        .flatMap((s) =>
+                            sectionForces(ecs, s.id)
+                                .filter((f) => editor.forces.ids.has(f.id))
+                                .map((f) => ({ id: f.id, s: f.s, g: f.g, len: s.length })),
+                        );
                     if (members.length === 0) return;
                     if (!forceSetEditable(ecs)) return; // the lockdown — all-or-nothing, like Del
                     e.preventDefault();

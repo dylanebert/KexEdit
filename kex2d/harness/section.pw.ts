@@ -4249,7 +4249,11 @@ test("mixed-set Delete removes every member across kinds in one gesture (S3)", a
     const forceCountBefore = (await sectionForces()).length;
     const stripKfCountBefore = ((await stripKeyframesOf(stripId)) as unknown[]).length;
 
-    // Delete — one gesture, both kinds gone
+    // Delete — one gesture, both kinds gone. The owning strip stays (the containment
+    // edge: stripKfs non-empty ⇒ strip non-empty), so assert it survives and stays selected —
+    // a strip with one keyframe makes stripKfCount - 1 === 0 read the same whether the strip
+    // was deleted with its keyframe or correctly kept, so the strip's own survival is the
+    // assertion that discriminates the ancestor-keep.
     const depthBefore = await undoDepth();
     await page.keyboard.press("Delete");
     await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit, not N
@@ -4257,6 +4261,7 @@ test("mixed-set Delete removes every member across kinds in one gesture (S3)", a
     await expect
         .poll(async () => ((await stripKeyframesOf(stripId)) as unknown[]).length)
         .toBe(stripKfCountBefore - 1);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
 
     // one Undo restores BOTH
     await page.keyboard.press("Control+z");
@@ -4433,6 +4438,7 @@ test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair
     const nodeSelOrders = () => kexCall(page, "nodeSelOrders") as Promise<number[]>;
     const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
     const nodeCount = () => kexCall(page, "nodeCount");
+    const sectionForceCounts = () => kexCall(page, "sectionForceCounts") as Promise<number[]>;
 
     // 1. select a force keyframe on the timeline (plain click → active = force)
     const forceHit = page.locator(".fhit").first();
@@ -4459,18 +4465,24 @@ test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair
     await expect.poll(activeKind).toBe("node");
 
     const nodeCountBefore = await nodeCount();
+    const forceCountsBefore = await sectionForceCounts();
+    const forceCountSec1Before = forceCountsBefore[1]; // section 1 is the force section
 
-    // 4. Delete — one gesture, both kinds gone
+    // 4. Delete — one gesture, both kinds gone. Assert the real force count on section 1
+    // (not `forceSelIds` as a proxy — the force is on section 1 while `forceCount`/`forces`
+    // read section 0, so only `sectionForceCounts` sees it).
     const depthBefore = await undoDepth();
     await page.keyboard.press("Delete");
     await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit, not N
     await expect.poll(nodeCount).toBe(nodeCountBefore - 1); // node trimmed
+    await expect.poll(async () => (await sectionForceCounts())[1]).toBe(forceCountSec1Before - 1); // force keyframe removed from section 1
     await expect.poll(async () => (await forceSelIds()).length).toBe(0); // force deselected
     await expect.poll(async () => (await nodeSelOrders()).length).toBe(0); // node deselected
 
     // 5. one Undo restores BOTH
     await page.keyboard.press("Control+z");
     await expect.poll(nodeCount).toBe(nodeCountBefore); // node restored
+    await expect.poll(async () => (await sectionForceCounts())[1]).toBe(forceCountSec1Before); // force keyframe restored on section 1
     await expect.poll(async () => (await forceSelIds()).length).toBe(1); // force re-selected
     await expect.poll(async () => (await nodeSelOrders()).length).toBe(1); // node re-selected
 });

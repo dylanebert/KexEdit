@@ -270,24 +270,34 @@ export function mixedSetDelete(ecs: State): boolean {
         }
     }
 
-    // strips — guard: each strip's station is editable. SKIP when a stripKf is also selected:
-    //   the strip is a containment ancestor of the stripKf (stripKfs non-empty ⇒ strip non-empty),
-    //   and deleting the strip would also destroy non-selected keyframes on it — a side effect
-    //   the law's "every selected member" does not reach. The sweep law's ancestor-keep applies
-    //   to Delete the same way it applies to replace-select.
-    if (editor.strips.ids.size > 0 && editor.stripKfs.ids.size === 0) {
-        let allEditable = true;
-        for (const id of editor.strips.ids) {
-            const sEid = stripAt(ecs, id);
-            if (sEid === null || !stripEditableAtEcs(ecs, Strip.start.get(sEid))) {
-                allEditable = false;
-                break;
-            }
+    // strips — guard: each strip's station is editable. SKIP a strip only when it is the
+    //   OWNER of a selected strip keyframe (the containment edge: stripKfs non-empty ⇒
+    //   strip non-empty, so deleting the owning strip would break the invariant and destroy
+    //   non-selected keyframes on it). A non-owning strip co-selected by shift-click on the
+    //   band is a sibling, not an ancestor — it deletes. The sweep law's ancestor-keep
+    //   applies to Delete the same way it applies to replace-select.
+    if (editor.strips.ids.size > 0) {
+        // resolve the set of strip ids that own a selected strip keyframe
+        const owningStrips = new Set<number>();
+        for (const kfId of editor.stripKfs.ids) {
+            const kfEid = stripKeyframeAt(ecs, kfId);
+            if (kfEid !== null) owningStrips.add(StripKeyframe.strip.get(kfEid));
         }
-        if (allEditable) {
-            for (const id of editor.strips.ids)
-                if (stripAt(ecs, id) !== null) ops.push(() => destroyStrip(ecs, id));
-            delStrip = true;
+        const deletable = [...editor.strips.ids].filter((id) => !owningStrips.has(id));
+        if (deletable.length > 0) {
+            let allEditable = true;
+            for (const id of deletable) {
+                const sEid = stripAt(ecs, id);
+                if (sEid === null || !stripEditableAtEcs(ecs, Strip.start.get(sEid))) {
+                    allEditable = false;
+                    break;
+                }
+            }
+            if (allEditable) {
+                for (const id of deletable)
+                    if (stripAt(ecs, id) !== null) ops.push(() => destroyStrip(ecs, id));
+                delStrip = true;
+            }
         }
     }
 
