@@ -125,6 +125,7 @@ import {
     keyframeActs,
     keyframeCuttable,
     lockCandidates,
+    mixedSetDelete,
     sectionEditable,
     sectionOpsAllowed,
 } from "./acts";
@@ -4237,7 +4238,7 @@ onMount(() => {
                 selectOneShot(false);
             } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
-                deleteSelectedOneShot();
+                mixedSetDelete(ecs);
             }
             return;
         }
@@ -4253,25 +4254,7 @@ onMount(() => {
                 else selectStrip(null);
             } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
-                if (editor.stripKf !== null) {
-                    if (editor.forces.ids.size > 0) {
-                        // S3: mixed-set Delete — stripKf + force in one history gesture so one
-                        // undo restores every member across kinds. the all-or-nothing editability
-                        // check mirrors the single-kind paths.
-                        if (!forceSetEditable(ecs)) return;
-                        const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
-                        if (stripEid === null) return;
-                        if (!stripEditableAt(Strip.start.get(stripEid))) return;
-                        skipLanding();
-                        deleteKeyframes(history, ecs, [...editor.forces.ids], [...editor.stripKfs.ids]);
-                        selectForce(null);
-                        selectStripKf(null);
-                    } else {
-                        deleteSelectedStripKf();
-                    }
-                } else {
-                    deleteSelectedStrip();
-                }
+                mixedSetDelete(ecs);
             } else if (
                 editor.stripKf !== null &&
                 editor.hover === "timeline" &&
@@ -4377,19 +4360,8 @@ onMount(() => {
                 });
                 if (act !== null) {
                     e.preventDefault();
-                    if (act === "remove" && editor.stripKfs.ids.size > 0) {
-                        // S3: mixed-set Delete — force + stripKf in one history gesture so one
-                        // undo restores every member across kinds. the all-or-nothing editability
-                        // check mirrors the single-kind paths: force via `forceSetEditable`, stripKf
-                        // via the owning strip's station (`stripEditableAt`).
-                        if (!forceSetEditable(ecs)) return;
-                        const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
-                        if (stripEid === null) return;
-                        if (!stripEditableAt(Strip.start.get(stripEid))) return;
-                        skipLanding();
-                        deleteKeyframes(history, ecs, [...editor.forces.ids], [...editor.stripKfs.ids]);
-                        selectForce(null);
-                        selectStripKf(null);
+                    if (act === "remove") {
+                        mixedSetDelete(ecs);
                     } else {
                         // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
                         // left-hand top row, one hand on the keyboard while the other mouses; the old

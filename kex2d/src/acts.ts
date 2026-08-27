@@ -6,7 +6,11 @@ import {
     exitTangentEdit,
     type PinSession,
     select,
+    selectForce,
+    selectOneShot,
     selectSection,
+    selectStrip,
+    selectStripKf,
     skipLanding,
     toggleLockedSet,
 } from "./editor";
@@ -14,6 +18,7 @@ import {
     beginMove,
     commit,
     deleteForces,
+    deleteMembers,
     extendTrack,
     history,
     joinSections,
@@ -32,15 +37,31 @@ import { exitPinMode } from "./pin";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import {
+    deleteSection as deleteSectionTrack,
+    destroyForce,
+    sectionAt,
+    destroyOneShot,
+    destroyStrip,
+    destroyStripKeyframe,
+    entryOneShot,
     Force,
     forceAt,
     Handle,
     handleTangent,
     lastHandle,
+    removeTrailingHandle,
     sectionForces,
     sectionHandles,
+    sectionSpans,
     seedTangent,
+    sections,
     setTangent,
+    Strip,
+    stripAt,
+    StripKeyframe,
+    stripKeyframeAt,
+    toLocal,
+    trackEntity,
 } from "./track";
 
 /**
@@ -166,6 +187,127 @@ export function forceSetEditable(ecs: State): boolean {
         if (eid === null) return false;
         if (!sectionEditable(editor.pinning, Force.section.get(eid))) return false;
     }
+    return true;
+}
+
+/** the strip/oneShot edit-lockdown gate, re-derived from the ECS rather than a component-local
+ *  `$derived` (`Timeline.svelte`'s own `stripEditableAt` closes over `spans`; this is the shared
+ *  twin `mixedSetDelete` reads). resolves station `d` to its section via `toLocal`/`sectionSpans`
+ *  and checks `sectionEditable` — the same consent-boundary reading a force keyframe's own
+ *  `.section` gives. */
+function stripEditableAtEcs(ecs: State, d: number): boolean {
+    const trackEid = trackEntity(ecs);
+    const spanTable = trackEid !== null ? sectionSpans(ecs, trackEid) : [];
+    const loc = toLocal(spanTable, d);
+    return loc === null || sectionEditable(editor.pinning, loc.section);
+}
+
+/** the general mixed-set Delete (S3 repair): one Delete over a mixed set removes, in ONE history
+ *  entry, every selected member whose own kind's structural guard permits removal. A kind whose
+ *  guard refuses is left selected and alive and does not block the other kinds' removal — one
+ *  undo restores everything the gesture removed. Iterates over the member set by kind, checking
+ *  each kind's existing guard (`forceSetEditable`, `suffixRun`, `sectionOpsAllowed`,
+ *  `stripEditableAtEcs`), and composes the destruction into one `deleteMembers` call — not a
+ *  pairwise switch. The whole-track `snapshotAll`/`restoreAll` capture (`history.deleteMembers`)
+ *  is what makes the composition safe: per-kind captures overlap (`snapshotSection` includes
+ *  forces, `snapshotAll` includes everything), so a whole-track snapshot is the one capture that
+ *  composes without duplicating on restore. */
+export function mixedSetDelete(ecs: State): boolean {
+    const ops: (() => void)[] = [];
+    let delForce = false;
+    let delStripKf = false;
+    let delNode = false;
+    let delSection = false;
+    let delStrip = false;
+    let delOneShot = false;
+
+    // force keyframes — guard: forceSetEditable (all-or-nothing on the pin lockdown)
+    if (editor.forces.ids.size > 0 && forceSetEditable(ecs)) {
+        for (const id of editor.forces.ids)
+            if (forceAt(ecs, id) !== null) ops.push(() => destroyForce(ecs, id));
+        delForce = true;
+    }
+
+    // strip keyframes — guard: each member's owning strip is editable
+    if (editor.stripKfs.ids.size > 0) {
+        let allEditable = true;
+        for (const id of editor.stripKfs.ids) {
+            const kfEid = stripKeyframeAt(ecs, id);
+            if (kfEid === null) continue;
+            const sId = StripKeyframe.strip.get(kfEid);
+            const sEid = stripAt(ecs, sId);
+            if (sEid === null || !stripEditableAtEcs(ecs, Strip.start.get(sEid))) {
+                allEditable = false;
+                break;
+            }
+        }
+        if (allEditable) {
+            for (const id of editor.stripKfs.ids)
+                if (stripKeyframeAt(ecs, id) !== null)
+                    ops.push(() => destroyStripKeyframe(ecs, id));
+            delStripKf = true;
+        }
+    }
+
+    // nodes — guard: suffixRun (a valid contiguous suffix, excluding node 0, leaving >= 2)
+    //   plus sectionEditable (the pin lockdown on the suffix's section)
+    if (editor.nodes.ids.size > 0) {
+        const run = suffixRun(nodeMembers(ecs), (sec) => sectionHandles(ecs, sec).length);
+        if (run !== null && sectionEditable(editor.pinning, run.section)) {
+            for (let i = 0; i < run.k; i++) ops.push(() => removeTrailingHandle(ecs, run.section));
+            delNode = true;
+        }
+    }
+
+    // sections — guard: sectionOpsAllowed (no pin session) plus the last-section floor
+    //   (the set is smaller than the total section count — one must survive)
+    if (editor.sections.ids.size > 0 && sectionOpsAllowed(editor.pinning)) {
+        const total = sections(ecs).length;
+        if (editor.sections.ids.size < total) {
+            for (const id of editor.sections.ids)
+                if (sectionAt(ecs, id) !== null) ops.push(() => deleteSectionTrack(ecs, id));
+            delSection = true;
+        }
+    }
+
+    // strips — guard: each strip's station is editable
+    if (editor.strips.ids.size > 0) {
+        let allEditable = true;
+        for (const id of editor.strips.ids) {
+            const sEid = stripAt(ecs, id);
+            if (sEid === null || !stripEditableAtEcs(ecs, Strip.start.get(sEid))) {
+                allEditable = false;
+                break;
+            }
+        }
+        if (allEditable) {
+            for (const id of editor.strips.ids)
+                if (stripAt(ecs, id) !== null) ops.push(() => destroyStrip(ecs, id));
+            delStrip = true;
+        }
+    }
+
+    // oneShot — guard: stripEditableAtEcs(0) (the track-start station)
+    if (editor.oneShot && stripEditableAtEcs(ecs, 0)) {
+        const os = entryOneShot(ecs);
+        if (os) {
+            ops.push(() => destroyOneShot(ecs, os.id));
+            delOneShot = true;
+        }
+    }
+
+    if (ops.length === 0) return false;
+
+    skipLanding();
+    deleteMembers(history, ecs, ops);
+
+    if (delForce) selectForce(null);
+    if (delStripKf) selectStripKf(null);
+    if (delNode) select(null);
+    if (delSection) selectSection(null);
+    if (delStrip) selectStrip(null);
+    if (delOneShot) selectOneShot(false);
+
     return true;
 }
 

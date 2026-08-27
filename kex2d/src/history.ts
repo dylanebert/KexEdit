@@ -782,6 +782,23 @@ export function deleteKeyframes(
     );
 }
 
+/** Delete a mixed set of members across ALL kinds as ONE undoable entry (S3 repair: the
+ *  general mixed-set Delete). The caller (`mixedSetDelete` in `acts.ts`) checks each kind's
+ *  guard and builds the destruction callbacks; this function snapshots the whole track before
+ *  and after, and records one command so a single undo restores everything the gesture removed
+ *  across every kind. Uses `snapshotAll`/`restoreAll` — the section kind's existing whole-track
+ *  capture — because per-kind captures overlap (`snapshotSection` includes forces, `snapshotAll`
+ *  includes everything), so composing them would duplicate on restore. */
+export function deleteMembers(h: History, ecs: State, ops: readonly (() => void)[]): boolean {
+    if (ops.length === 0) return false;
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotAll(ecs);
+    for (const op of ops) op();
+    const after = snapshotAll(ecs);
+    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
+    return true;
+}
+
 /** open a gesture on a strip-keyframe drag, snapshotting the keyframe's full state.
  *  commit coalesces the live writes into one entry; a no-move release records nothing.
  *  Restores through `restoreStripKeyframe` (the snapshot-restore writer, `setForcePoint`'s
