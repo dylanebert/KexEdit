@@ -3,7 +3,7 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
-import { editor, sandbox, select, selectionHook } from "./editor";
+import { activeKind, editor, sandbox, select, selectionHook } from "./editor";
 import {
     addStrip,
     appendSection,
@@ -164,6 +164,11 @@ if (import.meta.env.DEV) {
         // double-click at the START reached node 0 (order 0), the entry anchor.
         selectedOrder: (): number | null =>
             editor.selection === null ? null : Handle.order.get(editor.selection),
+        // the active selection member's kind, or null when nothing is selected — the routing
+        // key for the window-keydown handlers (S2 criterion (a): one Delete = one edit). the
+        // capture arm reads this to confirm the mixed selection's active kind before pressing
+        // Delete, so the arm's assertion (edit count) is independent of the guard predicate.
+        activeKind: (): string | null => activeKind(),
         // the whole selected node SET, by order (kex2d-multiselect stage 6) — `selectedOrder`
         // above is the ACTIVE member (the substrate's single-subject accessor); this is the
         // membership the marquee/shift-toggle/suffix-delete flows assert against. sorted for a

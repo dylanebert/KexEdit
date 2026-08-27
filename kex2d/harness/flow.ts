@@ -202,6 +202,7 @@ export interface Kex {
     seedTwinHill(): void;
     selectEnd(): void;
     selectedOrder(): number | null;
+    activeKind(): string | null;
     setLen(i: number, len: number): void;
     setV0(v: number): void;
     selectedSection(): number | null;

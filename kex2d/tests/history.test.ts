@@ -2,11 +2,13 @@ import { State } from "@dylanebert/shallot";
 import { beforeEach, expect, test } from "bun:test";
 import {
     editor,
+    enterForceEdit,
     enterTangentEdit,
     ensureStrip,
     openNodeMenu,
     select,
     selectForce,
+    selectForceHandle,
     selectionHook,
     selectNodes,
     selectSection,
@@ -1760,4 +1762,44 @@ test("undo/redo across a mixed force+strip+stripKf selection restores every memb
     expect(editor.force).toBe(forceId); // still not dropped
     expect(editor.strip).toBe(stripId);
     expect(editor.stripKf).toBe(kfId);
+});
+
+// R7 (S2 repair round 2): `forceHandle` survives undo/redo when `forceEdit` survives — the
+// keep-sub-mode-intact pattern the rest of `selectionHook` follows (tangentEdit is restored
+// the same way). The old restore unconditionally nulled `forceHandle`; R2 made it ride along
+// with `forceEdit`, which is more correct: a handle-edit sub-mode is a refinement of force
+// selection, and undo/redo of a non-selection command shouldn't peel it. This arm pins that
+// behavior: snapshot captures `forceHandle`, and restore preserves it when the force selection
+// is exactly the force-edit subject. Judgment: the old clear was wrong; the current preserve
+// is correct.
+test("forceHandle survives undo/redo when forceEdit survives (R7)", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const id = createForce(h, state, sec, 10, 1);
+
+    // select the force, enter handle-edit, select the "in" handle
+    selectForce(id);
+    enterForceEdit(id);
+    selectForceHandle("in");
+    expect(editor.forceEdit).toBe(id);
+    expect(editor.forceHandle).toBe("in");
+
+    // snapshot captures forceHandle
+    const snap = selectionHook.snapshot(state);
+    expect(snap).not.toBeNull();
+    expect((snap as NonNullable<typeof snap>).forceHandle).toBe("in");
+
+    // bracket with a history command so undo/redo fire
+    const extra = createForce(h, state, sec, 15, 0.5);
+    deleteForces(h, state, [extra]);
+
+    // undo → restore pre-command selection: forceEdit + forceHandle preserved
+    undo(h, state);
+    expect(editor.forceEdit).toBe(id); // force-edit subject restored
+    expect(editor.forceHandle).toBe("in"); // handle preserved — NOT nulled
+
+    // redo → restore post-command selection: same
+    redo(h, state);
+    expect(editor.forceEdit).toBe(id);
+    expect(editor.forceHandle).toBe("in");
 });

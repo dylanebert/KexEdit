@@ -18,6 +18,7 @@ import {
     selectedMetrics,
 } from "./controls";
 import {
+    activeKind,
     beginConvert,
     beginDrag,
     beginLanding,
@@ -216,7 +217,7 @@ onMount(() => {
             acts[act]();
             return;
         }
-        if (bound(BINDINGS.remove, e.key) && editor.section !== null) {
+        if (bound(BINDINGS.remove, e.key) && activeKind() === "section") {
             e.stopImmediatePropagation();
         }
     };
@@ -234,6 +235,7 @@ onMount(() => {
 // compare) so this listener never re-handles remove/join/cut — those stay `controls.ts`'s alone.
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
+        if (activeKind() !== "section") return;
         const section = editor.section;
         if (section === null) return;
         if (!bound(BINDINGS.convert, e.key) && !bound(BINDINGS.pin, e.key)) return;

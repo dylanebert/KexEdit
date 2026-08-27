@@ -4042,3 +4042,136 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
     expect(forceAfterV.g).toBe(forceAfterH.g); // force value byte-identical
     expect(stripKfAfterV.s).toBe(stripKfBeforeV.s); // station unchanged (vertical only)
 });
+
+// S2 repair round 2, criterion (a): the double-fire observable. With a node and a force
+// keyframe co-selected by ordinary shift-click (force first, then node — so the node is the
+// active member), one Delete key event must produce exactly ONE edit. The arm asserts the
+// edit COUNT (history depth), not the guard's shape, so it survives S3's re-grounding.
+//
+// RED-FIRST WITNESS: revert Timeline.svelte's force guard from `activeKind() === "force"` to
+// `editor.force !== null` (the pre-repair double-fire condition). With that revert, both
+// controls.ts's node handler (`activeKind() === "node"` → true) AND Timeline.svelte's force
+// handler (`editor.force !== null` → true, the force is co-selected) fire on one Delete press,
+// producing TWO history entries. The arm asserts exactly one, so it reds (exit 1).
+// `bun test` cannot see this: the handlers live behind `window.addEventListener` inside
+// `onMount`, and bun:test has no DOM — so a unit arm asserting a routing predicate is vacuous.
+// This capture arm is the only instrument that can see a keydown guard.
+test("one Delete on a node+force mixed selection produces exactly one edit (S2 criterion a)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    // seedHill: 7 geo nodes (orders 0-6) in section 0. Append a force section (section 1)
+    // with 2 seed force keyframes. The force keyframes are on the timeline; the geo nodes
+    // are in the viewport. We need both kinds co-selected to test the double-fire guard.
+    await seedHill(page);
+    await expect.poll(async () => kexCall(page, "nodeCount")).toBe(7);
+    const tBefore = await kexCall(page, "tTotal");
+    await kexCall(page, "append", 1); // SectionKind.Force — 2 seed force keyframes
+    await expect.poll(async () => kexCall(page, "sectionCount")).toBe(2);
+    await expect.poll(async () => kexCall(page, "tTotal")).not.toBe(tBefore); // bake re-landed
+    await frameTimeline(page);
+
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const nodeSelOrders = () => kexCall(page, "nodeSelOrders") as Promise<number[]>;
+    const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
+
+    // 1. select a force keyframe on the timeline (plain click → replace-select, active = force)
+    const forceHit = page.locator(".fhit").first();
+    const fb = await forceHit.boundingBox();
+    if (!fb) throw new Error("force diamond not laid out");
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    expect(await activeKind()).toBe("force");
+
+    // 2. shift-click the chain-end node (order 6) in the viewport — adds the node without
+    //    clearing the force (S2: shift-click extends across kinds). The node is now the active
+    //    member (last toggled-in). Order 6 is the chain end, so Delete is a valid trim.
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 3);
+    await page.keyboard.press("f"); // frame the viewport
+    const nodePt = await nodePoint(page, 6); // the chain end (order 6)
+    await page.keyboard.down("Shift");
+    await page.mouse.click(cb.x + nodePt.x, cb.y + nodePt.y);
+    await page.keyboard.up("Shift");
+
+    // 3. confirm the mixed selection: both kinds present, node active
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1); // force still selected
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(1); // node also selected
+    await expect.poll(activeKind).toBe("node"); // node is the active member
+
+    // 4. press Delete once, assert exactly ONE edit (history depth +1, not +2)
+    const before = await undoDepth();
+    await page.keyboard.press("Delete");
+    await expect.poll(undoDepth).toBe(before + 1); // exactly one edit — the double-fire would be +2
+});
+
+// S2 repair round 2, R6: App.svelte's two permanent `window.addEventListener("keydown")`
+// listeners read `editor.section` as a stand-in for "the active selection is a section." With
+// cross-kind co-selection, a stale co-selected section makes `editor.section` read non-null
+// while `activeKind()` is not "section."
+//
+// Site 1 (pin-mode listener, ~line 219): `if (bound(BINDINGS.remove, e.key) && editor.section !== null)`
+// — INTENDED to swallow Delete on a non-section selection during pin mode, but UNREACHABLE for
+// Delete: the handler returns early at `if (!bound(BINDINGS.exitMode, e.key) && !bound(BINDINGS.solve, e.key)) return;`
+// for any key that isn't Escape/Enter. The fix (`activeKind() === "section"`) is still more correct
+// (it would only swallow when the active kind is actually "section"), but the guard is dead code
+// for Delete. Booked as residue — the early return makes the swallow unreachable, so no arm can
+// witness a red. The fix is defense-in-depth, not a live-bug repair.
+//
+// Site 2 (Convert/Pin listener, ~line 233): `const section = editor.section; if (section === null) return;`
+// — IS a live bug. With a stale force section co-selected (1 member, editor.section non-null via
+// fallback) and a force keyframe active, pressing D fires `solveShape` (force→geo conversion) on
+// the stale section. The fix (`activeKind() !== "section"` → return) prevents this.
+//
+// RED-FIRST WITNESS (D/Convert leg): select the force section (1 section in set), shift-click a
+// force keyframe (force keyframe becomes active, section is stale). Press D → pre-fix:
+// `editor.section !== null` proceeds, `computeCanSolveShape` returns true (1 force section, live
+// bake), `sectionKeyAct` returns "solveShape", the conversion modal appears (`.scrim` visible) —
+// RED. Post-fix: `activeKind() !== "section"` returns early, no modal — GREEN.
+test("App.svelte Convert/Pin listener routes through activeKind, not editor.section (R6)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
+
+    // 1. select the force section (section 0) — 1 section in the set, active = section
+    await page.locator(".clip").first().click();
+    await expect.poll(async () => kexCall(page, "selectedSection")).not.toBeNull();
+    await expect.poll(activeKind).toBe("section");
+
+    // 2. shift-click a force keyframe — force keyframe becomes active, section 0 is stale
+    //    (still in the set with 1 member, but activeKind is "force")
+    const forceHit = page.locator(".fhit").first();
+    await forceHit.click({ modifiers: ["Shift"] });
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(activeKind).toBe("force");
+    // the stale section is still co-selected (1 section member in the set)
+    await expect.poll(async () => (await kexCall(page, "sectionSelIds")).length).toBe(1);
+
+    // 3. press D — must NOT fire Convert (solveShape) on the stale section.
+    //    Pre-fix: `editor.section !== null` → proceeds → `canSolveShape` true → D fires
+    //    solveShape → section 0 converts from force to geo (sectionKinds changes) (RED).
+    //    Fix: `activeKind() !== "section"` → returns early → section stays force (GREEN).
+    //    Asserted on sectionKinds (the durable effect), with a wait long enough for the
+    //    async conversion to complete.
+    const kindsBefore = await kexCall(page, "sectionKinds");
+    await page.evaluate(() => {
+        (document.activeElement as HTMLElement)?.blur?.();
+    });
+    await page.keyboard.press("d");
+    // wait for the async conversion to complete (if it fired), then check the kind.
+    // The conversion runs in a worker and may take up to ~2s for a simple profile.
+    // Use frames() (not waitForTimeout) per the harness lint rule.
+    await frames(page, 120); // ~2s at 60fps
+    expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
+});

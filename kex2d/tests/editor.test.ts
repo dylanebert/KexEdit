@@ -520,33 +520,32 @@ describe("S2: plain click stays replace-select (not widened)", () => {
 // AND one redo round-trip a mixed set: redo restores every member of every kind. (c) the
 // surviving sweepOtherKinds arm is non-vacuous — see the rewritten arm above.
 
-describe("S2 repair: double-fire routing (criterion a)", () => {
-    test("a node+force mixed selection has an unambiguous active kind — one Delete, one edit", () => {
-        // the pass's reproduction: selectForce(5); select(10, "toggle");
-        // editor.selection !== null && editor.force !== null — both true; both Delete branches fire
+// `activeKind()`'s XOR-by-construction: a single `Member.kind` tag means exactly one
+// handler's `activeKind() === <kind>` guard passes on a mixed selection. These arms pin
+// that structural property — the routing key is a single tag, not a set — NOT criterion (a)
+// (the edit count). Criterion (a) is covered by a capture arm (section.pw.ts) because the
+// keydown handlers live behind `window.addEventListener` inside `onMount`, and `bun:test`
+// has no DOM — a unit arm asserting a routing predicate is vacuous by construction.
+describe("activeKind() is a single-kind tag — XOR by construction", () => {
+    test("a node+force mixed selection has exactly one active kind", () => {
         selectForce(5);
         select(10, "toggle");
-        // both per-kind accessors read non-null simultaneously — the double-fire condition
-        expect(editor.selection).not.toBeNull();
-        expect(editor.force).not.toBeNull();
-        // the active member's kind is the routing key — one kind, one handler, one edit.
-        // assert the edit count (one handler fires), not the guard's shape (which kind).
+        // both per-kind accessors read non-null simultaneously (the fallback), but the
+        // active member's kind is a single tag — exactly one handler's guard passes
         const kind = activeKind();
         expect(kind).not.toBeNull();
-        // exactly one handler's guard passes — XOR over the two kinds' handlers
         expect(kind === "node").not.toBe(kind === "force");
     });
 
-    test("switching the active kind by shift-click reroutes Delete to the new handler", () => {
+    test("switching the active kind by shift-click changes the single tag", () => {
         selectForce(5);
         select(10, "toggle");
         expect(activeKind()).toBe("node"); // last shift-clicked is the node
         selectForce(5, "toggle");
         selectForce(5, "toggle"); // toggle out and back in — force is now the active kind
         expect(activeKind()).toBe("force");
-        // the node accessor still reads non-null (fallback), but the active kind is force
         const k2 = activeKind();
-        expect(k2 === "node").not.toBe(k2 === "force"); // still XOR — one handler
+        expect(k2 === "node").not.toBe(k2 === "force"); // still a single tag
     });
 });
 

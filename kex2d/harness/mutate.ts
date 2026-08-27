@@ -26,6 +26,15 @@
 // it lives in `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot
 // mutate. Its red-first witness is a unit-level pin (`tests/editor.test.ts`, S2 criterion c),
 // recorded there.)
+// (S2 repair round 2: two further `src/editor.ts` branches carry no pairing by the same
+// construction — this gate's `tgt` cannot reach `src/editor.ts` at all. `activeKind()`'s null
+// path (no selection → returns null, the routing key for the window-keydown handlers) and the
+// general restore loop's per-kind filters in `selectionHook.restore` (each kind's survival
+// check: `forceAt`/`sectionAt`/`stripAt`/`stripKeyframeAt`/`entryOneShot`) are new production
+// branches with no `mutate.ts` pairing. Their red-first witnesses are unit-level pins
+// (`tests/editor.test.ts` for `activeKind()`'s XOR-by-construction, `tests/history.test.ts`
+// for the restore loop's per-kind survival) and capture arms (`section.pw.ts` for the
+// keydown-guard routing), recorded there.)
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a
