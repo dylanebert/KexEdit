@@ -77,10 +77,11 @@ async function scrubKey(page: Page, keySel: string, dx: number): Promise<string>
 }
 
 /** create a velocity strip via T1's summoned creation (right-click → menu → Add) and return its
- *  stable id + seeded value. `seed()` already carries its own start strip at station 0 (S5), so
- *  the count goes 1 → 2, not 0 → 1 — every caller addresses the NEW strip by this id, never by
- *  index or position (the launch strip's own `[0, min extent)` span sorts first in
- *  `sectionStrips`' `start`-ascending order, and `stripPx`/`stripsOf` follow the same order). */
+ *  stable id + seeded value. `seed()` (S3) carries no strip of its own (the track-start one-shot
+ *  is a structurally distinct point kind, not a span), so the count goes 0 → 1 — every caller
+ *  addresses the NEW strip by this id, never by index or position (the created strip's own
+ *  `[0, min extent)` span sorts first in `sectionStrips`' `start`-ascending order, and
+ *  `stripPx`/`stripsOf` follow the same order). */
 async function createStrip(page: Page): Promise<{ id: number; value: number }> {
     const before = (await kexCall(page, "stripsOf", 0)) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();

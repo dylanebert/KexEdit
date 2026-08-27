@@ -1526,10 +1526,10 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     const vRange = () => kexCall(page, "vRange");
     const stripKfPx = () => kexCall(page, "stripKfPx");
 
-    // create a strip first (right-click on the band → Add velocity strip). `seed()` (S5)
-    // already carries its own start strip on this section, so the count goes 1 → 2, and the
-    // NEW strip is addressed by id, never index 0 (the launch strip's `start = 0` sorts
-    // first).
+    // create a strip first (right-click on the band → Add velocity strip). `seed()` (S3)
+    // carries no strip of its own (the track-start one-shot is a distinct point kind), so the
+    // count goes 0 → 1, and the NEW strip is addressed by id, never index 0 (the created
+    // strip's `start = 0` sorts first).
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -1863,9 +1863,9 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     const stripKfPx = () => kexCall(page, "stripKfPx");
 
     // create a strip (right-click on the band → Add velocity strip), the T1 flow's own idiom.
-    // `seed()` (S5) already carries its own start strip on this section, so the count goes
-    // 1 → 2, and the NEW strip is addressed by id, never index 0 (the launch strip's
-    // `start = 0` sorts first).
+    // `seed()` (S3) carries no strip of its own (the track-start one-shot is a distinct point
+    // kind), so the count goes 0 → 1, and the NEW strip is addressed by id, never index 0
+    // (the created strip's `start = 0` sorts first).
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2024,8 +2024,9 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     const stripKfPx = () => kexCall(page, "stripKfPx");
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2285,8 +2286,9 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     const xView = () => kexCall(page, "xView");
     const vRange = () => kexCall(page, "vRange");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2434,8 +2436,9 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     const vRange = () => kexCall(page, "vRange");
 
     // Create a strip at 30% of the clip (so strip.start > 0 — the `lo: m.start` bound is
-    // distinguishable from `lo: 0`). `seed()` (S5) already carries its own start strip, so
-    // the count goes 1 → 2; address the new strip by id.
+    // distinguishable from `lo: 0`). `seed()` (S3) carries no strip of its own (the
+    // track-start one-shot is a distinct point kind), so the count goes 0 → 1; address the
+    // new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2577,8 +2580,9 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     const xView = () => kexCall(page, "xView");
     const vRange = () => kexCall(page, "vRange");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2747,8 +2751,9 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     const xView = () => kexCall(page, "xView");
     const vRange = () => kexCall(page, "vRange");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -3167,9 +3172,9 @@ const onGrid = (v: number): boolean => Math.abs(v / S_GRID - Math.round(v / S_GR
 // (`bandMove`) now route the RESULTING edge through the SAME shared resolver a keyframe drag
 // rides (`snapAxis`) — snapping ON lands both on an S_GRID (1 m) increment when no landmark is
 // in range (neither drag below has one reachable: the segment's own force points sit well
-// inside the ORIGINAL extent, behind the widened edge; the strip is created clear of the
-// S5-seeded start strip and nothing parks the playhead). The Ctrl twin below asserts the
-// bypass — this is the arm that discharges the Residue instance list (S1's own six recorded
+// inside the ORIGINAL extent, behind the widened edge; the strip is created with room to
+// drag without hitting the track's own end). The Ctrl twin below asserts the bypass — this is
+// the arm that discharges the Residue instance list (S1's own six recorded
 // `.clip-trim` Ctrl-bypass sites): the segment half here is the first `.clip-trim` flow that
 // does NOT hold Ctrl through the drag.
 //
@@ -3197,15 +3202,15 @@ test("segment and strip resize snap to grid increments (F4)", async ({ page, boo
     // ── strip resize FIRST (before any segment trim -- a trim widens/undoes the section's
     // own extent, and the view's zoom never re-fits down after an undo, `commitLength`'s own
     // note, so a fraction-of-clip-width strip placement done AFTER a trim can land past the
-    // reverted extent). Create a strip clear of the S5-seeded start strip, drag its BODY, no
-    // Ctrl. ──
+    // reverted extent). Create a strip at 40% of the clip width, giving room to drag its BODY
+    // without hitting the track's own end, no Ctrl. ──
     const beforeStrips = await stripsOf();
     const total = (await kexCall(page, "uTotal")) as number;
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
     if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
     const bandY = bandBb.y + bandBb.height / 2;
-    const bandX = clipBb.x + clipBb.width * 0.4; // clear of the S5-seeded start strip
+    const bandX = clipBb.x + clipBb.width * 0.4; // room to drag before the track's own end
     await page.mouse.click(bandX, bandY, { button: "right" });
     await expect(page.locator(".smenu")).toBeVisible();
     await clickMenuItem(page, ".smenu", "Add velocity strip");
