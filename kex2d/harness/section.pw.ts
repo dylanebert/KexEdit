@@ -3871,8 +3871,10 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
     const stripKfPx = () =>
         kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
-    const stripPx = () =>
-        kexCall(page, "stripPx") as Promise<{ id: number; x0: number; x1: number }[]>;
+    const stripsOf = () =>
+        kexCall(page, "stripsOf", 0) as Promise<
+            { id: number; start: number; end: number; value: number }[]
+        >;
 
     const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
     const stripA = (await kexCall(page, "addStripAt", len * 0.1, len * 0.4, 5)) as number;
@@ -3880,13 +3882,17 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
     const kfA = (await kexCall(page, "placeStripKf", stripA, len * 0.25, 7)) as number;
     const kfB = (await kexCall(page, "placeStripKf", stripB, len * 0.75, 2)) as number;
 
+    // select stripA first (so editor.strip === stripA, the pre-fix filter's scope)
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
     if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
     const bandY = bandBb.y + bandBb.height / 2;
-    const sp = (await stripPx()).find((s) => s.id === stripA);
-    if (!sp) throw new Error("stripA has no band px");
-    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    await expect.poll(async () => (await stripsOf()).some((s) => s.id === stripA)).toBe(true);
+    const allStrips = await stripsOf();
+    const sa = allStrips.find((s) => s.id === stripA)!;
+    const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
+    const stripAx = chartCanvasBb.x + 44 + ((sa.start + sa.end) / 2) * pxPerU;
+    await page.mouse.click(stripAx, bandY);
     await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripA);
 
     let kfPx: { id: number; x: number; y: number }[] = [];
@@ -3976,12 +3982,14 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
     await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
 
+    // re-locate the force diamond after the shift-click (the view may have changed)
+    const fpDrag = await forceCenter();
     const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
     const dragDs = 5;
     const dragPx = dragDs * pxPerU;
-    await page.mouse.move(fp.x, fp.y);
+    await page.mouse.move(fpDrag.x, fpDrag.y);
     await page.mouse.down();
-    await page.mouse.move(fp.x + dragPx, fp.y, { steps: 10 });
+    await page.mouse.move(fpDrag.x + dragPx, fpDrag.y, { steps: 10 });
     await page.mouse.up();
 
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
