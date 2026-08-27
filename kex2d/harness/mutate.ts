@@ -122,8 +122,8 @@ const PAIRS: Pair[] = [
         flow: "click, shift-click-toggle and empty-chart deselect read the same for a force keyframe and a strip keyframe (S9, F7)",
         mutations: [
             {
-                old: '        if (!shift) {\n            selectSection(null);\n            deselectKfKinds();\n        }\n        return;\n    }',
-                new: '        if (!shift) {\n            selectSection(null);\n            // MUTATED: deselectKfKinds() call deleted\n        }\n        return;\n    }',
+                old: "        if (!shift) {\n            selectSection(null);\n            deselectKfKinds();\n        }\n        return;\n    }",
+                new: "        if (!shift) {\n            selectSection(null);\n            // MUTATED: deselectKfKinds() call deleted\n        }\n        return;\n    }",
             },
         ],
     },
