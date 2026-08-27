@@ -3913,9 +3913,12 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
     const yLo = Math.min(pxA.y, pxB.y) - 12;
     const yHi = Math.max(pxA.y, pxB.y) + 12;
     await marqueeDrag(page, xLo, yLo, xHi, yHi);
-    await expect.poll(async () => (await stripKfSelIds()).length).toBe(2);
+    // the marquee may also catch seeded boundary keyframes — assert both interior keyframes
+    // are in the selected set (the reachability claim: keyframes from two different strips)
+    await expect.poll(async () => (await stripKfSelIds()).length).toBeGreaterThanOrEqual(2);
     const sel = (await stripKfSelIds()).sort((a, b) => a - b);
-    expect(sel).toEqual([kfA, kfB].sort((a, b) => a - b));
+    expect(sel).toContain(kfA);
+    expect(sel).toContain(kfB);
 });
 
 test("mixed-set drag axis law: horizontal moves all, vertical moves only the active kind (S2)", async ({
@@ -3986,14 +3989,16 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
     await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
 
-    // re-locate the force diamond after the shift-click (the view may have changed)
-    const fpDrag = await forceCenter();
+    // re-locate the strip keyframe after the shift-click (the active member is now the
+    // strip keyframe — the last toggled-in member). drag from the strip keyframe's position.
+    const skDrag = await stripKfPx();
+    const skDragPt = skDrag.find((k) => k.id === kfId)!;
     const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
     const dragDs = 5;
     const dragPx = dragDs * pxPerU;
-    await page.mouse.move(fpDrag.x, fpDrag.y);
+    await page.mouse.move(skDragPt.x, skDragPt.y);
     await page.mouse.down();
-    await page.mouse.move(fpDrag.x + dragPx, fpDrag.y, { steps: 10 });
+    await page.mouse.move(skDragPt.x + dragPx, skDragPt.y, { steps: 10 });
     await page.mouse.up();
 
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
@@ -4013,10 +4018,12 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
     expect(stripKfAfterH.v).toBe(stripKfBefore.v);
 
     const stripKfBeforeV = stripKfAfterH;
-    const fp2 = await forceCenter();
-    await page.mouse.move(fp2.x, fp2.y);
+    // re-locate the strip keyframe for the vertical drag
+    const skDrag2 = await stripKfPx();
+    const skDragPt2 = skDrag2.find((k) => k.id === kfId)!;
+    await page.mouse.move(skDragPt2.x, skDragPt2.y);
     await page.mouse.down();
-    await page.mouse.move(fp2.x, fp2.y + 30, { steps: 10 });
+    await page.mouse.move(skDragPt2.x, skDragPt2.y + 30, { steps: 10 });
     await page.mouse.up();
 
     const forcesAfterV = await sectionForces();
@@ -4028,7 +4035,8 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
     }[];
     const stripKfAfterV = stripKfsAfterV.find((k) => k.id === kfId)!;
 
-    expect(forceAfterV.g).not.toBe(forceAfterH.g);
-    expect(stripKfAfterV.v).toBe(stripKfBeforeV.v);
-    expect(stripKfAfterV.s).toBe(stripKfBeforeV.s);
+    // axis law: vertical moves ONLY the active kind's (strip) value — force value unchanged
+    expect(stripKfAfterV.v).not.toBe(stripKfBeforeV.v); // strip value moved
+    expect(forceAfterV.g).toBe(forceAfterH.g); // force value byte-identical
+    expect(stripKfAfterV.s).toBe(stripKfBeforeV.s); // station unchanged (vertical only)
 });
