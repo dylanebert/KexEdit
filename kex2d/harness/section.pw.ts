@@ -4313,7 +4313,22 @@ test("mixed-set arrow nudge moves all stations, value only for active kind (S3)"
         (s) => s.id === stripId,
     );
     if (!sp) throw new Error("created strip has no band px");
-    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    // bandDown reads `bandStrips`, a `$derived` paced by `void tick` — a click landing before
+    // the derived flushes sees no strip and selects nothing. Wait on the band's own hit read
+    // (`bandHit`, which resolves through that same `bandStrips`) to report this strip's body
+    // at the target point before clicking, then a bounded retry guards any residual race.
+    const clickX = chartCanvasBb.x + (sp.x0 + sp.x1) / 2;
+    await page.mouse.move(clickX, bandY);
+    await expect
+        .poll(async () => {
+            const hit = (await kexCall(page, "bandHit")) as { kind: string; id?: number };
+            return hit.kind === "body" && hit.id === stripId;
+        })
+        .toBe(true);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        await page.mouse.click(clickX, bandY);
+        if ((await kexCall(page, "selectedStrip")) === stripId) break;
+    }
     await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
 
     let kfPx: { id: number; x: number; y: number }[] = [];
