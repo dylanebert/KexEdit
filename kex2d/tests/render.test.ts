@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { State, type System } from "@dylanebert/shallot";
 import { COLOR_ACCENT, hovered } from "../src/colors";
-import { editor, enterTangentEdit } from "../src/editor";
+import { deselectAll, editor, enterTangentEdit, selectStart } from "../src/editor";
 import { AnchorDrawSystem, infeasibleSpans, TangentDrawSystem } from "../src/render";
 import { TangentMode } from "../src/spline";
 import {
@@ -68,7 +68,7 @@ beforeEach(() => {
     editor.hoverNode = null;
     editor.hoverKnob = null;
     editor.tangentEdit = null;
-    editor.start = false;
+    deselectAll();
 });
 
 // ── the double's own contract: `recording-ctx.ts`'s JSDoc promises save()/restore() fidelity
@@ -107,7 +107,7 @@ describe("recordingContext — save/restore fidelity", () => {
         // bracket is reachable and sequenced as expected, not that restore() is load-bearing
         // there — the test above covers that half.
         const { state } = track();
-        editor.start = true;
+        selectStart(true);
         const calls = setupCanvas();
         draw(AnchorDrawSystem, state);
         const stroke = calls.filter((c) => c.method === "stroke");

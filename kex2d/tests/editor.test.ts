@@ -468,6 +468,29 @@ test("entering force handle-edit collapses a multi-point set to its subject", ()
     expect(editor.forceEdit).toBe(6);
 });
 
+// BLOCKER 2: selectNodes([])/selectForces([]) must exit tangent-edit / force-edit — the
+// shrink-to-zero case (a shift+marquee that toggles the last member off). the length guards
+// on the reconcile calls skipped the exit when `ids` was empty, leaving a sub-mode live on a
+// deselected subject. these arms red at 47f456d (tangentEdit/forceEdit stays set) and green
+// after the guards are dropped.
+test("selectNodes([]) exits tangent-edit (shrink-to-zero)", () => {
+    select(10);
+    enterTangentEdit(10);
+    expect(editor.tangentEdit).toBe(10);
+    selectNodes([], null);
+    expect(editor.nodes.ids.size).toBe(0);
+    expect(editor.tangentEdit).toBeNull();
+});
+
+test("selectForces([]) exits force-edit (shrink-to-zero)", () => {
+    selectForce(5);
+    enterForceEdit(5);
+    expect(editor.forceEdit).toBe(5);
+    selectForces([], null);
+    expect(editor.forces.ids.size).toBe(0);
+    expect(editor.forceEdit).toBeNull();
+});
+
 // ── section context menu: promote-vs-replace on right-click (mirrors openNodeMenu/openForceMenu) ──
 
 test("openContext on a member of a multi-set promotes it active, keeping the whole set", () => {

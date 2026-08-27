@@ -10,6 +10,8 @@ import {
     selectNodes,
     selectSection,
     selectStart,
+    selectStrip,
+    selectStripKf,
 } from "../src/editor";
 import {
     appendSection,
@@ -1676,4 +1678,41 @@ test("bulk tangent-mode: sets every member's mode in one entry; picking Aligned 
     setTangentModes(h2, s2, [{ section: sec2, order: 1 }], TangentMode.Aligned);
     expect(h2.undo.length).toBe(0);
     expect(handleTangent(s2, sec2, 1)).toBeUndefined();
+});
+
+// ── strip-keyframe selection across undo/redo (BLOCKER 1: snapshot/restore for `stripKf`) ──
+// `selectStripKf` sets `_active.kind = "stripKf"`, but `selectionHook.snapshot()` had no
+// `stripKf` case — it fell through to `default: return null`, so undo/redo across that point
+// restored no selection at all. the fix carries `stripKf` through the union + both arms,
+// mirroring the existing `"strip"` case with the strip-keyframe ids/active alongside the owning
+// strip id. this arm reds at 47f456d (snapshot returns null → restore clears everything) and
+// greens after the fix (both the strip and its keyframe are restored).
+test("undo/redo across 'select strip, then select one of its keyframes' restores both", () => {
+    clearSelection();
+    const { state } = nodes();
+    const h = createHistory();
+    const stripId = addStrip(h, state, 0, 10, 8) as number;
+    const seeded = stripKeyframes(state, stripId);
+    const kfId = seeded[0].id;
+
+    // select the strip, then select one of its keyframes — the gesture whose snapshot was null.
+    selectStrip(stripId);
+    selectStripKf(kfId);
+    expect(editor.strip).toBe(stripId);
+    expect(editor.stripKf).toBe(kfId);
+
+    // a command (delete a different keyframe) brackets the selection so undo/redo restore it.
+    const extraId = addStripKeyframe(h, state, stripId, 5, 12);
+    deleteStripKeyframes(h, state, [extraId]);
+
+    undo(h, state);
+    // both the owning strip AND the strip keyframe are restored — not null (the bug), not just
+    // the strip (the old code's accidental fallback).
+    expect(editor.strip).toBe(stripId);
+    expect(editor.stripKf).toBe(kfId);
+
+    redo(h, state);
+    // post-command selection (strip keyframe still active, strip still selected) restored forward.
+    expect(editor.strip).toBe(stripId);
+    expect(editor.stripKf).toBe(kfId);
 });
