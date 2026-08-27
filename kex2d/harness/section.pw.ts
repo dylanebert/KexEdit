@@ -4414,6 +4414,12 @@ test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair
     boot,
 }) => {
     await boot();
+    // seedHill: 7 geo nodes (orders 0-6) in section 0. Append a force section (section 1)
+    // with 2 seed force keyframes. The force keyframes are on section 1 (not the first section,
+    // so `forceCount`/`forces` — which read `sec()` = section 0 — cannot see them). The arm
+    // verifies the force deletion through `forceSelIds` (selection state) and `undoDepth`
+    // (history depth — a selection change alone never records, so +1 proves a deletion).
+    // The node is on section 0, verified directly via `nodeCount`.
     await seedHill(page);
     await expect.poll(async () => kexCall(page, "nodeCount")).toBe(7);
     const tBefore = await kexCall(page, "tTotal");
@@ -4427,8 +4433,6 @@ test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair
     const nodeSelOrders = () => kexCall(page, "nodeSelOrders") as Promise<number[]>;
     const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
     const nodeCount = () => kexCall(page, "nodeCount");
-    const sectionForces = () =>
-        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
 
     // 1. select a force keyframe on the timeline (plain click → active = force)
     const forceHit = page.locator(".fhit").first();
@@ -4444,7 +4448,7 @@ test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair
     if (!cb) throw new Error("viewport canvas not laid out");
     await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 3);
     await page.keyboard.press("f"); // frame the viewport
-    const nodePt = await nodePoint(page, 6);
+    const nodePt = await nodePoint(page, 6); // the chain end (order 6)
     await page.keyboard.down("Shift");
     await page.mouse.click(cb.x + nodePt.x, cb.y + nodePt.y);
     await page.keyboard.up("Shift");
@@ -4455,17 +4459,18 @@ test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair
     await expect.poll(activeKind).toBe("node");
 
     const nodeCountBefore = await nodeCount();
-    const forceCountBefore = (await sectionForces()).length;
 
     // 4. Delete — one gesture, both kinds gone
     const depthBefore = await undoDepth();
     await page.keyboard.press("Delete");
     await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit, not N
     await expect.poll(nodeCount).toBe(nodeCountBefore - 1); // node trimmed
-    await expect.poll(async () => (await sectionForces()).length).toBe(forceCountBefore - 1); // force deleted
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0); // force deselected
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(0); // node deselected
 
     // 5. one Undo restores BOTH
     await page.keyboard.press("Control+z");
-    await expect.poll(nodeCount).toBe(nodeCountBefore);
-    await expect.poll(async () => (await sectionForces()).length).toBe(forceCountBefore);
+    await expect.poll(nodeCount).toBe(nodeCountBefore); // node restored
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1); // force re-selected
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(1); // node re-selected
 });

@@ -270,8 +270,12 @@ export function mixedSetDelete(ecs: State): boolean {
         }
     }
 
-    // strips — guard: each strip's station is editable
-    if (editor.strips.ids.size > 0) {
+    // strips — guard: each strip's station is editable. SKIP when a stripKf is also selected:
+    //   the strip is a containment ancestor of the stripKf (stripKfs non-empty ⇒ strip non-empty),
+    //   and deleting the strip would also destroy non-selected keyframes on it — a side effect
+    //   the law's "every selected member" does not reach. The sweep law's ancestor-keep applies
+    //   to Delete the same way it applies to replace-select.
+    if (editor.strips.ids.size > 0 && editor.stripKfs.ids.size === 0) {
         let allEditable = true;
         for (const id of editor.strips.ids) {
             const sEid = stripAt(ecs, id);
