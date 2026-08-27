@@ -75,6 +75,7 @@ import {
     createOneShot as createOneShotTrack,
     destroyOneShot,
     entryOneShot,
+    setOneShotValue,
     spawnOneShot,
     createStripKeyframe as createStripKf,
     destroyStripKeyframe,
@@ -625,6 +626,21 @@ export function deleteOneShot(h: History, ecs: State, id: number): void {
             reverse: () => spawnOneShot(ecs, id, value),
         },
         pre,
+    );
+}
+
+/** open a gesture on the one-shot's inline value field edit (F5) — `beginForceMove`'s
+ *  single-scalar twin: no position to snapshot, since the axis is LOCKED (the one-shot's
+ *  `s` never moves, `setOneShotValue`'s own docblock). commit coalesces the live writes
+ *  into one entry; a no-op edit (a click, a re-typed identical value) records nothing. */
+export function beginOneShotMove(ecs: State, id: number): void {
+    begin(
+        () => {
+            const os = entryOneShot(ecs);
+            return os && os.id === id ? { id: os.id, value: os.value } : undefined;
+        },
+        (st: { id: number; value: number }) => setOneShotValue(ecs, st.id, st.value),
+        (a: { id: number; value: number }, b: { id: number; value: number }) => a.value === b.value,
     );
 }
 
