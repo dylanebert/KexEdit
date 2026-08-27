@@ -2071,9 +2071,20 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await page.mouse.move(edgePx + 80, bandY, { steps: 5 });
     await page.mouse.up();
 
-    // Poll for the seeded keyframes' diamonds to be projected on screen.
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
-    const kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    // Poll for the seeded keyframes' diamonds to be projected on screen, and derive kf0Px
+    // from the SAME poll iteration that observed it (kex2d-event-substrate S7, discharging
+    // the kex2d-iteration-speed handover): a separate re-read after the poll resolves leaves
+    // a gap a relayout can land in, which is the cheapest read of the one observed
+    // full-suite red (a select failure at this line, unreproduced at narrower scale) — a
+    // pixel derived from an earlier geometry read is stale if a relayout lands between the
+    // two, so the poll's own last-successful read is what the click uses.
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = (await stripKfPx()) as { id: number; x: number; y: number }[];
+            return kfPx.length;
+        })
+        .toBeGreaterThan(0);
     // Find a seeded keyframe that belongs to our strip.
     const kf0Px = kfPx.find((k) => seededIds.has(k.id));
     if (!kf0Px) throw new Error("seeded keyframe not projected on screen");
@@ -2098,16 +2109,17 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
 // the `.ptip`/`.fld` markup and `kfFieldEdit`/`oneShotFieldEdit`'s shared begin/set/commit
 // gesture shape, never a parallel twin (this stage's own adversarial named subject). This
 // flow drives BOTH through the real pointer: selects a strip keyframe's diamond, types a new
-// `v`, and reads the bake move at that exact station (`vAtD`); selects the one-shot glyph —
-// its POSITION field is LOCKED (disabled, `d = 0`, Locked decision F5) while its `v` field
-// still edits — types a new `v`, and reads the bake move (`v0`, `entrySpeed`'s own readback).
+// `v`, and reads the bake move just inside that keyframe's own station (`vAtD`, offset off
+// the edge boundary — see `readD` below); selects the one-shot glyph — its POSITION field is
+// LOCKED (disabled, `d = 0`, Locked decision F5) while its `v` field still edits — types a
+// new `v`, and reads the bake move (`v0`, `entrySpeed`'s own readback).
 //
-// RED-FIRST WITNESS (2026-08-26): deleted the `setOneShotValue(ecs, os.id, v);` line from
-// `oneShotFieldEdit` (Timeline.svelte) — the flow reds at the `v0` poll (`exit 1`, timeout:
-// `v0()` never moved off `v0Before`). Restored; the flow returns to green. A second witness
-// on the strip-keyframe half: deleted the same line's twin in `kfFieldEdit`'s strip branch
-// (`setStripKeyframe(ecs, k.id, ...)`) — reds identically at the `vAtD` poll (`exit 1`).
-// Restored both.
+// RED-FIRST WITNESS (successor executor, re-witnessed against the branch tree): deleted the
+// `setOneShotValue(ecs, os.id, v);` line from `oneShotFieldEdit` (Timeline.svelte) — the flow
+// reds at the `v0` poll (exit 1, timeout: `v0()` never moved off `v0Before`). Restored
+// byte-identical; green. A second witness on the strip-keyframe half: deleted the same
+// line's twin in `kfFieldEdit`'s strip branch (`setStripKeyframe(ecs, k.id, ...)`) — reds
+// identically at the `vAtD` poll (exit 1). Restored byte-identical.
 test("velocity value popup: typed edits move the bake, one-shot position stays locked (F5)", async ({
     page,
     boot,
@@ -2150,27 +2162,25 @@ test("velocity value popup: typed edits move the bake, one-shot position stays l
     const kf0Px = kfPx.find((k) => k.id === kf0.id);
     if (!kf0Px) throw new Error("seeded keyframe not projected on screen");
     await page.mouse.click(kf0Px.x, kf0Px.y);
-    console.log("DEBUG kf0", JSON.stringify(kf0), "kf0Px", JSON.stringify(kf0Px));
-    console.log("DEBUG stripKfSelIds", JSON.stringify(await kexCall(page, "stripKfSelIds")));
-    console.log("DEBUG stripKfSelActive", JSON.stringify(await kexCall(page, "stripKfSelActive")));
 
     const vField = page.locator('.ptip input[aria-label="Keyframe velocity (m/s)"]');
     await expect(vField).toBeVisible();
-    console.log("DEBUG vField initial value", await vField.inputValue());
-    const vBefore = (await vAtD(kf0.s)) as number;
+    // read the bake just INSIDE kf0's own station, never AT it: `edgeStrips`' boundary map
+    // ties a station exactly on an edge to the EARLIER edge (`boundary`'s own "ties toward
+    // the earlier edge" law), so `d = kf0.s` samples the edge just outside the override band
+    // — measured 6.80 (unmoved) at `kf0.s` against 10.75 (moved) at `kf0.s + 0.5` on this
+    // exact fixture. `readD` stays off the boundary and inside the strip's own extent.
+    const readD = kf0.s + 0.5;
+    const vBefore = (await vAtD(readD)) as number;
     const newKfV = kf0.v + 4;
     await vField.fill(String(newKfV));
-    console.log("DEBUG vField after fill", await vField.inputValue());
     await page.keyboard.press("Enter");
-    console.log("DEBUG vField after Enter", await vField.inputValue());
-    console.log("DEBUG stripKeyframesOf after", JSON.stringify(await stripKeyframesOf(strip0.id)));
     await frames(page, 4); // the bake reads through `bakeOut`'s RAF-tick gate (Residue: one frame behind)
-    console.log("DEBUG vAtD after frames", await vAtD(kf0.s));
-    await page.waitForTimeout(1000);
-    console.log("DEBUG vAtD after 1s wait", await vAtD(kf0.s));
-    console.log("DEBUG strip after 1s", JSON.stringify(await stripsOf()));
-    await expect.poll(async () => vAtD(kf0.s), { timeout: 10000 }).not.toBeCloseTo(vBefore, 2);
-    await expect.poll(async () => vAtD(kf0.s)).toBeCloseTo(newKfV, 2);
+    await expect.poll(async () => vAtD(readD), { timeout: 10000 }).not.toBeCloseTo(vBefore, 2);
+    // within 0.5 m/s of the typed value, never exact equality: `readD` sits a half-metre
+    // inside the strip's own extent (above), so the held-v² curve interpolates slightly
+    // toward the strip's OTHER (unedited) keyframe over that offset.
+    await expect.poll(async () => Math.abs((await vAtD(readD)) - newKfV)).toBeLessThan(0.5);
 
     await page.keyboard.press("Escape"); // clear the strip-keyframe popover before the one-shot's
 
