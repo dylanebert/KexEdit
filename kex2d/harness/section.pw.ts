@@ -4230,19 +4230,20 @@ test("mixed-set Delete removes every member across kinds in one gesture (S3)", a
         .toBe(true);
     const stripKfTarget = kfPx.find((k) => k.id === kfId)!;
 
-    // select a force keyframe (plain click → replace-select, active = force)
+    // select the strip keyframe first (plain click → replace-select, active = stripKf)
+    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+
+    // shift-click the force keyframe → co-select without clearing the stripKf (S2).
+    // force is the last toggled-in member, so activeKind is "force".
     const forceHit = page.locator(".fhit").first();
     const fb = await forceHit.boundingBox();
     if (!fb) throw new Error("force diamond not laid out");
-    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
-    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
-
-    // shift-click the strip keyframe → co-select without clearing the force (S2)
     await page.keyboard.down("Shift");
-    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
     await page.keyboard.up("Shift");
-    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(activeKind).toBe("force");
 
     const forceCountBefore = (await sectionForces()).length;
@@ -4319,23 +4320,24 @@ test("mixed-set arrow nudge moves all stations, value only for active kind (S3)"
         .toBe(true);
     const stripKfTarget = kfPx.find((k) => k.id === kfId)!;
 
-    // select a force keyframe (plain click → active = force)
+    // select the strip keyframe first (plain click → active = stripKf)
+    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+
+    // shift-click the force keyframe → co-select (S2). force is the last toggled-in,
+    // so activeKind is "force".
     const forceHit = page.locator(".fhit").first();
     const fb = await forceHit.boundingBox();
     if (!fb) throw new Error("force diamond not laid out");
-    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
-    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
-    const forceId = (await forceSelIds())[0];
-
-    // shift-click the strip keyframe → co-select (S2)
     await page.keyboard.down("Shift");
-    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
     await page.keyboard.up("Shift");
-    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(activeKind).toBe("force");
 
     // read pre-nudge state
+    const forceId = (await forceSelIds())[0];
     const forcesBefore = await sectionForces();
     const forceBefore = forcesBefore.find((f) => f.id === forceId)!;
     const stripKfsBefore = (await stripKeyframesOf(stripId)) as {
@@ -4363,10 +4365,10 @@ test("mixed-set arrow nudge moves all stations, value only for active kind (S3)"
     // station moved for both
     expect(forceAfterH.s).not.toBe(forceBefore.s); // force station moved
     expect(stripKfAfterH.s).not.toBe(stripKfBefore.s); // strip keyframe station moved
-    // same Δs (the shared delta)
+    // same Δs (the shared delta) — tolerance for floating-point rounding
     const forceDs = forceAfterH.s - forceBefore.s;
     const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
-    expect(forceDs).toBe(stripKfDs);
+    expect(Math.abs(forceDs - stripKfDs)).toBeLessThan(1e-9);
     // values unchanged (ArrowRight has no value component)
     expect(forceAfterH.g).toBe(forceBefore.g);
     expect(stripKfAfterH.v).toBe(stripKfBefore.v);
