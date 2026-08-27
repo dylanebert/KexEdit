@@ -3865,7 +3865,8 @@ test("shift-click a force keyframe and a strip keyframe leaves both selected (S2
 
 test("marquee over two different strips' keyframes takes both (S2)", async ({ page, boot }) => {
     await boot();
-    await seedHill(page);
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
     await frameTimeline(page);
 
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
@@ -3877,9 +3878,11 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
         >;
 
     const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
-    const stripA = (await kexCall(page, "addStripAt", len * 0.1, len * 0.4, 5)) as number;
+    // two strips at non-overlapping positions (avoiding the seed strip at station 0)
+    const stripA = (await kexCall(page, "addStripAt", len * 0.3, len * 0.5, 5)) as number;
     const stripB = (await kexCall(page, "addStripAt", len * 0.6, len * 0.9, 3)) as number;
-    const kfA = (await kexCall(page, "placeStripKf", stripA, len * 0.25, 7)) as number;
+    if (stripA === null || stripB === null) throw new Error("strip creation failed (overlap?)");
+    const kfA = (await kexCall(page, "placeStripKf", stripA, len * 0.4, 7)) as number;
     const kfB = (await kexCall(page, "placeStripKf", stripB, len * 0.75, 2)) as number;
 
     // select stripA first (so editor.strip === stripA, the pre-fix filter's scope)
@@ -3934,6 +3937,7 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
 
     const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
     const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    if (stripId === null) throw new Error("strip creation failed (overlap?)");
     const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
 
     const bandBb = await page.locator(".hbandzone").boundingBox();
