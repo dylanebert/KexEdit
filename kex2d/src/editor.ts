@@ -974,10 +974,9 @@ function selectSingle(kind: SelKind, id: number | null): void {
     }
 }
 
-/** toggle-select a member of `kind`, sweeping every other kind first (and keeping `strip` when
- *  `kind` is `stripKf`, since strip keyframes are layered under strip selection). */
+/** toggle-select a member of `kind` — shift-click extends across kinds (S2): the other kinds
+ *  are NOT swept, so force and strip keyframes can be co-selected as members of one set. */
 function toggleSingle(kind: SelKind, id: number): void {
-    sweepOtherKinds(kind === "stripKf" ? ["stripKf", "strip"] : [kind]);
     if (memberHas(kind, id)) {
         memberRemove(kind, id);
         if (_active !== null && _active.kind === kind && _active.id === id)
@@ -989,11 +988,12 @@ function toggleSingle(kind: SelKind, id: number): void {
 }
 
 /** replace a kind's membership with a computed set (the marquee's atomic write). a non-empty set
- *  clears all members and writes the set; an empty set clears only that kind, leaving the rest
- *  for the caller to sweep (matching empty-click). */
+ *  clears only its own kind and writes the set — the marquee extends across kinds (S2), so other
+ *  kinds are NOT swept. an empty set clears only that kind, leaving the rest for the caller to
+ *  sweep (matching empty-click). */
 function selectSet(kind: SelKind, ids: number[], activeId: number | null): void {
     if (ids.length) {
-        clearAllMembers();
+        clearKind(kind);
         for (const id of ids) memberAdd(kind, id);
         if (activeId !== null && memberHas(kind, activeId)) _active = { kind, id: activeId };
         else _active = lastMemberOfAny();
@@ -1136,15 +1136,24 @@ export function selectStrip(id: number | null, mode: SelectMode = "replace"): vo
     if (editor.strip === null) clearKind("stripKf");
 }
 
+/** ensure a strip member is in the unified set without clearing other kinds (S2: shift-click on
+ *  a strip keyframe from a different strip adds the owning strip to the set rather than
+ *  replace-selecting it, so the co-selection survives). no-op when the strip is already a member. */
+export function ensureStrip(id: number): void {
+    if (!memberHas("strip", id)) {
+        memberAdd("strip", id);
+        _active = { kind: "strip", id };
+    }
+}
+
 /** select a velocity-strip keyframe by its stable id — `selectForce`'s own two-form shape,
  *  reached through the same `Timeline.svelte kfDesc` descriptor `keyframeDown` calls for either
  *  kind (S9, F7). "replace" (default) collapses the set to `id` (or clears it when null);
- *  "toggle" adds/removes it (shift-click, S4's booked multi-select). either non-clearing form
- *  sweeps the other top-level kinds (keeping the owning strip — S9's fix for the missing
- *  cross-clear, finding (b): before, nothing swept `forces` here, so a force keyframe could
- *  stay selected alongside a strip keyframe). a sub-selection layered on strip selection: the
- *  owning strip stays selected (its diamonds are drawn), and the set becomes the Delete/Escape
- *  target. selection state in editor, Delete through the history wrapper. */
+ *  "toggle" adds/removes it (shift-click). the replace form sweeps the other top-level kinds
+ *  (keeping the owning strip) — this is the plain-click path, and `sweepOtherKinds` survives
+ *  here alone (S2 deleted it from the shift/marquee paths). a sub-selection layered on strip
+ *  selection: the owning strip stays selected (its diamonds are drawn), and the set becomes the
+ *  Delete/Escape target. selection state in editor, Delete through the history wrapper. */
 export function selectStripKf(id: number | null, mode: SelectMode = "replace"): void {
     if (id === null || mode === "replace") {
         if (id !== null) {
@@ -1162,10 +1171,10 @@ export function selectStripKf(id: number | null, mode: SelectMode = "replace"): 
 
 /** replace the strip-keyframe selection with a computed set (the marquee's atomic write) —
  *  `selectForces`' own strip-keyframe form (S9, F7's finding (a): before, `marqueeUp` never
- *  built a strip-keyframe candidate pool at all, so a rubber-band never took one). */
+ *  built a strip-keyframe candidate pool at all, so a rubber-band never took one). S2: the
+ *  marquee extends across kinds, so other kinds are NOT swept here. */
 export function selectStripKfs(ids: number[], active: number | null): void {
     if (ids.length) {
-        sweepOtherKinds(["stripKf", "strip"]);
         clearKind("stripKf");
         for (const id of ids) memberAdd("stripKf", id);
         if (active !== null && memberHas("stripKf", active))

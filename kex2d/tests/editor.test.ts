@@ -7,6 +7,7 @@ import {
     convertProgress,
     deselectAll,
     dismissNotice,
+    ensureStrip,
     editor,
     endConvert,
     enterForceEdit,
@@ -154,17 +155,16 @@ test("selectNodes falls back to the last-inserted member when the given active i
     expect(editor.selection).toBe(20);
 });
 
-test("a non-empty set applier sweeps the other kinds; an empty one clears only its own", () => {
+test("a non-empty set applier writes its own kind without sweeping others; an empty one clears only its own", () => {
+    // S2: the marquee extends across kinds — selectNodes no longer clears other kinds.
     selectSection(3);
     selectNodes([10, 20], 10);
-    expect(editor.sections.ids.size).toBe(0); // swept
+    expect([...editor.sections.ids]).toEqual([3]); // NOT swept — co-selection
     expect([...editor.nodes.ids]).toEqual([10, 20]);
 
     // an empty write is the marquee's "hit nothing" case: it clears the node kind alone, leaving
     // the full deselect (the other kinds + START) to the caller, matching empty-click.
     selectSection(3);
-    select(10, "toggle"); // node kind again, sections swept
-    selectSection(3, "toggle"); // …and back to sections, so a stale kind exists to observe
     selectNodes([], null);
     expect(editor.nodes.ids.size).toBe(0);
     expect([...editor.sections.ids]).toEqual([3]); // untouched — the caller owns the rest
@@ -183,10 +183,10 @@ test("a set applier that grows past a sub-mode's subject drops the sub-mode", ()
     expect(editor.forceHandle).toBeNull();
 });
 
-test("selectForces writes the force set and sweeps the other kinds", () => {
+test("selectForces writes the force set without sweeping other kinds (S2: marquee extends)", () => {
     select(10);
     selectForces([5, 6, 7], 6);
-    expect(editor.nodes.ids.size).toBe(0);
+    expect([...editor.nodes.ids]).toEqual([10]); // NOT swept — co-selection
     expect([...editor.forces.ids]).toEqual([5, 6, 7]);
     expect(editor.force).toBe(6);
 });
@@ -220,11 +220,11 @@ test("selecting into one kind clears the others (a multi-member set included)", 
     expect(editor.oneShot).toBe(false);
 });
 
-test("toggling into a kind while another kind is active switches kinds", () => {
+test("toggling into a kind while another kind is active keeps both (S2: shift-click extends)", () => {
     selectForce(5);
     selectForce(6, "toggle"); // a two-point force set
     select(10, "toggle"); // shift-click a node with forces selected
-    expect(editor.forces.ids.size).toBe(0);
+    expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]); // NOT swept
     expect([...editor.nodes.ids]).toEqual([10]);
     expect(editor.selection).toBe(10);
 });
@@ -422,12 +422,99 @@ describe("strip-keyframe multi-select", () => {
     // implies `editor.strip === null`, which empties `marqueeUp`'s own strip-keyframe
     // candidate pool too), so it pins `exclusiveStripKf()`'s declared-parity sweep rather than
     // a live marquee outcome.
-    test("selectStripKfs (the marquee multi-write) sweeps the other kinds like selectForces does", () => {
+    test("selectStripKfs (the marquee multi-write) does NOT sweep the force set (S2: extends)", () => {
         selectForce(99);
+        ensureStrip(1);
         selectStripKfs([10, 20], 20);
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
         expect(editor.stripKf).toBe(20);
+        expect(editor.force).toBe(99); // NOT swept — co-selection
+    });
+});
+
+// ── S2: cross-kind co-selection, reachable (kex2d-selection-substrate S2) ──────────────────
+// the state S9 proved unreachable is now the thing these arms assert: shift-click and marquee
+// extend across kinds, so force and strip keyframes can be co-selected as members of one set.
+// a plain click stays a replace-select clearing every member of every kind (not widened here).
+// the shift/marquee paths stop routing through `sweepOtherKinds`; it survives for the plain-click
+// `selectStripKf` replace path alone (the layered invariant: clear other top-level kinds, keep
+// the owning strip).
+
+describe("S2: cross-kind co-selection — shift-click extends across kinds", () => {
+    test("shift-clicking a force keyframe then a strip keyframe leaves both selected", () => {
+        selectForce(5);
+        ensureStrip(1); // shift-click adds the owning strip without clearing others
+        selectStripKf(10, "toggle");
+        // both kinds co-exist in the unified set — the state S9 proved unreachable
+        expect([...editor.forces.ids]).toEqual([5]);
+        expect(editor.force).toBe(5);
+        expect([...editor.stripKfs.ids]).toEqual([10]);
+        expect(editor.stripKf).toBe(10);
+    });
+
+    test("shift-clicking a node with forces selected keeps both kinds", () => {
+        selectForce(5);
+        select(10, "toggle");
+        expect([...editor.forces.ids]).toEqual([5]);
+        expect([...editor.nodes.ids]).toEqual([10]);
+    });
+
+    test("shift-clicking a strip keyframe with a force keyframe selected keeps both", () => {
+        selectForce(5);
+        ensureStrip(1);
+        selectStripKf(10, "toggle");
+        // toggle the force out, then back in — the strip keyframe survives
+        selectForce(5, "toggle");
+        expect(editor.forces.ids.size).toBe(0);
+        expect([...editor.stripKfs.ids]).toEqual([10]);
+        selectForce(5, "toggle");
+        expect([...editor.forces.ids]).toEqual([5]);
+        expect([...editor.stripKfs.ids]).toEqual([10]);
+    });
+});
+
+describe("S2: cross-kind co-selection — marquee extends across kinds", () => {
+    test("selectForces does NOT clear the strip-keyframe set (marquee extends, not replaces)", () => {
+        ensureStrip(1);
+        selectStripKf(10);
+        selectStripKf(20, "toggle");
+        selectForces([5, 6], 6);
+        expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
+        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
+    });
+
+    test("selectStripKfs does NOT clear the force set (marquee extends, not replaces)", () => {
+        selectForce(5);
+        selectForce(6, "toggle");
+        ensureStrip(1);
+        selectStripKfs([10, 20], 20);
+        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
+        expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
+    });
+
+    test("selectNodes does NOT clear the force set (marquee extends across kinds)", () => {
+        selectForce(5);
+        selectNodes([10, 20], 20);
+        expect([...editor.nodes.ids].sort((a, b) => a - b)).toEqual([10, 20]);
+        expect([...editor.forces.ids]).toEqual([5]);
+    });
+});
+
+describe("S2: plain click stays replace-select (not widened)", () => {
+    test("plain-clicking a force keyframe clears the strip-keyframe set", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        selectForce(5);
+        expect(editor.stripKfs.ids.size).toBe(0);
+        expect([...editor.forces.ids]).toEqual([5]);
+    });
+
+    test("plain-clicking a strip keyframe clears the force set (sweepOtherKinds survives here)", () => {
+        selectForce(5);
+        selectStrip(1);
+        selectStripKf(10);
         expect(editor.force).toBeNull();
+        expect([...editor.stripKfs.ids]).toEqual([10]);
     });
 });
 

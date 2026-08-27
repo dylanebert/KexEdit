@@ -3801,3 +3801,222 @@ test("segment and strip resize Ctrl bypasses grid snap (F4)", async ({ page, boo
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await sectionLengths())[0]).toBeCloseTo(before[0], 3);
 });
+
+// S2 reachability arm 1: shift-clicking a force keyframe and then a strip keyframe leaves BOTH
+// selected, read back as members of one set. RED-FIRST WITNESS: at the pre-fix ref, the
+// `selectStrip(k.strip)` call in `keyframeDown` (run unconditionally before the shift-check)
+// replace-selects the strip, clearing the force selection via `clearAllMembers`. After S2's
+// `ensureStrip` fix, the shift-click adds the owning strip without clearing others.
+test("shift-click a force keyframe and a strip keyframe leaves both selected (S2)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const sp = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripId,
+    );
+    if (!sp) throw new Error("created strip has no band px");
+    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfId);
+        })
+        .toBe(true);
+    const target = kfPx.find((k) => k.id === kfId);
+    if (!target) throw new Error("strip keyframe not projected");
+
+    const forceHit = page.locator(".fhit").first();
+    const forceCenter = async (): Promise<{ x: number; y: number }> => {
+        const b = await forceHit.boundingBox();
+        if (!b) throw new Error("force diamond not laid out");
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    };
+    const fp = await forceCenter();
+    await page.mouse.click(fp.x, fp.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+
+    await page.keyboard.down("Shift");
+    await page.mouse.click(target.x, target.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+});
+
+test("marquee over two different strips' keyframes takes both (S2)", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripPx = () =>
+        kexCall(page, "stripPx") as Promise<{ id: number; x0: number; x1: number }[]>;
+
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripA = (await kexCall(page, "addStripAt", len * 0.1, len * 0.4, 5)) as number;
+    const stripB = (await kexCall(page, "addStripAt", len * 0.6, len * 0.9, 3)) as number;
+    const kfA = (await kexCall(page, "placeStripKf", stripA, len * 0.25, 7)) as number;
+    const kfB = (await kexCall(page, "placeStripKf", stripB, len * 0.75, 2)) as number;
+
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const sp = (await stripPx()).find((s) => s.id === stripA);
+    if (!sp) throw new Error("stripA has no band px");
+    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripA);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfA) && kfPx.some((k) => k.id === kfB);
+        })
+        .toBe(true);
+    const pxA = kfPx.find((k) => k.id === kfA)!;
+    const pxB = kfPx.find((k) => k.id === kfB)!;
+
+    const xLo = Math.min(pxA.x, pxB.x) - 8;
+    const xHi = Math.max(pxA.x, pxB.x) + 8;
+    const yLo = Math.min(pxA.y, pxB.y) - 12;
+    const yHi = Math.max(pxA.y, pxB.y) + 12;
+    await marqueeDrag(page, xLo, yLo, xHi, yHi);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(2);
+    const sel = (await stripKfSelIds()).sort((a, b) => a - b);
+    expect(sel).toEqual([kfA, kfB].sort((a, b) => a - b));
+});
+
+test("mixed-set drag axis law: horizontal moves all, vertical moves only the active kind (S2)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const sectionForces = () =>
+        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const sp = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripId,
+    );
+    if (!sp) throw new Error("created strip has no band px");
+    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfId);
+        })
+        .toBe(true);
+    const stripKfTarget = kfPx.find((k) => k.id === kfId)!;
+
+    const forceHit = page.locator(".fhit").first();
+    const forceCenter = async (): Promise<{ x: number; y: number }> => {
+        const b = await forceHit.boundingBox();
+        if (!b) throw new Error("force diamond not laid out");
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    };
+    const fp = await forceCenter();
+    await page.mouse.click(fp.x, fp.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const forceId = (await forceSelIds())[0];
+
+    const forcesBefore = await sectionForces();
+    const forceBefore = forcesBefore.find((f) => f.id === forceId)!;
+    const stripKfsBefore = (await stripKeyframesOf(stripId)) as {
+        id: number;
+        s: number;
+        v: number;
+    }[];
+    const stripKfBefore = stripKfsBefore.find((k) => k.id === kfId)!;
+
+    await page.keyboard.down("Shift");
+    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+
+    const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
+    const dragDs = 5;
+    const dragPx = dragDs * pxPerU;
+    await page.mouse.move(fp.x, fp.y);
+    await page.mouse.down();
+    await page.mouse.move(fp.x + dragPx, fp.y, { steps: 10 });
+    await page.mouse.up();
+
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const forcesAfterH = await sectionForces();
+    const forceAfterH = forcesAfterH.find((f) => f.id === forceId)!;
+    const stripKfsAfterH = (await stripKeyframesOf(stripId)) as {
+        id: number;
+        s: number;
+        v: number;
+    }[];
+    const stripKfAfterH = stripKfsAfterH.find((k) => k.id === kfId)!;
+
+    const forceDs = forceAfterH.s - forceBefore.s;
+    const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
+    expect(Math.abs(forceDs - dragDs)).toBeLessThan(2 / pxPerU);
+    expect(Math.abs(stripKfDs - dragDs)).toBeLessThan(2 / pxPerU);
+    expect(stripKfAfterH.v).toBe(stripKfBefore.v);
+
+    const stripKfBeforeV = stripKfAfterH;
+    const fp2 = await forceCenter();
+    await page.mouse.move(fp2.x, fp2.y);
+    await page.mouse.down();
+    await page.mouse.move(fp2.x, fp2.y + 30, { steps: 10 });
+    await page.mouse.up();
+
+    const forcesAfterV = await sectionForces();
+    const forceAfterV = forcesAfterV.find((f) => f.id === forceId)!;
+    const stripKfsAfterV = (await stripKeyframesOf(stripId)) as {
+        id: number;
+        s: number;
+        v: number;
+    }[];
+    const stripKfAfterV = stripKfsAfterV.find((k) => k.id === kfId)!;
+
+    expect(forceAfterV.g).not.toBe(forceAfterH.g);
+    expect(stripKfAfterV.v).toBe(stripKfBeforeV.v);
+    expect(stripKfAfterV.s).toBe(stripKfBeforeV.s);
+});

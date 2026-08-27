@@ -246,8 +246,8 @@ if (import.meta.env.DEV) {
         forceCount: (): number => sectionForces(ecs, sec()).length,
         // the authored points, sorted by s — the flow asserts a dblclick create
         // resolves its g ON the profile (not at the cursor's y).
-        forces: (): { s: number; g: number }[] =>
-            sectionForces(ecs, sec()).map((p) => ({ s: p.s, g: p.g })),
+        forces: (): { id: number; s: number; g: number }[] =>
+            sectionForces(ecs, sec()).map((p) => ({ id: p.id, s: p.s, g: p.g })),
         // a section span's mid-sample screen point (canvas-local px), by chain index — where
         // the pin flow pixel-probes the polyline for the out-of-scope dim (mirrors
         // startAt/nodeAt: the canvas-drawn track carries no DOM box). null pre-bake.

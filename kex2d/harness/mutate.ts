@@ -96,6 +96,12 @@ interface Pair {
 // clicked-selected-vs-unselected rule (`desc.activate`/`desc.select`) are BOTH branches S9
 // newly unified — collapsed from twin per-kind limbs to one call each — and Validation's own
 // "a behavior carrying no pairing is a red of the gate itself" clause named them as owed.
+// "cross-kind-shift-ensure" and "axis-law-dv-scale" (S2, kex2d-selection-substrate) extend
+// the roster again: `keyframeDown`'s shift-click `ensureStrip` call (S2: adds the owning strip
+// without clearing other kinds, enabling cross-kind co-selection) and `applyKeyframeDrag`'s
+// `dvScale` axis law (S2: vertical moves only the active kind's members) are BOTH newly-shared
+// production branches in the same file this gate mutates, sourced from S2's own Validation
+// bullet.
 const BEHAVIORS = [
     "snap",
     "deselect",
@@ -109,6 +115,8 @@ const BEHAVIORS = [
     "marquee-strip-select",
     "shift-toggle",
     "kf-click-select-vs-activate",
+    "cross-kind-shift-ensure",
+    "axis-law-dv-scale",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -144,13 +152,18 @@ const PAIRS: Pair[] = [
         // S9 (F7): re-pointed at the UNIFIED branch — `keyframeDown`'s single drag-set-build
         // line now serves both kinds through `desc.pts`/`desc.sel`, collapsing the pre-S9 twin
         // (`stripKfPts.filter((sp) => set.has(sp.id))` vs `forcePts.filter((fp) => set.has(fp.id))`)
-        // that no longer exists verbatim.
+        // that no longer exists verbatim. S2: the drag set now spans both kinds (mixed-set drag);
+        // the anchor is the active kind's member-build line.
         name: "modifier-extend",
         flow: "strip keyframe multi-member drag",
         mutations: [
             {
-                old: "    const members = set.size > 1 ? desc.pts.filter((m) => set.has(m.id)) : [pt];",
-                new: "    const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
+                old: "        const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
+            },
+            {
+                old: "        const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
         ],
     },
@@ -259,6 +272,32 @@ const PAIRS: Pair[] = [
             {
                 old: "function bandZoneX0(): number {\n    if (!entryOneShot(ecs)) return LEFT_GUT;\n    const gx = oneShotGlyphX();\n    if (gx < LEFT_GUT) return LEFT_GUT;\n    return Math.min(LEFT_GUT, gx - STRIP_HIT_R);\n}",
                 new: "function bandZoneX0(): number {\n    return LEFT_GUT; // MUTATED: F6 widen removed\n}",
+            },
+        ],
+    },
+    {
+        // S2 (kex2d-selection-substrate): `keyframeDown`'s shift-click `ensureStrip` call —
+        // adds the owning strip without clearing other kinds, enabling cross-kind co-selection.
+        // Mutated back to `selectStrip` (replace-select), the shift-click clears the force set.
+        name: "cross-kind-shift-ensure",
+        flow: "shift-click a force keyframe and a strip keyframe leaves both selected (S2)",
+        mutations: [
+            {
+                old: "        if (e.shiftKey) ensureStrip(k.strip);\n        else if (editor.strip !== k.strip) selectStrip(k.strip);",
+                new: "        if (e.shiftKey) selectStrip(k.strip); // MUTATED: ensureStrip replaced with selectStrip (clears other kinds)\n        else if (editor.strip !== k.strip) selectStrip(k.strip);",
+            },
+        ],
+    },
+    {
+        // S2 (kex2d-selection-substrate): `applyKeyframeDrag`'s `dvScale` axis law — vertical
+        // moves only the active kind's members. Mutating `dvScale` to 1 for all members makes
+        // the vertical drag move both kinds' values (the axis law violation).
+        name: "axis-law-dv-scale",
+        flow: "mixed-set drag axis law: horizontal moves all, vertical moves only the active kind (S2)",
+        mutations: [
+            {
+                old: "        const v = m.v0 + dv * m.dvScale;",
+                new: "        const v = m.v0 + dv; // MUTATED: axis law disabled — vertical moves all kinds",
             },
         ],
     },
