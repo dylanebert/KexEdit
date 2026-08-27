@@ -25,10 +25,16 @@
 // strip kind at all. The round-2 standard's OTHER newly-shared branch, `selectStripKf`'s own
 // `exclusiveStripKf()` cross-clear sweep (F7 finding (b)), is NOT paired here: it lives in
 // `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot mutate, and —
-// measured, not assumed — deleting it alone does not red any reachable capture flow, because
-// `keyframeDown`'s own `selectStrip` precondition (an S1-era mechanism in Timeline.svelte)
-// already covers the cross-clear redundantly on every path this gate can drive. Its own
-// red-first witness is a unit-level pin (`tests/editor.test.ts`, S9), recorded there.)
+// measured, not assumed — deleting it alone does not red any reachable capture flow. This is
+// not merely "on every path this gate can drive": `forces` is only ever populated through
+// `selectForce`/`selectForces`, both of which route through `exclusiveForce`, which already
+// clears `strips`; `forces` non-empty therefore implies `editor.strip === null`, which empties
+// the strip-keyframe candidate pool (`kfDesc("strip").pts`, filtered on `k.strip ===
+// editor.strip`) — so `selectStripKf`/`selectStripKfs` can never fire with a non-empty `forces`
+// set on ANY current production entry point, marquee included, not just the ones this gate
+// drives. The call is kept as declared parity with `exclusiveForce`'s own shape, never as a fix
+// for a demonstrated live state. Its own red-first witness is a unit-level pin
+// (`tests/editor.test.ts`, S9), recorded there.)
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a
@@ -85,6 +91,11 @@ interface Pair {
 // "marquee-strip-select" (S9, F7 finding (a)) extends the roster again: `marqueeUp`'s resolve
 // loop reaching the strip kind at all is a NEW shared branch (before S9, the loop didn't exist
 // — the candidate pool was `forcePts` alone), sourced from S9's own Validation bullet.
+// "shift-toggle" and "kf-click-select-vs-activate" (S9 repair round, F7) extend the roster a
+// third time: `keyframeDown`'s shift-click toggle (`desc.select(pt.id, "toggle")`) and its
+// clicked-selected-vs-unselected rule (`desc.activate`/`desc.select`) are BOTH branches S9
+// newly unified — collapsed from twin per-kind limbs to one call each — and Validation's own
+// "a behavior carrying no pairing is a red of the gate itself" clause named them as owed.
 const BEHAVIORS = [
     "snap",
     "deselect",
@@ -96,6 +107,8 @@ const BEHAVIORS = [
     "strip-resize-snap",
     "oneshot-hit-priority",
     "marquee-strip-select",
+    "shift-toggle",
+    "kf-click-select-vs-activate",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -150,6 +163,42 @@ const PAIRS: Pair[] = [
             {
                 old: 'const KF_KINDS: readonly KfKind[] = ["force", "strip"];',
                 new: 'const KF_KINDS: readonly KfKind[] = ["force"]; // MUTATED: marquee never reaches the strip kind',
+            },
+        ],
+    },
+    {
+        // S9 repair round (F7): `keyframeDown`'s shift-click toggle — ONE call, both kinds
+        // (`desc.select(pt.id, "toggle")`). Restricted to force alone, a strip shift-click no
+        // longer toggles. RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
+        // `e.shiftKey && kind === "force"` — the flow reds at the strip-keyframe
+        // `stripKfSelIds().length toBe(0)` poll after the shift-click-toggle-back-out step
+        // (exit 1, Playwright timeout). Restored byte-identical; green.
+        name: "shift-toggle",
+        flow: "click, shift-click-toggle and empty-chart deselect read the same for a force keyframe and a strip keyframe (S9, F7)",
+        mutations: [
+            {
+                old: '    if (e.shiftKey) {\n        desc.select(pt.id, "toggle");\n        return;\n    }',
+                new: '    if (e.shiftKey && kind === "force") {\n        desc.select(pt.id, "toggle"); // MUTATED: strip shift-toggle disabled\n        return;\n    }',
+            },
+        ],
+    },
+    {
+        // S9 repair round (F7): `keyframeDown`'s clicked-selected-vs-unselected rule — ONE
+        // path, both kinds (`desc.activate(pt.id)` vs `desc.select(pt.id)`). Restricted to
+        // force alone, a plain click on an already-selected strip keyframe now always
+        // COLLAPSES the set instead of promoting the clicked member active without disturbing
+        // it. RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
+        // `desc.sel.ids.has(pt.id) && kind === "force"` — "strip keyframe multi-member drag"
+        // reds at the "same delta (offset preserved)" assertion, because the drag-origin click
+        // on the non-active member of a 2-member set collapses the set to one member instead
+        // of promoting it, so the OTHER member never moves (exit 1). Restored byte-identical;
+        // green.
+        name: "kf-click-select-vs-activate",
+        flow: "strip keyframe multi-member drag",
+        mutations: [
+            {
+                old: "    if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);\n    else desc.select(pt.id);",
+                new: '    if (desc.sel.ids.has(pt.id) && kind === "force") desc.activate(pt.id); // MUTATED: strip activate-on-reselect disabled\n    else desc.select(pt.id);',
             },
         ],
     },

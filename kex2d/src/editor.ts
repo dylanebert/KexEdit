@@ -931,7 +931,18 @@ function exclusiveOneShot(): void {
  *  alongside a strip keyframe with nothing clearing across them (`exclusiveForce` already
  *  cleared `stripKfs`, but nothing made the reverse true). Mirrors `exclusiveForce`'s list
  *  minus `strips`/`stripKfs` themselves — a keyframe pick never clears its OWN owning strip or
- *  set, unlike every other `exclusive*` sweep, which is why this isn't just `exclusiveStrip`. */
+ *  set, unlike every other `exclusive*` sweep, which is why this isn't just `exclusiveStrip`.
+ *  The `clearSel(editor.forces)` call is currently UNREACHABLE through any production entry
+ *  point (measured, not assumed — deleting it leaves all three S9 capture arms green, including
+ *  the marquee arm): `forces` is only ever populated through `selectForce`/`selectForces`, both
+ *  of which route through `exclusiveForce`, which already clears `strips`; `forces` non-empty
+ *  therefore implies `editor.strip === null`, which empties `kfDesc("strip").pts`'s candidate
+ *  pool (filtered on `k.strip === editor.strip`), so `selectStripKf`/`selectStripKfs` can never
+ *  fire with a non-empty `forces` set today. The call stays anyway, as declared parity with
+ *  `exclusiveForce`'s own shape (every other `exclusive*` sweep clears every other kind) rather
+ *  than as a fix for any demonstrated live state — it is the cheap insurance against the day a
+ *  new caller reaches `selectStripKf`/`selectStripKfs` without routing through the strip-select
+ *  precondition that makes it redundant today. */
 function exclusiveStripKf(): void {
     clearSel(editor.nodes);
     clearSel(editor.forces);

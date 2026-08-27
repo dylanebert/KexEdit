@@ -1845,6 +1845,25 @@ function marqueeUp(): void {
     // against ITS OWN current selection and writes through ITS OWN multi-write, so a marquee
     // that only catches one kind's diamonds leaves the other kind exactly as it was — matching
     // a plain click's own per-kind exclusivity (`exclusiveForce`/`exclusiveStripKf`).
+    //
+    // CROSS-KIND TIE-BREAK (reachable — force and strip keyframes share this same y-pixel
+    // band, `yOf`/`vOf`'s own comment): a single rect that hits BOTH a force keyframe and a
+    // strip keyframe on the currently-selected strip resolves in `KF_KINDS` DECLARATION ORDER
+    // ALONE, with no other priority signal. `KF_KINDS` lists "force" before "strip", so the
+    // force branch runs first: `desc.selectMany` → `exclusiveForce()` clears `editor.strips`,
+    // nulling `editor.strip`. The strip branch's own candidate pool (`kfDesc("strip").pts`,
+    // filtered on `k.strip === editor.strip`) is computed AFTER that clear, in the SAME
+    // synchronous pass — so it reads empty and the strip branch never fires at all. The
+    // outcome is therefore FORCE-WINS: the force keyframe selects, the strip keyframe is
+    // silently dropped from the candidate pool it would otherwise have joined (measured
+    // directly: a marquee spanning a force point and a same-band strip keyframe leaves
+    // `forceSelIds` populated and `stripKfSelIds` empty). Reversing `KF_KINDS`'s declared
+    // order would not flip this — `exclusiveForce` unconditionally clears `strips`/`stripKfs`
+    // whichever position it runs from, so "force wins when both hit" is closer to a property
+    // of `exclusiveForce`'s own unconditional clear than of iteration order in general, but the
+    // ORDER is still what decides WHICH branch's clear gets to run against a still-populated
+    // sibling pool. This is a deliberate exclusivity model requiring some deterministic
+    // choice — not one of S9's three enumerated findings, and not fixed here.
     let anyHits = false;
     for (const kind of KF_KINDS) {
         const desc = kfDesc(kind);
