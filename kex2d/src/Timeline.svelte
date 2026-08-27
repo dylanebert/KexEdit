@@ -18,6 +18,7 @@ import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
 import {
     activateForce,
     activateStripKf,
+    activeKind,
     beginDrag,
     closeForceMenu,
     closeRulerMenu,
@@ -907,8 +908,8 @@ const selSections = $derived.by((): Set<number> => {
     return editor.sections.ids;
 });
 // the geo section that OWNS the selected node — its clip gets a quiet context wash (which
-// clip the selection lives in). node and section selection are mutually exclusive
-// (editor.ts), so a washed clip is never also the selected clip; the wash stays the quieter
+// clip the selection lives in). the active member's kind routes the keydown handlers, so a
+// washed clip is never also the selected clip; the wash stays the quieter
 // register — the node is the accent, the clip is context.
 const washSection = $derived.by((): number | null => {
     void tick;
@@ -4229,7 +4230,7 @@ onMount(() => {
         }
         // the track-start one-shot's own select/delete — Escape/Delete only, `editor.strip`'s
         // point-kind twin (S3): no drag, no keyframe sub-selection to peel first.
-        if (editor.oneShot) {
+        if (activeKind() === "oneShot") {
             if (e.key === "Escape") {
                 e.preventDefault();
                 selectOneShot(false);
@@ -4244,7 +4245,7 @@ onMount(() => {
         // strip keyframe (a sub-selection layered on the strip) peels first: Delete removes
         // the keyframe (not the strip), and Escape clears the keyframe selection before
         // the strip's — the force keyframe's own Escape ladder.
-        if (editor.strip !== null) {
+        if (activeKind() === "strip" || activeKind() === "stripKf") {
             if (e.key === "Escape") {
                 e.preventDefault();
                 if (editor.stripKf !== null) selectStripKf(null);
@@ -4274,9 +4275,9 @@ onMount(() => {
                 // short, and commits a wrong value (section.pw.ts:2344, witnessed:
                 // `toBeCloseTo` Expected 11.1, Received 11 with no frame between the two
                 // presses). `stripAt`/`stripKeyframes` are synchronous ECS queries.
-                const stripEid = stripAt(ecs, editor.strip);
+                const stripEid = stripAt(ecs, editor.strip!);
                 if (stripEid === null) return;
-                const members = stripKeyframes(ecs, editor.strip).filter((k) =>
+                const members = stripKeyframes(ecs, editor.strip!).filter((k) =>
                     editor.stripKfs.ids.has(k.id),
                 );
                 if (members.length === 0) return;
@@ -4303,12 +4304,12 @@ onMount(() => {
             }
             return;
         }
-        // force-point select/delete/nudge — guarded on a live force selection so geo-node
-        // Esc/Del/arrows (controls.ts) stay unambiguous (the selections are mutually exclusive).
-        // Delete and `Q` route through `keys.ts`'s `forceKeyAct` (the keyboard twin of
+        // force-point select/delete/nudge — guarded on the active member's kind so only one
+        // window-keydown handler fires on a mixed selection (the Blender active-vs-selected split,
+        // the Locked decision). Delete and `Q` route through `keys.ts`'s `forceKeyAct` (the keyboard twin of
         // `menus.keyframeMenu`'s `Delete`/Lock-Unlock rows); Escape and the arrow-nudge are
         // nobody's menu row and stay raw.
-        if (editor.force !== null) {
+        if (activeKind() === "force") {
             if (e.key === "Escape") {
                 // dismissal peels one layer: deselect the handle first (back to the keyframe
                 // readout), then exit handle edit (keep the point selected), then clear the

@@ -3,6 +3,7 @@ import { beforeEach, expect, test } from "bun:test";
 import {
     editor,
     enterTangentEdit,
+    ensureStrip,
     openNodeMenu,
     select,
     selectForce,
@@ -1713,6 +1714,50 @@ test("undo/redo across 'select strip, then select one of its keyframes' restores
 
     redo(h, state);
     // post-command selection (strip keyframe still active, strip still selected) restored forward.
+    expect(editor.strip).toBe(stripId);
+    expect(editor.stripKf).toBe(kfId);
+});
+
+// ── S2 repair (criterion b): the general all-members kind-tagged snapshot ──
+// the old SelSnapshot switched on the active member's kind, carrying one hand-rolled stripKf+strip
+// pairing. a mixed-set drag (force + stripKf co-selected) made the hole fire: redo-after-undo
+// restored force = null while the strip members came back, because the active kind was stripKf and
+// the snapshot never recorded the force member. the fix replaces the switch with a flat list of
+// all members tagged with their kind, so restore brings back every kind.
+test("undo/redo across a mixed force+strip+stripKf selection restores every member of every kind (S2 criterion b)", () => {
+    clearSelection();
+    const { state } = nodes();
+    const h = createHistory();
+    // create a force section with a keyframe
+    const forceSec = appendSection(h, state, SectionKind.Force);
+    const forceId = createForce(h, state, forceSec, 5, 1);
+    // create a strip with seeded keyframes
+    const stripId = addStrip(h, state, 0, 10, 8) as number;
+    const seeded = stripKeyframes(state, stripId);
+    const kfId = seeded[0].id;
+
+    // build a mixed set: force + strip + stripKf (shift-click extends across kinds)
+    selectForce(forceId);
+    ensureStrip(stripId);
+    selectStripKf(kfId, "toggle");
+    expect(editor.force).toBe(forceId);
+    expect(editor.strip).toBe(stripId);
+    expect(editor.stripKf).toBe(kfId);
+
+    // bracket the selection with a history command
+    const extraId = addStripKeyframe(h, state, stripId, 5, 12);
+    deleteStripKeyframes(h, state, [extraId]);
+
+    // undo → restore pre-selection: every member of every kind comes back
+    // the old switch-on-active-kind snapshot dropped the force (the passive kind)
+    undo(h, state);
+    expect(editor.force).toBe(forceId); // NOT null — the passive kind is restored
+    expect(editor.strip).toBe(stripId);
+    expect(editor.stripKf).toBe(kfId);
+
+    // redo → restore post-selection: every member of every kind comes back
+    redo(h, state);
+    expect(editor.force).toBe(forceId); // still not dropped
     expect(editor.strip).toBe(stripId);
     expect(editor.stripKf).toBe(kfId);
 });

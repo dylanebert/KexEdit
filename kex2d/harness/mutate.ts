@@ -22,19 +22,10 @@
 // (S9 note, F7 round-2: "deselect" and "modifier-extend" are RE-POINTED at the unified branch
 // keyframeDown/marqueeUp collapsed to (their pre-S9 anchors no longer exist verbatim), and
 // "marquee-strip-select" is a genuinely NEW branch — marqueeUp's resolve loop reaching the
-// strip kind at all. The round-2 standard's OTHER newly-shared branch, `selectStripKf`'s own
-// `exclusiveStripKf()` cross-clear sweep (F7 finding (b)), is NOT paired here: it lives in
-// `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot mutate, and —
-// measured, not assumed — deleting it alone does not red any reachable capture flow. This is
-// not merely "on every path this gate can drive": `forces` is only ever populated through
-// `selectForce`/`selectForces`, both of which route through `exclusiveForce`, which already
-// clears `strips`; `forces` non-empty therefore implies `editor.strip === null`, which empties
-// the strip-keyframe candidate pool (`kfDesc("strip").pts`, filtered on `k.strip ===
-// editor.strip`) — so `selectStripKf`/`selectStripKfs` can never fire with a non-empty `forces`
-// set on ANY current production entry point, marquee included, not just the ones this gate
-// drives. The call is kept as declared parity with `exclusiveForce`'s own shape, never as a fix
-// for a demonstrated live state. Its own red-first witness is a unit-level pin
-// (`tests/editor.test.ts`, S9), recorded there.)
+// strip kind at all. `selectStripKf`'s replace-path `sweepOtherKinds` call is NOT paired here:
+// it lives in `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot
+// mutate. Its red-first witness is a unit-level pin (`tests/editor.test.ts`, S2 criterion c),
+// recorded there.)
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a

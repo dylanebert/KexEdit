@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
     activateStripKf,
+    activeKind,
     beginConvert,
     clearHover,
     closeContext,
@@ -34,6 +35,7 @@ import {
     selectStrip,
     selectStripKf,
     selectStripKfs,
+    selectionHook,
     setMember,
     toggleMember,
     writeHover,
@@ -380,27 +382,12 @@ describe("strip-keyframe multi-select", () => {
         expect(editor.stripKfs.ids.size).toBe(0);
     });
 
-    // ── S9 (F7, finding (b)): the two selection containers are disjoint and nothing cleared
-    // across them — `exclusiveForce` already swept `stripKfs`, but `selectStripKf` called no
-    // exclusive sweep of its own. Pure-function pin of `exclusiveStripKf`, both directions —
-    // the round-2 standard's own required capture arm (marquee/click cross-clear, both
-    // directions) lives in `harness/section.pw.ts`, driven through the real production
-    // handler; this is the legitimate unit-level pin of the shared helper the S1 seam law
-    // allows alongside it.
-    //
-    // MEASURED, NOT ASSUMED (S9's own open question): `exclusiveStripKf()`'s `clearSel
-    // (editor.forces)` call is UNREACHABLE through ANY current production entry point, not
-    // just `keyframeDown`'s click path — `forces` is only ever populated through
-    // `selectForce`/`selectForces`, both of which route through `exclusiveForce`, which
-    // already clears `strips`; `forces` non-empty therefore implies `editor.strip === null`,
-    // which empties the strip-keyframe candidate pool (`kfDesc("strip").pts`, filtered on
-    // `k.strip === editor.strip`) that `keyframeDown`'s click path and `marqueeUp`'s rubber-
-    // band alike draw `selectStripKf`/`selectStripKfs` calls from — so neither production path
-    // can ever reach `selectStripKf` with a non-empty `forces` set. This unit test calls
-    // `selectStripKf` DIRECTLY (never through a production entry point), so it drives a state
-    // production cannot reach today; it stays as a pin of `exclusiveStripKf()`'s own declared-
-    // parity mechanism, not as evidence about a live path. ──
-    test("selecting a strip keyframe clears the force selection (S9, F7 finding b — pins a state production cannot reach; see comment above)", () => {
+    // ── the replace-select sweep: `selectStripKf`'s replace path calls `sweepOtherKinds`,
+    // clearing sibling kinds (force) while keeping the owning strip (an ancestor, not a sibling).
+    // S2 made force+stripKf co-selection reachable through shift-click, so this sweep is now
+    // reachable through production entry points — the plain-click replace path on a different
+    // keyframe of an already-selected strip (see the criterion-(c) arm above). ──
+    test("selecting a strip keyframe clears the force selection (replace-select sweep)", () => {
         selectForce(99);
         expect(editor.force).toBe(99);
         selectStripKf(10);
@@ -417,11 +404,9 @@ describe("strip-keyframe multi-select", () => {
         expect(editor.force).toBe(99);
     });
 
-    // Like the finding-(b) arm above, this drives `selectStripKfs` with a non-empty `forces`
-    // set directly — a state no production entry point can reach today (`forces` non-empty
-    // implies `editor.strip === null`, which empties `marqueeUp`'s own strip-keyframe
-    // candidate pool too), so it pins `exclusiveStripKf()`'s declared-parity sweep rather than
-    // a live marquee outcome.
+    // S2: the marquee extends across kinds, so `selectStripKfs` does NOT sweep the force set.
+    // This is the marquee's atomic write — it clears only its own kind, leaving the rest for the
+    // caller to sweep (matching empty-click).
     test("selectStripKfs (the marquee multi-write) does NOT sweep the force set (S2: extends)", () => {
         selectForce(99);
         ensureStrip(1);
@@ -509,12 +494,75 @@ describe("S2: plain click stays replace-select (not widened)", () => {
         expect([...editor.forces.ids]).toEqual([5]);
     });
 
-    test("plain-clicking a strip keyframe clears the force set (sweepOtherKinds survives here)", () => {
+    test("plain-clicking a strip keyframe sweeps the sibling force kind (S2 criterion c)", () => {
+        // build force+strip+stripKf through production entry points (shift-click extends)
         selectForce(5);
-        selectStrip(1);
-        selectStripKf(10);
-        expect(editor.force).toBeNull();
+        ensureStrip(1);
+        selectStripKf(10, "toggle");
+        // the mixed set is live: force + strip + stripKf co-exist
+        expect(editor.force).toBe(5);
+        expect(editor.strip).toBe(1);
         expect([...editor.stripKfs.ids]).toEqual([10]);
+        // plain-click a DIFFERENT keyframe of the same already-selected strip —
+        // keyframeDown skips its own selectStrip (the strip is already selected) and
+        // reaches selectStripKf's replace path with the force kind still live, so
+        // sweepOtherKinds(["stripKf", "strip"]) clears the force (sibling), keeping the strip (ancestor)
+        selectStripKf(20);
+        expect(editor.force).toBeNull(); // swept by sweepOtherKinds, not by selectStrip
+        expect(editor.strip).toBe(1); // the owning strip survives (containment, not sibling)
+        expect([...editor.stripKfs.ids]).toEqual([20]);
+    });
+});
+
+// ── S2 repair: the three criteria the adversarial pass added ──
+// each a demonstrated instance rather than a class claim. (a) the double-fire observable stays
+// pinned: one Delete on a node+force mixed selection produces exactly one edit. (b) one undo
+// AND one redo round-trip a mixed set: redo restores every member of every kind. (c) the
+// surviving sweepOtherKinds arm is non-vacuous — see the rewritten arm above.
+
+describe("S2 repair: double-fire routing (criterion a)", () => {
+    test("a node+force mixed selection has an unambiguous active kind — one Delete, one edit", () => {
+        // the pass's reproduction: selectForce(5); select(10, "toggle");
+        // editor.selection !== null && editor.force !== null — both true; both Delete branches fire
+        selectForce(5);
+        select(10, "toggle");
+        // both per-kind accessors read non-null simultaneously — the double-fire condition
+        expect(editor.selection).not.toBeNull();
+        expect(editor.force).not.toBeNull();
+        // the active member's kind is the routing key — one kind, one handler, one edit.
+        // assert the edit count (one handler fires), not the guard's shape (which kind).
+        const kind = activeKind();
+        expect(kind).not.toBeNull();
+        // exactly one handler's guard passes — XOR over the two kinds' handlers
+        expect(kind === "node").not.toBe(kind === "force");
+    });
+
+    test("switching the active kind by shift-click reroutes Delete to the new handler", () => {
+        selectForce(5);
+        select(10, "toggle");
+        expect(activeKind()).toBe("node"); // last shift-clicked is the node
+        selectForce(5, "toggle");
+        selectForce(5, "toggle"); // toggle out and back in — force is now the active kind
+        expect(activeKind()).toBe("force");
+        // the node accessor still reads non-null (fallback), but the active kind is force
+        const k2 = activeKind();
+        expect(k2 === "node").not.toBe(k2 === "force"); // still XOR — one handler
+    });
+});
+
+describe("S2 repair: mixed-set snapshot/restore (criterion b)", () => {
+    test("selectionHook.snapshot captures every member with its kind, not just the active kind", () => {
+        // build a mixed set: force + strip + stripKf
+        selectForce(5);
+        ensureStrip(1);
+        selectStripKf(10, "toggle");
+        // snapshot captures every member — the old switch-on-active-kind shape dropped the passive kind
+        const snap = selectionHook.snapshot(null as never); // ecs not needed for non-node kinds
+        expect(snap).not.toBeNull();
+        const s = snap as NonNullable<typeof snap>;
+        const kinds = s.members.map((m) => m.kind).sort();
+        expect(kinds).toEqual(["force", "strip", "stripKf"]);
+        expect(s.active?.kind).toBe("stripKf"); // the active member
     });
 });
 

@@ -147,6 +147,15 @@ function kindActiveId(kind: SelKind): number | null {
     return last;
 }
 
+/** the active member's kind, or null when nothing is selected — the routing key for the two
+ *  window-keydown handlers (the Blender active-vs-selected split the Locked decision names).
+ *  `kindActiveId`'s fallback-to-last-member is what makes the old per-kind accessor guards read
+ *  non-null simultaneously under cross-kind co-selection; `activeKind` has no fallback, so only
+ *  one handler's guard passes on a mixed selection. */
+export function activeKind(): SelKind | null {
+    return _active?.kind ?? null;
+}
+
 /** a live `Selection` view over the unified set for one kind — `ids` and `active` read the
  *  current state on each access, so a held reference stays current after a write. */
 function kindView(kind: SelKind): Selection {
@@ -1306,90 +1315,89 @@ export function closeStripMenu(): void {
 // ── history selection hook ────────────────────────────────────────────────────────
 // the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
 // so the coupling points inward — history calls this, never imports editor. the whole selection SET
-// is snapshotted: a NODE by its stable (section, order), not its eid (`restoreSection`/`restoreAll`
-// recycle the allocator LIFO, so a raw eid would remap to a DIFFERENT node after an undo), force and
-// section by stable id, the START by a flag; the active member rides along in the same form. undo
+// is snapshotted: every member with its kind, so a mixed-set drag's undo/redo restores every kind,
+// not just the active one. a NODE is recorded by its stable (section, order), not its eid
+// (`restoreSection`/`restoreAll` recycle the allocator LIFO, so a raw eid would remap to a DIFFERENT
+// node after an undo); force, section, strip, stripKf by stable id; start/oneShot by their singleton
+// id. the active member and the sub-modes (tangentEdit, forceEdit, forceHandle) ride along. undo
 // restores each command's pre-selection, redo its post; a selection change alone is never a command.
 
-interface NodeRef {
+/** a single member in the restorable snapshot — kind-tagged so restore does not switch on the
+ *  active member's kind (the old shape dropped the passive kind on a mixed-set undo/redo). */
+interface MemberSnap {
+    kind: SelKind;
+    /** node only — re-resolved across the eid recycle on restore. */
+    section: number;
+    /** node only. */
+    order: number;
+    /** non-node kinds — the stable id. 0 for node. */
+    id: number;
+}
+
+/** the active member in the restorable snapshot — same shape as {@link MemberSnap} minus the kind
+ *  tag on the restore side (it carries its own). */
+interface ActiveSnap {
+    kind: SelKind;
     section: number;
     order: number;
+    id: number;
 }
-type SelSnapshot =
-    | { kind: "node"; members: NodeRef[]; active: NodeRef; editing: boolean }
-    | { kind: "force"; ids: number[]; active: number; editing: boolean }
-    | { kind: "section"; ids: number[]; active: number }
-    | { kind: "strip"; ids: number[]; active: number }
-    | {
-          kind: "stripKf";
-          ids: number[];
-          active: number;
-          stripIds: number[];
-          stripActive: number | null;
-      }
-    | { kind: "start" }
-    | { kind: "oneShot" }
-    | null;
+
+interface SelSnapshotData {
+    members: MemberSnap[];
+    active: ActiveSnap | null;
+    tangentEdit: { section: number; order: number } | null;
+    forceEdit: number | null;
+    forceHandle: "in" | "out" | null;
+}
+type SelSnapshot = SelSnapshotData | null;
 
 /** the `SelectionHook` (`history.ts`) the app injects at boot: capture the current selection set in a
  *  restorable form + restore it. history holds the snapshot opaquely. */
 export const selectionHook = {
     snapshot(ecs: State): SelSnapshot {
-        if (_active === null) return null;
-        switch (_active.kind) {
-            case "node": {
-                if (!ecs.has(_active.id, Handle)) return null;
-                const members: NodeRef[] = [];
-                for (const m of _members.values())
-                    if (m.kind === "node" && ecs.has(m.id, Handle))
-                        members.push({
-                            section: Handle.section.get(m.id),
-                            order: Handle.order.get(m.id),
-                        });
-                return {
+        if (_members.size === 0) return null;
+        const members: MemberSnap[] = [];
+        for (const m of _members.values()) {
+            if (m.kind === "node") {
+                if (!ecs.has(m.id, Handle)) continue; // drop a dead node
+                members.push({
                     kind: "node",
-                    members,
-                    active: {
+                    section: Handle.section.get(m.id),
+                    order: Handle.order.get(m.id),
+                    id: 0,
+                });
+            } else {
+                members.push({ kind: m.kind, section: 0, order: 0, id: m.id });
+            }
+        }
+        let active: ActiveSnap | null = null;
+        if (_active !== null) {
+            if (_active.kind === "node") {
+                if (ecs.has(_active.id, Handle))
+                    active = {
+                        kind: "node",
                         section: Handle.section.get(_active.id),
                         order: Handle.order.get(_active.id),
-                    },
-                    editing: editor.tangentEdit === _active.id,
-                };
+                        id: 0,
+                    };
+            } else {
+                active = { kind: _active.kind, section: 0, order: 0, id: _active.id };
             }
-            case "force":
-                return {
-                    kind: "force",
-                    ids: [...kindIds("force")],
-                    active: _active.id,
-                    editing: editor.forceEdit === _active.id,
-                };
-            case "section":
-                return {
-                    kind: "section",
-                    ids: [...kindIds("section")],
-                    active: _active.id,
-                };
-            case "strip":
-                return {
-                    kind: "strip",
-                    ids: [...kindIds("strip")],
-                    active: _active.id,
-                };
-            case "stripKf":
-                return {
-                    kind: "stripKf",
-                    ids: [...kindIds("stripKf")],
-                    active: _active.id,
-                    stripIds: [...kindIds("strip")],
-                    stripActive: kindActiveId("strip"),
-                };
-            case "start":
-                return { kind: "start" };
-            case "oneShot":
-                return { kind: "oneShot" };
-            default:
-                return null;
         }
+        let tangentEdit: { section: number; order: number } | null = null;
+        if (editor.tangentEdit !== null && ecs.has(editor.tangentEdit, Handle))
+            tangentEdit = {
+                section: Handle.section.get(editor.tangentEdit),
+                order: Handle.order.get(editor.tangentEdit),
+            };
+        return {
+            members,
+            active,
+            tangentEdit,
+            forceEdit: editor.forceEdit,
+            forceHandle: editor.forceHandle,
+        };
     },
     restore(ecs: State, snap: unknown): void {
         editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
@@ -1400,71 +1408,57 @@ export const selectionHook = {
             deselectAll(); // clears every kind + (below) every sub-mode
             return;
         }
-        switch (s.kind) {
-            case "node": {
-                const ids: number[] = [];
-                for (const m of s.members) {
-                    const eid = handleAt(ecs, m.section, m.order); // re-resolve across the eid recycle
-                    if (eid !== null) ids.push(eid); // drop a member that didn't survive
-                }
-                const activeEid = handleAt(ecs, s.active.section, s.active.order);
-                clearAllMembers();
-                for (const id of ids) memberAdd("node", id);
-                if (activeEid !== null && memberHas("node", activeEid))
-                    _active = { kind: "node", id: activeEid };
-                else _active = lastMemberOfAny();
-                const nv = kindView("node");
-                editor.tangentEdit = s.editing && nv.ids.size === 1 ? nv.active : null;
-                break;
-            }
-            case "force": {
-                const filteredIds = s.ids.filter((id) => forceAt(ecs, id) !== null);
-                clearAllMembers();
-                for (const id of filteredIds) memberAdd("force", id);
-                if (memberHas("force", s.active)) _active = { kind: "force", id: s.active };
-                else _active = lastMemberOfAny();
-                editor.forceHandle = null;
-                const fv = kindView("force");
-                editor.forceEdit = s.editing && fv.ids.size === 1 ? fv.active : null;
-                break;
-            }
-            case "section": {
-                const filteredIds = s.ids.filter((id) => sectionAt(ecs, id) !== null);
-                clearAllMembers();
-                for (const id of filteredIds) memberAdd("section", id);
-                if (memberHas("section", s.active)) _active = { kind: "section", id: s.active };
-                else _active = lastMemberOfAny();
-                break;
-            }
-            case "strip": {
-                const filteredIds = s.ids.filter((id) => stripAt(ecs, id) !== null);
-                clearAllMembers();
-                for (const id of filteredIds) memberAdd("strip", id);
-                if (memberHas("strip", s.active)) _active = { kind: "strip", id: s.active };
-                else _active = lastMemberOfAny();
-                break;
-            }
-            case "stripKf": {
-                const filteredStripIds = s.stripIds.filter((id) => stripAt(ecs, id) !== null);
-                const filteredKfIds = s.ids.filter((id) => stripKeyframeAt(ecs, id) !== null);
-                clearAllMembers();
-                for (const id of filteredStripIds) memberAdd("strip", id);
-                for (const id of filteredKfIds) memberAdd("stripKf", id);
-                if (memberHas("stripKf", s.active)) _active = { kind: "stripKf", id: s.active };
-                else if (s.stripActive !== null && memberHas("strip", s.stripActive))
-                    _active = { kind: "strip", id: s.stripActive };
-                else _active = lastMemberOfAny();
-                break;
-            }
-            case "start":
-                selectStart(true);
-                break;
-            case "oneShot":
+        clearAllMembers();
+        for (const m of s.members) {
+            if (m.kind === "node") {
+                const eid = handleAt(ecs, m.section, m.order); // re-resolve across the eid recycle
+                if (eid !== null) memberAdd("node", eid); // drop a member that didn't survive
+            } else if (m.kind === "force") {
+                if (forceAt(ecs, m.id) !== null) memberAdd("force", m.id);
+            } else if (m.kind === "section") {
+                if (sectionAt(ecs, m.id) !== null) memberAdd("section", m.id);
+            } else if (m.kind === "strip") {
+                if (stripAt(ecs, m.id) !== null) memberAdd("strip", m.id);
+            } else if (m.kind === "stripKf") {
+                if (stripKeyframeAt(ecs, m.id) !== null) memberAdd("stripKf", m.id);
+            } else if (m.kind === "start") {
+                memberAdd("start", SINGLETON_ID);
+            } else if (m.kind === "oneShot") {
                 // the one-shot may have been deleted by whatever the undo/redo just replayed —
-                // `stripAt`'s own filter-before-select reading, singleton-shaped: select only
-                // when it survived.
-                if (entryOneShot(ecs)) selectOneShot(true);
-                break;
+                // singleton-shaped: add only when it survived.
+                if (entryOneShot(ecs)) memberAdd("oneShot", SINGLETON_ID);
+            }
+        }
+        // restore the active member
+        if (s.active !== null) {
+            if (s.active.kind === "node") {
+                const eid = handleAt(ecs, s.active.section, s.active.order);
+                if (eid !== null && memberHas("node", eid)) _active = { kind: "node", id: eid };
+                else _active = lastMemberOfAny();
+            } else if (memberHas(s.active.kind, s.active.id)) {
+                _active = { kind: s.active.kind, id: s.active.id };
+            } else {
+                _active = lastMemberOfAny();
+            }
+        } else {
+            _active = lastMemberOfAny();
+        }
+        // restore sub-modes — only when the selection is exactly the sub-mode's subject
+        if (s.tangentEdit !== null) {
+            const eid = handleAt(ecs, s.tangentEdit.section, s.tangentEdit.order);
+            const nv = kindView("node");
+            editor.tangentEdit =
+                eid !== null && nv.ids.size === 1 && nv.active === eid ? eid : null;
+        } else {
+            editor.tangentEdit = null;
+        }
+        if (s.forceEdit !== null) {
+            const fv = kindView("force");
+            editor.forceEdit = fv.ids.size === 1 && fv.active === s.forceEdit ? s.forceEdit : null;
+            editor.forceHandle = editor.forceEdit !== null ? s.forceHandle : null;
+        } else {
+            editor.forceEdit = null;
+            editor.forceHandle = null;
         }
     },
 };
