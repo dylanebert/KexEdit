@@ -1,6 +1,7 @@
 import type { State } from "@dylanebert/shallot";
 import {
     type CutPosition,
+    mixedSetDelete,
     nodeActs,
     nodeCuttable,
     sectionActs,
@@ -1593,8 +1594,12 @@ export function attachControls(
             if (act === "solve" || act === "solveShape" || act === "pinEnter") return;
             if (act !== null) {
                 e.preventDefault();
-                const acts = sectionActs(ecs, section, position);
-                acts[act]();
+                if (act === "remove" || act === "removeSet") {
+                    mixedSetDelete(ecs);
+                } else {
+                    const acts = sectionActs(ecs, section, position);
+                    acts[act]();
+                }
             }
             return;
         }
@@ -1617,8 +1622,12 @@ export function attachControls(
             });
             if (act !== null) {
                 e.preventDefault();
-                const acts = nodeActs(ecs, sel);
-                acts[act]();
+                if (act === "removeSet") {
+                    mixedSetDelete(ecs);
+                } else {
+                    const acts = nodeActs(ecs, sel);
+                    acts[act]();
+                }
             }
             return;
         }
@@ -1632,8 +1641,12 @@ export function attachControls(
         });
         if (act !== null) {
             e.preventDefault();
-            const acts = nodeActs(ecs, sel);
-            acts[act]();
+            if (act === "remove") {
+                mixedSetDelete(ecs);
+            } else {
+                const acts = nodeActs(ecs, sel);
+                acts[act]();
+            }
         }
     };
 

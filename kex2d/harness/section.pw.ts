@@ -4175,3 +4175,329 @@ test("App.svelte Convert/Pin listener routes through activeKind, not editor.sect
     await frames(page, 120); // ~2s at 60fps
     expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
 });
+
+// S3: mixed-set Delete over force + stripKf in ONE history gesture. A force keyframe and a
+// strip keyframe are co-selected by shift-click (S2's cross-kind co-selection). Delete must
+// remove BOTH in one undo entry — one undo restores all, not N.
+//
+// RED-FIRST WITNESS: at the pre-fix ref, the active kind's Delete handler fires alone (S2's
+// activeKind routing), so only the active kind's members are deleted. The other kind's members
+// survive — the arm asserts both are gone, so it reds (the passive kind is still present).
+// The history depth is also +1 (one kind's delete records one entry), but the member count
+// assertion is what discriminates.
+test("mixed-set Delete removes every member across kinds in one gesture (S3)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const sectionForces = () =>
+        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
+
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    if (stripId === null) throw new Error("strip creation failed (overlap?)");
+    const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    // select the strip, then its keyframe
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const sp = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripId,
+    );
+    if (!sp) throw new Error("created strip has no band px");
+    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfId);
+        })
+        .toBe(true);
+    const stripKfTarget = kfPx.find((k) => k.id === kfId)!;
+
+    // select the strip keyframe first (plain click → replace-select, active = stripKf)
+    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+
+    // shift-click the force keyframe → co-select without clearing the stripKf (S2).
+    // force is the last toggled-in member, so activeKind is "force".
+    const forceHit = page.locator(".fhit").first();
+    const fb = await forceHit.boundingBox();
+    if (!fb) throw new Error("force diamond not laid out");
+    await page.keyboard.down("Shift");
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await expect.poll(activeKind).toBe("force");
+
+    const forceCountBefore = (await sectionForces()).length;
+    const stripKfCountBefore = ((await stripKeyframesOf(stripId)) as unknown[]).length;
+
+    // Delete — one gesture, both kinds gone. The owning strip stays (the containment
+    // edge: stripKfs non-empty ⇒ strip non-empty), so assert it survives and stays selected —
+    // a strip with one keyframe makes stripKfCount - 1 === 0 read the same whether the strip
+    // was deleted with its keyframe or correctly kept, so the strip's own survival is the
+    // assertion that discriminates the ancestor-keep.
+    const depthBefore = await undoDepth();
+    await page.keyboard.press("Delete");
+    await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit, not N
+    await expect.poll(async () => (await sectionForces()).length).toBe(forceCountBefore - 1);
+    await expect
+        .poll(async () => ((await stripKeyframesOf(stripId)) as unknown[]).length)
+        .toBe(stripKfCountBefore - 1);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    // one Undo restores BOTH
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await sectionForces()).length).toBe(forceCountBefore);
+    await expect
+        .poll(async () => ((await stripKeyframesOf(stripId)) as unknown[]).length)
+        .toBe(stripKfCountBefore);
+});
+
+// S3: mixed-set arrow nudge — station moves every member, value moves only the active kind.
+// A force keyframe (active) and a strip keyframe are co-selected. ArrowRight moves both
+// stations by the same Δs; ArrowUp moves only the force value (the active kind), the strip
+// keyframe's value is byte-identical (the locked axis law: value applies only to the active
+// member's kind).
+//
+// RED-FIRST WITNESS: at the pre-fix ref, the nudge handler only moves the active kind's members
+// (force). The strip keyframe holds still — its station is unchanged. The arm asserts the strip
+// keyframe's station moved, so it reds.
+test("mixed-set arrow nudge moves all stations, value only for active kind (S3)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const sectionForces = () =>
+        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
+    const undoDepth = () => kexCall(page, "undoDepth");
+
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    if (stripId === null) throw new Error("strip creation failed (overlap?)");
+    const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    // select the strip, then its keyframe
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const sp = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripId,
+    );
+    if (!sp) throw new Error("created strip has no band px");
+    // bandDown reads `bandStrips`, a `$derived` paced by `void tick` — a click landing before
+    // the derived flushes sees no strip and selects nothing. Wait on the band's own hit read
+    // (`bandHit`, which resolves through that same `bandStrips`) to report this strip's body
+    // at the target point before clicking, then a bounded retry guards any residual race.
+    const clickX = chartCanvasBb.x + (sp.x0 + sp.x1) / 2;
+    await page.mouse.move(clickX, bandY);
+    await expect
+        .poll(async () => {
+            const hit = (await kexCall(page, "bandHit")) as { kind: string; id?: number };
+            return hit.kind === "body" && hit.id === stripId;
+        })
+        .toBe(true);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        await page.mouse.click(clickX, bandY);
+        if ((await kexCall(page, "selectedStrip")) === stripId) break;
+    }
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfId);
+        })
+        .toBe(true);
+    const stripKfTarget = kfPx.find((k) => k.id === kfId)!;
+
+    // select the strip keyframe first (plain click → active = stripKf)
+    await page.mouse.click(stripKfTarget.x, stripKfTarget.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+
+    // shift-click the force keyframe → co-select (S2). force is the last toggled-in,
+    // so activeKind is "force".
+    const forceHit = page.locator(".fhit").first();
+    const fb = await forceHit.boundingBox();
+    if (!fb) throw new Error("force diamond not laid out");
+    await page.keyboard.down("Shift");
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await expect.poll(activeKind).toBe("force");
+
+    // read pre-nudge state
+    const forceId = (await forceSelIds())[0];
+    const forcesBefore = await sectionForces();
+    const forceBefore = forcesBefore.find((f) => f.id === forceId)!;
+    const stripKfsBefore = (await stripKeyframesOf(stripId)) as {
+        id: number;
+        s: number;
+        v: number;
+    }[];
+    const stripKfBefore = stripKfsBefore.find((k) => k.id === kfId)!;
+
+    // ArrowRight — station moves for BOTH (same Δs), no value change for either
+    const depthBefore = await undoDepth();
+    await page.mouse.move(chartCanvasBb.x + 100, chartCanvasBb.y + 100);
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit
+
+    const forcesAfterH = await sectionForces();
+    const forceAfterH = forcesAfterH.find((f) => f.id === forceId)!;
+    const stripKfsAfterH = (await stripKeyframesOf(stripId)) as {
+        id: number;
+        s: number;
+        v: number;
+    }[];
+    const stripKfAfterH = stripKfsAfterH.find((k) => k.id === kfId)!;
+
+    // station moved for both
+    expect(forceAfterH.s).not.toBe(forceBefore.s); // force station moved
+    expect(stripKfAfterH.s).not.toBe(stripKfBefore.s); // strip keyframe station moved
+    // same Δs (the shared delta) — tolerance for floating-point rounding
+    const forceDs = forceAfterH.s - forceBefore.s;
+    const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
+    expect(Math.abs(forceDs - stripKfDs)).toBeLessThan(1e-9);
+    // values unchanged (ArrowRight has no value component)
+    expect(forceAfterH.g).toBe(forceBefore.g);
+    expect(stripKfAfterH.v).toBe(stripKfBefore.v);
+
+    // ArrowUp — value moves only for force (active kind); strip keyframe value unchanged
+    const forceBeforeV = forceAfterH;
+    const stripKfBeforeV = stripKfAfterH;
+    const depthBeforeV = await undoDepth();
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(undoDepth).toBe(depthBeforeV + 1); // one edit
+
+    const forcesAfterV = await sectionForces();
+    const forceAfterV = forcesAfterV.find((f) => f.id === forceId)!;
+    const stripKfsAfterV = (await stripKeyframesOf(stripId)) as {
+        id: number;
+        s: number;
+        v: number;
+    }[];
+    const stripKfAfterV = stripKfsAfterV.find((k) => k.id === kfId)!;
+
+    // force value moved (active kind), strip keyframe value unchanged (passive kind)
+    expect(forceAfterV.g).not.toBe(forceBeforeV.g); // force value moved
+    expect(stripKfAfterV.v).toBe(stripKfBeforeV.v); // strip keyframe value byte-identical
+    // stations unchanged (ArrowUp has no station component)
+    expect(forceAfterV.s).toBe(forceBeforeV.s);
+    expect(stripKfAfterV.s).toBe(stripKfBeforeV.s);
+});
+
+// S3 repair: mixed-set Delete over node+force in ONE history gesture. A force keyframe and
+// the chain-end node are co-selected by shift-click (S2's cross-kind co-selection). Delete
+// must remove BOTH in one undo entry — one undo restores all, not N. This is the combination
+// the pairwise force+stripKf path silently dropped: the active kind's handler fired alone and
+// the passive kind survived.
+//
+// RED-FIRST WITNESS: at the pre-repair ref, the active kind's Delete handler fires alone
+// (Timeline.svelte for force, controls.ts for node). With activeKind === "force", the force
+// handler deletes forces but leaves the node alive; with activeKind === "node", the node
+// handler trims the node but leaves the force alive. The arm asserts both are gone, so it
+// reds (the passive kind survives). The history depth is +1 (one kind's delete), but the
+// member count assertion is what discriminates.
+test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    // seedHill: 7 geo nodes (orders 0-6) in section 0. Append a force section (section 1)
+    // with 2 seed force keyframes. The force keyframes are on section 1 (not the first section,
+    // so `forceCount`/`forces` — which read `sec()` = section 0 — cannot see them). The arm
+    // verifies the force deletion through `forceSelIds` (selection state) and `undoDepth`
+    // (history depth — a selection change alone never records, so +1 proves a deletion).
+    // The node is on section 0, verified directly via `nodeCount`.
+    await seedHill(page);
+    await expect.poll(async () => kexCall(page, "nodeCount")).toBe(7);
+    const tBefore = await kexCall(page, "tTotal");
+    await kexCall(page, "append", 1); // SectionKind.Force — 2 seed force keyframes
+    await expect.poll(async () => kexCall(page, "sectionCount")).toBe(2);
+    await expect.poll(async () => kexCall(page, "tTotal")).not.toBe(tBefore);
+    await frameTimeline(page);
+
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const nodeSelOrders = () => kexCall(page, "nodeSelOrders") as Promise<number[]>;
+    const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
+    const nodeCount = () => kexCall(page, "nodeCount");
+    const sectionForceCounts = () => kexCall(page, "sectionForceCounts") as Promise<number[]>;
+
+    // 1. select a force keyframe on the timeline (plain click → active = force)
+    const forceHit = page.locator(".fhit").first();
+    const fb = await forceHit.boundingBox();
+    if (!fb) throw new Error("force diamond not laid out");
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    expect(await activeKind()).toBe("force");
+
+    // 2. shift-click the chain-end node (order 6) in the viewport — co-select without clearing
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 3);
+    await page.keyboard.press("f"); // frame the viewport
+    const nodePt = await nodePoint(page, 6); // the chain end (order 6)
+    await page.keyboard.down("Shift");
+    await page.mouse.click(cb.x + nodePt.x, cb.y + nodePt.y);
+    await page.keyboard.up("Shift");
+
+    // 3. confirm the mixed selection: both kinds present, node active
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(1);
+    await expect.poll(activeKind).toBe("node");
+
+    const nodeCountBefore = await nodeCount();
+    const forceCountsBefore = await sectionForceCounts();
+    const forceCountSec1Before = forceCountsBefore[1]; // section 1 is the force section
+
+    // 4. Delete — one gesture, both kinds gone. Assert the real force count on section 1
+    // (not `forceSelIds` as a proxy — the force is on section 1 while `forceCount`/`forces`
+    // read section 0, so only `sectionForceCounts` sees it).
+    const depthBefore = await undoDepth();
+    await page.keyboard.press("Delete");
+    await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit, not N
+    await expect.poll(nodeCount).toBe(nodeCountBefore - 1); // node trimmed
+    await expect.poll(async () => (await sectionForceCounts())[1]).toBe(forceCountSec1Before - 1); // force keyframe removed from section 1
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0); // force deselected
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(0); // node deselected
+
+    // 5. one Undo restores BOTH
+    await page.keyboard.press("Control+z");
+    await expect.poll(nodeCount).toBe(nodeCountBefore); // node restored
+    await expect.poll(async () => (await sectionForceCounts())[1]).toBe(forceCountSec1Before); // force keyframe restored on section 1
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1); // force re-selected
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(1); // node re-selected
+});
