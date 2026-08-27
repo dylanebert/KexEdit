@@ -1511,7 +1511,7 @@ let dragKfMembers: {
     ownerId: number; // section id for force, strip id for strip-kf (for overlap cap)
     setter: (ecs: State, id: number, s: number, v: number) => void;
     floor: number | null;
-    dvScale: number; // 1 for the active kind, 0 for the other (the axis law)
+    dvScale: number; // 1 for the active kind in a single-domain set, 0 otherwise (S5 axis law)
 }[] = [];
 let dragKfMemberSet: Set<number> = new Set();
 // the v-to-pixel and pixel-to-v projections, kind-specific: force uses yOf/yToG (g axis),
@@ -1592,10 +1592,11 @@ function applyKeyframeDrag(): void {
     const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room
     const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);
     if (dsWrite !== ds) snapX = null; // the cap engaged: the snap guide would point past it
-    // S2 axis law: horizontal (Δd) moves EVERY member's stored station; vertical (Δv) moves
-    // ONLY the active kind's members. each member carries its own `dvScale` (1 for the active
-    // kind, 0 for the other) and its own `setter`/`floor`, set at drag start — so this write
-    // loop has no per-kind branch at the drag site.
+    // S5 axis law: horizontal (Δd) moves EVERY member's stored station; vertical (Δv) moves
+    // only the active kind's members in a single-domain set, and no member's value when the
+    // set spans both keyframe domains. each member carries its own `dvScale` (1 for the active
+    // kind in a single-domain set, 0 otherwise) and its own `setter`/`floor`, set at drag start
+    // — so this write loop has no per-kind branch at the drag site.
     for (const m of dragKfMembers) {
         const s = m.s0 + dsWrite;
         const v = m.v0 + dv * m.dvScale;
@@ -1714,12 +1715,17 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     if (kind === "force" && !sectionEditable(editor.pinning, pt.section)) return;
     // drag set: every selected keyframe of BOTH kinds (S2: mixed-set drag). the active kind's
     // members come from `desc.sel`; the other kind's members come from the other descriptor's
-    // selection. each member carries its own kind, setter, floor, and dvScale (1 for the active
-    // kind, 0 for the other) so the axis law write loop needs no per-kind branch.
+    // selection. each member carries its own kind, setter, floor, and dvScale so the axis law
+    // write loop needs no per-kind branch. S5: when the set spans both keyframe domains (force
+    // and strip co-selected), dvScale is 0 for EVERY member including the grabbed kind — a
+    // gesture channel whose meaning is not defined for every member carries no meaning for that
+    // gesture. single-domain multi-select keeps dvScale 1 for the active kind, so the constraint
+    // reads off set composition, not kind.
     const forceDesc = kfDesc("force");
     const stripDesc = kfDesc("strip");
     const forceIds = forceDesc.sel.ids;
     const stripIds = stripDesc.sel.ids;
+    const mixed = forceIds.size > 0 && stripIds.size > 0;
     const allMembers: typeof dragKfMembers = [];
     if (kind === "force") {
         // active kind: full selection (or just the clicked point if single)
@@ -1729,7 +1735,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             allMembers.push({
                 id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.val(m),
                 section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                floor: forceDesc.floor, dvScale: 1,
+                floor: forceDesc.floor, dvScale: mixed ? 0 : 1,
             });
         // other kind: its selected members move in s only (dvScale 0)
         if (stripIds.size > 0) {
@@ -1747,7 +1753,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             allMembers.push({
                 id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.val(m),
                 section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                floor: stripDesc.floor, dvScale: 1,
+                floor: stripDesc.floor, dvScale: mixed ? 0 : 1,
             });
         // other kind: its selected members move in s only (dvScale 0)
         if (forceIds.size > 0) {
@@ -4247,9 +4253,9 @@ onMount(() => {
                 const lo = Strip.start.get(stripEid);
                 const len = Strip.end.get(stripEid);
                 if (editor.forces.ids.size > 0) {
-                    // S3: mixed-set nudge — station (ds) moves every member; value (dv) moves
-                    // only the active kind's (stripKf), per the locked axis law. one gesture
-                    // (`beginKeyframeMoves`) so one undo restores all.
+                    // S5: mixed-domain nudge — station (ds) moves every member; value (dv)
+                    // moves NO member when the set spans both keyframe domains (force + strip).
+                    // one gesture (`beginKeyframeMoves`) so one undo restores all.
                     // synchronous ECS read — not `forcePts` (a `$derived` behind `void tick`):
                     // a second nudge before the tick flushes reads pre-first-nudge state and
                     // writes it back (the axis-law red: a vertical nudge rewinds a force's
@@ -4278,7 +4284,7 @@ onMount(() => {
                         for (const w of nudgeKeyframes(
                             members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
                             ds,
-                            dv,
+                            0,
                         ))
                             setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
                         commit(history);
@@ -4373,9 +4379,9 @@ onMount(() => {
                     const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                     const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
                     if (editor.stripKfs.ids.size > 0) {
-                        // S3: mixed-set nudge — station (ds) moves every member; value (dg) moves
-                        // only the active kind's (force), per the locked axis law. one gesture
-                        // (`beginKeyframeMoves`) so one undo restores all.
+                        // S5: mixed-domain nudge — station (ds) moves every member; value
+                        // (dg) moves NO member when the set spans both keyframe domains (force +
+                        // strip). one gesture (`beginKeyframeMoves`) so one undo restores all.
                         const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
                         if (stripEid !== null && stripEditableAt(Strip.start.get(stripEid))) {
                             const skMembers = stripKeyframes(ecs, editor.strip!).filter((k) =>
@@ -4392,7 +4398,7 @@ onMount(() => {
                                 for (const w of nudgeKeyframes(
                                     members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
                                     ds,
-                                    dg,
+                                    0,
                                 ))
                                     setForcePoint(ecs, w.id, w.s, w.v);
                                 for (const w of nudgeKeyframes(

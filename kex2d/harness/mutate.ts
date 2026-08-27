@@ -99,7 +99,7 @@ interface Pair {
 // "cross-kind-shift-ensure" and "axis-law-dv-scale" (S2, kex2d-selection-substrate) extend
 // the roster again: `keyframeDown`'s shift-click `ensureStrip` call (S2: adds the owning strip
 // without clearing other kinds, enabling cross-kind co-selection) and `applyKeyframeDrag`'s
-// `dvScale` axis law (S2: vertical moves only the active kind's members) are BOTH newly-shared
+// `dvScale` axis law (S5: vertical moves no member's value when the set spans both domains) are BOTH newly-shared
 // production branches in the same file this gate mutates, sourced from S2's own Validation
 // bullet.
 const BEHAVIORS = [
@@ -288,11 +288,12 @@ const PAIRS: Pair[] = [
         ],
     },
     {
-        // S2 (kex2d-selection-substrate): `applyKeyframeDrag`'s `dvScale` axis law — vertical
-        // moves only the active kind's members. Mutating `dvScale` to 1 for all members makes
-        // the vertical drag move both kinds' values (the axis law violation).
+        // S5 (kex2d-selection-substrate): `applyKeyframeDrag`'s `dvScale` axis law — when the
+        // set spans both keyframe domains, vertical moves no member's value. Mutating `dvScale`
+        // to 1 for all members makes the vertical drag move both kinds' values (the axis law
+        // violation).
         name: "axis-law-dv-scale",
-        flow: "mixed-set drag axis law: horizontal moves all, vertical moves only the active kind (S2)",
+        flow: "mixed-set drag axis law: horizontal moves all, vertical moves none when the set spans both domains (S5)",
         mutations: [
             {
                 old: "        const v = m.v0 + dv * m.dvScale;",

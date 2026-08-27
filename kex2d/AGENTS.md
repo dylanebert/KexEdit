@@ -227,9 +227,13 @@ routes the keydown handlers (the Blender active-vs-selected split). A plain clic
 replace-selects (clearing every member of every kind); shift/marquee extend across kinds, so
 a selection can span a force keyframe and a strip keyframe at once. A key press never
 double-fires because only the active kind's handler guard passes, not because the containers
-are mutually exclusive (they are one container now). Section selection is a **highlight + the
-context-menu target only**; it never gates authoring (force points are added by cursor position,
-nodes dragged in the viewport).
+are mutually exclusive (they are one container now). **The mixed-set drag axis law:** station
+moves every member; value moves only when the set is single-domain — a gesture channel whose
+meaning is not defined for every member of the set carries no meaning for that gesture, so a
+drag spanning both keyframe domains (force and strip) moves station for all and value for none.
+Single-domain multi-select keeps its full vertical channel. Section selection is a **highlight +
+the context-menu target only**; it never gates authoring (force points are added by cursor
+position, nodes dragged in the viewport).
 
 **Geo authoring** (within a geo section) — author the shape in the viewport. Click a node to select
 it; click empty space to deselect. Movement on the default surface is the two manipulators, never a

@@ -224,7 +224,12 @@ shape:
   tightest in-bounds member stops the block; a member already out of its own bounds is excluded
   from the binding set and rides its own outer clamp). A clamp that overrides the anchor's snap
   drops the snap guide. Every member writes from its gesture-start snapshot — never accumulate
-  increments.
+  increments. **The mixed-domain vertical channel carries nothing:** a gesture channel whose
+  meaning is not defined for every member of the set carries no meaning for that gesture —
+  constrain the channel, never resolve it against one privileged member. A drag spanning both
+  keyframe domains (force and strip) moves station for every member and value for none; a
+  single-domain multi-select keeps its full vertical channel. The constraint reads off set
+  composition, not kind.
 - **Geo group move = the same Δlength/Δangle applied per node in its own polar frame** (Blender's
   Individual Origins), the snap quantizing the *delta*, Ctrl bypassing. Ascending chain walk with a
   running-prev anchor inside one pass; the gesture **reads from a frozen gesture-start chain
