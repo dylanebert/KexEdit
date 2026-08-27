@@ -32,6 +32,7 @@ import {
     selectStart,
     selectStrip,
     selectStripKf,
+    selectStripKfs,
     setMember,
     toggleMember,
     writeHover,
@@ -377,6 +378,56 @@ describe("strip-keyframe multi-select", () => {
         selectStripKf(20, "toggle");
         selectSection(5);
         expect(editor.stripKfs.ids.size).toBe(0);
+    });
+
+    // ── S9 (F7, finding (b)): the two selection containers are disjoint and nothing cleared
+    // across them — `exclusiveForce` already swept `stripKfs`, but `selectStripKf` called no
+    // exclusive sweep of its own. Pure-function pin of `exclusiveStripKf`, both directions —
+    // the round-2 standard's own required capture arm (marquee/click cross-clear, both
+    // directions) lives in `harness/section.pw.ts`, driven through the real production
+    // handler; this is the legitimate unit-level pin of the shared helper the S1 seam law
+    // allows alongside it.
+    //
+    // MEASURED, NOT ASSUMED (S9's own open question): `exclusiveStripKf()`'s `clearSel
+    // (editor.forces)` call is UNREACHABLE through ANY current production entry point, not
+    // just `keyframeDown`'s click path — `forces` is only ever populated through
+    // `selectForce`/`selectForces`, both of which route through `exclusiveForce`, which
+    // already clears `strips`; `forces` non-empty therefore implies `editor.strip === null`,
+    // which empties the strip-keyframe candidate pool (`kfDesc("strip").pts`, filtered on
+    // `k.strip === editor.strip`) that `keyframeDown`'s click path and `marqueeUp`'s rubber-
+    // band alike draw `selectStripKf`/`selectStripKfs` calls from — so neither production path
+    // can ever reach `selectStripKf` with a non-empty `forces` set. This unit test calls
+    // `selectStripKf` DIRECTLY (never through a production entry point), so it drives a state
+    // production cannot reach today; it stays as a pin of `exclusiveStripKf()`'s own declared-
+    // parity mechanism, not as evidence about a live path. ──
+    test("selecting a strip keyframe clears the force selection (S9, F7 finding b — pins a state production cannot reach; see comment above)", () => {
+        selectForce(99);
+        expect(editor.force).toBe(99);
+        selectStripKf(10);
+        expect(editor.force).toBeNull(); // was left selected before S9
+        expect(editor.stripKf).toBe(10);
+    });
+
+    test("selecting a force keyframe clears the strip-keyframe selection (the reverse already held)", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        expect(editor.stripKf).toBe(10);
+        selectForce(99);
+        expect(editor.stripKf).toBeNull();
+        expect(editor.force).toBe(99);
+    });
+
+    // Like the finding-(b) arm above, this drives `selectStripKfs` with a non-empty `forces`
+    // set directly — a state no production entry point can reach today (`forces` non-empty
+    // implies `editor.strip === null`, which empties `marqueeUp`'s own strip-keyframe
+    // candidate pool too), so it pins `exclusiveStripKf()`'s declared-parity sweep rather than
+    // a live marquee outcome.
+    test("selectStripKfs (the marquee multi-write) sweeps the other kinds like selectForces does", () => {
+        selectForce(99);
+        selectStripKfs([10, 20], 20);
+        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
+        expect(editor.stripKf).toBe(20);
+        expect(editor.force).toBeNull();
     });
 });
 

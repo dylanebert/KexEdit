@@ -756,10 +756,14 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   editing` stage 8): `controls.ts`'s keyboard path (`keys.ts sectionKeyAct`'s playhead-exact
   `cutAt`) AND `Timeline.svelte`'s `clipMenu` (the menu's cursor→playhead snap, `timeline.ts
   snapCutToPlayhead`) both call it directly — one call site, not two paths that happen to agree.
-- `editor.ts` — ephemeral UI state: `selection` (node), `force` (point id), `section` (id), `start`
-  (the track START anchor / v0 handle) + their setters. The four are **mutually exclusive** (selecting
-  one clears the others). `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT a
-  fifth exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
+- `editor.ts` — ephemeral UI state: a `Selection` set per kind (`nodes`, `forces`, `sections`,
+  `strips`, `stripKfs` — each an `ids` set plus an `active` anchor, never a bare id) plus the two
+  boolean anchors `start` (the track START / drag-coefficient popover) and `oneShot` (S3's track-start
+  velocity event) + their setters. All of them are **mutually exclusive** (selecting into one clears
+  the others); the enforcement is the `exclusive*` family, one per kind, each clearing every other —
+  read that family for the membership rather than a count here, since the set has grown three times
+  (S2's `strips`, S3's `oneShot`, and `stripKfs`) and every prose count of it has gone stale.
+  `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT another exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
   right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Pin` on a
   force section, then `Reset` and `Delete`; inside a live pin session on that section
@@ -1308,9 +1312,14 @@ capture harness alone (`.claude/rules/kex2d-harness.md`).
 riding one selection/deselect/modifier-grammar/snapping/overlap-refusal/nudge path
 (`Timeline.svelte`'s `marqueeUp`/`keyframeDown`/keyboard handler) — a second implementation of an
 interaction is the defect S1 (`kex2d-event-substrate`) removed, and a parity twin reappearing
-here is that same defect back. The oracle standard riding it: a parity arm drives BOTH kinds
-through the SAME named function and asserts the SAME observable — name-presence matching
-(asserting twin function names exist in source) is not an oracle. Two further shapes are banned,
+here is that same defect back. **The oracle standard riding it is the deletion of the ONE branch
+both kinds reach, and a surviving per-kind branch is the finding rather than a passing arm.** Two
+weaker standards were each met while the defect stood, so neither is sufficient on its own:
+name-presence matching (asserting twin function names exist in source) is not an oracle, and
+neither is a parity arm that drives BOTH kinds through the SAME named function and asserts the
+SAME observable — a handler with one name and a per-kind `if`/`else` limb inside it is a twin that
+standard cannot see, which is how selection and the popup gesture stayed twinned through S1 and
+surfaced as feel-gate round 2's F7/F8. Two further shapes are banned,
 both measured on the same stage's first attempt: calling one kind-agnostic pure function twice
 with byte-identical inputs (a tautology — the function carries no parameter distinguishing the
 two subjects, so no divergence can red it), and arming a shared helper while the *repaired* call

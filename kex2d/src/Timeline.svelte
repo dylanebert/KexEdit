@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount, untrack } from "svelte";
+import type { SelectMode, Selection } from "./editor";
 import {
     cartState,
     forceCurve,
@@ -43,6 +44,7 @@ import {
     selectSection,
     selectStrip,
     selectStripKf,
+    selectStripKfs,
     snapActive,
     toggleSnap,
 } from "./editor";
@@ -1296,7 +1298,7 @@ const selOneShotLocked = $derived.by((): boolean => {
     return selOneShotPt !== null && !stripEditableAt(0);
 });
 // a force keyframe's chart x — its global axis coordinate, straight off the lens's affine.
-const ptX = (p: ForcePt): number => uPx(p.u);
+const ptX = (p: ForcePt | StripKfPt): number => uPx(p.u);
 
 // ── snapping (the AE magnet): a snap resolves in chart-local px (the `snap` resolver,
 // timeline.ts), so `snapX`/`snapY` are the guide flashes to draw when an axis latches.
@@ -1464,6 +1466,9 @@ function chartCreate(e: MouseEvent): void {
 // drag: the per-axis gesture-start magnet is the "change just one axis" affordance, so a
 // dominant-axis lock is redundant here.
 type KfKind = "force" | "strip";
+// every keyframe kind, in declaration order — the marquee's own resolve loop (S9) iterates
+// this so a third kind never needs its own copy of the deselect/marquee-merge call.
+const KF_KINDS: readonly KfKind[] = ["force", "strip"];
 // the Δd-cap overlap refusal's "strictly short" margin (S5b) — small against `S_GRID = 1`
 // (a whole grid step), far above f32 station-precision noise at drag-reachable magnitudes, so
 // a capped landing never round-trips onto the occupied station it was held short of.
@@ -1495,6 +1500,10 @@ let dragKfValToY: (v: number) => number = yOf;
 let dragKfYToVal: (py: number) => number = yToG;
 let dragKfVGrid = G_GRID;
 let dragKfValFloor: number | null = null; // null for force, V_FLOOR for strip
+// the write, kind-specific: `setForcePoint`/`setStripKeyframe` share one `(ecs, id, s, v)`
+// signature — the descriptor's own "setter" facet (`kfDesc`, S9), set at drag start alongside
+// the other per-kind config so this write loop needs no `kind` branch of its own.
+let dragKfSetter: (ecs: State, id: number, s: number, v: number) => void = setForcePoint;
 function applyKeyframeDrag(): void {
     if (dragKf === null) return;
     const kind = dragKf.kind;
@@ -1566,10 +1575,7 @@ function applyKeyframeDrag(): void {
     for (const m of dragKfMembers) {
         const s = m.s0 + dsWrite;
         const v = m.v0 + dv;
-        if (kind === "force")
-            setForcePoint(ecs, m.id, s, v);
-        else
-            setStripKeyframe(ecs, m.id, s, dragKfValFloor !== null ? Math.max(dragKfValFloor, v) : v);
+        dragKfSetter(ecs, m.id, s, dragKfValFloor !== null ? Math.max(dragKfValFloor, v) : v);
     }
 }
 // double-press detection for the diamond summon: a keyframe drag captures the pointer on
@@ -1579,21 +1585,93 @@ function applyKeyframeDrag(): void {
 const FDBL_MS = 300;
 let lastFdownT = 0;
 let lastFdownId = -1;
-// the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1).
-// `pt` carries the kind-specific fields; `kind` selects the value-axis mapping, snap targets,
-// overlap scope, and setter. No clamp domain (S5, F2): a grabbed keyframe drags freely past
-// its strip/segment extent, both kinds, through this one shared path.
+// the per-kind descriptor keyframeDown (and applyKeyframeDrag's own setter) branch on: the
+// selection container, its select/multi-write/activate triad, the value mapping, grid, floor,
+// and setter (S9, F7 — round 2's own standard). Declared ONCE so the clicked-selected-vs-
+// unselected rule, the shift-toggle, and the multi-member drag-set build below run through a
+// SINGLE path for both kinds, closing the twin `if`/`else` limbs the round-2 feel gate found:
+// a shared function NAME over two per-kind CODE paths is still a twin (Locked decision,
+// feel-gate round 2). Snap-target queries (`sTargets`/`stripKfSTargets`, `gTargets`/`vTargets`)
+// stay their own per-kind data queries in `applyKeyframeDrag` — genuinely different candidate
+// pools, not a duplicated selection/deselect/toggle rule, so S9's letter (the descriptor's six
+// named facets) doesn't require folding them in here.
+interface KfDesc {
+    sel: Selection;
+    pts: (ForcePt | StripKfPt)[];
+    select: (id: number | null, mode?: SelectMode) => void;
+    selectMany: (ids: number[], active: number | null) => void;
+    activate: (id: number) => void;
+    val: (p: ForcePt | StripKfPt) => number; // value mapping: which field is "the value" (g or v)
+    valToY: (v: number) => number;
+    yToVal: (py: number) => number;
+    grid: number;
+    floor: number | null;
+    setter: (ecs: State, id: number, s: number, v: number) => void;
+}
+function kfDesc(kind: KfKind): KfDesc {
+    if (kind === "force")
+        return {
+            sel: editor.forces,
+            pts: forcePts,
+            select: selectForce,
+            selectMany: selectForces,
+            activate: activateForce,
+            val: (p) => (p as ForcePt).g,
+            valToY: yOf,
+            yToVal: yToG,
+            grid: G_GRID,
+            floor: null,
+            setter: setForcePoint,
+        };
+    return {
+        sel: editor.stripKfs,
+        // scoped to the CURRENTLY selected strip: a strip keyframe's own sub-selection is
+        // layered on strip selection (`editor.stripKfs.ids` non-empty implies `editor.strip !==
+        // null`, `editor.ts`'s own invariant), so a candidate pool spanning every strip on the
+        // chart would let a marquee (or a multi-drag) build a set spanning two strips at once,
+        // which nothing else in the substrate models. `keyframeDown` already selects the owning
+        // strip before reaching this descriptor (`if (editor.strip !== k.strip) selectStrip
+        // (k.strip)`), so this filter is a no-op there; it's load-bearing for `marqueeUp`
+        // (S9, F7 finding (a)), where the rect is checked against whichever strip is selected.
+        pts: stripKfPts.filter((k) => k.strip === editor.strip),
+        select: selectStripKf,
+        selectMany: selectStripKfs,
+        activate: activateStripKf,
+        val: (p) => (p as StripKfPt).v,
+        valToY: vOf,
+        yToVal: (py) => vView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo),
+        grid: V_GRID,
+        floor: V_FLOOR,
+        setter: setStripKeyframe,
+    };
+}
+// the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1;
+// S9 closes F7 by routing the selection grammar itself through `kfDesc` too, not just the
+// drag). No clamp domain (S5, F2): a grabbed keyframe drags freely past its strip/segment
+// extent, both kinds, through this one shared path.
 function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    if (kind === "strip") {
+        const k = pt as StripKfPt;
+        // lockdown up front for strip keyframes — a locked section's keys don't even select
+        // (force's own lockdown, below the shift/double-click grammar, SELECTS but never
+        // drags: a pre-existing per-kind ORDERING divergence, not one of S9's three enumerated
+        // findings, left as-is). a keyframe draws for every strip, so grabbing one owned by an
+        // unselected strip must select that strip first (its diamonds are drawn).
+        if (!sectionEditable(editor.pinning, k.section)) return;
+        if (editor.strip !== k.strip) selectStrip(k.strip);
+    }
+    const desc = kfDesc(kind);
+    // shift-click TOGGLES set membership — a selection gesture, not a drag. ONE path, both
+    // kinds (S9 closes F7: the twin `if`/`else` limbs collapse to this single call).
+    if (e.shiftKey) {
+        desc.select(pt.id, "toggle");
+        return;
+    }
     if (kind === "force") {
         const p = pt as ForcePt;
-        // shift-click TOGGLES set membership — a selection gesture, not a drag.
-        if (e.shiftKey) {
-            selectForce(p.id, "toggle");
-            return;
-        }
         // double-click → summon handles (force-only; strip keyframes have no tangent handles).
         if (lastFdownId === p.id && e.timeStamp - lastFdownT < FDBL_MS) {
             lastFdownT = 0;
@@ -1603,58 +1681,27 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         }
         lastFdownT = e.timeStamp;
         lastFdownId = p.id;
-        // clicked-selected-vs-unselected rule
-        if (editor.forces.ids.has(p.id)) activateForce(p.id);
-        else selectForce(p.id);
-        // lockdown: another section's keys SELECT but never drag
-        if (!sectionEditable(editor.pinning, p.section)) return;
-        // drag set: every selected member (multi-member support)
-        const set = editor.forces.ids;
-        const members = set.size > 1 ? forcePts.filter((fp) => set.has(fp.id)) : [p];
-        dragKfMembers = members.map((fp) => ({
-            id: fp.id, s0: fp.s, v0: fp.g, section: fp.section,
-        }));
-        dragKfS0 = p.s;
-        dragKfV0 = p.g;
-        dragKfStartD = p.startD;
-        dragKfSection = p.section;
-        dragKfValToY = yOf;
-        dragKfYToVal = yToG;
-        dragKfVGrid = G_GRID;
-        dragKfValFloor = null;
-    } else {
-        const k = pt as StripKfPt;
-        // lockdown check
-        if (!sectionEditable(editor.pinning, k.section)) return;
-        // a keyframe draws for every strip, so grabbing one owned by an unselected strip must
-        // select that strip first (its diamonds are drawn).
-        if (editor.strip !== k.strip) selectStrip(k.strip);
-        // shift-click TOGGLES set membership — a selection gesture, not a drag.
-        if (e.shiftKey) {
-            selectStripKf(k.id, "toggle");
-            return;
-        }
-        // clicked-selected-vs-unselected rule
-        if (editor.stripKfs.ids.has(k.id)) activateStripKf(k.id);
-        else selectStripKf(k.id);
-        // drag set: every selected member (multi-member support — the fix for the broken modifier
-        // grammar: shift-click toggles into the set, then the drag moves ALL members by one delta)
-        const set = editor.stripKfs.ids;
-        const members = set.size > 1 ? stripKfPts.filter((sp) => set.has(sp.id)) : [k];
-        dragKfMembers = members.map((sp) => ({
-            id: sp.id, s0: sp.s, v0: sp.v, section: sp.section,
-        }));
-        dragKfS0 = k.s;
-        dragKfV0 = k.v;
-        dragKfStartD = k.startD;
-        dragKfSection = k.section;
-        dragKfStrip = k.strip;
-        dragKfValToY = vOf;
-        dragKfYToVal = (py: number) =>
-            vView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
-        dragKfVGrid = V_GRID;
-        dragKfValFloor = V_FLOOR;
     }
+    // clicked-selected-vs-unselected rule — ONE path, both kinds.
+    if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);
+    else desc.select(pt.id);
+    // lockdown: another section's force keys SELECT but never drag (strip already returned
+    // above when locked).
+    if (kind === "force" && !sectionEditable(editor.pinning, pt.section)) return;
+    // drag set: every selected member (multi-member support) — ONE path, both kinds.
+    const set = desc.sel.ids;
+    const members = set.size > 1 ? desc.pts.filter((m) => set.has(m.id)) : [pt];
+    dragKfMembers = members.map((m) => ({ id: m.id, s0: m.s, v0: desc.val(m), section: m.section }));
+    dragKfS0 = pt.s;
+    dragKfV0 = desc.val(pt);
+    dragKfStartD = pt.startD;
+    dragKfSection = pt.section;
+    dragKfStrip = kind === "force" ? -1 : (pt as StripKfPt).strip;
+    dragKfValToY = desc.valToY;
+    dragKfYToVal = desc.yToVal;
+    dragKfVGrid = desc.grid;
+    dragKfValFloor = desc.floor;
+    dragKfSetter = desc.setter;
     // common drag setup
     dragKfMemberSet = new Set(dragKfMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
@@ -1761,6 +1808,15 @@ function marqueeMove(e: PointerEvent): void {
           )
         : null;
 }
+// clear every keyframe kind's own selection — the shared form marqueeUp's plain-click
+// deselect needs from each kind (S9 closes F7's finding (b) here too: a bare `selectForce(null)`
+// beside a bare `selectStripKf(null)` is two hand-paired calls that silently omit a third kind
+// later; one loop over `kfDesc` can't). Each kind's own `null` form already skips the
+// exclusive-sweep (mirroring `selectForce(null)`'s existing shape), so calling both in either
+// order is safe — neither disturbs the other, `editor.strip`, or `editor.sections`.
+function deselectKfKinds(): void {
+    for (const kind of KF_KINDS) kfDesc(kind).select(null);
+}
 function marqueeUp(): void {
     if (!marqueeStart) return;
     const armed = marqueeArmed;
@@ -1768,32 +1824,59 @@ function marqueeUp(): void {
     const shift = marqueeShift;
     marqueeCancel(); // detach listeners + clear rect/state
     if (!armed || !rect) {
-        // a plain click on empty chart deselects the force/section kinds (shift-click
-        // preserves) — the ORIGINAL, narrower deselect, kept narrow on purpose: the chart is
-        // not one of the S4 transition table's rows (`kex2d-event-lane` Validation names
-        // {segment, span, keyframe, empty-ruler, empty-lane} only), and a strip must SURVIVE
-        // this click — `chartCreate`'s T2 branch (double-click a strip's own curve to drop a
-        // velocity keyframe) reads `editor.strip` on the SECOND click of the pair, after this
-        // handler already ran once on the first. Widening this to `deselectAll()` silently
-        // broke that create path (discovered via `bun run capture`, section.pw.ts's own strip-
-        // keyframe flows reading 2 rows where 3 were expected).
+        // a plain click on empty chart deselects the force/strip-keyframe/section kinds
+        // (shift-click preserves) — the ORIGINAL, narrower deselect, kept narrow on purpose:
+        // the chart is not one of the S4 transition table's rows (`kex2d-event-lane`
+        // Validation names {segment, span, keyframe, empty-ruler, empty-lane} only), and a
+        // strip must SURVIVE this click — `chartCreate`'s T2 branch (double-click a strip's
+        // own curve to drop a velocity keyframe) reads `editor.strip` on the SECOND click of
+        // the pair, after this handler already ran once on the first. Widening this to
+        // `deselectAll()` silently broke that create path (discovered via `bun run capture`,
+        // section.pw.ts's own strip-keyframe flows reading 2 rows where 3 were expected).
         if (!shift) {
-            selectForce(null);
             selectSection(null);
-            selectStripKf(null); // also clear the strip-keyframe sub-selection (S1: the broken
-            // deselect — a strip keyframe stayed selected after an empty-chart click). the strip
-            // selection survives so `chartCreate`'s T2 branch can still read `editor.strip`.
+            deselectKfKinds();
         }
         return;
     }
-    const cand = forcePts.map((p) => ({ id: p.id, x: ptX(p), y: yOf(p.g) }));
-    const res = merge(editor.forces, hits(rect, cand), shift ? "toggle" : "replace");
-    if (!shift && res.ids.length === 0) {
-        selectForce(null);
+    // ONE resolve loop reaches both keyframe kinds (S9 closes F7's finding (a): before, the
+    // candidate pool was built from `forcePts` alone — `Timeline.svelte:1789` — so a rubber-
+    // band never took a strip keyframe, with or without shift). Each kind's own hit set merges
+    // against ITS OWN current selection and writes through ITS OWN multi-write, so a marquee
+    // that only catches one kind's diamonds leaves the other kind exactly as it was — matching
+    // a plain click's own per-kind exclusivity (`exclusiveForce`/`exclusiveStripKf`).
+    //
+    // CROSS-KIND TIE-BREAK (reachable — force and strip keyframes share this same y-pixel
+    // band, `yOf`/`vOf`'s own comment): a single rect that hits BOTH a force keyframe and a
+    // strip keyframe on the currently-selected strip resolves in `KF_KINDS` DECLARATION ORDER
+    // ALONE, with no other priority signal. `KF_KINDS` lists "force" before "strip", so the
+    // force branch runs first: `desc.selectMany` → `exclusiveForce()` clears `editor.strips`,
+    // nulling `editor.strip`. The strip branch's own candidate pool (`kfDesc("strip").pts`,
+    // filtered on `k.strip === editor.strip`) is computed AFTER that clear, in the SAME
+    // synchronous pass — so it reads empty and the strip branch never fires at all. The
+    // outcome is therefore FORCE-WINS: the force keyframe selects, the strip keyframe is
+    // silently dropped from the candidate pool it would otherwise have joined (measured
+    // directly: a marquee spanning a force point and a same-band strip keyframe leaves
+    // `forceSelIds` populated and `stripKfSelIds` empty). Reversing `KF_KINDS`'s declared
+    // order would not flip this — `exclusiveForce` unconditionally clears `strips`/`stripKfs`
+    // whichever position it runs from, so "force wins when both hit" is closer to a property
+    // of `exclusiveForce`'s own unconditional clear than of iteration order in general, but the
+    // ORDER is still what decides WHICH branch's clear gets to run against a still-populated
+    // sibling pool. This is a deliberate exclusivity model requiring some deterministic
+    // choice — not one of S9's three enumerated findings, and not fixed here.
+    let anyHits = false;
+    for (const kind of KF_KINDS) {
+        const desc = kfDesc(kind);
+        const cand = desc.pts.map((p) => ({ id: p.id, x: ptX(p), y: desc.valToY(desc.val(p)) }));
+        const hitIds = hits(rect, cand);
+        if (hitIds.length === 0) continue;
+        anyHits = true;
+        const res = merge(desc.sel, hitIds, shift ? "toggle" : "replace");
+        desc.selectMany(res.ids, res.active);
+    }
+    if (!shift && !anyHits) {
         selectSection(null);
-        selectStripKf(null);
-    } else {
-        selectForces(res.ids, res.active);
+        deselectKfKinds();
     }
 }
 function marqueeCancel(): void {
