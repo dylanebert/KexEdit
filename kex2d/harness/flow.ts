@@ -163,7 +163,7 @@ export interface Kex {
         outDg: number;
     })[];
     forceMarkerAt(i: number): { x: number; y: number } | null;
-    forces(): { s: number; g: number }[];
+    forces(): { id: number; s: number; g: number }[];
     friction(): number;
     ghostPx(): { x0: number; x1: number }[];
     gRange(): [number, number];
@@ -202,6 +202,7 @@ export interface Kex {
     seedTwinHill(): void;
     selectEnd(): void;
     selectedOrder(): number | null;
+    activeKind(): string | null;
     setLen(i: number, len: number): void;
     setV0(v: number): void;
     selectedSection(): number | null;

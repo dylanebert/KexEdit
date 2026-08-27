@@ -22,19 +22,19 @@
 // (S9 note, F7 round-2: "deselect" and "modifier-extend" are RE-POINTED at the unified branch
 // keyframeDown/marqueeUp collapsed to (their pre-S9 anchors no longer exist verbatim), and
 // "marquee-strip-select" is a genuinely NEW branch — marqueeUp's resolve loop reaching the
-// strip kind at all. The round-2 standard's OTHER newly-shared branch, `selectStripKf`'s own
-// `exclusiveStripKf()` cross-clear sweep (F7 finding (b)), is NOT paired here: it lives in
-// `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot mutate, and —
-// measured, not assumed — deleting it alone does not red any reachable capture flow. This is
-// not merely "on every path this gate can drive": `forces` is only ever populated through
-// `selectForce`/`selectForces`, both of which route through `exclusiveForce`, which already
-// clears `strips`; `forces` non-empty therefore implies `editor.strip === null`, which empties
-// the strip-keyframe candidate pool (`kfDesc("strip").pts`, filtered on `k.strip ===
-// editor.strip`) — so `selectStripKf`/`selectStripKfs` can never fire with a non-empty `forces`
-// set on ANY current production entry point, marquee included, not just the ones this gate
-// drives. The call is kept as declared parity with `exclusiveForce`'s own shape, never as a fix
-// for a demonstrated live state. Its own red-first witness is a unit-level pin
-// (`tests/editor.test.ts`, S9), recorded there.)
+// strip kind at all. `selectStripKf`'s replace-path `sweepOtherKinds` call is NOT paired here:
+// it lives in `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot
+// mutate. Its red-first witness is a unit-level pin (`tests/editor.test.ts`, S2 criterion c),
+// recorded there.)
+// (S2 repair round 2: two further `src/editor.ts` branches carry no pairing by the same
+// construction — this gate's `tgt` cannot reach `src/editor.ts` at all. `activeKind()`'s null
+// path (no selection → returns null, the routing key for the window-keydown handlers) and the
+// general restore loop's per-kind filters in `selectionHook.restore` (each kind's survival
+// check: `forceAt`/`sectionAt`/`stripAt`/`stripKeyframeAt`/`entryOneShot`) are new production
+// branches with no `mutate.ts` pairing. Their red-first witnesses are unit-level pins
+// (`tests/editor.test.ts` for `activeKind()`'s XOR-by-construction, `tests/history.test.ts`
+// for the restore loop's per-kind survival) and capture arms (`section.pw.ts` for the
+// keydown-guard routing), recorded there.)
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a
@@ -96,6 +96,12 @@ interface Pair {
 // clicked-selected-vs-unselected rule (`desc.activate`/`desc.select`) are BOTH branches S9
 // newly unified — collapsed from twin per-kind limbs to one call each — and Validation's own
 // "a behavior carrying no pairing is a red of the gate itself" clause named them as owed.
+// "cross-kind-shift-ensure" and "axis-law-dv-scale" (S2, kex2d-selection-substrate) extend
+// the roster again: `keyframeDown`'s shift-click `ensureStrip` call (S2: adds the owning strip
+// without clearing other kinds, enabling cross-kind co-selection) and `applyKeyframeDrag`'s
+// `dvScale` axis law (S2: vertical moves only the active kind's members) are BOTH newly-shared
+// production branches in the same file this gate mutates, sourced from S2's own Validation
+// bullet.
 const BEHAVIORS = [
     "snap",
     "deselect",
@@ -109,6 +115,8 @@ const BEHAVIORS = [
     "marquee-strip-select",
     "shift-toggle",
     "kf-click-select-vs-activate",
+    "cross-kind-shift-ensure",
+    "axis-law-dv-scale",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -144,13 +152,18 @@ const PAIRS: Pair[] = [
         // S9 (F7): re-pointed at the UNIFIED branch — `keyframeDown`'s single drag-set-build
         // line now serves both kinds through `desc.pts`/`desc.sel`, collapsing the pre-S9 twin
         // (`stripKfPts.filter((sp) => set.has(sp.id))` vs `forcePts.filter((fp) => set.has(fp.id))`)
-        // that no longer exists verbatim.
+        // that no longer exists verbatim. S2: the drag set now spans both kinds (mixed-set drag);
+        // the anchor is the active kind's member-build line.
         name: "modifier-extend",
         flow: "strip keyframe multi-member drag",
         mutations: [
             {
-                old: "    const members = set.size > 1 ? desc.pts.filter((m) => set.has(m.id)) : [pt];",
-                new: "    const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
+                old: "        const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
+            },
+            {
+                old: "        const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
         ],
     },
@@ -217,7 +230,7 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe arrow-nudge",
         mutations: [
             {
-                old: "                const members = stripKeyframes(ecs, editor.strip).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
+                old: "                const members = stripKeyframes(ecs, editor.strip!).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
                 new: "                const members: ReturnType<typeof stripKeyframes> = []; // MUTATED: nudge branch disabled",
             },
         ],
@@ -259,6 +272,32 @@ const PAIRS: Pair[] = [
             {
                 old: "function bandZoneX0(): number {\n    if (!entryOneShot(ecs)) return LEFT_GUT;\n    const gx = oneShotGlyphX();\n    if (gx < LEFT_GUT) return LEFT_GUT;\n    return Math.min(LEFT_GUT, gx - STRIP_HIT_R);\n}",
                 new: "function bandZoneX0(): number {\n    return LEFT_GUT; // MUTATED: F6 widen removed\n}",
+            },
+        ],
+    },
+    {
+        // S2 (kex2d-selection-substrate): `keyframeDown`'s shift-click `ensureStrip` call —
+        // adds the owning strip without clearing other kinds, enabling cross-kind co-selection.
+        // Mutated back to `selectStrip` (replace-select), the shift-click clears the force set.
+        name: "cross-kind-shift-ensure",
+        flow: "shift-click a force keyframe and a strip keyframe leaves both selected (S2)",
+        mutations: [
+            {
+                old: "        if (e.shiftKey) ensureStrip(k.strip);\n        else if (editor.strip !== k.strip) selectStrip(k.strip);",
+                new: "        if (e.shiftKey) selectStrip(k.strip); // MUTATED: ensureStrip replaced with selectStrip (clears other kinds)\n        else if (editor.strip !== k.strip) selectStrip(k.strip);",
+            },
+        ],
+    },
+    {
+        // S2 (kex2d-selection-substrate): `applyKeyframeDrag`'s `dvScale` axis law — vertical
+        // moves only the active kind's members. Mutating `dvScale` to 1 for all members makes
+        // the vertical drag move both kinds' values (the axis law violation).
+        name: "axis-law-dv-scale",
+        flow: "mixed-set drag axis law: horizontal moves all, vertical moves only the active kind (S2)",
+        mutations: [
+            {
+                old: "        const v = m.v0 + dv * m.dvScale;",
+                new: "        const v = m.v0 + dv; // MUTATED: axis law disabled — vertical moves all kinds",
             },
         ],
     },

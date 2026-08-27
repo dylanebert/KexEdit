@@ -781,6 +781,44 @@ export function beginStripKeyframeMoves(ecs: State, ids: readonly number[]): voi
     );
 }
 
+/** begin a mixed-set keyframe drag gesture — S2's cross-kind co-selection means a drag can
+ *  carry both force and strip keyframes in one history entry. one `begin()` call snapshots
+ *  both kinds together, so a single undo restores all members of both kinds. */
+export function beginKeyframeMoves(
+    ecs: State,
+    forceIds: readonly number[],
+    stripKfIds: readonly number[],
+): void {
+    begin(
+        () => {
+            const fsts: ForcePointState[] = [];
+            for (const id of forceIds) {
+                const st = forcePointState(ecs, id);
+                if (st) fsts.push(st);
+            }
+            const ssts: StripKeyframeState[] = [];
+            for (const id of stripKfIds) {
+                const st = stripKeyframeState(ecs, id);
+                if (st) ssts.push(st);
+            }
+            if (fsts.length === 0 && ssts.length === 0) return undefined;
+            return { forces: fsts, stripKfs: ssts };
+        },
+        (s: { forces: ForcePointState[]; stripKfs: StripKeyframeState[] }) => {
+            for (const st of s.forces) restoreForcePoint(ecs, st);
+            for (const st of s.stripKfs) restoreStripKeyframe(ecs, st);
+        },
+        (
+            a: { forces: ForcePointState[]; stripKfs: StripKeyframeState[] },
+            b: { forces: ForcePointState[]; stripKfs: StripKeyframeState[] },
+        ) =>
+            a.forces.length === b.forces.length &&
+            a.forces.every((s, i) => sameForcePoint(s, b.forces[i])) &&
+            a.stripKfs.length === b.stripKfs.length &&
+            a.stripKfs.every((s, i) => s.s === b.stripKfs[i].s && s.v === b.stripKfs[i].v),
+    );
+}
+
 /** record one undoable entry over the addressed segment's two bounding keyframes — the
  *  leading keyframe `id` and its successor `next` (if any) — after `mutate` has already
  *  run on the live data. the command restores both keyframes, so a single undo reverts

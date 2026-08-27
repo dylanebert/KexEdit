@@ -8,6 +8,7 @@ import {
     sectionOpsAllowed,
 } from "./acts";
 import {
+    activeKind,
     beginDrag,
     clearHover,
     editor,
@@ -1412,14 +1413,14 @@ export function attachControls(
         // stays polar length/angle regardless of node kind (the multi law, `editor-ui.md`) — out of
         // this stage's scope.
         if (
-            editor.selection !== null &&
+            activeKind() === "node" &&
             editor.hover === "viewport" &&
             (e.key === "ArrowLeft" ||
                 e.key === "ArrowRight" ||
                 e.key === "ArrowUp" ||
                 e.key === "ArrowDown")
         ) {
-            const eid = editor.selection;
+            const eid = editor.selection!;
             const s = trackSamples(ecs);
             if (dragManip !== null || panning || Handle.order.get(eid) === 0 || !s) return;
             // the lockdown: geo nodes are never the pinning section's, so no nudge in-mode.
@@ -1521,7 +1522,11 @@ export function attachControls(
             if (editor.tangentEdit !== null) {
                 e.preventDefault();
                 exitTangentEdit();
-            } else if (editor.selection !== null || editor.section !== null || editor.start) {
+            } else if (
+                activeKind() === "node" ||
+                activeKind() === "section" ||
+                activeKind() === "start"
+            ) {
                 e.preventDefault();
                 select(null);
                 selectSection(null);
@@ -1553,8 +1558,8 @@ export function attachControls(
         // the clip-strip menu row resolves a cursor through, scoped to THIS section — null off
         // the track (no bake) or off the section (the playhead sits outside it), either of which
         // makes `C` a no-op here exactly like a non-interior click would.
-        if (editor.section !== null) {
-            const section = editor.section;
+        if (activeKind() === "section") {
+            const section = editor.section!;
             const trackEid = trackEntity(ecs);
             let position: CutPosition | null = null;
             if (trackEid !== null) {
@@ -1595,8 +1600,8 @@ export function attachControls(
         }
 
         // a node selected: extend, or trim the chain end.
-        if (editor.selection === null) return;
-        const sel = editor.selection;
+        if (activeKind() !== "node") return;
+        const sel = editor.selection!;
 
         // a MULTI node set: Delete acts on the whole set iff it's a valid suffix run (a contiguous
         // suffix of one section, excluding node 0, leaving ≥ 2) — trimmed as ONE undo entry, then the

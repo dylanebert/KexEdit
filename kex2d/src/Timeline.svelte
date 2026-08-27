@@ -18,6 +18,7 @@ import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
 import {
     activateForce,
     activateStripKf,
+    activeKind,
     beginDrag,
     closeForceMenu,
     closeRulerMenu,
@@ -26,6 +27,7 @@ import {
     dismissNotice,
     editor,
     endDrag as endDragGesture,
+    ensureStrip,
     enterForceEdit,
     exitForceEdit,
     landingG,
@@ -56,6 +58,7 @@ import {
     beginForceMove,
     beginForceMoves,
     beginForceTangent,
+    beginKeyframeMoves,
     beginLength,
     beginOneShotMove,
     beginStripMove,
@@ -905,8 +908,8 @@ const selSections = $derived.by((): Set<number> => {
     return editor.sections.ids;
 });
 // the geo section that OWNS the selected node — its clip gets a quiet context wash (which
-// clip the selection lives in). node and section selection are mutually exclusive
-// (editor.ts), so a washed clip is never also the selected clip; the wash stays the quieter
+// clip the selection lives in). the active member's kind routes the keydown handlers, so a
+// washed clip is never also the selected clip; the wash stays the quieter
 // register — the node is the accent, the clip is context.
 const washSection = $derived.by((): number | null => {
     void tick;
@@ -1493,7 +1496,17 @@ let dragKfV0 = 0;
 // is the size-1 case (just the anchor). the whole set moves by ONE shared (Δs, Δv) — relative
 // offsets preserved exactly, unbounded by any strip/segment extent (S5, F2: no rigid-clamp
 // bounds carried here anymore — a keyframe drags freely past its container).
-let dragKfMembers: { id: number; s0: number; v0: number; section: number }[] = [];
+let dragKfMembers: {
+    id: number;
+    kind: KfKind;
+    s0: number;
+    v0: number;
+    section: number;
+    ownerId: number; // section id for force, strip id for strip-kf (for overlap cap)
+    setter: (ecs: State, id: number, s: number, v: number) => void;
+    floor: number | null;
+    dvScale: number; // 1 for the active kind, 0 for the other (the axis law)
+}[] = [];
 let dragKfMemberSet: Set<number> = new Set();
 // the v-to-pixel and pixel-to-v projections, kind-specific: force uses yOf/yToG (g axis),
 // strip uses vOf/its inverse (v axis). set at drag start.
@@ -1555,15 +1568,15 @@ function applyKeyframeDrag(): void {
     // room — never an equality test (the pre-S5b `keyframeTaken` block check only ever fired
     // by accident, off the now-deleted extent clamp; discrete pointer sampling sweeps past a
     // bare equality target). `dir` is the sign of the desired move; a zero `ds` caps to
-    // itself either way.
-    const owner = kind === "force" ? -1 : dragKfStrip;
+    // itself either way. S2: each member carries its own `kind`/`ownerId` for the overlap
+    // check, so a mixed-set drag caps against both kinds' rooms.
     const dir: 1 | -1 = ds < 0 ? -1 : 1;
     let cap = Infinity;
     for (const m of dragKfMembers) {
         const room = keyframeRoom(
             ecs,
-            kind,
-            kind === "force" ? m.section : owner,
+            m.kind,
+            m.ownerId,
             m.s0,
             dragKfMemberSet,
             dir,
@@ -1573,10 +1586,14 @@ function applyKeyframeDrag(): void {
     const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room
     const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);
     if (dsWrite !== ds) snapX = null; // the cap engaged: the snap guide would point past it
+    // S2 axis law: horizontal (Δd) moves EVERY member's stored station; vertical (Δv) moves
+    // ONLY the active kind's members. each member carries its own `dvScale` (1 for the active
+    // kind, 0 for the other) and its own `setter`/`floor`, set at drag start — so this write
+    // loop has no per-kind branch at the drag site.
     for (const m of dragKfMembers) {
         const s = m.s0 + dsWrite;
-        const v = m.v0 + dv;
-        dragKfSetter(ecs, m.id, s, dragKfValFloor !== null ? Math.max(dragKfValFloor, v) : v);
+        const v = m.v0 + dv * m.dvScale;
+        m.setter(ecs, m.id, s, m.floor !== null ? Math.max(m.floor, v) : v);
     }
 }
 // double-press detection for the diamond summon: a keyframe drag captures the pointer on
@@ -1626,15 +1643,12 @@ function kfDesc(kind: KfKind): KfDesc {
         };
     return {
         sel: editor.stripKfs,
-        // scoped to the CURRENTLY selected strip: a strip keyframe's own sub-selection is
-        // layered on strip selection (`editor.stripKfs.ids` non-empty implies `editor.strip !==
-        // null`, `editor.ts`'s own invariant), so a candidate pool spanning every strip on the
-        // chart would let a marquee (or a multi-drag) build a set spanning two strips at once,
-        // which nothing else in the substrate models. `keyframeDown` already selects the owning
-        // strip before reaching this descriptor (`if (editor.strip !== k.strip) selectStrip
-        // (k.strip)`), so this filter is a no-op there; it's load-bearing for `marqueeUp`
-        // (S9, F7 finding (a)), where the rect is checked against whichever strip is selected.
-        pts: stripKfPts.filter((k) => k.strip === editor.strip),
+        // every strip's keyframes on the chart — S2 deletes the owning-strip filter
+        // (`k.strip === editor.strip`) that scoped the candidate pool to the currently selected
+        // strip, so a marquee can now take keyframes across two different strips at once. the
+        // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
+        // filter was the siloing — not a visibility gate.
+        pts: stripKfPts,
         select: selectStripKf,
         selectMany: selectStripKfs,
         activate: activateStripKf,
@@ -1660,9 +1674,12 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         // (force's own lockdown, below the shift/double-click grammar, SELECTS but never
         // drags: a pre-existing per-kind ORDERING divergence, not one of S9's three enumerated
         // findings, left as-is). a keyframe draws for every strip, so grabbing one owned by an
-        // unselected strip must select that strip first (its diamonds are drawn).
+        // unselected strip must select that strip first (its diamonds are drawn). S2: on
+        // shift-click, `ensureStrip` adds the owning strip without clearing other kinds (cross-
+        // kind co-selection); on plain click, `selectStrip` replace-selects as before.
         if (!sectionEditable(editor.pinning, k.section)) return;
-        if (editor.strip !== k.strip) selectStrip(k.strip);
+        if (e.shiftKey) ensureStrip(k.strip);
+        else if (editor.strip !== k.strip) selectStrip(k.strip);
     }
     const desc = kfDesc(kind);
     // shift-click TOGGLES set membership — a selection gesture, not a drag. ONE path, both
@@ -1689,10 +1706,54 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     // lockdown: another section's force keys SELECT but never drag (strip already returned
     // above when locked).
     if (kind === "force" && !sectionEditable(editor.pinning, pt.section)) return;
-    // drag set: every selected member (multi-member support) — ONE path, both kinds.
-    const set = desc.sel.ids;
-    const members = set.size > 1 ? desc.pts.filter((m) => set.has(m.id)) : [pt];
-    dragKfMembers = members.map((m) => ({ id: m.id, s0: m.s, v0: desc.val(m), section: m.section }));
+    // drag set: every selected keyframe of BOTH kinds (S2: mixed-set drag). the active kind's
+    // members come from `desc.sel`; the other kind's members come from the other descriptor's
+    // selection. each member carries its own kind, setter, floor, and dvScale (1 for the active
+    // kind, 0 for the other) so the axis law write loop needs no per-kind branch.
+    const forceDesc = kfDesc("force");
+    const stripDesc = kfDesc("strip");
+    const forceIds = forceDesc.sel.ids;
+    const stripIds = stripDesc.sel.ids;
+    const allMembers: typeof dragKfMembers = [];
+    if (kind === "force") {
+        // active kind: full selection (or just the clicked point if single)
+        const set = forceIds;
+        const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];
+        for (const m of members)
+            allMembers.push({
+                id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.val(m),
+                section: m.section, ownerId: m.section, setter: forceDesc.setter,
+                floor: forceDesc.floor, dvScale: 1,
+            });
+        // other kind: its selected members move in s only (dvScale 0)
+        if (stripIds.size > 0) {
+            for (const m of stripDesc.pts.filter((m) => stripIds.has(m.id)))
+                allMembers.push({
+                    id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.val(m),
+                    section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
+                    floor: stripDesc.floor, dvScale: 0,
+                });
+        }
+    } else {
+        const set = stripIds;
+        const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];
+        for (const m of members)
+            allMembers.push({
+                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.val(m),
+                section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
+                floor: stripDesc.floor, dvScale: 1,
+            });
+        // other kind: its selected members move in s only (dvScale 0)
+        if (forceIds.size > 0) {
+            for (const m of forceDesc.pts.filter((m) => forceIds.has(m.id)))
+                allMembers.push({
+                    id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.val(m),
+                    section: m.section, ownerId: m.section, setter: forceDesc.setter,
+                    floor: forceDesc.floor, dvScale: 0,
+                });
+        }
+    }
+    dragKfMembers = allMembers;
     dragKfS0 = pt.s;
     dragKfV0 = desc.val(pt);
     dragKfStartD = pt.startD;
@@ -1713,11 +1774,12 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     gestureMapping = mapping;
     // the grab origin
     dragKfU0 = uAtPx(clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
-    // begin the history gesture (kind-specific)
-    if (kind === "force")
-        beginForceMoves(ecs, dragKfMembers.map((m) => m.id));
-    else
-        beginStripKeyframeMoves(ecs, dragKfMembers.map((m) => m.id));
+    // begin the history gesture (S2: one gesture for both kinds — mixed-set drag)
+    beginKeyframeMoves(
+        ecs,
+        dragKfMembers.filter((m) => m.kind === "force").map((m) => m.id),
+        dragKfMembers.filter((m) => m.kind === "strip").map((m) => m.id),
+    );
     dragKf = { kind, id: dragKfMembers[0].id };
     beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", keyframeMove);
@@ -1812,8 +1874,8 @@ function marqueeMove(e: PointerEvent): void {
 // clear every keyframe kind's own selection — the shared form marqueeUp's plain-click
 // deselect needs from each kind (S9 closes F7's finding (b) here too: a bare `selectForce(null)`
 // beside a bare `selectStripKf(null)` is two hand-paired calls that silently omit a third kind
-// later; one loop over `kfDesc` can't). Each kind's own `null` form already skips the
-// exclusive-sweep (mirroring `selectForce(null)`'s existing shape), so calling both in either
+// later; one loop over `kfDesc` can't). Each kind's own `null` form clears only its own kind
+// (S2: the exclusive-sweep is deleted from the shift/marquee paths), so calling both in either
 // order is safe — neither disturbs the other, `editor.strip`, or `editor.sections`.
 function deselectKfKinds(): void {
     for (const kind of KF_KINDS) kfDesc(kind).select(null);
@@ -1841,30 +1903,12 @@ function marqueeUp(): void {
         return;
     }
     // ONE resolve loop reaches both keyframe kinds (S9 closes F7's finding (a): before, the
-    // candidate pool was built from `forcePts` alone — `Timeline.svelte:1789` — so a rubber-
-    // band never took a strip keyframe, with or without shift). Each kind's own hit set merges
-    // against ITS OWN current selection and writes through ITS OWN multi-write, so a marquee
-    // that only catches one kind's diamonds leaves the other kind exactly as it was — matching
-    // a plain click's own per-kind exclusivity (`exclusiveForce`/`exclusiveStripKf`).
-    //
-    // CROSS-KIND TIE-BREAK (reachable — force and strip keyframes share this same y-pixel
-    // band, `yOf`/`vOf`'s own comment): a single rect that hits BOTH a force keyframe and a
-    // strip keyframe on the currently-selected strip resolves in `KF_KINDS` DECLARATION ORDER
-    // ALONE, with no other priority signal. `KF_KINDS` lists "force" before "strip", so the
-    // force branch runs first: `desc.selectMany` → `exclusiveForce()` clears `editor.strips`,
-    // nulling `editor.strip`. The strip branch's own candidate pool (`kfDesc("strip").pts`,
-    // filtered on `k.strip === editor.strip`) is computed AFTER that clear, in the SAME
-    // synchronous pass — so it reads empty and the strip branch never fires at all. The
-    // outcome is therefore FORCE-WINS: the force keyframe selects, the strip keyframe is
-    // silently dropped from the candidate pool it would otherwise have joined (measured
-    // directly: a marquee spanning a force point and a same-band strip keyframe leaves
-    // `forceSelIds` populated and `stripKfSelIds` empty). Reversing `KF_KINDS`'s declared
-    // order would not flip this — `exclusiveForce` unconditionally clears `strips`/`stripKfs`
-    // whichever position it runs from, so "force wins when both hit" is closer to a property
-    // of `exclusiveForce`'s own unconditional clear than of iteration order in general, but the
-    // ORDER is still what decides WHICH branch's clear gets to run against a still-populated
-    // sibling pool. This is a deliberate exclusivity model requiring some deterministic
-    // choice — not one of S9's three enumerated findings, and not fixed here.
+    // candidate pool was built from `forcePts` alone — so a rubber-band never took a strip
+    // keyframe, with or without shift). S2: the marquee extends across kinds — each kind's
+    // `selectMany` writes its own kind without sweeping others, so a rect that hits BOTH
+    // kinds selects both. S2 also deletes the strip pool's owning-strip filter, so a marquee
+    // can take keyframes from two different strips at once; the owning strips are ensured
+    // selected after the hit write so the layered invariant holds.
     let anyHits = false;
     for (const kind of KF_KINDS) {
         const desc = kfDesc(kind);
@@ -1874,6 +1918,13 @@ function marqueeUp(): void {
         anyHits = true;
         const res = merge(desc.sel, hitIds, shift ? "toggle" : "replace");
         desc.selectMany(res.ids, res.active);
+        // ensure owning strips are selected for strip-kf hits (the layered invariant)
+        if (kind === "strip") {
+            const hitSet = new Set(hitIds);
+            for (const p of desc.pts) {
+                if (hitSet.has(p.id)) ensureStrip((p as StripKfPt).strip);
+            }
+        }
     }
     if (!shift && !anyHits) {
         selectSection(null);
@@ -4179,7 +4230,7 @@ onMount(() => {
         }
         // the track-start one-shot's own select/delete — Escape/Delete only, `editor.strip`'s
         // point-kind twin (S3): no drag, no keyframe sub-selection to peel first.
-        if (editor.oneShot) {
+        if (activeKind() === "oneShot") {
             if (e.key === "Escape") {
                 e.preventDefault();
                 selectOneShot(false);
@@ -4194,7 +4245,7 @@ onMount(() => {
         // strip keyframe (a sub-selection layered on the strip) peels first: Delete removes
         // the keyframe (not the strip), and Escape clears the keyframe selection before
         // the strip's — the force keyframe's own Escape ladder.
-        if (editor.strip !== null) {
+        if (activeKind() === "strip" || activeKind() === "stripKf") {
             if (e.key === "Escape") {
                 e.preventDefault();
                 if (editor.stripKf !== null) selectStripKf(null);
@@ -4224,9 +4275,9 @@ onMount(() => {
                 // short, and commits a wrong value (section.pw.ts:2344, witnessed:
                 // `toBeCloseTo` Expected 11.1, Received 11 with no frame between the two
                 // presses). `stripAt`/`stripKeyframes` are synchronous ECS queries.
-                const stripEid = stripAt(ecs, editor.strip);
+                const stripEid = stripAt(ecs, editor.strip!);
                 if (stripEid === null) return;
-                const members = stripKeyframes(ecs, editor.strip).filter((k) =>
+                const members = stripKeyframes(ecs, editor.strip!).filter((k) =>
                     editor.stripKfs.ids.has(k.id),
                 );
                 if (members.length === 0) return;
@@ -4253,12 +4304,12 @@ onMount(() => {
             }
             return;
         }
-        // force-point select/delete/nudge — guarded on a live force selection so geo-node
-        // Esc/Del/arrows (controls.ts) stay unambiguous (the selections are mutually exclusive).
-        // Delete and `Q` route through `keys.ts`'s `forceKeyAct` (the keyboard twin of
+        // force-point select/delete/nudge — guarded on the active member's kind so only one
+        // window-keydown handler fires on a mixed selection (the Blender active-vs-selected split,
+        // the Locked decision). Delete and `Q` route through `keys.ts`'s `forceKeyAct` (the keyboard twin of
         // `menus.keyframeMenu`'s `Delete`/Lock-Unlock rows); Escape and the arrow-nudge are
         // nobody's menu row and stay raw.
-        if (editor.force !== null) {
+        if (activeKind() === "force") {
             if (e.key === "Escape") {
                 // dismissal peels one layer: deselect the handle first (back to the keyframe
                 // readout), then exit handle edit (keep the point selected), then clear the
