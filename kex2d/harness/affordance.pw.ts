@@ -26,15 +26,18 @@ import {
 //
 // THE MECHANISM. `.fld .key` is this app's scrub-handle dress — `cursor: ew-resize`,
 // `user-select: none`, `touch-action: none`, a hover wash (`Timeline.svelte`, `.fld .key`).
-// Six `.fld .key` spans exist in that file, all six wiring `onpointerdown` to a scrub:
-// `handleScrub` (two spans, s and g axes), `scrubStart` (two spans, s and g axes),
-// `snapScrub` (two spans, angle and length). `App.svelte` carries two more under its
-// own `.vtip .key` rule, the identical `ew-resize` dress (`frictionScrubStart`,
-// `resistanceScrubStart`), both wired — the v0 row retired with S5's derived entry
-// speed. Eight wired teachers app-wide, zero refusers. The C5 strip popover's unwired `.striptip .key` span
-// (the refuser this arm originally targeted) does not exist in T1's tree — T1 does not
-// add a strip value popover (the value surface is T2's, in the graph) — so the `test.fail`
-// arm that targeted it was permanently vacuous and is retired (see below).
+// Ten `.fld .key` spans exist in that file, all ten wiring `onpointerdown` to a scrub:
+// `handleScrub` (two spans, s and g axes), `scrubStart` (six spans, S10/F8 — the force, strip
+// keyframe, and one-shot popovers all share the one parameterized `scrubSubject()` descriptor,
+// so every popup's position AND value label carries the gesture, the one-shot's position label
+// included even though its own subject always refuses), `snapScrub` (two spans, angle and
+// length). `App.svelte` carries two more under its own `.vtip .key` rule, the identical
+// `ew-resize` dress (`frictionScrubStart`, `resistanceScrubStart`), both wired — the v0 row
+// retired with S5's derived entry speed. Twelve wired teachers app-wide, zero refusers. The C5
+// strip popover's unwired `.striptip .key` span (the refuser this arm originally targeted) does
+// not exist in T1's tree — T1 does not add a strip value popover (the value surface is T2's, in
+// the graph) — so the `test.fail` arm that targeted it was permanently vacuous and is retired
+// (see below).
 // Cited by handler name, not line number — `7220424` moved all six by +22 and the line
 // numbers rotted; handler names cannot rot.
 //

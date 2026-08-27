@@ -3317,15 +3317,88 @@ function labelScrub(e: PointerEvent, opts: ScrubOpts): void {
 function cancelLabelScrub(): void {
     scrubCancel?.();
 }
-function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
+// the popup's own label-scrub SUBJECT (S10, F8): force's `scrubStart` used to resolve straight
+// off `selPoint`, force-only by construction — the strip keyframe and the one-shot popovers
+// opted out of the same gesture in a comment beside them ("no scrub-drag on the labels"). This
+// descriptor is the parameterization: built ONCE, from whichever of the three popups is open,
+// so `scrubStart` itself branches on axis alone, never on kind — the same shape `kfDesc` already
+// uses for the drag/selection substrate (S9's own standard: a shared name over a per-kind branch
+// is still a twin). `pos` is `null` for a subject with no position axis to scrub at all (the
+// one-shot lives at `d = 0`, `setOneShotValue`'s own invariant): the lockdown lives INSIDE each
+// of `pos`/`val` rather than as a sibling flag, so a subject with no position axis has no
+// `locked` bit floating free of it either — an absent axis and a locked one both refuse through
+// the same `subj.pos === null || subj.pos.locked` read, and there is no second, redundant flag a
+// mutation could flip without changing what the gesture actually does.
+interface ScrubSubject {
+    pos: { seed: number; lo: number; hi: number; locked: boolean; write: (v: number) => void } | null;
+    val: { seed: number; locked: boolean; write: (v: number) => void };
+    freeze: { x: number; y: number };
+    begin: () => void;
+}
+function scrubSubject(): ScrubSubject | null {
     const p = selPoint;
-    if (p === null) return;
-    if (!sectionEditable(editor.pinning, p.section)) return; // the lockdown
-    const freeze = {
-        x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
-        y: clamp(yOf(p.g), TOP, h - BOT_PAD),
-    };
+    const k = selStripKfPt;
+    const os = selOneShotPt;
+    if (p !== null) {
+        return {
+            pos: {
+                seed: p.u,
+                lo: p.startU,
+                hi: uOf(p.startD + p.len),
+                locked: selLocked,
+                write: (v) => setForcePoint(ecs, p.id, clamp(dOf(v) - p.startD, 0, p.len), p.g),
+            },
+            val: { seed: p.g, locked: selLocked, write: (v) => setForcePoint(ecs, p.id, p.s, v) },
+            freeze: {
+                x: clamp(ptX(p), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
+                y: clamp(yOf(p.g), TOP, h - BOT_PAD),
+            },
+            begin: () => beginForceMove(ecs, p.id),
+        };
+    }
+    if (k !== null) {
+        return {
+            pos: {
+                seed: k.u,
+                lo: uOf(k.start),
+                hi: uOf(k.end),
+                locked: selStripKfLocked,
+                write: (v) => setStripKeyframe(ecs, k.id, clamp(dOf(v), k.start, k.end), k.v),
+            },
+            val: {
+                seed: k.v,
+                locked: selStripKfLocked,
+                write: (v) => setStripKeyframe(ecs, k.id, k.s, Math.max(V_FLOOR, v)),
+            },
+            freeze: {
+                x: clamp(uPx(k.u), LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
+                y: clamp(vOf(k.v), TOP, h - BOT_PAD),
+            },
+            begin: () => beginStripKeyframeMove(ecs, k.id),
+        };
+    }
+    if (os !== null) {
+        return {
+            pos: null, // the one-shot's position never scrubs -- it has none to move, ever
+            val: { seed: os.value, locked: selOneShotLocked, write: (v) => setOneShotValue(ecs, os.id, v) },
+            freeze: {
+                x: clamp(
+                    oneShotGlyphX(),
+                    LEFT_GUT + TIP_HALF,
+                    Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF),
+                ),
+                y: RULER_H + GAP_H + STRIP_H / 2,
+            },
+            begin: () => beginOneShotMove(ecs, os.id),
+        };
+    }
+    return null;
+}
+function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
+    const subj = scrubSubject();
+    if (subj === null) return;
     if (axis === "s") {
+        if (subj.pos === null || subj.pos.locked) return; // no axis to scrub, or the lockdown
         // the position scrub slides the value the field DISPLAYS — the active domain, so its rate
         // and its rounding are that domain's own (`SCRUB_T` is `SCRUB_S`'s time twin at the default
         // entry speed) — and inverts through the GESTURE-FROZEN table for the write (`dOf`,
@@ -3333,25 +3406,26 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
         // metres store directly).
         gestureMapping = mapping; // freeze -- see `keyframeDown`'s own note
         labelScrub(e, {
-            seed: p.u,
+            seed: subj.pos.seed,
             rate: timeDomain ? SCRUB_T : SCRUB_S,
-            lo: p.startU,
-            hi: uOf(p.startD + p.len),
+            lo: subj.pos.lo,
+            hi: subj.pos.hi,
             round: 10,
-            write: (v) => setForcePoint(ecs, p.id, clamp(dOf(v) - p.startD, 0, p.len), p.g),
-            freeze,
-            begin: () => beginForceMove(ecs, p.id),
+            write: subj.pos.write,
+            freeze: subj.freeze,
+            begin: subj.begin,
         });
     } else {
+        if (subj.val.locked) return; // the lockdown
         labelScrub(e, {
-            seed: p.g,
+            seed: subj.val.seed,
             rate: SCRUB_G,
             lo: -Infinity,
             hi: Infinity,
             round: 100,
-            write: (v) => setForcePoint(ecs, p.id, p.s, v),
-            freeze,
-            begin: () => beginForceMove(ecs, p.id),
+            write: subj.val.write,
+            freeze: subj.freeze,
+            begin: subj.begin,
         });
     }
 }
@@ -4937,9 +5011,10 @@ onMount(() => {
             {/if}
         <!-- the selected STRIP keyframe's own typed s/v popover — `selPoint`'s twin (S3, findings
              10/3): selection alone isn't the whole substrate parity, the value has to be SHOWN
-             too. No scrub-drag on the labels (force's `scrubStart`); `v` carries its m/s unit
-             (S5, Locked decision finding 11 near half) the same `.unit` span the position field
-             wears, never a second axis (that's the far half, out of scope). -->
+             too. Both labels carry the same scrub-drag the force keyframe's do (S10, F8 —
+             `scrubStart` is parameterized over `scrubSubject()` rather than force-only); `v`
+             carries its m/s unit (S5, Locked decision finding 11 near half) the same `.unit` span
+             the position field wears, never a second axis (that's the far half, out of scope). -->
         {:else if selStripKfPt && !multiStripKf}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
@@ -4954,7 +5029,11 @@ onMount(() => {
                     style="left: {ax}px; top: {ay}px"
                 >
                     <div class="fld">
-                        <span class="key" role="presentation">{posLabel}</span>
+                        <span
+                            class="key"
+                            onpointerdown={(e) => scrubStart(e, "s")}
+                            role="presentation">{posLabel}</span
+                        >
                         <input
                             type="number"
                             step={timeDomain ? 0.1 : 1}
@@ -4969,7 +5048,11 @@ onMount(() => {
                         <span class="unit">{posUnit}</span>
                     </div>
                     <div class="fld">
-                        <span class="key" role="presentation">v</span>
+                        <span
+                            class="key"
+                            onpointerdown={(e) => scrubStart(e, "g")}
+                            role="presentation">v</span
+                        >
                         <input
                             type="number"
                             step="0.1"
@@ -4993,7 +5076,12 @@ onMount(() => {
              locked) and carries no `onchange` at all, so a rejected keystroke has nothing to
              route to even if the `disabled` attribute were somehow bypassed. Anchored at the
              glyph's own fixed screen position (`oneShotGlyphX`/`cy`, Timeline's canvas draw) —
-             a one-shot has no value-axis curve to project onto, unlike a force/strip keyframe. -->
+             a one-shot has no value-axis curve to project onto, unlike a force/strip keyframe.
+             Both labels wire `scrubStart` (S10, F8) — the value scrub reaches `setOneShotValue`
+             through `scrubSubject()`; the position scrub reaches the same call and refuses,
+             `scrubSubject`'s own `pos: null` for this kind (there is no `s` to scrub, ever, so
+             wiring the handle at all is what makes the refusal reachable through the real
+             gesture rather than left as an absent affordance). -->
         {:else if selOneShotPt}
             {@const gx = oneShotGlyphX()}
             {#if gx >= LEFT_GUT - FHIT_R && gx <= w + FHIT_R}
@@ -5003,7 +5091,11 @@ onMount(() => {
                 {@const vText = fmt(selOneShotPt.value, 2)}
                 <div class="ptip" class:below={ay < TOP + TIP_FLIP} style="left: {ax}px; top: {ay}px">
                     <div class="fld">
-                        <span class="key" role="presentation">{posLabel}</span>
+                        <span
+                            class="key"
+                            onpointerdown={(e) => scrubStart(e, "s")}
+                            role="presentation">{posLabel}</span
+                        >
                         <input
                             type="number"
                             value={posText}
@@ -5015,7 +5107,11 @@ onMount(() => {
                         <span class="unit">{posUnit}</span>
                     </div>
                     <div class="fld">
-                        <span class="key" role="presentation">v</span>
+                        <span
+                            class="key"
+                            onpointerdown={(e) => scrubStart(e, "g")}
+                            role="presentation">v</span
+                        >
                         <input
                             type="number"
                             step="0.1"
@@ -5397,6 +5493,27 @@ onMount(() => {
     }
     .fld input::selection {
         background: var(--accent-soft);
+    }
+    /* a locked `.fld` field must READ as disabled, not just refuse edits (S10, F8 — the
+       stylesheet had no rule reaching this state at all before this stage): the standard grayed
+       treatment `.menu-item`/`.clip-add` already wear elsewhere (dim opacity, default cursor).
+       The `:has()` selector below reaches the row's own scrub-handle label and unit too — the
+       label doubles as the scrub handle, and a scrub on a locked field must read as inert exactly
+       like the handles on `handleScrub`'s Δs/Δg row already do (never a second lockdown flag
+       threaded from script; the input's own native attribute is the one signal). */
+    .fld input:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+    .fld:has(input:disabled) .key {
+        cursor: default;
+    }
+    .fld:has(input:disabled) .key:hover {
+        color: var(--muted);
+        background: none;
+    }
+    .fld:has(input:disabled) .unit {
+        opacity: 0.4;
     }
 
     .body {

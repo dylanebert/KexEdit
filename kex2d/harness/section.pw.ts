@@ -2465,6 +2465,209 @@ test("velocity value popup: typed edits move the bake, one-shot position stays l
     await expect(posField).toBeDisabled();
 });
 
+// S10 (kex2d-event-substrate, F8): `scrubStart` (Timeline.svelte) resolved its subject from
+// `selPoint` alone and was force-only by construction — the strip keyframe and one-shot
+// popovers opted out of the label scrub in a comment beside them. This flow drives BOTH new
+// arms through the real pointer: a strip keyframe's own position AND value labels, and the
+// one-shot's own value label — each moving the bake (read through `vAtD`/`v0`, the same
+// readback F5's typed-field arm above uses), same arm shape as the force keyframe's
+// pre-existing scrub (`affordance.pw.ts`'s "popover key scrub affordance — force keyframe
+// control").
+//
+// RED-FIRST WITNESS: nulled `scrubSubject`'s `k`/`os` locals (`selStripKfPt`/`selOneShotPt`
+// forced to `null`, the force-only pre-S10 read) — the flow reds at the strip position poll
+// (exit 1, timeout: the moved keyframe's own `s` never exceeds `readD` — the label's
+// `onpointerdown` still fires but `scrubSubject()` resolves no subject to scrub, so
+// `labelScrub` never runs). Restored byte-identical; green.
+test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F8)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await frameTimeline(page);
+
+    const stripId = await kexCall(page, "addStripAt", 0, 12, 5);
+    if (stripId === null) throw new Error("strip create refused");
+    await expect.poll(async () => (await kexCall(page, "stripsOf", 0)).length).toBe(1);
+    await frames(page, 2); // bandStrips/stripKfPts settle behind the RAF tick (F5's own note)
+    // a third, DISTINCT-valued keyframe: `addStripAt`'s two boundary keyframes share one value
+    // (S4's own seed, `createStrip`'s `value` param at both ends), which would leave the curve
+    // FLAT regardless of where either boundary sits — a position move needs a differing
+    // neighbour to be visible in the sampled curve at all.
+    await kexCall(page, "placeStripKf", stripId, 6, 12);
+
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKeyframesOf = () =>
+        kexCall(page, "stripKeyframesOf", stripId) as Promise<
+            { id: number; s: number; v: number }[]
+        >;
+    const vAtD = (d: number) => kexCall(page, "vAtD", d) as Promise<number>;
+    await expect.poll(async () => (await stripKfPx()).length).toBe(3);
+
+    // ── position label: drag the start keyframe (s = 0) rightward, past a readback station ──
+    const kfs = await stripKeyframesOf();
+    const kf0 = kfs.find((k) => k.s === 0);
+    if (!kf0) throw new Error("seeded start keyframe not found");
+    let px = (await stripKfPx()).find((k) => k.id === kf0.id);
+    if (!px) throw new Error("start keyframe not projected");
+    await page.mouse.click(px.x, px.y);
+    await expect.poll(() => kexCall(page, "stripKfSelIds")).toEqual([kf0.id]);
+
+    const readD = 3; // between the start keyframe (s=0) and the mid one (s=6, v=12) — inside
+    // the interpolated region until the start keyframe's own station passes it, at which point
+    // it falls into the flat extrapolation BEFORE the earliest keyframe (S5's own out-of-extent
+    // resolution) — a real, sampled change, not just a stored-field readback.
+    const vBefore = await vAtD(readD);
+    const posKey = page.locator(".ptip .fld:nth-of-type(1) .key");
+    const posBox = await posKey.boundingBox();
+    if (!posBox) throw new Error("strip keyframe position scrub handle not laid out");
+    await page.mouse.move(posBox.x + posBox.width / 2, posBox.y + posBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(posBox.x + posBox.width / 2 + 100, posBox.y + posBox.height / 2, {
+        steps: 10,
+    });
+    await page.mouse.up();
+    await frames(page, 4); // the bake reads through `bakeOut`'s RAF-tick gate (Residue: one frame behind)
+    await expect
+        .poll(async () => (await stripKeyframesOf()).find((k) => k.id === kf0.id)?.s)
+        .toBeGreaterThan(readD);
+    await expect.poll(() => vAtD(readD), { timeout: 1000 }).not.toBeCloseTo(vBefore, 2);
+
+    // ── value label: drag the mid keyframe's own v ──
+    await page.keyboard.press("Escape"); // clear the popover before re-selecting
+    const midKf = (await stripKeyframesOf()).find((k) => k.s === 6);
+    if (!midKf) throw new Error("mid keyframe not found");
+    px = (await stripKfPx()).find((k) => k.id === midKf.id);
+    if (!px) throw new Error("mid keyframe not projected");
+    await page.mouse.click(px.x, px.y);
+    await expect.poll(() => kexCall(page, "stripKfSelIds")).toEqual([midKf.id]);
+
+    const vReadD = 6.5; // just past the mid keyframe's own station, inside its influence
+    const vBefore2 = await vAtD(vReadD);
+    const vKey = page.locator(".ptip .fld:nth-of-type(2) .key");
+    const vBox = await vKey.boundingBox();
+    if (!vBox) throw new Error("strip keyframe value scrub handle not laid out");
+    await page.mouse.move(vBox.x + vBox.width / 2, vBox.y + vBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(vBox.x + vBox.width / 2 + 60, vBox.y + vBox.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await frames(page, 4);
+    await expect.poll(() => vAtD(vReadD), { timeout: 1000 }).not.toBeCloseTo(vBefore2, 2);
+
+    // ── one-shot value label: moves v0, the derived entry speed's own readback ──
+    await page.keyboard.press("Escape");
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!bandBb) throw new Error("header band not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const glyphLocalX = (await kexCall(page, "oneShotPx")) as number;
+    await page.mouse.click(chartCanvasBb.x + glyphLocalX, bandY);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
+    const v0Before = (await kexCall(page, "v0")) as number;
+    const osVKey = page.locator(".ptip .fld:nth-of-type(2) .key");
+    const osVBox = await osVKey.boundingBox();
+    if (!osVBox) throw new Error("one-shot value scrub handle not laid out");
+    await page.mouse.move(osVBox.x + osVBox.width / 2, osVBox.y + osVBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(osVBox.x + osVBox.width / 2 + 60, osVBox.y + osVBox.height / 2, {
+        steps: 10,
+    });
+    await page.mouse.up();
+    await expect.poll(() => kexCall(page, "v0"), { timeout: 1000 }).not.toBeCloseTo(v0Before, 2);
+});
+
+// S10 (kex2d-event-substrate, F8): a locked field refuses the scrub the way it already refuses
+// the typed field — pin mode over the VALUE (a force keyframe outside the pinning section, the
+// pre-existing lockdown `scrubStart` always carried, now reached through `scrubSubject`), and
+// the one-shot's own POSITION, locked unconditionally (`scrubSubject`'s `pos: null` — F5's own
+// invariant, `d = 0`, never `sectionEditable`).
+//
+// RED-FIRST WITNESS (two independent mutations, each restored byte-identical after): (1) deleted
+// the `if (subj.val.locked) return;` guard in `scrubStart`'s value branch — the pin-mode half of
+// this flow reds (exit 1, `toBeCloseTo` fails: the locked keyframe's `g` moved 0.6 under the
+// drag instead of holding). (2) replaced the one-shot arm's `pos: null` with a live `pos` object
+// (seed 0, unbounded, wired to `setOneShotValue`) — the one-shot half reds (exit 1, `toEqual`
+// fails: `oneShot().value` moved from 10 to 3 under the position-label drag it must refuse).
+test("popup label scrub refuses on a locked field — pin mode for the value, always for the one-shot's position (S10, F8)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await kexCall(page, "convert"); // section 0 → FORCE, so it carries authored keyframes
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => (await kexCall(page, "forces")).length).toBe(5);
+    // section 1 → FORCE too: the Pin row only appears on a FORCE section (`menus.ts`'s own
+    // `s.kind === SectionKind.Force` guard), so the section being PINNED must be force-kind —
+    // the lockdown it OPENS falls on every OTHER section regardless of kind, which is what
+    // leaves section 0's own keyframe locked.
+    await kexCall(page, "append", 1);
+    await expect.poll(() => kexCall(page, "sectionCount")).toBe(2);
+    await frameTimeline(page);
+
+    // pin section 1 (the appended FORCE section) — the section-selection this opens is a
+    // DIFFERENT selectable kind than a force keyframe (multiselect law: kinds stay mutually
+    // exclusive), so the keyframe is selected AFTER the mode opens, not before it — selecting it
+    // first would only be cleared by entering the mode.
+    await page.locator(".clip").nth(1).click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await clickMenuItem(page, ".ctxmenu", "Pin");
+    await expect.poll(() => kexCall(page, "pinning")).toBe(true);
+
+    // select a force keyframe on the now-LOCKED section 0 through the real pointer — "another
+    // section's force keys SELECT but never drag" (`keyframeDown`'s own comment): the click
+    // still lands.
+    const dia = await page.locator(".fpt").nth(2).boundingBox();
+    if (!dia) throw new Error("force keyframe 2 not laid out");
+    await page.mouse.click(dia.x + dia.width / 2, dia.y + dia.height / 2);
+    await expect.poll(async () => (await kexCall(page, "forceSelIds")).length).toBe(1);
+    const sel = await kexCall(page, "forceSelActive");
+    const gOf = async () => (await kexCall(page, "forceU")).find((p) => p.id === sel)?.g;
+    const gBefore = await gOf();
+    if (gBefore === undefined) throw new Error("selected keyframe not readable");
+
+    const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
+    await expect(gField).toBeDisabled();
+    const gKey = page.locator(".ptip .fld:nth-of-type(2) .key");
+    const gBox = await gKey.boundingBox();
+    if (!gBox) throw new Error("g scrub handle not laid out under lockdown");
+    await page.mouse.move(gBox.x + gBox.width / 2, gBox.y + gBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(gBox.x + gBox.width / 2 + 60, gBox.y + gBox.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await frames(page, 2);
+    expect(await gOf()).toBeCloseTo(gBefore, 6); // locked: the scrub never wrote
+
+    await page.keyboard.press("Escape"); // clear the force keyframe popover
+    await page.locator(".pinpanel .exit").click(); // discard the (empty) sandbox, exit the mode
+    await expect.poll(() => kexCall(page, "pinning")).toBe(false);
+
+    // ── the one-shot's own position label: ALWAYS locked — d = 0 is its whole invariant ──
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!bandBb) throw new Error("header band not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const glyphLocalX = (await kexCall(page, "oneShotPx")) as number;
+    await page.mouse.click(chartCanvasBb.x + glyphLocalX, bandY);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
+    const before = (await kexCall(page, "oneShot")) as { id: number; value: number };
+
+    const posKey = page.locator(".ptip .fld:nth-of-type(1) .key");
+    const posBox = await posKey.boundingBox();
+    if (!posBox) throw new Error("one-shot position scrub handle not laid out");
+    await page.mouse.move(posBox.x + posBox.width / 2, posBox.y + posBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(posBox.x + posBox.width / 2 + 60, posBox.y + posBox.height / 2, {
+        steps: 10,
+    });
+    await page.mouse.up();
+    await frames(page, 2);
+    expect(await kexCall(page, "oneShot")).toEqual(before); // nothing to scrub — unchanged
+});
+
 // S8 (kex2d-event-substrate, F6): the one-shot glyph's own hit priority at `d = 0` — when a
 // velocity strip ALSO starts there, the glyph's own screen station and the band's own left
 // edge coincide at minimum pan (`bandZoneX0`, Timeline.svelte). A click on the glyph's LEFT
