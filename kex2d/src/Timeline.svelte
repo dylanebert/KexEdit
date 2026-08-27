@@ -4253,9 +4253,9 @@ onMount(() => {
                 const lo = Strip.start.get(stripEid);
                 const len = Strip.end.get(stripEid);
                 if (editor.forces.ids.size > 0) {
-                    // S3: mixed-set nudge — station (ds) moves every member; value (dv) moves
-                    // only the active kind's (stripKf), per the locked axis law. one gesture
-                    // (`beginKeyframeMoves`) so one undo restores all.
+                    // S5: mixed-domain nudge — station (ds) moves every member; value (dv)
+                    // moves NO member when the set spans both keyframe domains (force + strip).
+                    // one gesture (`beginKeyframeMoves`) so one undo restores all.
                     // synchronous ECS read — not `forcePts` (a `$derived` behind `void tick`):
                     // a second nudge before the tick flushes reads pre-first-nudge state and
                     // writes it back (the axis-law red: a vertical nudge rewinds a force's
@@ -4284,7 +4284,7 @@ onMount(() => {
                         for (const w of nudgeKeyframes(
                             members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
                             ds,
-                            dv,
+                            0,
                         ))
                             setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
                         commit(history);
@@ -4379,9 +4379,9 @@ onMount(() => {
                     const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                     const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
                     if (editor.stripKfs.ids.size > 0) {
-                        // S3: mixed-set nudge — station (ds) moves every member; value (dg) moves
-                        // only the active kind's (force), per the locked axis law. one gesture
-                        // (`beginKeyframeMoves`) so one undo restores all.
+                        // S5: mixed-domain nudge — station (ds) moves every member; value
+                        // (dg) moves NO member when the set spans both keyframe domains (force +
+                        // strip). one gesture (`beginKeyframeMoves`) so one undo restores all.
                         const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
                         if (stripEid !== null && stripEditableAt(Strip.start.get(stripEid))) {
                             const skMembers = stripKeyframes(ecs, editor.strip!).filter((k) =>
@@ -4398,7 +4398,7 @@ onMount(() => {
                                 for (const w of nudgeKeyframes(
                                     members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
                                     ds,
-                                    dg,
+                                    0,
                                 ))
                                     setForcePoint(ecs, w.id, w.s, w.v);
                                 for (const w of nudgeKeyframes(

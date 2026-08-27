@@ -4390,19 +4390,16 @@ test("mixed-set Delete removes every member across kinds in one gesture (S3)", a
         .toBe(stripKfCountBefore);
 });
 
-// S3: mixed-set arrow nudge — station moves every member, value moves only the active kind.
-// A force keyframe (active) and a strip keyframe are co-selected. ArrowRight moves both
-// stations by the same Δs; ArrowUp moves only the force value (the active kind), the strip
-// keyframe's value is byte-identical (the locked axis law: value applies only to the active
-// member's kind).
+// S5 (amended from S3): mixed-domain arrow nudge — station moves every member, value moves
+// none. A force keyframe (active) and a strip keyframe are co-selected. ArrowRight moves both
+// stations by the same Δs; ArrowUp moves NO member's value — both kinds' stored values are
+// byte-identical (the S5 axis law: a gesture channel whose meaning is not defined for every
+// member of the set carries no meaning for that gesture).
 //
-// RED-FIRST WITNESS: at the pre-fix ref, the nudge handler only moves the active kind's members
-// (force). The strip keyframe holds still — its station is unchanged. The arm asserts the strip
-// keyframe's station moved, so it reds.
-test("mixed-set arrow nudge moves all stations, value only for active kind (S3)", async ({
-    page,
-    boot,
-}) => {
+// RED-FIRST WITNESS: at the pre-fix ref (S3's code), ArrowUp moves the active kind's value
+// (force) while the strip keyframe's value holds. The arm asserts the force value is
+// byte-identical after the vertical nudge, so it reds (the force value moved).
+test("mixed-domain arrow nudge moves all stations, value for none (S5)", async ({ page, boot }) => {
     await boot();
     await kexCall(page, "seedForceBump");
     await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
@@ -4512,12 +4509,15 @@ test("mixed-set arrow nudge moves all stations, value only for active kind (S3)"
     expect(forceAfterH.g).toBe(forceBefore.g);
     expect(stripKfAfterH.v).toBe(stripKfBefore.v);
 
-    // ArrowUp — value moves only for force (active kind); strip keyframe value unchanged
+    // ArrowUp — S5 axis law: value moves NO member when the set spans both keyframe domains.
+    // the vertical channel carries no meaning, so the nudge is a no-op: no member's value
+    // moves, no edit records (history's `same` guard detects the no-op). both kinds' stored
+    // values are byte-identical; stations unchanged (ArrowUp has no station component).
     const forceBeforeV = forceAfterH;
     const stripKfBeforeV = stripKfAfterH;
     const depthBeforeV = await undoDepth();
     await page.keyboard.press("ArrowUp");
-    await expect.poll(undoDepth).toBe(depthBeforeV + 1); // one edit
+    await expect.poll(undoDepth).toBe(depthBeforeV); // no edit — the channel carries nothing
 
     const forcesAfterV = await sectionForces();
     const forceAfterV = forcesAfterV.find((f) => f.id === forceId)!;
@@ -4528,8 +4528,8 @@ test("mixed-set arrow nudge moves all stations, value only for active kind (S3)"
     }[];
     const stripKfAfterV = stripKfsAfterV.find((k) => k.id === kfId)!;
 
-    // force value moved (active kind), strip keyframe value unchanged (passive kind)
-    expect(forceAfterV.g).not.toBe(forceBeforeV.g); // force value moved
+    // S5: both kinds' values byte-identical — no member's value moves in the mixed-domain case
+    expect(forceAfterV.g).toBe(forceBeforeV.g); // force value byte-identical — no move
     expect(stripKfAfterV.v).toBe(stripKfBeforeV.v); // strip keyframe value byte-identical
     // stations unchanged (ArrowUp has no station component)
     expect(forceAfterV.s).toBe(forceBeforeV.s);
