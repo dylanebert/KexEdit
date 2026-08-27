@@ -853,7 +853,7 @@ export function toggleSnap(): void {
  *  invert, so a bypass turns it off while on and summons it while off). */
 export const snapActive = (mod: boolean): boolean => editor.snap !== mod;
 
-// the four selection kinds are mutually exclusive — selecting into one clears the others, so the
+// the selection kinds are mutually exclusive — selecting into one clears the others, so the
 // contextual actions (node extend/trim, force field popover, section ops, v0 popover) never fight
 // over which target a key press means. each `select*` grows a `mode`: "replace" (the default, and
 // today's single-select behavior — collapse the kind to one member) and "toggle" (shift-click
