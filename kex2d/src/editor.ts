@@ -1132,11 +1132,11 @@ export function selectStrip(id: number | null, mode: SelectMode = "replace"): vo
  *  reached through the same `Timeline.svelte kfDesc` descriptor `keyframeDown` calls for either
  *  kind (S9, F7). "replace" (default) collapses the set to `id` (or clears it when null);
  *  "toggle" adds/removes it (shift-click, S4's booked multi-select). either non-clearing form
- *  sweeps the other top-level kinds (`exclusiveStripKf` — S9's fix for the missing cross-clear,
- *  finding (b): before, nothing swept `forces` here, so a force keyframe could stay selected
- *  alongside a strip keyframe). a sub-selection layered on strip selection: the owning strip
- *  stays selected (its diamonds are drawn), and the set becomes the Delete/Escape target.
- *  selection state in editor, Delete through the history wrapper. */
+ *  sweeps the other top-level kinds (keeping the owning strip — S9's fix for the missing
+ *  cross-clear, finding (b): before, nothing swept `forces` here, so a force keyframe could
+ *  stay selected alongside a strip keyframe). a sub-selection layered on strip selection: the
+ *  owning strip stays selected (its diamonds are drawn), and the set becomes the Delete/Escape
+ *  target. selection state in editor, Delete through the history wrapper. */
 export function selectStripKf(id: number | null, mode: SelectMode = "replace"): void {
     if (id === null || mode === "replace") {
         if (id !== null) {
