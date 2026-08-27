@@ -2182,24 +2182,22 @@ test("marquee over a strip keyframe selects it, shift-marquee toggles it (S9, F7
 // keyframe first, in both directions, so neither assertion can pass by the other kind having
 // already been empty (force.pw.ts's own "one selection model" flow reads as coverage here
 // vacuously — its strip keyframe is clicked AFTER a strip-body click already cleared `forces`
-// via `exclusiveStrip`, so its "the strip sweep clears it" comment never actually exercises
-// `selectStripKf`'s own sweep).
+// via `selectStrip`'s own `clearAllMembers`, so its "the strip sweep clears it" comment never
+// actually exercises `selectStripKf`'s own sweep).
 //
-// MEASURED, NOT ASSUMED (S9's own open question — re-confirmed at claim, `d32a30f`): deleting
-// `exclusiveStripKf()`'s call from `selectStripKf` ALONE does NOT red this flow (exit 0) —
-// `keyframeDown`'s own strip branch re-calls `selectStrip(k.strip)` (which sweeps `forces` via
-// `exclusiveStrip`, an S1-era mechanism) whenever `editor.strip` differs from the clicked
-// keyframe's owner, and `editor.strip` is ALWAYS nulled by the time this flow re-clicks the
-// strip keyframe (the intervening force click ran `exclusiveForce`, which clears `editor.strips`
-// too). So finding (b), as a LIVE reachable defect, does not reproduce at `d32a30f`: the S1
-// mechanism already covers this specific path redundantly. `exclusiveStripKf()` stays as a
-// genuine structural fix (parity with `selectForce`'s own shape, and the only guard on
-// `selectStripKfs`'s marquee write, which never goes through `keyframeDown`'s precondition) —
-// RED-FIRST WITNESS for the property this arm actually pins: deleting BOTH `exclusiveStrip`'s
-// own `clearSel(editor.forces)` line AND `selectStripKf`'s `exclusiveStripKf()` call together
-// reds at `await expect.poll(forceSelIds).toEqual([]);` (the first strip-keyframe selection
-// after the force click) — exit 1, timeout: `forceSelIds()` stays `[0]`. Restored; green.
-// Deleting `selectStripKf`'s `exclusiveStripKf()` call ALONE does not red this arm (exit 0) —
+// MEASURED, NOT ASSUMED: deleting `sweepOtherKinds` from `selectStripKf`'s replace path ALONE
+// does NOT red this flow (exit 0) — `keyframeDown`'s own strip branch re-calls `selectStrip(k.strip)`
+// (which clears all members via `clearAllMembers`) whenever `editor.strip` differs from the clicked
+// keyframe's owner, and `editor.strip` is ALWAYS nulled by the time this flow re-clicks the strip
+// keyframe (the intervening force click ran `selectForce`, which clears all members too). So the
+// `sweepOtherKinds` call in `selectStripKf`'s replace path stays as a genuine structural guard
+// (the only guard on the plain-click replace path when the owning strip is already selected, so
+// `keyframeDown` skips its own `selectStrip` call — see the S2 criterion-(c) unit arm) —
+// RED-FIRST WITNESS for the property this arm actually pins: deleting BOTH `selectStrip`'s own
+// `clearAllMembers` AND `selectStripKf`'s `sweepOtherKinds` call together reds at
+// `await expect.poll(forceSelIds).toEqual([]);` (the first strip-keyframe selection after the force
+// click) — exit 1, timeout: `forceSelIds()` stays `[0]`. Restored; green.
+// Deleting `selectStripKf`'s `sweepOtherKinds` call ALONE does not red this arm (exit 0) —
 // recorded above as the measured finding.
 test("selecting a keyframe of either kind clears the other's selection, both directions (S9, F7 finding b)", async ({
     page,
@@ -2254,14 +2252,15 @@ test("selecting a keyframe of either kind clears the other's selection, both dir
     await page.mouse.click(fp.x, fp.y);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
 
-    // now select the strip keyframe — the direction ALREADY correct before S9 (`exclusiveForce`
-    // sweeps `stripKfs`), but re-checked here against a genuinely non-empty force selection.
+    // now select the strip keyframe — the direction already correct (a plain click
+    // replace-selects via `selectStrip`, clearing all members), but re-checked here against
+    // a genuinely non-empty force selection.
     await page.mouse.click(target.x, target.y);
     await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(forceSelIds).toEqual([]);
 
     // re-select the force keyframe again — the direction MISSING before S9: `selectStripKf`
-    // called no exclusive sweep at all, so the force keyframe stayed selected alongside it.
+    // called no sweep of its own, so the force keyframe stayed selected alongside it.
     const fp2 = await forceCenter();
     await page.mouse.click(fp2.x, fp2.y);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
