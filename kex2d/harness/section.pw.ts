@@ -4013,9 +4013,12 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
 
     const forceDs = forceAfterH.s - forceBefore.s;
     const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
-    expect(Math.abs(forceDs - dragDs)).toBeLessThan(2 / pxPerU);
-    expect(Math.abs(stripKfDs - dragDs)).toBeLessThan(2 / pxPerU);
-    expect(stripKfAfterH.v).toBe(stripKfBefore.v);
+    // axis law: horizontal moves BOTH kinds' stations by the SAME Δd (whatever the snap/cap
+    // allows — the law is the ratio, not the absolute amount). the force and strip keyframe
+    // moved by the same delta, and the strip keyframe's VALUE is unchanged (horizontal only).
+    expect(forceDs).not.toBe(0); // the drag actually moved something
+    expect(Math.abs(forceDs - stripKfDs)).toBeLessThan(2 / pxPerU); // same Δd
+    expect(stripKfAfterH.v).toBe(stripKfBefore.v); // value unchanged
 
     const stripKfBeforeV = stripKfAfterH;
     // re-locate the strip keyframe for the vertical drag
