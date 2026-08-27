@@ -319,7 +319,8 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
   and `Timeline.svelte` (force-point Del/Esc) both listen on `window`. They don't check kind — each
   guards on its OWN live selection (`editor.selection` / `editor.section` / `editor.force`), which are
   mutually exclusive (`editor.ts` clears the others on select). Keep that guard: a kind check instead
-  could double-fire.
+  could double-fire. (Node/section/force exclusivity, not the strip-vs-force keyframe exclusivity
+  refuted at `kex2d-event-substrate`'s close — see `kex2d-map.md`'s `editor.ts` entry.)
 - **Never hold a raw eid across a snapshot restore.** `restoreSection`/`restoreAll` destroy and
   respawn a section's nodes and the eid allocator recycles LIFO, so a held eid remaps to a
   DIFFERENT node — hold the stable `(section, order)` instead. The injected **`SelectionHook`**

@@ -4799,15 +4799,20 @@ onMount(() => {
                 {/each}
             </g>
             <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
-                 channel, drawn for every strip (Locked decision "Visibility"), the selected
-                 strip's own keyframes brightening per the same `.sel` rung force keyframes use.
-                 `.active` marks the ONE individually-selected keyframe (`editor.stripKf`) —
-                 `selForceSet`/`selForce`'s own `.sel`/`.active` split, S3's parity fix (findings
-                 10/3): before, every keyframe on the selected strip read `.sel` alike, with no
-                 rung distinguishing the one actually grabbed. `.msel` is S4's own addition — a
-                 non-active member of the multi-select set (`editor.stripKfs`) bumped one rung
-                 over the strip-context `.sel`, so a shift-click block reads distinctly from the
-                 rest of the strip's diamonds. Same diamond idiom as force keyframes but on the
+                 channel, drawn for every strip (Locked decision "Visibility"). `.sel` here is
+                 strip-CONTEXT membership (`selStrip !== null && k.strip === selStrip.id`), true
+                 for every keyframe on the selected strip — unlike a force keyframe's `.sel`
+                 (`selForceSet.has(p.id)`), which is true selection membership. `.sel`'s fill is
+                 `var(--accent)`, the dominant channel, so every keyframe on the selected strip
+                 renders as if selected; `.active` marks the one individually-selected keyframe
+                 (`editor.stripKf`, +0.4px stroke over `.sel`) and `.msel` marks a non-active
+                 multi-select member (`editor.stripKfs`, +0.2px stroke) — both thin strokes over
+                 a shared bright fill. This is the mechanism behind "selecting one keyframe in a
+                 strip appears to select others" (feel-gate round 3, F3, 2026-08-27): every
+                 keyframe on the strip reads as selected regardless of membership, and only the
+                 fine stroke delta discriminates a real member. Not fixed by the `kex2d-event-
+                 substrate` S3/S4 parity work that introduced `.active`/`.msel` — open for the
+                 keyframe-substrate re-scope. Same diamond idiom as force keyframes but on the
                  v-axis (vOf, not yOf). Clipped to the chart. -->
             <g class="fmarkers" clip-path="url(#fclip)">
                 {#each stripKfPts as k (k.id)}
