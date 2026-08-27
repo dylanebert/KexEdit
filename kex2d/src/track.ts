@@ -1170,12 +1170,12 @@ export const DEFAULT_RESISTANCE = 2.5e-4;
 export const EXTEND_DIST = 24;
 
 /** the extent (m) a summoned strip creation grows to, from the station's min-extent edge
- *  span up to a brake-section-typical length (Locked decision, findings 4/5/6, `Timeline.svelte`
- *  `createStripAt`/`track.ts` `stripDefaultExtentAt`) — derived from `EXTEND_DIST`, the same
- *  constant a fresh force section/geo chain seeds at just above, rather than a new tuned
- *  literal: "how long is a section before someone resizes it" is the same question at either
- *  substrate. */
-export const STRIP_DEFAULT_LEN = EXTEND_DIST;
+ *  span up to a velocity-strip-typical length (feel-gate F3, person's verdict 2026-08-26: ~10 m,
+ *  meters because meters are the store) — an independent literal, not derived from
+ *  `EXTEND_DIST`: a velocity strip and a fresh section answer different questions ("how far does
+ *  the speed control run" vs. "how long is a section before someone resizes it"), and the two
+ *  happened to share a value only by construction of the substrate this stage retires. */
+export const STRIP_DEFAULT_LEN = 10;
 
 /** the track's initial anchor for a given initial speed: the entry to the first
  *  section, a level start at the origin. world position is cosmetic in this 2D

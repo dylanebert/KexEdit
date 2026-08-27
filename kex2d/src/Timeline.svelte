@@ -2749,6 +2749,25 @@ const bandHit = $derived.by((): StripHit => {
 function oneShotGlyphX(): number {
     return uPx(uOf(0));
 }
+// F6 (feel-gate round 1): the ONE band-wide hit rect (`.hbandzone`, Locked decision — never
+// per-strip DOM hit-testing) starts at `LEFT_GUT`, so at minimum pan `d = 0`'s own station
+// (`oneShotGlyphX()`, always `>= LEFT_GUT`, clamped equal there) leaves the glyph's LEFT half
+// — a real hit radius, `STRIP_HIT_R`, not just the visual diamond — sitting past the rect's own
+// left edge: a click lands on nothing there today, and where a strip ALSO starts at `d = 0` its
+// coincident edge is the only thing left in that dead zone for the pointer to land on. Widen the
+// rect's own left edge to cover the glyph's full hit radius instead of adding a second DOM
+// element (the Locked-decision "ONE hit rect" stands) — precedence itself stays JS-side
+// (`classifyOneShotHit` checked first in `bandDown`/`bandContext`, S3); this is what makes that
+// check REACHABLE for the glyph's own left half at all. Bounded by construction: `Math.min`
+// only widens when the glyph is actually flush against `LEFT_GUT` (visible at minimum pan) —
+// panned off-screen (`gx < LEFT_GUT`, not drawn, `render()`'s own gate) or clear of the dead
+// zone (`gx - STRIP_HIT_R >= LEFT_GUT`) both fall through to the unwidened `LEFT_GUT`.
+function bandZoneX0(): number {
+    if (!entryOneShot(ecs)) return LEFT_GUT;
+    const gx = oneShotGlyphX();
+    if (gx < LEFT_GUT) return LEFT_GUT;
+    return Math.min(LEFT_GUT, gx - STRIP_HIT_R);
+}
 // the one-shot glyph's own hover read — `bandHit`'s point-kind twin, checked FIRST wherever
 // both could coincide (a real strip authored to start exactly at `d = 0` would otherwise share
 // screen space with the glyph): the one-shot is a distinct kind, so it gets its own hit-test
@@ -4525,15 +4544,21 @@ onMount(() => {
                  (`bandDown`, `strip-hit.ts`) rather than per-strip DOM hit-testing; the visual
                  strip rects are drawn on the canvas above. Right-click summons the context menu
                  (`bandContext`); left-click on a strip selects + trims/drags; empty space is
-                 inert (no create-drag — the rescope that retired C5's rejected idiom). -->
+                 inert (no create-drag — the rescope that retired C5's rejected idiom). Its own
+                 left edge widens past `LEFT_GUT` when the one-shot glyph is flush against it
+                 (F6, `bandZoneX0`) — the glyph's hit priority IS this widen, not a JS ordering
+                 check alone: `classifyOneShotHit`'s own precedence in `bandDown`/`bandContext`
+                 (S3) was already correct but unreachable for the glyph's left half until the
+                 rect covering it existed. -->
             {#if eid !== null && sTotal > 0}
+                {@const bandX0 = bandZoneX0()}
                 <rect
                     class="hbandzone"
                     class:edge-hover={bandHit.kind === "endpoint"}
                     class:body-hover={bandHit.kind === "body"}
-                    x={LEFT_GUT}
+                    x={bandX0}
                     y={RULER_H + GAP_H}
-                    width={Math.max(0, w - LEFT_GUT)}
+                    width={Math.max(0, w - bandX0)}
                     height={STRIP_H}
                     onpointerdown={bandDown}
                     onpointermove={bandHoverMove}

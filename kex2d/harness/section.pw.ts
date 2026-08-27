@@ -1526,10 +1526,10 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     const vRange = () => kexCall(page, "vRange");
     const stripKfPx = () => kexCall(page, "stripKfPx");
 
-    // create a strip first (right-click on the band → Add velocity strip). `seed()` (S5)
-    // already carries its own start strip on this section, so the count goes 1 → 2, and the
-    // NEW strip is addressed by id, never index 0 (the launch strip's `start = 0` sorts
-    // first).
+    // create a strip first (right-click on the band → Add velocity strip). `seed()` (S3)
+    // carries no strip of its own (the track-start one-shot is a distinct point kind), so the
+    // count goes 0 → 1, and the NEW strip is addressed by id, never index 0 (the created
+    // strip's `start = 0` sorts first).
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -1863,9 +1863,9 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     const stripKfPx = () => kexCall(page, "stripKfPx");
 
     // create a strip (right-click on the band → Add velocity strip), the T1 flow's own idiom.
-    // `seed()` (S5) already carries its own start strip on this section, so the count goes
-    // 1 → 2, and the NEW strip is addressed by id, never index 0 (the launch strip's
-    // `start = 0` sorts first).
+    // `seed()` (S3) carries no strip of its own (the track-start one-shot is a distinct point
+    // kind), so the count goes 0 → 1, and the NEW strip is addressed by id, never index 0
+    // (the created strip's `start = 0` sorts first).
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2024,8 +2024,9 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     const stripKfPx = () => kexCall(page, "stripKfPx");
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2213,6 +2214,51 @@ test("velocity value popup: typed edits move the bake, one-shot position stays l
     await expect(posField).toBeDisabled();
 });
 
+// S8 (kex2d-event-substrate, F6): the one-shot glyph's own hit priority at `d = 0` — when a
+// velocity strip ALSO starts there, the glyph's own screen station and the band's own left
+// edge coincide at minimum pan (`bandZoneX0`, Timeline.svelte). A click on the glyph's LEFT
+// half (inside its own hit radius, `STRIP_HIT_R`, but past the pre-fix band rect's un-widened
+// `LEFT_GUT` edge) used to reach no DOM element at all — never `bandDown`, so
+// `classifyOneShotHit`'s own precedence check there (S3, already correct) was unreachable for
+// that half; the coincident strip's own edge was the only affordance left standing in the dead
+// zone. The fix widens `.hbandzone`'s own left edge to cover the glyph's full hit radius
+// instead of adding a second DOM element (the Locked-decision "ONE band-wide hit rect" stands).
+//
+// RED-FIRST WITNESS: reverted `bandZoneX0` to its pre-fix unconditional `return LEFT_GUT;` —
+// the flow reds at the `oneShotSelected` poll (exit 1, timeout: stays `false` — the click on
+// the glyph's left half never reaches `bandDown` at all). Restored byte-identical; green.
+test("one-shot glyph's left half selects it, even with a coincident strip at d = 0 (F6)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await frameTimeline(page);
+
+    // a strip starting exactly at d = 0 — the coincident-edge case the finding names. Direct
+    // ECS write (`addStripAt`, a real guarded `history.addStrip`): the pointer-driven "Add
+    // velocity strip" menu can't guarantee an exact station (`substrate.pw.ts`'s own reason).
+    await kexCall(page, "addStripAt", 0, 10, 7);
+    await expect
+        .poll(async () => ((await kexCall(page, "stripsOf", 0)) as unknown[]).length)
+        .toBe(1);
+    await frames(page, 2); // bandStrips settle behind the RAF tick (the F5 test's own note)
+
+    const glyphLocalX = (await kexCall(page, "oneShotPx")) as number;
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!chartCanvasBb) throw new Error("chart canvas not laid out");
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!bandBb) throw new Error("header band not laid out");
+    const bandY = bandBb.y + bandBb.height / 2;
+
+    // the glyph's own LEFT half: 3px inside its 6px hit radius (`STRIP_HIT_R`), on the side
+    // the pre-fix band rect never covered (`bandBb.x` itself reads `LEFT_GUT`, unwidened, at
+    // minimum pan — the click below lands strictly left of it).
+    await page.mouse.click(chartCanvasBb.x + glyphLocalX - 3, bandY);
+    await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
+    // the coincident strip, never selected — the glyph won the hit test, not its edge.
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(null);
+});
+
 // S1 capture arm: keyframeDown's multi-member drag for strip keyframes — the offset-preserving
 // path. keyframeDown (Timeline.svelte:1498) sets up the drag set from editor.stripKfs.ids:
 // when multiple strip keyframes are selected (shift-click toggles into the set), the drag
@@ -2240,8 +2286,9 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     const xView = () => kexCall(page, "xView");
     const vRange = () => kexCall(page, "vRange");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2389,8 +2436,9 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     const vRange = () => kexCall(page, "vRange");
 
     // Create a strip at 30% of the clip (so strip.start > 0 — the `lo: m.start` bound is
-    // distinguishable from `lo: 0`). `seed()` (S5) already carries its own start strip, so
-    // the count goes 1 → 2; address the new strip by id.
+    // distinguishable from `lo: 0`). `seed()` (S3) carries no strip of its own (the
+    // track-start one-shot is a distinct point kind), so the count goes 0 → 1; address the
+    // new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2532,8 +2580,9 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     const xView = () => kexCall(page, "xView");
     const vRange = () => kexCall(page, "vRange");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -2563,39 +2612,22 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     );
     expect(seededIds.size).toBe(2);
 
-    // Widen the strip via a REAL pointer edge-drag on its end.
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
     if (!chartCanvasBb) throw new Error("chart canvas not laid out");
-    const spBefore = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId);
-    if (!spBefore) throw new Error("created strip has no band px");
-    const edgePx = chartCanvasBb.x + spBefore.x1;
-    await page.mouse.move(edgePx, bandY);
-    await page.mouse.down();
-    await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
-    await page.mouse.up();
 
-    // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
-    // tie) toward the widened end, uncovering the start keyframe.
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
-    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
-    const sharedPx = kfPxAll.find((k) => seededIds.has(k.id))!;
-    const widePx = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId)!;
-    const separateX = chartCanvasBb.x + widePx.x1 - 10;
-    await page.mouse.move(sharedPx.x, sharedPx.y);
-    await page.mouse.down();
-    await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
-    await page.mouse.up();
-
-    // Read the separated keyframes — identify start (smaller s) and end (larger s).
+    // The seeded pair (S4's own "seed two keyframes at start/end" idiom) already sits
+    // STRIP_DEFAULT_LEN apart — 10 m as of F3, well past a keyframe's own hit radius at any
+    // reachable zoom, so no widen/separate drag is owed here: the old default (24 m) only
+    // ever read as "coincident" because it happened to saturate this fixture's own short
+    // `seedHill` track to its full length (both ends landing at the SAME station, the track's
+    // own end) — a coincidence F3's docblock names outright, and the property this arm
+    // actually needs (two DISTINCT, addressable keyframes to build a midpoint snap landmark
+    // between) holds without it.
     let kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
     const seededKfs = kfs.filter((k) => seededIds.has(k.id)).sort((a, b) => a.s - b.s);
     const startKf = seededKfs[0]; // smaller s = start
     const endKf = seededKfs[1]; // larger s = end
-    if (!startKf || !endKf) throw new Error("start/end keyframe not found after separation");
+    if (!startKf || !endKf) throw new Error("start/end keyframe not found");
 
     // Create a third keyframe at the strip's MIDPOINT.
     const strip = (
@@ -2625,7 +2657,7 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
             return px.find((k) => k.id === midKf.id) ?? null;
         })
         .not.toBeNull();
-    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
 
     // Move the END keyframe to an OFF-GRID v value (with Ctrl to bypass snap). This makes the
     // end keyframe's v a landmark snap target that is NOT on the V_GRID (0.1) quantum — so the
@@ -2719,8 +2751,9 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     const xView = () => kexCall(page, "xView");
     const vRange = () => kexCall(page, "vRange");
 
-    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S5) already
-    // carries its own start strip, so the count goes 1 → 2; address the new strip by id.
+    // Create a strip (right-click on the band → Add velocity strip). `seed()` (S3) carries no
+    // strip of its own (the track-start one-shot is a distinct point kind), so the count goes
+    // 0 → 1; address the new strip by id.
     const beforeStrips = (await stripsOf()) as { id: number }[];
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
@@ -3139,9 +3172,9 @@ const onGrid = (v: number): boolean => Math.abs(v / S_GRID - Math.round(v / S_GR
 // (`bandMove`) now route the RESULTING edge through the SAME shared resolver a keyframe drag
 // rides (`snapAxis`) — snapping ON lands both on an S_GRID (1 m) increment when no landmark is
 // in range (neither drag below has one reachable: the segment's own force points sit well
-// inside the ORIGINAL extent, behind the widened edge; the strip is created clear of the
-// S5-seeded start strip and nothing parks the playhead). The Ctrl twin below asserts the
-// bypass — this is the arm that discharges the Residue instance list (S1's own six recorded
+// inside the ORIGINAL extent, behind the widened edge; the strip is created with room to
+// drag without hitting the track's own end). The Ctrl twin below asserts the bypass — this is
+// the arm that discharges the Residue instance list (S1's own six recorded
 // `.clip-trim` Ctrl-bypass sites): the segment half here is the first `.clip-trim` flow that
 // does NOT hold Ctrl through the drag.
 //
@@ -3153,10 +3186,9 @@ const onGrid = (v: number): boolean => Math.abs(v / S_GRID - Math.round(v / S_GR
 test("segment and strip resize snap to grid increments (F4)", async ({ page, boot }) => {
     await boot();
     await kexCall(page, "seedForceBump");
-    // widen the section well past its own default STRIP_DEFAULT_LEN (24 m, `track.ts`'s own
-    // `EXTEND_DIST` alias) -- the fixture's own default flat seed is exactly 24 m, so a strip
-    // created anywhere on it runs flush to the track's own end by construction
-    // (`stripDefaultExtentAt`'s own clamp), leaving no room for a body drag on either side. Test
+    // widen the section past the fixture's own default flat seed (24 m, `EXTEND_DIST`) -- gives
+    // a strip created on it (STRIP_DEFAULT_LEN, 10 m as of F3, an independent literal) room to
+    // drag on either side without hitting the track's own end. Test
     // SETUP, the same `setLen` hook the domain flow uses for its own short-track fixture.
     await kexCall(page, "setLen", 0, 80);
     await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
@@ -3170,15 +3202,15 @@ test("segment and strip resize snap to grid increments (F4)", async ({ page, boo
     // ── strip resize FIRST (before any segment trim -- a trim widens/undoes the section's
     // own extent, and the view's zoom never re-fits down after an undo, `commitLength`'s own
     // note, so a fraction-of-clip-width strip placement done AFTER a trim can land past the
-    // reverted extent). Create a strip clear of the S5-seeded start strip, drag its BODY, no
-    // Ctrl. ──
+    // reverted extent). Create a strip at 40% of the clip width, giving room to drag its BODY
+    // without hitting the track's own end, no Ctrl. ──
     const beforeStrips = await stripsOf();
     const total = (await kexCall(page, "uTotal")) as number;
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const clipBb = await page.locator(".clip").first().boundingBox();
     if (!bandBb || !clipBb) throw new Error("header band / clip not laid out");
     const bandY = bandBb.y + bandBb.height / 2;
-    const bandX = clipBb.x + clipBb.width * 0.4; // clear of the S5-seeded start strip
+    const bandX = clipBb.x + clipBb.width * 0.4; // room to drag before the track's own end
     await page.mouse.click(bandX, bandY, { button: "right" });
     await expect(page.locator(".smenu")).toBeVisible();
     await clickMenuItem(page, ".smenu", "Add velocity strip");
@@ -3241,10 +3273,9 @@ test("segment and strip resize snap to grid increments (F4)", async ({ page, boo
 test("segment and strip resize Ctrl bypasses grid snap (F4)", async ({ page, boot }) => {
     await boot();
     await kexCall(page, "seedForceBump");
-    // widen the section well past its own default STRIP_DEFAULT_LEN (24 m, `track.ts`'s own
-    // `EXTEND_DIST` alias) -- the fixture's own default flat seed is exactly 24 m, so a strip
-    // created anywhere on it runs flush to the track's own end by construction
-    // (`stripDefaultExtentAt`'s own clamp), leaving no room for a body drag on either side. Test
+    // widen the section past the fixture's own default flat seed (24 m, `EXTEND_DIST`) -- gives
+    // a strip created on it (STRIP_DEFAULT_LEN, 10 m as of F3, an independent literal) room to
+    // drag on either side without hitting the track's own end. Test
     // SETUP, the same `setLen` hook the domain flow uses for its own short-track fixture.
     await kexCall(page, "setLen", 0, 80);
     await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
