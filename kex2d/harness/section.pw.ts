@@ -2608,39 +2608,22 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     );
     expect(seededIds.size).toBe(2);
 
-    // Widen the strip via a REAL pointer edge-drag on its end.
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
     if (!chartCanvasBb) throw new Error("chart canvas not laid out");
-    const spBefore = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId);
-    if (!spBefore) throw new Error("created strip has no band px");
-    const edgePx = chartCanvasBb.x + spBefore.x1;
-    await page.mouse.move(edgePx, bandY);
-    await page.mouse.down();
-    await page.mouse.move(edgePx + 120, bandY, { steps: 5 });
-    await page.mouse.up();
 
-    // Separate the still-coincident seeded pair — drag the END keyframe (renders on top at the
-    // tie) toward the widened end, uncovering the start keyframe.
-    await expect.poll(async () => (await stripKfPx()).length).toBeGreaterThan(0);
-    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
-    const sharedPx = kfPxAll.find((k) => seededIds.has(k.id))!;
-    const widePx = (
-        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
-    ).find((s) => s.id === stripId)!;
-    const separateX = chartCanvasBb.x + widePx.x1 - 10;
-    await page.mouse.move(sharedPx.x, sharedPx.y);
-    await page.mouse.down();
-    await page.mouse.move(separateX, sharedPx.y, { steps: 8 });
-    await page.mouse.up();
-
-    // Read the separated keyframes — identify start (smaller s) and end (larger s).
+    // The seeded pair (S4's own "seed two keyframes at start/end" idiom) already sits
+    // STRIP_DEFAULT_LEN apart — 10 m as of F3, well past a keyframe's own hit radius at any
+    // reachable zoom, so no widen/separate drag is owed here: the old default (24 m) only
+    // ever read as "coincident" because it happened to saturate this fixture's own short
+    // `seedHill` track to its full length (both ends landing at the SAME station, the track's
+    // own end) — a coincidence F3's docblock names outright, and the property this arm
+    // actually needs (two DISTINCT, addressable keyframes to build a midpoint snap landmark
+    // between) holds without it.
     let kfs = (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[];
     const seededKfs = kfs.filter((k) => seededIds.has(k.id)).sort((a, b) => a.s - b.s);
     const startKf = seededKfs[0]; // smaller s = start
     const endKf = seededKfs[1]; // larger s = end
-    if (!startKf || !endKf) throw new Error("start/end keyframe not found after separation");
+    if (!startKf || !endKf) throw new Error("start/end keyframe not found");
 
     // Create a third keyframe at the strip's MIDPOINT.
     const strip = (
@@ -2670,7 +2653,7 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
             return px.find((k) => k.id === midKf.id) ?? null;
         })
         .not.toBeNull();
-    kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
+    let kfPxAll = (await stripKfPx()) as { id: number; x: number; y: number }[];
 
     // Move the END keyframe to an OFF-GRID v value (with Ctrl to bypass snap). This makes the
     // end keyframe's v a landmark snap target that is NOT on the V_GRID (0.1) quantum — so the
