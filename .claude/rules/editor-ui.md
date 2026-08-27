@@ -200,7 +200,11 @@ shape:
   pointerdown retargets the compatibility click stream and silently kills two-click accumulation.
 - **Set + active member** (Blender's active object; Unity's `activeGameObject`): selection is a
   per-kind set with the last-selected member active; single-select is the size-1 case — one
-  substrate, never a parallel multi path beside scalar selections. Kinds stay mutually exclusive.
+  substrate, never a parallel multi path beside scalar selections. Kinds stay mutually exclusive
+  for nodes/sections/forces; keyframe-kind exclusivity (strip vs. force) is refuted by the
+  feel-gate round-3 verdict (2026-08-27, `kex2d-event-substrate` close) — multi-select should
+  work across the two kinds, and they should not be siloed. Open for a dedicated re-scope unit;
+  not designed here.
   Edit sub-modes (tangent/handle edit) collapse the selection to their one subject on entry.
   Removing the active promotes the **last-inserted survivor**. Scalar accessors read the active.
 - **Promote vs replace**: a click, grab, or right-click on a set member keeps the set and promotes

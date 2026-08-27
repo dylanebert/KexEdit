@@ -763,6 +763,11 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   the others); the enforcement is the `exclusive*` family, one per kind, each clearing every other —
   read that family for the membership rather than a count here, since the set has grown three times
   (S2's `strips`, S3's `oneShot`, and `stripKfs`) and every prose count of it has gone stale.
+  **This exclusivity between the two keyframe kinds (`forces`/`stripKfs`) is refuted as settled law
+  by the feel-gate round-3 verdict (2026-08-27, `kex2d-event-substrate` close):** a strip keyframe
+  still selects/deselects unlike every other keyframe and multi-select doesn't cross the two kinds —
+  they should not be siloed. Open for a dedicated re-scope unit; the node/section/force split above
+  is unaffected.
   `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT another exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
   right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Pin` on a
