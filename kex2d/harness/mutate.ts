@@ -221,7 +221,7 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe arrow-nudge",
         mutations: [
             {
-                old: "                const members = stripKeyframes(ecs, editor.strip).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
+                old: "                const members = stripKeyframes(ecs, editor.strip!).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
                 new: "                const members: ReturnType<typeof stripKeyframes> = []; // MUTATED: nudge branch disabled",
             },
         ],
