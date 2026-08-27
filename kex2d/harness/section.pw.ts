@@ -2105,6 +2105,257 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await expect.poll(async () => (await stripKfSelIds()).length).toBe(0);
 });
 
+// S9 capture arm 1 (kex2d-event-substrate, F7 finding (a)): a marquee dragged over a strip
+// keyframe selects it, and a shift-marquee toggles it — the same arm shape the force-keyframe
+// marquee already has ("timeline multiselect flow", force.pw.ts). Before S9, `marqueeUp`'s
+// candidate list was built from `forcePts` alone, so a rubber-band never took a strip keyframe,
+// with or without shift. Constructs a real strip via `addStripAt` (a real guarded write,
+// `history.addStrip`) with two interior keyframes via `placeStripKf` at known stations, selects
+// the strip through a real band click (the sub-selection's own invariant — the same
+// precondition `keyframeDown` establishes before ever reaching a strip keyframe), drags a real
+// marquee over both interior keyframes, then shift-marquee-toggles one back out.
+//
+// RED-FIRST WITNESS: reverted `KF_KINDS` to `["force"]` (Timeline.svelte) — `marqueeUp`'s
+// resolve loop then never reaches the strip kind at all, reproducing pre-S9 finding (a)
+// exactly. The flow reds at the first `stripKfSelIds()` poll (exit 1, timeout: stays `[]` — the
+// marquee never selected the interior keyframes). Restored; green.
+test("marquee over a strip keyframe selects it, shift-marquee toggles it (S9, F7 finding a)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await frameTimeline(page);
+
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+
+    // a strip [0, 40) with two interior keyframes at s=10 and s=30 — the seeded start/end pair
+    // (s=0/40) sits well outside the marquee box below.
+    const stripId = (await kexCall(page, "addStripAt", 0, 40, 5)) as number;
+    await kexCall(page, "placeStripKf", stripId, 10, 8);
+    await kexCall(page, "placeStripKf", stripId, 30, 3);
+    await expect.poll(async () => ((await stripKeyframesOf(stripId)) as unknown[]).length).toBe(4);
+
+    // select the strip through a real band click first.
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    const stripPx = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
+    const sp = stripPx.find((s) => s.id === stripId);
+    if (!bandBb || !chartCanvasBb || !sp) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.length;
+        })
+        .toBeGreaterThan(0);
+    const ids = (await stripKeyframesOf(stripId)) as { id: number; s: number }[];
+    const interior = ids.filter((k) => k.s === 10 || k.s === 30).map((k) => k.id);
+    expect(interior.length).toBe(2);
+    const pxA = kfPx.find((k) => k.id === interior[0]);
+    const pxB = kfPx.find((k) => k.id === interior[1]);
+    if (!pxA || !pxB) throw new Error("interior keyframes not projected");
+
+    // a real marquee spanning both interior keyframes (padded past their two distinct v's).
+    const xLo = Math.min(pxA.x, pxB.x) - 8;
+    const xHi = Math.max(pxA.x, pxB.x) + 8;
+    const yLo = Math.min(pxA.y, pxB.y) - 12;
+    const yHi = Math.max(pxA.y, pxB.y) + 12;
+    await marqueeDrag(page, xLo, yLo, xHi, yHi);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(2);
+    expect((await stripKfSelIds()).sort((a, b) => a - b)).toEqual(interior.sort((a, b) => a - b));
+
+    // shift-marquee over just ONE of them toggles it out.
+    await marqueeDrag(page, pxA.x - 8, pxA.y - 12, pxA.x + 8, pxA.y + 12, true);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    expect(await stripKfSelIds()).toEqual([interior.find((id) => id !== pxA.id) ?? -1]);
+});
+
+// S9 capture arm 2 (kex2d-event-substrate, F7 finding (b)): selecting a keyframe of either kind
+// leaves ZERO members selected of the other, in BOTH directions. This flow selects a FORCE
+// keyframe first, in both directions, so neither assertion can pass by the other kind having
+// already been empty (force.pw.ts's own "one selection model" flow reads as coverage here
+// vacuously — its strip keyframe is clicked AFTER a strip-body click already cleared `forces`
+// via `exclusiveStrip`, so its "the strip sweep clears it" comment never actually exercises
+// `selectStripKf`'s own sweep).
+//
+// MEASURED, NOT ASSUMED (S9's own open question — re-confirmed at claim, `d32a30f`): deleting
+// `exclusiveStripKf()`'s call from `selectStripKf` ALONE does NOT red this flow (exit 0) —
+// `keyframeDown`'s own strip branch re-calls `selectStrip(k.strip)` (which sweeps `forces` via
+// `exclusiveStrip`, an S1-era mechanism) whenever `editor.strip` differs from the clicked
+// keyframe's owner, and `editor.strip` is ALWAYS nulled by the time this flow re-clicks the
+// strip keyframe (the intervening force click ran `exclusiveForce`, which clears `editor.strips`
+// too). So finding (b), as a LIVE reachable defect, does not reproduce at `d32a30f`: the S1
+// mechanism already covers this specific path redundantly. `exclusiveStripKf()` stays as a
+// genuine structural fix (parity with `selectForce`'s own shape, and the only guard on
+// `selectStripKfs`'s marquee write, which never goes through `keyframeDown`'s precondition) —
+// RED-FIRST WITNESS for the property this arm actually pins: deleting BOTH `exclusiveStrip`'s
+// own `clearSel(editor.forces)` line AND `selectStripKf`'s `exclusiveStripKf()` call together
+// reds at `await expect.poll(forceSelIds).toEqual([]);` (the first strip-keyframe selection
+// after the force click) — exit 1, timeout: `forceSelIds()` stays `[0]`. Restored; green.
+// Deleting `selectStripKf`'s `exclusiveStripKf()` call ALONE does not red this arm (exit 0) —
+// recorded above as the measured finding.
+test("selecting a keyframe of either kind clears the other's selection, both directions (S9, F7 finding b)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+
+    // interior extent — [0, len) would coincide with the leading/trailing force keyframes'
+    // own stations (the seeded continuation points `seedForceBump` leaves at each end), and a
+    // selected strip's own curve carries a click-to-create hit layer across its whole extent
+    // (`chartCreate`'s T2), which would intercept a click aimed at a force diamond sitting on
+    // that boundary.
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    const stripPx = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
+    const sp = stripPx.find((s) => s.id === stripId);
+    if (!bandBb || !chartCanvasBb || !sp) throw new Error("layout not ready");
+    await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandBb.y + bandBb.height / 2);
+    await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfId);
+        })
+        .toBe(true);
+    const target = kfPx.find((k) => k.id === kfId);
+    if (!target) throw new Error("strip keyframe not projected");
+
+    const forceHit = page.locator(".fhit").first(); // force points render first in DOM order
+    const forceCenter = async (): Promise<{ x: number; y: number }> => {
+        const b = await forceHit.boundingBox();
+        if (!b) throw new Error("force diamond not laid out");
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    };
+
+    // select the force keyframe first.
+    const fp = await forceCenter();
+    await page.mouse.click(fp.x, fp.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+
+    // now select the strip keyframe — the direction ALREADY correct before S9 (`exclusiveForce`
+    // sweeps `stripKfs`), but re-checked here against a genuinely non-empty force selection.
+    await page.mouse.click(target.x, target.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await expect.poll(forceSelIds).toEqual([]);
+
+    // re-select the force keyframe again — the direction MISSING before S9: `selectStripKf`
+    // called no exclusive sweep at all, so the force keyframe stayed selected alongside it.
+    const fp2 = await forceCenter();
+    await page.mouse.click(fp2.x, fp2.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(stripKfSelIds).toEqual([]);
+});
+
+// S9 capture arm 3 (kex2d-event-substrate, F7): click, shift-click-toggle and empty-chart
+// deselect each assert the SAME observable for a force keyframe and a strip keyframe — the
+// round-2 standard's own symmetry check. force.pw.ts's "one selection model" flow already
+// drives click/shift-toggle for both kinds through the RULER/LANE rows' own empty-space click
+// (`startScrub`/`bandDown`); this arm is the CHART's own empty click — `marqueeUp`'s plain-
+// click branch — which section.pw.ts only ever drove for the strip side before S9.
+//
+// RED-FIRST WITNESS: deleted the `deselectKfKinds()` call from `marqueeUp`'s plain-click branch
+// (Timeline.svelte) — the flow reds at the first post-click `forceSelIds()` poll (exit 1,
+// timeout: stays non-empty — the force keyframe stayed selected after the empty-chart click).
+// Restored; green.
+test("click, shift-click-toggle and empty-chart deselect read the same for a force keyframe and a strip keyframe (S9, F7)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+
+    // interior extent — see the sibling arm's own note on why [0, len) is unsafe here.
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    const kfA = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartCanvasBb) throw new Error("layout not ready");
+    const bandY = bandBb.y + bandBb.height / 2;
+    const selectStripBody = async (): Promise<void> => {
+        const sp = (
+            (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+        ).find((s) => s.id === stripId);
+        if (!sp) throw new Error("created strip has no band px");
+        await page.mouse.click(chartCanvasBb.x + (sp.x0 + sp.x1) / 2, bandY);
+        await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
+    };
+    const kfPxOf = async (id: number): Promise<{ x: number; y: number }> => {
+        const pts = (await kexCall(page, "stripKfPx")) as { id: number; x: number; y: number }[];
+        const p = pts.find((k) => k.id === id);
+        if (!p) throw new Error(`strip keyframe ${id} not laid out`);
+        return p;
+    };
+    const forceCenter = async (): Promise<{ x: number; y: number }> => {
+        const b = await page.locator(".fhit").first().boundingBox();
+        if (!b) throw new Error("force diamond not laid out");
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    };
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("dock body not laid out");
+    const emptyX = dockBb.x + dockBb.width * 0.5;
+    const emptyY = dockBb.y + CHART_TOP + 4;
+
+    // ── FORCE: click selects, shift-click toggles it back out, click re-selects, empty-chart
+    // click clears — ONE path (`keyframeDown`/`marqueeUp`'s own `kfDesc`). ──
+    let fp = await forceCenter();
+    await page.mouse.click(fp.x, fp.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(fp.x, fp.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0); // toggled back OUT
+    fp = await forceCenter();
+    await page.mouse.click(fp.x, fp.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.mouse.click(emptyX, emptyY);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
+
+    // ── STRIP KEYFRAME: the SAME three steps, the SAME observable shape — ONE path. ──
+    await selectStripBody();
+    let a = await kfPxOf(kfA);
+    await page.mouse.click(a.x, a.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(a.x, a.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(0); // toggled back OUT
+    await selectStripBody();
+    a = await kfPxOf(kfA);
+    await page.mouse.click(a.x, a.y);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await page.mouse.click(emptyX, emptyY);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(0);
+});
+
 // S7 (kex2d-event-substrate, F5): the velocity value popup. A strip keyframe's typed `v`
 // field and the one-shot's typed `v` field read/edit through the SAME popover substrate —
 // the `.ptip`/`.fld` markup and `kfFieldEdit`/`oneShotFieldEdit`'s shared begin/set/commit

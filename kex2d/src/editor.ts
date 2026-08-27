@@ -926,6 +926,23 @@ function exclusiveOneShot(): void {
     editor.start = false;
 }
 
+/** clear the kinds a strip-keyframe select sweeps — S9's own fix for F7's finding (b): before,
+ *  `selectStripKf` called no exclusive sweep at all, so a force keyframe stayed selected
+ *  alongside a strip keyframe with nothing clearing across them (`exclusiveForce` already
+ *  cleared `stripKfs`, but nothing made the reverse true). Mirrors `exclusiveForce`'s list
+ *  minus `strips`/`stripKfs` themselves — a keyframe pick never clears its OWN owning strip or
+ *  set, unlike every other `exclusive*` sweep, which is why this isn't just `exclusiveStrip`. */
+function exclusiveStripKf(): void {
+    clearSel(editor.nodes);
+    clearSel(editor.forces);
+    clearSel(editor.sections);
+    editor.tangentEdit = null;
+    editor.forceEdit = null;
+    editor.forceHandle = null;
+    editor.start = false;
+    editor.oneShot = false;
+}
+
 /** clear every selection kind at once — the empty-ruler / empty-lane deselect
  *  (`kex2d-event-lane` S4, "one selection model": clicking empty space with no object under the
  *  pointer clears segments, spans, keyframes, and nodes together). Unlike the `exclusive*`
@@ -1088,19 +1105,37 @@ export function selectStrip(id: number | null, mode: SelectMode = "replace"): vo
     if (editor.strip === null) clearSel(editor.stripKfs);
 }
 
-/** select a velocity-strip keyframe by its stable id. "replace" (default) collapses the set to
- *  `id` (or clears it when null); "toggle" adds/removes it (shift-click, S4's booked multi-select
- *  — `selectForce`'s own two-form shape). a sub-selection layered on strip selection: the owning
- *  strip stays selected (its diamonds are drawn), and the set becomes the Delete/Escape target.
+/** select a velocity-strip keyframe by its stable id — `selectForce`'s own two-form shape,
+ *  reached through the same `Timeline.svelte kfDesc` descriptor `keyframeDown` calls for either
+ *  kind (S9, F7). "replace" (default) collapses the set to `id` (or clears it when null);
+ *  "toggle" adds/removes it (shift-click, S4's booked multi-select). either non-clearing form
+ *  sweeps the other top-level kinds (`exclusiveStripKf` — S9's fix for the missing cross-clear,
+ *  finding (b): before, nothing swept `forces` here, so a force keyframe could stay selected
+ *  alongside a strip keyframe). a sub-selection layered on strip selection: the owning strip
+ *  stays selected (its diamonds are drawn), and the set becomes the Delete/Escape target.
  *  selection state in editor, Delete through the history wrapper. */
 export function selectStripKf(id: number | null, mode: SelectMode = "replace"): void {
-    if (id === null || mode === "replace") setMember(editor.stripKfs, id);
-    else toggleMember(editor.stripKfs, id);
+    if (id === null || mode === "replace") {
+        setMember(editor.stripKfs, id);
+        if (id !== null) exclusiveStripKf();
+    } else {
+        exclusiveStripKf();
+        toggleMember(editor.stripKfs, id);
+    }
+}
+
+/** replace the strip-keyframe selection with a computed set (the marquee's atomic write) —
+ *  `selectForces`' own strip-keyframe form (S9, F7's finding (a): before, `marqueeUp` never
+ *  built a strip-keyframe candidate pool at all, so a rubber-band never took one). */
+export function selectStripKfs(ids: number[], active: number | null): void {
+    rebuild(editor.stripKfs, ids, active);
+    if (ids.length) exclusiveStripKf();
 }
 
 /** promote an already-selected strip keyframe to the ACTIVE member without disturbing set
- *  membership — `activateForce`'s strip-keyframe twin: grabbing a member of a multi-set makes it
- *  the single subject the popover binds to. no-op when `id` isn't a member. */
+ *  membership — `activateForce`'s strip-keyframe form, reached through the same `kfDesc`
+ *  descriptor: grabbing a member of a multi-set makes it the single subject the popover binds
+ *  to. no-op when `id` isn't a member. */
 export function activateStripKf(id: number): void {
     if (editor.stripKfs.ids.has(id)) editor.stripKfs.active = id;
 }

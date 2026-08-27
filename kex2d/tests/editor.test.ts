@@ -32,6 +32,7 @@ import {
     selectStart,
     selectStrip,
     selectStripKf,
+    selectStripKfs,
     setMember,
     toggleMember,
     writeHover,
@@ -377,6 +378,49 @@ describe("strip-keyframe multi-select", () => {
         selectStripKf(20, "toggle");
         selectSection(5);
         expect(editor.stripKfs.ids.size).toBe(0);
+    });
+
+    // ── S9 (F7, finding (b)): the two selection containers are disjoint and nothing cleared
+    // across them — `exclusiveForce` already swept `stripKfs`, but `selectStripKf` called no
+    // exclusive sweep of its own. Pure-function pin of `exclusiveStripKf`, both directions —
+    // the round-2 standard's own required capture arm (marquee/click cross-clear, both
+    // directions) lives in `harness/section.pw.ts`, driven through the real production
+    // handler; this is the legitimate unit-level pin of the shared helper the S1 seam law
+    // allows alongside it.
+    //
+    // MEASURED, NOT ASSUMED (S9's own open question): finding (b), as a LIVE defect reachable
+    // through `keyframeDown`'s own click path, does not reproduce at `d32a30f` — every
+    // production caller of `selectStripKf` is preceded, on the SAME click, by
+    // `keyframeDown`'s `if (editor.strip !== k.strip) selectStrip(k.strip)` precondition
+    // whenever the strip differs from the one currently selected, and it ALWAYS differs once
+    // a force keyframe has been selected in between (`exclusiveForce` nulls `editor.strips`),
+    // so `selectStrip`'s own `exclusiveStrip` sweep (S1-era, already clears `forces`) covers
+    // that specific path redundantly with `exclusiveStripKf()`. This unit test calls
+    // `selectStripKf` DIRECTLY (never through `keyframeDown`'s precondition), so it is the
+    // one place `exclusiveStripKf()`'s own mechanism is independently witnessable. ──
+    test("selecting a strip keyframe clears the force selection (S9, F7 finding b — was one-way)", () => {
+        selectForce(99);
+        expect(editor.force).toBe(99);
+        selectStripKf(10);
+        expect(editor.force).toBeNull(); // was left selected before S9
+        expect(editor.stripKf).toBe(10);
+    });
+
+    test("selecting a force keyframe clears the strip-keyframe selection (the reverse already held)", () => {
+        selectStrip(1);
+        selectStripKf(10);
+        expect(editor.stripKf).toBe(10);
+        selectForce(99);
+        expect(editor.stripKf).toBeNull();
+        expect(editor.force).toBe(99);
+    });
+
+    test("selectStripKfs (the marquee multi-write) sweeps the other kinds like selectForces does", () => {
+        selectForce(99);
+        selectStripKfs([10, 20], 20);
+        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
+        expect(editor.stripKf).toBe(20);
+        expect(editor.force).toBeNull();
     });
 });
 

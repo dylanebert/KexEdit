@@ -19,6 +19,16 @@
 // against the roster: every roster name has a pair, and every pair names a roster member.
 // (S5 note: adding "body-drag-carries-keyframes" widens the roster past S1's original five —
 // see the header comment above for why that one item and no other from F1/F2 belongs here.)
+// (S9 note, F7 round-2: "deselect" and "modifier-extend" are RE-POINTED at the unified branch
+// keyframeDown/marqueeUp collapsed to (their pre-S9 anchors no longer exist verbatim), and
+// "marquee-strip-select" is a genuinely NEW branch — marqueeUp's resolve loop reaching the
+// strip kind at all. The round-2 standard's OTHER newly-shared branch, `selectStripKf`'s own
+// `exclusiveStripKf()` cross-clear sweep (F7 finding (b)), is NOT paired here: it lives in
+// `src/editor.ts`, which this gate's single `tgt` (`src/Timeline.svelte`) cannot mutate, and —
+// measured, not assumed — deleting it alone does not red any reachable capture flow, because
+// `keyframeDown`'s own `selectStrip` precondition (an S1-era mechanism in Timeline.svelte)
+// already covers the cross-clear redundantly on every path this gate can drive. Its own
+// red-first witness is a unit-level pin (`tests/editor.test.ts`, S9), recorded there.)
 //
 // The arm of each pair is a capture flow (a `.pw.ts` test), and its red-first witness comes
 // from deleting the HANDLER's strip branch — never from mutating a shared helper, and never a
@@ -72,6 +82,9 @@ interface Pair {
 // production branch widening the shared `.hbandzone` hit rect so the one-shot glyph's own
 // precedence check (`classifyOneShotHit`, checked first in `bandDown`/`bandContext`) is
 // reachable for the glyph's left half at all, sourced from S8's own Validation bullet.
+// "marquee-strip-select" (S9, F7 finding (a)) extends the roster again: `marqueeUp`'s resolve
+// loop reaching the strip kind at all is a NEW shared branch (before S9, the loop didn't exist
+// — the candidate pool was `forcePts` alone), sourced from S9's own Validation bullet.
 const BEHAVIORS = [
     "snap",
     "deselect",
@@ -82,6 +95,7 @@ const BEHAVIORS = [
     "segment-resize-snap",
     "strip-resize-snap",
     "oneshot-hit-priority",
+    "marquee-strip-select",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -100,22 +114,42 @@ const PAIRS: Pair[] = [
         ],
     },
     {
+        // S9 (F7): re-pointed at the UNIFIED branch — `deselectKfKinds()`'s own loop, which
+        // now clears BOTH keyframe kinds through one call (`selectStripKf`'s twin limb, F7's
+        // own finding (c), collapsed into `keyframeDown`/`marqueeUp`'s shared `kfDesc`). The
+        // pre-S9 anchor (a bare `selectStripKf(null)` call) no longer exists verbatim.
         name: "deselect",
-        flow: "strip keyframe deselect on empty chart click",
+        flow: "click, shift-click-toggle and empty-chart deselect read the same for a force keyframe and a strip keyframe (S9, F7)",
         mutations: [
             {
-                old: "            selectStripKf(null); // also clear the strip-keyframe sub-selection (S1: the broken",
-                new: "            // MUTATED: marqueeUp strip-keyframe deselect branch deleted",
+                old: '        if (!shift) {\n            selectSection(null);\n            deselectKfKinds();\n        }\n        return;\n    }',
+                new: '        if (!shift) {\n            selectSection(null);\n            // MUTATED: deselectKfKinds() call deleted\n        }\n        return;\n    }',
             },
         ],
     },
     {
+        // S9 (F7): re-pointed at the UNIFIED branch — `keyframeDown`'s single drag-set-build
+        // line now serves both kinds through `desc.pts`/`desc.sel`, collapsing the pre-S9 twin
+        // (`stripKfPts.filter((sp) => set.has(sp.id))` vs `forcePts.filter((fp) => set.has(fp.id))`)
+        // that no longer exists verbatim.
         name: "modifier-extend",
         flow: "strip keyframe multi-member drag",
         mutations: [
             {
-                old: "        const members = set.size > 1 ? stripKfPts.filter((sp) => set.has(sp.id)) : [k];",
-                new: "        const members = [k]; // MUTATED: multi-member drag set collapsed to the clicked one",
+                old: "    const members = set.size > 1 ? desc.pts.filter((m) => set.has(m.id)) : [pt];",
+                new: "    const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
+            },
+        ],
+    },
+    {
+        // S9 (F7 finding (a)): the marquee's own resolve loop reaching the strip kind at all —
+        // before S9, `marqueeUp` never built a strip-keyframe candidate pool (`forcePts` alone).
+        name: "marquee-strip-select",
+        flow: "marquee over a strip keyframe selects it, shift-marquee toggles it (S9, F7 finding a)",
+        mutations: [
+            {
+                old: 'const KF_KINDS: readonly KfKind[] = ["force", "strip"];',
+                new: 'const KF_KINDS: readonly KfKind[] = ["force"]; // MUTATED: marquee never reaches the strip kind',
             },
         ],
     },
