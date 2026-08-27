@@ -68,6 +68,7 @@ import {
     commit,
     commitLength,
     createForce,
+    deleteKeyframes,
     deleteOneShot,
     deleteStrips,
     deleteStripKeyframes,
@@ -4252,8 +4253,25 @@ onMount(() => {
                 else selectStrip(null);
             } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
-                if (editor.stripKf !== null) deleteSelectedStripKf();
-                else deleteSelectedStrip();
+                if (editor.stripKf !== null) {
+                    if (editor.forces.ids.size > 0) {
+                        // S3: mixed-set Delete — stripKf + force in one history gesture so one
+                        // undo restores every member across kinds. the all-or-nothing editability
+                        // check mirrors the single-kind paths.
+                        if (!forceSetEditable(ecs)) return;
+                        const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
+                        if (stripEid === null) return;
+                        if (!stripEditableAt(Strip.start.get(stripEid))) return;
+                        skipLanding();
+                        deleteKeyframes(history, ecs, [...editor.forces.ids], [...editor.stripKfs.ids]);
+                        selectForce(null);
+                        selectStripKf(null);
+                    } else {
+                        deleteSelectedStripKf();
+                    }
+                } else {
+                    deleteSelectedStrip();
+                }
             } else if (
                 editor.stripKf !== null &&
                 editor.hover === "timeline" &&
@@ -4290,6 +4308,33 @@ onMount(() => {
                 const dv = e.key === "ArrowUp" ? stepV : e.key === "ArrowDown" ? -stepV : 0;
                 const lo = Strip.start.get(stripEid);
                 const len = Strip.end.get(stripEid);
+                if (editor.forces.ids.size > 0) {
+                    // S3: mixed-set nudge — station (ds) moves every member; value (dv) moves
+                    // only the active kind's (stripKf), per the locked axis law. one gesture
+                    // (`beginKeyframeMoves`) so one undo restores all.
+                    const forceMembers = forcePts.filter((fp) => editor.forces.ids.has(fp.id));
+                    if (forceMembers.length > 0 && forceSetEditable(ecs)) {
+                        beginKeyframeMoves(
+                            ecs,
+                            forceMembers.map((m) => m.id),
+                            members.map((m) => m.id),
+                        );
+                        for (const w of nudgeKeyframes(
+                            forceMembers.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
+                            ds,
+                            0,
+                        ))
+                            setForcePoint(ecs, w.id, w.s, w.v);
+                        for (const w of nudgeKeyframes(
+                            members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
+                            ds,
+                            dv,
+                        ))
+                            setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
+                        commit(history);
+                        return;
+                    }
+                }
                 beginStripKeyframeMoves(
                     ecs,
                     members.map((m) => m.id),
@@ -4332,13 +4377,28 @@ onMount(() => {
                 });
                 if (act !== null) {
                     e.preventDefault();
-                    // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
-                    // left-hand top row, one hand on the keyboard while the other mouses; the old
-                    // `L` was unreachable that way and is removed, not aliased), restricted to the
-                    // pinning section's own keys (a lock on another section's key would be dead
-                    // state — the solve never reads it). the mode-only menu row is the mouse path
-                    // to the same toggle.
-                    keyframeActs(ecs)[act]();
+                    if (act === "remove" && editor.stripKfs.ids.size > 0) {
+                        // S3: mixed-set Delete — force + stripKf in one history gesture so one
+                        // undo restores every member across kinds. the all-or-nothing editability
+                        // check mirrors the single-kind paths: force via `forceSetEditable`, stripKf
+                        // via the owning strip's station (`stripEditableAt`).
+                        if (!forceSetEditable(ecs)) return;
+                        const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
+                        if (stripEid === null) return;
+                        if (!stripEditableAt(Strip.start.get(stripEid))) return;
+                        skipLanding();
+                        deleteKeyframes(history, ecs, [...editor.forces.ids], [...editor.stripKfs.ids]);
+                        selectForce(null);
+                        selectStripKf(null);
+                    } else {
+                        // `Q` = the lock/free toggle (kex2d stage 6 — reachability is the criterion:
+                        // left-hand top row, one hand on the keyboard while the other mouses; the old
+                        // `L` was unreachable that way and is removed, not aliased), restricted to the
+                        // pinning section's own keys (a lock on another section's key would be dead
+                        // state — the solve never reads it). the mode-only menu row is the mouse path
+                        // to the same toggle.
+                        keyframeActs(ecs)[act]();
+                    }
                 } else if (
                     editor.hover === "timeline" &&
                     (e.key === "ArrowLeft" ||
@@ -4361,6 +4421,40 @@ onMount(() => {
                     const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
                     const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                     const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
+                    if (editor.stripKfs.ids.size > 0) {
+                        // S3: mixed-set nudge — station (ds) moves every member; value (dg) moves
+                        // only the active kind's (force), per the locked axis law. one gesture
+                        // (`beginKeyframeMoves`) so one undo restores all.
+                        const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
+                        if (stripEid !== null && stripEditableAt(Strip.start.get(stripEid))) {
+                            const skMembers = stripKeyframes(ecs, editor.strip!).filter((k) =>
+                                editor.stripKfs.ids.has(k.id),
+                            );
+                            if (skMembers.length > 0) {
+                                const lo = Strip.start.get(stripEid);
+                                const len = Strip.end.get(stripEid);
+                                beginKeyframeMoves(
+                                    ecs,
+                                    members.map((m) => m.id),
+                                    skMembers.map((m) => m.id),
+                                );
+                                for (const w of nudgeKeyframes(
+                                    members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
+                                    ds,
+                                    dg,
+                                ))
+                                    setForcePoint(ecs, w.id, w.s, w.v);
+                                for (const w of nudgeKeyframes(
+                                    skMembers.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
+                                    ds,
+                                    0,
+                                ))
+                                    setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
+                                commit(history);
+                                return;
+                            }
+                        }
+                    }
                     beginForceMoves(
                         ecs,
                         members.map((m) => m.id),
