@@ -135,16 +135,15 @@ const PAIRS: Pair[] = [
         ],
     },
     {
-        // S9 (F7): re-pointed at the UNIFIED branch — `deselectKfKinds()`'s own loop, which
-        // now clears BOTH keyframe kinds through one call (`selectStripKf`'s twin limb, F7's
-        // own finding (c), collapsed into `keyframeDown`/`marqueeUp`'s shared `kfDesc`). The
-        // pre-S9 anchor (a bare `selectStripKf(null)` call) no longer exists verbatim.
+        // S4: re-pointed at the unified `deselectAll()` call — S4 replaced the pre-S4 partial
+        // sweep (`selectSection(null); deselectKfKinds()`) with one `deselectAll()` that clears
+        // every kind. The pre-S4 anchor (`deselectKfKinds()`) no longer exists verbatim.
         name: "deselect",
         flow: "click, shift-click-toggle and empty-chart deselect read the same for a force keyframe and a strip keyframe (S9, F7)",
         mutations: [
             {
-                old: "        if (!shift) {\n            selectSection(null);\n            deselectKfKinds();\n        }\n        return;\n    }",
-                new: "        if (!shift) {\n            selectSection(null);\n            // MUTATED: deselectKfKinds() call deleted\n        }\n        return;\n    }",
+                old: "        if (!shift) deselectAll();\n        return;\n    }",
+                new: "        if (!shift) {} // MUTATED: deselectAll() call deleted\n        return;\n    }",
             },
         ],
     },
