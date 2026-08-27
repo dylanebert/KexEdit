@@ -756,7 +756,11 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   editing` stage 8): `controls.ts`'s keyboard path (`keys.ts sectionKeyAct`'s playhead-exact
   `cutAt`) AND `Timeline.svelte`'s `clipMenu` (the menu's cursor→playhead snap, `timeline.ts
   snapCutToPlayhead`) both call it directly — one call site, not two paths that happen to agree.
-- `editor.ts` — ephemeral UI state: one unified selection container — an ordered set of
+- `editor.ts` — **`_members` + `_active` here are the only selection storage in kex2d, and a
+  per-kind selection *field* is the regression this substrate exists to prevent — no type blocks
+  it** (`tsc` compiles a reintroduced `nodes: Selection` data property clean, measured), so
+  `tests/substrate.oracle.ts` is the only detector and it runs in no gate: run it by hand
+  whenever the selection block changes. Ephemeral UI state: one unified selection container — an ordered set of
   `{kind, id}` members (`Member`) plus one `active: {kind, id}` — over seven kinds (`node`,
   `force`, `section`, `strip`, `stripKf`, `start`, `oneShot`). The per-kind views
   (`nodes`, `forces`, `sections`, `strips`, `stripKfs` — each an `ids` set plus an `active`
@@ -764,8 +768,9 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   storage. A plain click replace-selects (clearing every member of every kind); shift/marquee
   extend across kinds. The `exclusive*` family is deleted — its observable (selecting into one
   kind clears the others) is preserved by replace-select clearing all members. The active
-  member's kind (`activeKind()`) routes the two window-keydown handlers so a key press never
-  double-fires; the old mechanism (per-kind containers that were mutually exclusive) is gone.
+  member's kind (`activeKind()`) routes every selection-reading keydown handler so a key press
+  never double-fires (the class and its enumerating query are `kex2d/AGENTS.md`'s Hard gotchas);
+  the old mechanism (per-kind containers that were mutually exclusive) is gone.
   `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT another selection kind — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
   right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Pin` on a
@@ -1330,11 +1335,14 @@ two subjects, so no divergence can red it), and arming a shared helper while the
 path (`marqueeUp`, `keyframeDown`'s multi-member drag, the keyboard handler) stays unpinned.
 
 **The instrument is a committed mutation gate, `bun run mutate`** (`kex2d/harness/mutate.ts`):
-one (production strip-branch mutation, capture arm) pair per named behavior — snap, deselect,
-modifier-extend, overlap refusal, nudge — enumerated against its own roster independently of the
-pairing table, so a behavior carrying no pairing reds the gate itself. Exhaustiveness against an
-enumerated source of truth, never a sample. `bun test` reaches no harness file, which is why this
-is a package script rather than a `bun test` entry point.
+one (production strip-branch mutation, capture arm) pair per named behavior, enumerated against
+its own roster independently of the pairing table, so a behavior carrying no pairing reds the gate
+itself — **read that roster from the instrument's own `BEHAVIORS`, never from a count or list
+written here**, which has gone stale every time one was. Exhaustiveness against an enumerated
+source of truth, never a sample. `bun test` reaches no harness file, which is why this is a
+package script rather than a `bun test` entry point. **Its single `tgt` is `src/Timeline.svelte`,
+so no `src/editor.ts` branch can carry a pairing** — a criterion demanding one for a substrate
+branch is unsatisfiable by construction and owes a unit or capture arm instead.
 
 **The general law — a `.svelte` module has no importable export, so handlers are reachable
 only from capture flows — is `kex2d-harness.md`'s (Flow-authoring laws); revise it there.** The

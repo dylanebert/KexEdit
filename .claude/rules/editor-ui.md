@@ -206,13 +206,18 @@ shape:
   strip keyframe's owning strip stays). Keys route off the active member's kind, not off which
   container is non-empty.
   Edit sub-modes (tangent/handle edit) collapse the selection to their one subject on entry.
-  Removing the active promotes the **last-inserted survivor**. Scalar accessors read the active.
+  Removing the active promotes the **last-inserted survivor**. Each scalar accessor falls back to
+  its own kind's last member, so several read non-null at once — the active member governs
+  keyboard routing, and a single-kind accessor is never "the selection".
 - **Promote vs replace**: a click, grab, or right-click on a set member keeps the set and promotes
   the member to active; on a non-member it replace-selects. One rule across menus and drag anchors.
 - **Multi context UI** (contextual chrome on a multi-set was tried across four feel rounds and
   rejected each time; closed): the viewport shows **no contextual controls** on a multi-set —
   ring, knobs, and readout all hide; single-select context on
-  a multi selection is invalid. The timeline's typed-field popover is single-keyframe context too,
+  a multi selection is invalid. Under one container, "multi" is a property of the whole member
+  set: any two-member selection, cross-kind included, is a multi-set, and a per-kind
+  `ids.size > 1` predicate reads a two-member cross-kind selection as single-select.
+  The timeline's typed-field popover is single-keyframe context too,
   so it hides on a multi-set exactly as the viewport ring does — standard multi-select shows no
   single-keyframe context, on any surface. No shared-delta readout, no count chip, no Mixed
   sentinel — AE shows nothing extra for a multi-keyframe selection; the members' highlight with the
@@ -229,7 +234,10 @@ shape:
   constrain the channel, never resolve it against one privileged member. A drag spanning both
   keyframe domains (force and strip) moves station for every member and value for none; a
   single-domain multi-select keeps its full vertical channel. The constraint reads off set
-  composition, not kind.
+  composition, not kind. **A set spanning two *surfaces* is scoped instead of constrained:** a
+  node plus a keyframe nudges only the active kind's members, and only while the pointer is over
+  that kind's surface, because station is not a shared axis there — a scope law, not the
+  mixed-domain constraint above, which is about unlike units on one shared axis.
 - **Geo group move = the same Δlength/Δangle applied per node in its own polar frame** (Blender's
   Individual Origins), the snap quantizing the *delta*, Ctrl bypassing. Ascending chain walk with a
   running-prev anchor inside one pass; the gesture **reads from a frozen gesture-start chain

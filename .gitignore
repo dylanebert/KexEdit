@@ -19,6 +19,10 @@ build/
 .svelte-kit/
 *.tsbuildinfo
 
+# Harness output (capture runs, gate logs) — both dirty the checkout and refuse a ship preflight
+test-results/
+scratch/
+
 # OS
 .DS_Store
 Thumbs.db

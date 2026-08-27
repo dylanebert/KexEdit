@@ -253,7 +253,11 @@ job is to summon a person rather than to fail a run.
 - **A `.svelte` module has no importable export, so production handlers are reachable only from
   capture flows:** a unit arm over a shared pure helper is a legitimate pin and never discharges a
   handler-path criterion — that criterion's arm is a capture flow whose red-first witness mutates
-  the *handler's* branch, not the helper.
+  the *handler's* branch, not the helper. **`bun test` has no DOM either, so a handler behind
+  `window.addEventListener` inside `onMount` is invisible to it** — reverting a repaired keydown
+  guard to its double-fire form left `bun test` at 1705 pass / 0 fail. A criterion whose subject
+  is a key press owes a `.pw.ts` arm asserting an **edit count** (authored readback or history
+  depth); a unit arm over a routing predicate is not a substitute for one.
 - **A multi-flow red is presumptively host-level.** Unrelated flows failing together in one
   full run (observed ~1/18; never reproduced in isolation or ×12 consecutive) is a run-level
   signature on the shared GPU bridge — re-run once before debugging any flow; if it recurs,

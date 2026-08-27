@@ -324,11 +324,15 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
   canvas/keyboard listeners and returns a teardown App calls on unmount. Don't move this back to a
   `System` with a module-level `attached` flag — that goes stale across a remount (a fresh canvas
   keeps the old flag and never re-binds, so input silently dies).
-- **Two window-keydown handlers, disambiguated by the active member's kind.**
+- **Selection keys route off `activeKind()`, never off which per-kind accessor is non-null** —
+  each accessor falls back to its own kind's last member, so several read non-null at once.
   `controls.ts` (node + section keys) and `Timeline.svelte` (force/strip/stripKf/oneShot keys)
-  both listen on `window`. Each handler guards on `activeKind()` — the active member's kind,
-  not which container is non-empty (there is one container now). Only one handler's guard
-  passes on a mixed selection, so a key press never double-fires. The observable (one key
+  are the two selection-reading handlers on `window`; only one handler's guard passes on a mixed
+  selection, so a key press never double-fires. **The class is every
+  `window.addEventListener("keydown")` under `kex2d/src` plus every reader treating a
+  single-kind accessor as "the selection" — enumerate it by that query, never from a count
+  written here** (a remembered count of two is what made this unit miss `App.svelte`'s
+  listeners twice). The observable (one key
   event = one edit) is pinned by this routing; the old mechanism (per-kind containers that
   were mutually exclusive) is gone, replaced by one unified member set + `activeKind()`.
 - **Never hold a raw eid across a snapshot restore.** `restoreSection`/`restoreAll` destroy and
