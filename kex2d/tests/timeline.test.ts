@@ -60,7 +60,7 @@ import {
     sectionForces,
     stripKeyframes,
 } from "../src/track";
-import { deselectAll, editor, selectStripKf, setMember } from "../src/editor";
+import { deselectAll, editor, selectForce, selectStripKf } from "../src/editor";
 
 // the distance-domain lead-out floor — most of these tests exercise the pure math over a
 // generic axis unit, so they pass this in wherever `floor` used to default to `MARGIN_M`.
@@ -1422,13 +1422,13 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
     test("deselect: `selectStripKf(null)` clears the strip keyframe selection (the `marqueeUp` fix)", () => {
         try {
             // set up a strip keyframe selection directly
-            setMember(editor.stripKfs, 7);
+            selectStripKf(7);
             expect(editor.stripKf).toBe(7);
             // the actual fix: `marqueeUp` calls `selectStripKf(null)` to clear the sub-selection
             selectStripKf(null);
             expect(editor.stripKf).toBeNull();
             // the force side: `marqueeUp` also calls `selectForce(null)` — same observable
-            setMember(editor.forces, 42);
+            selectForce(42);
             expect(editor.force).toBe(42);
             // `selectForce(null)` is the force-side twin (already existed at base)
             editor.force = null;
