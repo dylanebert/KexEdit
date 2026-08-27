@@ -6,13 +6,15 @@ import { join } from "node:path";
 // query — NOT a behavioral sample — asserting the substrate's structural shape:
 //  (a) zero `exclusive*` function definitions in `src/editor.ts` (the family is deleted, not
 //      repaired — its observable preserved by replace-select clearing all members);
-//  (b) exactly one selection container declared (the unified `_members` Map), not the five
-//      per-kind `Selection` records that used to be storage;
-//  (c) the per-kind container cannot be reintroduced without a type change: `emptySel` is gone
-//      (a reintroduced `nodes: emptySel()` is a compile error), and the `EditorState` interface
-//      carries no stored `Selection` field — `nodes`/`forces`/`sections`/`strips`/`stripKfs`
-//      are satisfied by getters, so adding a stored `Selection` property alongside them is the
-//      only path back, and that is a type change the oracle names.
+//  (b) exactly one `_members` Map declaration by that literal name — the unified container.
+//      the arm is name-anchored: a second module-level container under any other name is NOT
+//      caught, and a reintroduced per-kind *data* field typechecks cleanly (TS interfaces do
+//      not distinguish accessor from data property, so the `EditorState` interface alone cannot
+//      block `nodes: Selection` as storage alongside the getter). the arm enforces what a
+//      literal-name source query can; the rest is a type-system gap, not a structural claim;
+//  (c) the old storage primitives are gone: `emptySel`, `clearSel`, and `rebuild` are deleted,
+//      so a reintroduced `nodes: emptySel()` is a compile error. the per-kind accessors are
+//      getters over the unified set, not stored fields.
 //
 // Run explicitly (`bun test ./tests/substrate.oracle.ts`): a source query, not a behavioral arm.
 
@@ -39,6 +41,8 @@ describe("kex2d-selection-substrate S1: structural oracle", () => {
     test("(b) exactly one selection container declared — the unified `_members` Map", () => {
         // the unified storage: one Map<string, Member> + one _active. the five per-kind
         // Selection records (nodes/forces/sections/strips/stripKfs) are no longer storage.
+        // the match is name-anchored on the literal token `_members` — a second container under
+        // any other name is NOT caught (see the header comment for the honest scope).
         const memberMaps = src.match(/const\s+_members\s*=\s*new\s+Map\s*</g);
         expect(memberMaps?.length).toBe(1);
     });

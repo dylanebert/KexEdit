@@ -1295,6 +1295,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 | `bun test ./tests/forcegeo.oracle.ts` | `geofit.ts` — the force→geo dual-budget fit | ~2 s |
 | `bun test ./tests/polish.oracle.ts` | `polish.ts` / `fit.ts` — full-free corpus, field-wise against a stamp-matched golden | ~1 s |
 | `bun test ./tests/optimize.oracle.ts` | `optimize.ts` — the corpus-scale solve claims | <1 s |
+| `bun test ./tests/substrate.oracle.ts` | `editor.ts` — the unified selection substrate's structural shape | <1 s |
 
 The `./` prefix is load-bearing — a bare path is a name filter to bun and silently matches nothing.
 

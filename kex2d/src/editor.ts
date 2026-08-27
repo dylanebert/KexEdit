@@ -20,6 +20,7 @@ import {
     setBakeFreeze,
     setBakeLanding,
     stripAt,
+    stripKeyframeAt,
 } from "./track";
 import type { TangentSide } from "./tangents";
 
@@ -31,7 +32,14 @@ export type Surface = "viewport" | "timeline";
  *  size-1 case (the substrate, not a parallel path). the node kind holds live eids (resolved fresh
  *  each pick); the force and section kinds hold stable ids (`Force.id` / `Section.id`), per the
  *  stable-form recycle-safety law. members are insertion-ordered (JS Set), so toggling out the active
- *  member promotes the most-recently-added survivor deterministically. */
+ *  member promotes the most-recently-added survivor deterministically.
+ *
+ *  the editor's per-kind views (`editor.nodes`, `editor.forces`, etc.) return a fresh `Selection`
+ *  per access whose `ids` and `active` are getter-only properties — a new `Set` is allocated on
+ *  each `ids` read, and `active` is derived from the unified member set. a direct assignment like
+ *  `editor.forces.active = 5` type-checks (the interface declares `active: number | null`) but
+ *  throws at runtime (the property has no setter on the getter-only view). use the select* APIs
+ *  (`selectForce`, `selectForces`, etc.) to mutate selection state. */
 export interface Selection {
     /** the selected members — eids (node kind) or stable ids (force/section kind). */
     ids: Set<number>;
@@ -1044,7 +1052,7 @@ export function select(eid: number | null, mode: SelectMode = "replace"): void {
  *  only (the caller sweeps the rest for a full deselect, matching empty-click). */
 export function selectNodes(ids: number[], active: number | null): void {
     selectSet("node", ids, active);
-    if (ids.length) reconcileTangent();
+    reconcileTangent();
 }
 
 /** replace the force selection with a computed set (the marquee's atomic write) — the force
@@ -1052,7 +1060,7 @@ export function selectNodes(ids: number[], active: number | null): void {
 export function selectForces(ids: number[], active: number | null): void {
     selectSet("force", ids, active);
     editor.forceHandle = null;
-    if (ids.length) reconcileForceEdit();
+    reconcileForceEdit();
 }
 
 /** enter tangent-edit mode on a node — the summon (double-click). collapses the node selection to
@@ -1303,6 +1311,13 @@ type SelSnapshot =
     | { kind: "force"; ids: number[]; active: number; editing: boolean }
     | { kind: "section"; ids: number[]; active: number }
     | { kind: "strip"; ids: number[]; active: number }
+    | {
+          kind: "stripKf";
+          ids: number[];
+          active: number;
+          stripIds: number[];
+          stripActive: number | null;
+      }
     | { kind: "start" }
     | { kind: "oneShot" }
     | null;
@@ -1350,6 +1365,14 @@ export const selectionHook = {
                     kind: "strip",
                     ids: [...kindIds("strip")],
                     active: _active.id,
+                };
+            case "stripKf":
+                return {
+                    kind: "stripKf",
+                    ids: [...kindIds("stripKf")],
+                    active: _active.id,
+                    stripIds: [...kindIds("strip")],
+                    stripActive: kindActiveId("strip"),
                 };
             case "start":
                 return { kind: "start" };
@@ -1409,6 +1432,18 @@ export const selectionHook = {
                 clearAllMembers();
                 for (const id of filteredIds) memberAdd("strip", id);
                 if (memberHas("strip", s.active)) _active = { kind: "strip", id: s.active };
+                else _active = lastMemberOfAny();
+                break;
+            }
+            case "stripKf": {
+                const filteredStripIds = s.stripIds.filter((id) => stripAt(ecs, id) !== null);
+                const filteredKfIds = s.ids.filter((id) => stripKeyframeAt(ecs, id) !== null);
+                clearAllMembers();
+                for (const id of filteredStripIds) memberAdd("strip", id);
+                for (const id of filteredKfIds) memberAdd("stripKf", id);
+                if (memberHas("stripKf", s.active)) _active = { kind: "stripKf", id: s.active };
+                else if (s.stripActive !== null && memberHas("strip", s.stripActive))
+                    _active = { kind: "strip", id: s.stripActive };
                 else _active = lastMemberOfAny();
                 break;
             }

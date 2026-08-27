@@ -989,10 +989,11 @@ $effect(() => {
 // while the single-subject rows (Custom) gray out. The typed-field popover is single-keyframe
 // context too, and hides on a multi-set exactly as the viewport ring does (editor-ui.md multi law):
 // standard multi-select shows no single-keyframe context. Read `tick` directly (not through
-// `selForceSet`): `editor.forces.ids` is mutated IN PLACE (`rebuild`/`toggleMember`/`setMember`
-// never reassign the Set), so a derived layered on top of `selForceSet`'s reference never sees a
-// changed value to invalidate on — only a derived reading the mutable size straight off `tick`
-// re-evaluates every frame.
+// `selForceSet`): `editor.forces.ids` is a fresh `Set` per access (a getter over the unified
+// member set), so a derived layered on a held reference never sees a changed value to invalidate
+// on — only a derived reading the mutable size straight off `tick` re-evaluates every frame.
+// `void tick` is what makes this `$derived.by` re-run at all: a plain getter is not reactively
+// tracked either way, so the `void tick` dependency is the re-evaluation trigger.
 const multiForce = $derived.by((): boolean => {
     void tick;
     return editor.forces.ids.size > 1;
