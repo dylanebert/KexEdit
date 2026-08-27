@@ -220,9 +220,14 @@ IS the app (`track.ts`, `history.ts`, `geoforce.ts`, `App.svelte`/`Timeline.svel
 ## Editing model
 
 A track is a chain of sections; each is geo or force, authored by its idiom (below). Direct
-manipulation, no sub-tools. Four mutually-exclusive selections (`editor.ts`): a node, a force
-point, a whole section, or the START anchor (the initial-speed handle) — selecting one clears the
-others, so a key press never fights over its target. Section selection is a **highlight + the
+manipulation, no sub-tools. One selection container (`editor.ts`): a unified ordered set of
+`{kind, id}` members — a node, a force point, a whole section, a velocity strip, a strip
+keyframe, the START anchor, or the track-start one-shot — plus one active member whose kind
+routes the keydown handlers (the Blender active-vs-selected split). A plain click
+replace-selects (clearing every member of every kind); shift/marquee extend across kinds, so
+a selection can span a force keyframe and a strip keyframe at once. A key press never
+double-fires because only the active kind's handler guard passes, not because the containers
+are mutually exclusive (they are one container now). Section selection is a **highlight + the
 context-menu target only**; it never gates authoring (force points are added by cursor position,
 nodes dragged in the viewport).
 
@@ -315,12 +320,13 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
   canvas/keyboard listeners and returns a teardown App calls on unmount. Don't move this back to a
   `System` with a module-level `attached` flag — that goes stale across a remount (a fresh canvas
   keeps the old flag and never re-binds, so input silently dies).
-- **Two window-keydown handlers, disambiguated by selection.** `controls.ts` (node + section keys)
-  and `Timeline.svelte` (force-point Del/Esc) both listen on `window`. They don't check kind — each
-  guards on its OWN live selection (`editor.selection` / `editor.section` / `editor.force`), which are
-  mutually exclusive (`editor.ts` clears the others on select). Keep that guard: a kind check instead
-  could double-fire. (Node/section/force exclusivity, not the strip-vs-force keyframe exclusivity
-  refuted at `kex2d-event-substrate`'s close — see `kex2d-map.md`'s `editor.ts` entry.)
+- **Two window-keydown handlers, disambiguated by the active member's kind.**
+  `controls.ts` (node + section keys) and `Timeline.svelte` (force/strip/stripKf/oneShot keys)
+  both listen on `window`. Each handler guards on `activeKind()` — the active member's kind,
+  not which container is non-empty (there is one container now). Only one handler's guard
+  passes on a mixed selection, so a key press never double-fires. The observable (one key
+  event = one edit) is pinned by this routing; the old mechanism (per-kind containers that
+  were mutually exclusive) is gone, replaced by one unified member set + `activeKind()`.
 - **Never hold a raw eid across a snapshot restore.** `restoreSection`/`restoreAll` destroy and
   respawn a section's nodes and the eid allocator recycles LIFO, so a held eid remaps to a
   DIFFERENT node — hold the stable `(section, order)` instead. The injected **`SelectionHook`**

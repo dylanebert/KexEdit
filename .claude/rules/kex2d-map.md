@@ -756,19 +756,17 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   editing` stage 8): `controls.ts`'s keyboard path (`keys.ts sectionKeyAct`'s playhead-exact
   `cutAt`) AND `Timeline.svelte`'s `clipMenu` (the menu's cursor→playhead snap, `timeline.ts
   snapCutToPlayhead`) both call it directly — one call site, not two paths that happen to agree.
-- `editor.ts` — ephemeral UI state: a `Selection` set per kind (`nodes`, `forces`, `sections`,
-  `strips`, `stripKfs` — each an `ids` set plus an `active` anchor, never a bare id) plus the two
-  boolean anchors `start` (the track START / drag-coefficient popover) and `oneShot` (S3's track-start
-  velocity event) + their setters. All of them are **mutually exclusive** (selecting into one clears
-  the others); the enforcement is the `exclusive*` family, one per kind, each clearing every other —
-  read that family for the membership rather than a count here, since the set has grown three times
-  (S2's `strips`, S3's `oneShot`, and `stripKfs`) and every prose count of it has gone stale.
-  **This exclusivity between the two keyframe kinds (`forces`/`stripKfs`) is refuted as settled law
-  by the feel-gate round-3 verdict (2026-08-27, `kex2d-event-substrate` close):** a strip keyframe
-  still selects/deselects unlike every other keyframe and multi-select doesn't cross the two kinds —
-  they should not be siloed. Open for a dedicated re-scope unit; the node/section/force split above
-  is unaffected.
-  `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT another exclusive state — entered by double-clicking a node (`enterTangentEdit`, summons its
+- `editor.ts` — ephemeral UI state: one unified selection container — an ordered set of
+  `{kind, id}` members (`Member`) plus one `active: {kind, id}` — over seven kinds (`node`,
+  `force`, `section`, `strip`, `stripKf`, `start`, `oneShot`). The per-kind views
+  (`nodes`, `forces`, `sections`, `strips`, `stripKfs` — each an `ids` set plus an `active`
+  anchor) and the two booleans (`start`, `oneShot`) are derived reads over this set, not
+  storage. A plain click replace-selects (clearing every member of every kind); shift/marquee
+  extend across kinds. The `exclusive*` family is deleted — its observable (selecting into one
+  kind clears the others) is preserved by replace-select clearing all members. The active
+  member's kind (`activeKind()`) routes the two window-keydown handlers so a key press never
+  double-fires; the old mechanism (per-kind containers that were mutually exclusive) is gone.
+  `tangentEdit` (eid or null) is a sub-mode layered on node selection, NOT another selection kind — entered by double-clicking a node (`enterTangentEdit`, summons its
   handles); a different-subject select, Esc, or click-away exits it (`exitTangentEdit`). Two
   right-click menus: `context` (the section menu — the ONE kind-fitted `Convert` row, `Pin` on a
   force section, then `Reset` and `Delete`; inside a live pin session on that section
