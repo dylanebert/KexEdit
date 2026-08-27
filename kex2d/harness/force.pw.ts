@@ -162,8 +162,8 @@ test("force authoring flow", async ({ page, boot }) => {
     await expect.poll(nodeCount).toBe(0);
     await expect.poll(forceCount).toBe(2); // the two seeds (stage B), not an empty profile
     expect(await forces()).toEqual([
-        { s: 0, g: 1 }, // (0, F_entry) — F_entry = DEFAULT_G, the track-start fallback
-        { s: 24, g: 1 }, // (length, F_entry) — length = DEFAULT_FORCE_LEN (EXTEND_DIST)
+        { id: 0, s: 0, g: 1 }, // (0, F_entry) — F_entry = DEFAULT_G, the track-start fallback
+        { id: 1, s: 24, g: 1 }, // (length, F_entry) — length = DEFAULT_FORCE_LEN (EXTEND_DIST)
     ]);
     // the flat force track BAKED — `tTotal > 0` was already true of the pre-convert geo bake, so
     // only a CHANGE proves the shot below shows the converted track (the bake-readiness law).
@@ -359,7 +359,7 @@ test("force keyframe arrow-nudge", async ({ page, boot }) => {
     await seedHill(page);
     await frameTimeline(page);
 
-    const forces = () => kexCall(page, "forces") as Promise<{ s: number; g: number }[]>;
+    const forces = () => kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
     const forceCount = () => kexCall(page, "forceCount");
     const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
     const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
