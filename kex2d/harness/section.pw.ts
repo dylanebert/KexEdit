@@ -3975,7 +3975,7 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
     expect(sel).toContain(kfB);
 });
 
-test("mixed-set drag axis law: horizontal moves all, vertical moves only the active kind (S2)", async ({
+test("mixed-set drag axis law: horizontal moves all, vertical moves none when the set spans both domains (S5)", async ({
     page,
     boot,
 }) => {
@@ -4092,10 +4092,74 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves only the act
     }[];
     const stripKfAfterV = stripKfsAfterV.find((k) => k.id === kfId)!;
 
-    // axis law: vertical moves ONLY the active kind's (strip) value — force value unchanged
-    expect(stripKfAfterV.v).not.toBe(stripKfBeforeV.v); // strip value moved
-    expect(forceAfterV.g).toBe(forceAfterH.g); // force value byte-identical
+    // S5 axis law: vertical moves NO member's value when the set spans both keyframe domains —
+    // a gesture channel whose meaning is not defined for every member carries no meaning for
+    // that gesture. both kinds' values are byte-identical; station is unchanged (vertical only).
+    expect(stripKfAfterV.v).toBe(stripKfBeforeV.v); // strip value byte-identical — no move
+    expect(forceAfterV.g).toBe(forceAfterH.g); // force value byte-identical — no move
     expect(stripKfAfterV.s).toBe(stripKfBeforeV.s); // station unchanged (vertical only)
+});
+
+// S5 arm (b): a multi-select WITHIN one domain still moves every member's value, so the
+// constraint reads off set composition, not off the mixed case having disabled the channel
+// outright. Two force keyframes co-selected, vertical drag — both values move.
+//
+// RED-FIRST WITNESS: revert `keyframeDown`'s `dvScale: mixed ? 0 : 1` back to `dvScale: 0`
+// (the S2 form that zeroed the active kind whenever the other kind was absent — but here
+// both members are the same kind, so `mixed` is false and `dvScale` is 1 either way). The
+// real red is against the S5 code with `mixed` computed as `true` unconditionally — then
+// single-domain value drags stop moving, and this arm reds (exit 1).
+test("single-domain multi-select drag still moves every member's value (S5)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const sectionForces = () =>
+        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+
+    // select two force keyframes (single-domain multi-select)
+    const forceHits = page.locator(".fhit");
+    const forceCenter = async (idx: number): Promise<{ x: number; y: number }> => {
+        const b = await forceHits.nth(idx).boundingBox();
+        if (!b) throw new Error(`force diamond ${idx} not laid out`);
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    };
+
+    const fp0 = await forceCenter(0);
+    await page.mouse.click(fp0.x, fp0.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const id0 = (await forceSelIds())[0];
+
+    const fp1 = await forceCenter(1);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(fp1.x, fp1.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(2);
+    const ids = await forceSelIds();
+    const id1 = ids.find((i) => i !== id0)!;
+
+    const forcesBefore = await sectionForces();
+    const f0Before = forcesBefore.find((f) => f.id === id0)!;
+    const f1Before = forcesBefore.find((f) => f.id === id1)!;
+
+    // vertical drag from the second keyframe (the active member)
+    await page.mouse.move(fp1.x, fp1.y);
+    await page.mouse.down();
+    await page.mouse.move(fp1.x, fp1.y + 30, { steps: 10 });
+    await page.mouse.up();
+
+    const forcesAfter = await sectionForces();
+    const f0After = forcesAfter.find((f) => f.id === id0)!;
+    const f1After = forcesAfter.find((f) => f.id === id1)!;
+
+    // single-domain: both members' values moved (the vertical channel is not constrained)
+    expect(f0After.g).not.toBe(f0Before.g); // first member value moved
+    expect(f1After.g).not.toBe(f1Before.g); // second (active) member value moved
 });
 
 // S2 repair round 2, criterion (a): the double-fire observable. With a node and a force
