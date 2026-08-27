@@ -119,8 +119,8 @@ test("multi-section flow", async ({ page, boot }) => {
     const strip = dockStrip(page);
     if (strip) await page.screenshot({ path: join(OUT, "sections-wash.png"), clip: strip });
 
-    // selecting a CLIP instead takes the selection with it (node and section selection are mutually
-    // exclusive, `editor.ts`), so the wash goes out entirely — a washed clip is never also the
+    // selecting a CLIP instead takes the selection with it (a plain click replace-selects,
+    // clearing all members), so the wash goes out entirely — a washed clip is never also the
     // selected clip, which is the whole reason the wash is a quieter register than `sel`.
     // Mutation: key `washSection` to `editor.section` → the selected clip washes → red.
     await clips.nth(0).click();
@@ -2607,8 +2607,8 @@ test("popup label scrub refuses on a locked field — pin mode for the value, al
     await frameTimeline(page);
 
     // pin section 1 (the appended FORCE section) — the section-selection this opens is a
-    // DIFFERENT selectable kind than a force keyframe (multiselect law: kinds stay mutually
-    // exclusive), so the keyframe is selected AFTER the mode opens, not before it — selecting it
+    // DIFFERENT selectable kind than a force keyframe (a plain click replace-selects, clearing
+    // all members), so the keyframe is selected AFTER the mode opens, not before it — selecting it
     // first would only be cleared by entering the mode.
     await page.locator(".clip").nth(1).click({ button: "right" });
     await expect(page.locator(".ctxmenu")).toBeVisible();

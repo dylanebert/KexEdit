@@ -208,8 +208,8 @@ test("selecting into one kind clears the others (a multi-member set included)", 
     selectStart(true);
     expect(editor.sections.ids.size).toBe(0);
     expect(editor.start).toBe(true);
-    // S3: the track-start one-shot is the sixth mutually-exclusive kind (`editor.ts`'s own
-    // header comment) — a boolean like `start`, so it gets the same round-trip.
+    // S3: the track-start one-shot is the sixth selection kind (`editor.ts`'s own
+    // header comment) — a boolean like `start`, so a plain click replace-select clears it.
     selectStrip(7);
     expect(editor.start).toBe(false);
     expect(editor.strip).toBe(7);
