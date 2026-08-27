@@ -820,7 +820,6 @@ const nodeTicks = $derived.by((): NodeTick[] => {
     if (eid === null) return [];
     const out = bakeOut.get(eid);
     if (!out) return [];
-    const sel = editor.selection;
     const res: NodeTick[] = [];
     for (const c of clips) {
         if (c.kind !== SectionKind.Geo) continue;
@@ -831,7 +830,7 @@ const nodeTicks = $derived.by((): NodeTick[] => {
             const heid = handles[order];
             if (heid === undefined) continue;
             const d = c.s0 + nodeArc(out.ds, info.startSample, Handle.sample.get(heid));
-            res.push({ eid: heid, x: markerX(d), sel: heid === sel, sec: c.id });
+            res.push({ eid: heid, x: markerX(d), sel: selNodes.has(heid), sec: c.id });
         }
     }
     return res;
@@ -927,6 +926,20 @@ const selForce = $derived.by((): number | null => {
 const selForceSet = $derived.by((): Set<number> => {
     void tick;
     return editor.forces.ids;
+});
+// the whole selected node SET (membership, for the tick highlight) — `selForceSet`'s node-kind
+// twin. read through the tick so a multi-select's non-active members render selected in the
+// timeline ticks, not just the active one.
+const selNodes = $derived.by((): Set<number> => {
+    void tick;
+    return editor.nodes.ids;
+});
+// the whole selected strip SET (membership, for the band + curve highlight) — `selForceSet`'s
+// strip-kind twin. read through the tick so a multi-select's non-active strips render selected,
+// not just the active one.
+const selStrips = $derived.by((): Set<number> => {
+    void tick;
+    return editor.strips.ids;
 });
 // the live pin session's own clip (kex2d-optimize-mode stage 4), or null — the timeline's
 // one read of the mode: the focus dim brackets its span, the striped clip marks it, and the
@@ -1192,7 +1205,6 @@ interface StripCurve {
 }
 const stripCurves = $derived.by((): StripCurve[] => {
     void tick;
-    const selId = editor.strip;
     return bandStrips.map((s) => {
         const kfs = stripKeyframes(ecs, s.id);
         const x0 = uPx(s.u0);
@@ -1223,7 +1235,7 @@ const stripCurves = $derived.by((): StripCurve[] => {
             }
             points = res;
         }
-        return { id: s.id, sel: s.id === selId, points };
+        return { id: s.id, sel: selStrips.has(s.id), points };
     });
 });
 // the popover lives only as long as its subject, `selPoint`'s own law: an undo/redo restoring
@@ -1408,31 +1420,25 @@ function chartU(e: MouseEvent): number {
 // (or empty), it's a no-op.
 function chartCreate(e: MouseEvent): void {
     let u = chartU(e);
-    // T2: if a strip is selected and the double-click is over the strip's extent,
-    // create a velocity keyframe on the strip's curve (the force-curve machinery).
-    // Reads the strip directly from the ECS (not a tick-gated `$derived`) so the
-    // double-click fires on the same frame the selection landed.
-    const stripId = editor.strip;
-    if (stripId !== null) {
-        const stripEid = stripAt(ecs, stripId);
-        if (stripEid !== null) {
-            const stripStart = Strip.start.get(stripEid);
-            const stripEnd = Strip.end.get(stripEid);
-            // strips are track-global (S2): `stripStart`/`stripEnd` ARE the storage
-            // coordinate, no section to resolve. a create has no gesture to freeze a table
-            // for — `dOf`/`uOf` read the LIVE mapping here, same as `gestureMapping` would
-            // fall back to outside a drag.
-            const u0 = uOf(stripStart);
-            const u1 = uOf(stripEnd);
-            if (u >= u0 && u <= u1) {
-                if (!stripEditableAt(stripStart)) return;
-                const rect = canvas.getBoundingClientRect();
-                const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
-                const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
-                const d = clamp(dOf(u), stripStart, stripEnd);
-                addStripKeyframe(history, ecs, stripId, d, Math.max(V_FLOOR, v));
-                return;
-            }
+    // T2: if the double-click is over a strip's extent, create a velocity keyframe on
+    // that strip's curve (the force-curve machinery). S4: the strip is resolved from
+    // geometry (iterating all strips) rather than from `editor.strip`, so the chart body's
+    // empty-click `deselectAll()` (which fires on the first click of the double-click pair)
+    // no longer needs to preserve the strip selection for this create path. Reads strips
+    // directly from the ECS (not a tick-gated `$derived`) so the create fires on the same
+    // frame the double-click lands. Strips cannot overlap (the overlap guard), so the hit
+    // is unambiguous.
+    for (const st of allStrips(ecs)) {
+        const u0 = uOf(st.start);
+        const u1 = uOf(st.end);
+        if (u >= u0 && u <= u1) {
+            if (!stripEditableAt(st.start)) return;
+            const rect = canvas.getBoundingClientRect();
+            const cy = clamp(e.clientY - rect.top, TOP, Math.max(TOP, h - BOT_PAD));
+            const v = vView.lo + (1 - (cy - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo);
+            const d = clamp(dOf(u), st.start, st.end);
+            addStripKeyframe(history, ecs, st.id, d, Math.max(V_FLOOR, v));
+            return;
         }
     }
     // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
@@ -1871,15 +1877,6 @@ function marqueeMove(e: PointerEvent): void {
           )
         : null;
 }
-// clear every keyframe kind's own selection — the shared form marqueeUp's plain-click
-// deselect needs from each kind (S9 closes F7's finding (b) here too: a bare `selectForce(null)`
-// beside a bare `selectStripKf(null)` is two hand-paired calls that silently omit a third kind
-// later; one loop over `kfDesc` can't). Each kind's own `null` form clears only its own kind
-// (S2: the exclusive-sweep is deleted from the shift/marquee paths), so calling both in either
-// order is safe — neither disturbs the other, `editor.strip`, or `editor.sections`.
-function deselectKfKinds(): void {
-    for (const kind of KF_KINDS) kfDesc(kind).select(null);
-}
 function marqueeUp(): void {
     if (!marqueeStart) return;
     const armed = marqueeArmed;
@@ -1887,19 +1884,12 @@ function marqueeUp(): void {
     const shift = marqueeShift;
     marqueeCancel(); // detach listeners + clear rect/state
     if (!armed || !rect) {
-        // a plain click on empty chart deselects the force/strip-keyframe/section kinds
-        // (shift-click preserves) — the ORIGINAL, narrower deselect, kept narrow on purpose:
-        // the chart is not one of the S4 transition table's rows (`kex2d-event-lane`
-        // Validation names {segment, span, keyframe, empty-ruler, empty-lane} only), and a
-        // strip must SURVIVE this click — `chartCreate`'s T2 branch (double-click a strip's
-        // own curve to drop a velocity keyframe) reads `editor.strip` on the SECOND click of
-        // the pair, after this handler already ran once on the first. Widening this to
-        // `deselectAll()` silently broke that create path (discovered via `bun run capture`,
-        // section.pw.ts's own strip-keyframe flows reading 2 rows where 3 were expected).
-        if (!shift) {
-            selectSection(null);
-            deselectKfKinds();
-        }
+        // a plain click on empty chart deselects EVERYTHING (shift-click preserves) — S4's
+        // one empty-click grammar: the chart body, the band, and the ruler alike all clear
+        // every member through `deselectAll()`. `chartCreate`'s T2 branch (double-click a
+        // strip's own curve to drop a velocity keyframe) resolves the strip from geometry
+        // rather than from `editor.strip`, so the strip no longer needs to survive this click.
+        if (!shift) deselectAll();
         return;
     }
     // ONE resolve loop reaches both keyframe kinds (S9 closes F7's finding (a): before, the
@@ -1926,10 +1916,7 @@ function marqueeUp(): void {
             }
         }
     }
-    if (!shift && !anyHits) {
-        selectSection(null);
-        deselectKfKinds();
-    }
+    if (!shift && !anyHits) deselectAll();
 }
 function marqueeCancel(): void {
     const captured = marqueeArmed; // only an armed marquee ever took the capture
@@ -3632,7 +3619,7 @@ function render(ctx: CanvasRenderingContext2D): void {
         const x0 = uPx(s.u0);
         const x1 = uPx(s.u1);
         if (x1 < LEFT_GUT || x0 > w) continue;
-        const sel = editor.strip === s.id;
+        const sel = selStrips.has(s.id);
         // clamp the drawn width to ≥ 1px — a min-extent strip (the only kind the menu makes)
         // can draw sub-pixel or zero-width when zoomed out, the same clamp the ghost loop
         // above carries (S3's disclosed gap; the downstream freeze's own zero-length edge).
@@ -4909,21 +4896,15 @@ onMount(() => {
                 {/each}
             </g>
             <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
-                 channel, drawn for every strip (Locked decision "Visibility"). `.sel` here is
-                 strip-CONTEXT membership (`selStrip !== null && k.strip === selStrip.id`), true
-                 for every keyframe on the selected strip — unlike a force keyframe's `.sel`
-                 (`selForceSet.has(p.id)`), which is true selection membership. `.sel`'s fill is
-                 `var(--accent)`, the dominant channel, so every keyframe on the selected strip
-                 renders as if selected; `.active` marks the one individually-selected keyframe
-                 (`editor.stripKf`, +0.4px stroke over `.sel`) and `.msel` marks a non-active
-                 multi-select member (`editor.stripKfs`, +0.2px stroke) — both thin strokes over
-                 a shared bright fill. This is the mechanism behind "selecting one keyframe in a
-                 strip appears to select others" (feel-gate round 3, F3, 2026-08-27): every
-                 keyframe on the strip reads as selected regardless of membership, and only the
-                 fine stroke delta discriminates a real member. Not fixed by the `kex2d-event-
-                 substrate` S3/S4 parity work that introduced `.active`/`.msel` — open for the
-                 keyframe-substrate re-scope. Same diamond idiom as force keyframes but on the
-                 v-axis (vOf, not yOf). Clipped to the chart. -->
+                 channel, drawn for every strip (Locked decision "Visibility"). `.sel` reads real
+                 container membership (`selStripKfSet.has(k.id)`), the same as a force keyframe's
+                 `.sel` (`selForceSet.has(p.id)`) — S4 retires the strip-context expression that
+                 made every keyframe on the selected strip render as if selected regardless of
+                 membership (feel-gate round 3, F3, 2026-08-27). `.active` marks the one
+                 individually-selected keyframe (`editor.stripKf`, +0.4px stroke over `.sel`) and
+                 `.msel` marks a non-active multi-select member (`editor.stripKfs`, +0.2px stroke)
+                 — both thin strokes over the shared bright fill. Same diamond idiom as force
+                 keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
             <g class="fmarkers" clip-path="url(#fclip)">
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
@@ -4931,7 +4912,7 @@ onMount(() => {
                         {@const my = vOf(k.v)}
                         <g
                             class="fpt"
-                            class:sel={selStrip !== null && k.strip === selStrip.id}
+                            class:sel={selStripKfSet.has(k.id)}
                             class:active={selStripKfPt !== null && k.id === selStripKfPt.id}
                             class:msel={selStripKfSet.has(k.id) &&
                                 (selStripKfPt === null || k.id !== selStripKfPt.id)}
