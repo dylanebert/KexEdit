@@ -4396,3 +4396,76 @@ test("mixed-set arrow nudge moves all stations, value only for active kind (S3)"
     expect(forceAfterV.s).toBe(forceBeforeV.s);
     expect(stripKfAfterV.s).toBe(stripKfBeforeV.s);
 });
+
+// S3 repair: mixed-set Delete over node+force in ONE history gesture. A force keyframe and
+// the chain-end node are co-selected by shift-click (S2's cross-kind co-selection). Delete
+// must remove BOTH in one undo entry — one undo restores all, not N. This is the combination
+// the pairwise force+stripKf path silently dropped: the active kind's handler fired alone and
+// the passive kind survived.
+//
+// RED-FIRST WITNESS: at the pre-repair ref, the active kind's Delete handler fires alone
+// (Timeline.svelte for force, controls.ts for node). With activeKind === "force", the force
+// handler deletes forces but leaves the node alive; with activeKind === "node", the node
+// handler trims the node but leaves the force alive. The arm asserts both are gone, so it
+// reds (the passive kind survives). The history depth is +1 (one kind's delete), but the
+// member count assertion is what discriminates.
+test("mixed-set Delete removes node+force across kinds in one gesture (S3 repair)", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await expect.poll(async () => kexCall(page, "nodeCount")).toBe(7);
+    const tBefore = await kexCall(page, "tTotal");
+    await kexCall(page, "append", 1); // SectionKind.Force — 2 seed force keyframes
+    await expect.poll(async () => kexCall(page, "sectionCount")).toBe(2);
+    await expect.poll(async () => kexCall(page, "tTotal")).not.toBe(tBefore);
+    await frameTimeline(page);
+
+    const undoDepth = () => kexCall(page, "undoDepth");
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const nodeSelOrders = () => kexCall(page, "nodeSelOrders") as Promise<number[]>;
+    const activeKind = () => kexCall(page, "activeKind") as Promise<string | null>;
+    const nodeCount = () => kexCall(page, "nodeCount");
+    const sectionForces = () =>
+        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+
+    // 1. select a force keyframe on the timeline (plain click → active = force)
+    const forceHit = page.locator(".fhit").first();
+    const fb = await forceHit.boundingBox();
+    if (!fb) throw new Error("force diamond not laid out");
+    await page.mouse.click(fb.x + fb.width / 2, fb.y + fb.height / 2);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    expect(await activeKind()).toBe("force");
+
+    // 2. shift-click the chain-end node (order 6) in the viewport — co-select without clearing
+    const canvas = page.locator("canvas.viewport");
+    const cb = await canvas.boundingBox();
+    if (!cb) throw new Error("viewport canvas not laid out");
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 3);
+    await page.keyboard.press("f"); // frame the viewport
+    const nodePt = await nodePoint(page, 6);
+    await page.keyboard.down("Shift");
+    await page.mouse.click(cb.x + nodePt.x, cb.y + nodePt.y);
+    await page.keyboard.up("Shift");
+
+    // 3. confirm the mixed selection: both kinds present, node active
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await expect.poll(async () => (await nodeSelOrders()).length).toBe(1);
+    await expect.poll(activeKind).toBe("node");
+
+    const nodeCountBefore = await nodeCount();
+    const forceCountBefore = (await sectionForces()).length;
+
+    // 4. Delete — one gesture, both kinds gone
+    const depthBefore = await undoDepth();
+    await page.keyboard.press("Delete");
+    await expect.poll(undoDepth).toBe(depthBefore + 1); // one edit, not N
+    await expect.poll(nodeCount).toBe(nodeCountBefore - 1); // node trimmed
+    await expect.poll(async () => (await sectionForces()).length).toBe(forceCountBefore - 1); // force deleted
+
+    // 5. one Undo restores BOTH
+    await page.keyboard.press("Control+z");
+    await expect.poll(nodeCount).toBe(nodeCountBefore);
+    await expect.poll(async () => (await sectionForces()).length).toBe(forceCountBefore);
+});
