@@ -942,8 +942,11 @@ describe("multi — the set-level multi predicate", () => {
     test("a genuinely cross-kind two-member set (one force + one strip keyframe) reads true", () => {
         // the defect the law names: a per-kind `ids.size > 1` predicate reads this as single-select
         // (forces.ids.size === 1, stripKfs.ids.size === 1), but the whole set has ≥2 members.
-        // built through the production shift-click path: plain-click a force, then shift-click
-        // (toggle) a strip keyframe — `toggleSingle` does not sweep, so both kinds survive.
+        // built through the production selectors — `selectForce` in replace mode, then
+        // `selectStripKf` in toggle mode, whose `toggleSingle` does not sweep, so both kinds
+        // survive. deliberately narrower than a real shift-click on a strip keyframe, which also
+        // runs `ensureStrip` (`Timeline.svelte` `keyframeDown`) and so lands three members: this
+        // arm isolates the cross-kind pair with no containment member in it.
         selectForce(5);
         selectStripKf(10, "toggle");
         expect(multi()).toBe(true);

@@ -159,9 +159,15 @@ export function activeKind(): SelKind | null {
 /** whether the selection is a multi-set — two or more members of any kind, cross-kind included.
  *  the set-level multi predicate (editor-ui.md Multi context UI): a per-kind `ids.size > 1`
  *  predicate reads a two-member cross-kind selection as single-select, so the context readers
- *  (manip ring, popover, readout) read this instead. bulk-op applicability readers (Delete
- *  set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the law governs
- *  context, never bulk-op applicability.
+ *  (manip ring, force-point popover, readout) read this instead. bulk-op applicability readers
+ *  (Delete set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the law
+ *  governs context, never bulk-op applicability.
+ *
+ *  the one context reader that does *not* read this yet is the strip-keyframe typed-field popover
+ *  (`multiStripKf`, `Timeline.svelte`): a plain click on a strip keyframe keeps the owning strip
+ *  (`sweepOtherKinds(["stripKf", "strip"])`), so a size-only count reads that single-subject click
+ *  as a multi-set and hides the popover. counting co-selected siblings instead of raw members needs
+ *  the per-member ownership read S4 introduces, and that migration is S5.
  *
  *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal
  *  of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the existing
