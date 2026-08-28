@@ -260,11 +260,15 @@ export type Summary = {
      * Only versioned, non-dirty records populate the roster — legacy and dirty-tree records are
      * excluded, so a run on an uncommitted edit enters nothing at all. */
     roster: { title: string; units: string[] }[];
-    /** full reds whose HEAD did not resolve (`git rev-parse --short HEAD` returned empty,
-     * mapped to null in `capture.ts`) — invisible to the roster's per-branch bucketing when the
-     * branch is also null, since a null branch can never be counted as distinct. Recorded so a
-     * broken git identity on this seat cannot read as "not yet recurring" forever. */
-    unresolvedHeadReds: number;
+    /** full reds in the roster population whose branch did not resolve (`git rev-parse
+     * --abbrev-ref HEAD` returned "HEAD" in a detached state, mapped to null in `capture.ts`)
+     * — invisible to the roster's per-branch bucketing, since a null branch slug can never be
+     * counted as distinct. Dirty-tree runs and legacy records are deliberately excluded from
+     * the roster (an uncommitted edit enters nothing at all; a legacy record feeds no roster
+     * entry), so only a versioned, non-dirty red with an unresolvable branch identity is
+     * counted. Recorded so an unresolvable branch identity on this seat cannot read as "not
+     * yet recurring" forever. */
+    unresolvedBranchReds: number;
 };
 
 function median(xs: number[]): number {
@@ -350,7 +354,14 @@ export function summarize(records: RunRecord[]): Summary {
         roster: [...units.entries()]
             .map(([title, slugs]) => ({ title, units: slugs }))
             .sort((a, b) => b.units.length - a.units.length),
-        unresolvedHeadReds: full.filter((r) => r.exitCode !== 0 && r.head === null).length,
+        // The tripwire's subject: a versioned, non-dirty red whose branch slug is null — the
+        // roster cannot bucket it, so it reads as "not yet recurring" forever. Dirty-tree runs
+        // are a deliberate exclusion (the Locked decision: an uncommitted edit enters nothing at
+        // all), not a broken identity; legacy records are excluded the same way. Only an
+        // unresolvable branch identity trips.
+        unresolvedBranchReds: rosterRecords.filter(
+            (r) => r.exitCode !== 0 && branchSlug(r.branch) === null,
+        ).length,
     };
 }
 
@@ -367,9 +378,9 @@ export function tripwires(summary: Summary): string[] {
             breaches.push(
                 `rate: "${entry.title}" reddened on ${entry.units.length} distinct branch units (${entry.units.join(", ")}) — a roster entry is a defect with an owner`,
             );
-    if (summary.unresolvedHeadReds > 0)
+    if (summary.unresolvedBranchReds > 0)
         breaches.push(
-            `head: ${summary.unresolvedHeadReds} red run(s) recorded with no resolvable HEAD — cannot join the roster, git identity is broken on this seat`,
+            `branch: ${summary.unresolvedBranchReds} red run(s) recorded with no resolvable branch — cannot join the roster, branch identity is unresolvable on this seat`,
         );
     return breaches;
 }
