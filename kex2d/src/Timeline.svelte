@@ -11,7 +11,7 @@ import {
     trackMapping,
     velocityCurve,
 } from "./cart";
-import { COLOR_FORCE, COLOR_VELOCITY, dimmed, hovered, kindSegments, selected } from "./colors";
+import { COLOR_VELOCITY, dimmed, hovered, kindSegments } from "./colors";
 import Menu from "./Menu.svelte";
 import { BINDINGS, bound, fitMenu, type MenuItem } from "./menu";
 import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
@@ -141,20 +141,6 @@ import { hits, merge, normRect, type Rect } from "./marquee";
 import { infeasibleSpans } from "./render";
 import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
 import { TangentMode } from "./spline";
-// S2 of kex2d-segment-spike (specs/kex2d-segment-spike.md): S1's pure segment model + hit-test,
-// reused as-is behind the `?spike=1` arm below — no draw code lives in `segmentspike.ts` itself.
-import {
-    type BoundaryCandidate,
-    type HitState,
-    nearestWithin,
-    pickHit,
-    type PointCandidate,
-    rippleDuration,
-    type SegmentCandidate,
-    segmentKnobs,
-    segments,
-    type SpikeHit,
-} from "./segmentspike";
 import {
     bakeOut,
     entryOneShot,
@@ -314,14 +300,6 @@ const NUDGE_V_COARSE = 0.5;
 const V_GRID = 0.1;
 const THANDLE_R = 4; // px; the summoned tangent-handle knob radius (visual)
 const THIT_R = 10; // px; the invisible grab radius around a handle knob (fat pick zone)
-
-// S2 of kex2d-segment-spike (specs/kex2d-segment-spike.md): the arming read, the whole seam —
-// `?spike=1` alone, nothing touches `keys.ts` or the production keymap (Locked decision). Read
-// once at mount; a query-param change mid-session is a fresh navigation, never a live toggle.
-const spikeArmed =
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("spike") === "1";
-const SPIKE_KNOB_R = 5; // px; the spike's value knob — FMARKER_R's own visual weight (a circle, not a diamond)
-const SPIKE_HIT_R = 8; // px; pickHit's boundary-preference radius over the spike's boundary lines
 
 let host: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -820,400 +798,6 @@ const clips = $derived.by((): Clip[] => {
     void tick;
     return computeClips(spans, ecs);
 });
-
-// ── S2 of kex2d-segment-spike (specs/kex2d-segment-spike.md): the throwaway grip-language
-// overlay's state, armed only behind `spikeArmed`. The active section is the selected clip when
-// it names a force section, else the document's first force section (so arming alone, nothing
-// pre-selected, still shows the overlay). `spikePoints` is a LOCAL copy of that section's
-// authored force keys — S2 never writes into it (no gesture lands until S3); it exists already
-// in the shape S3 edits, per the Locked decision's "seeds a local ForcePoint[]" read-only claim.
-const spikeSectionId = $derived.by((): number | null => {
-    if (!spikeArmed) return null;
-    void tick;
-    const sel = clips.find((c) => c.id === editor.section && c.kind === SectionKind.Force);
-    if (sel) return sel.id;
-    const first = clips.find((c) => c.kind === SectionKind.Force);
-    return first ? first.id : null;
-});
-// the active section's own entry, in track-global arclength — the base every local `s` in
-// `spikePoints` projects through to screen x (`markerX(spikeOffset + s)`), the SAME projection
-// `computeForcePts` uses for the production diamonds.
-const spikeOffset = $derived.by((): number => {
-    const id = spikeSectionId;
-    if (id === null) return 0;
-    const sp = spans.find((x) => x.id === id);
-    return sp ? sp.offset : 0;
-});
-const spikeLen = $derived.by((): number => {
-    const id = spikeSectionId;
-    if (id === null) return 0;
-    const sp = spans.find((x) => x.id === id);
-    return sp ? sp.len : 0;
-});
-let spikePoints = $state<ForcePoint[]>([]);
-let spikeSeededFor: number | null = $state(null);
-// segment SELECTION: a set of `Segment.index` values into `spikePoints` — one member is the
-// active segment (knobs + the right-boundary duration-handle highlight); 2+ is a multi-set
-// (Approach "Multi-segment selection is allowed but only for optimize/delete, never editing" —
-// knobs hide to signal the absent controls, Channel check). Cleared whenever the section reseeds.
-let spikeSel = $state<Set<number>>(new Set());
-// `pickHit`'s own cycling state, threaded across clicks (S1) — reset with the selection.
-let spikeHitState: HitState | null = $state(null);
-// S3 (the gestures): the boundary/knob/handle a double-click stepped into. `spikeHandleEdit`
-// is the active segment's own `Segment.index` while its two bezier control points (from
-// `segmentControls`, the SAME evaluator the arc reads — no second geometry) are up for local
-// drag; null the rest of the time. The "more settings" popup affordance and its display-only
-// direction axis (Channel check: the substrate carries no direction concept, so this control
-// renders the READ without a functional hook — Locked decision, no second evaluator to add one).
-let spikeHandleEdit: number | null = $state(null);
-let spikeMoreSettings = $state(false);
-let spikeDirection = $state<"in" | "out" | "in-out">("in-out");
-$effect(() => {
-    const id = spikeSectionId;
-    if (id === null) {
-        if (spikeSeededFor !== null) {
-            spikeSeededFor = null;
-            spikePoints = [];
-            spikeSel = new Set();
-            spikeHitState = null;
-            spikeHandleEdit = null;
-        }
-        return;
-    }
-    if (id === spikeSeededFor) return;
-    untrack(() => {
-        spikePoints = sectionForces(ecs, id).map((p) => ({
-            s: p.s,
-            g: p.g,
-            ease: forceEase(ecs, p.id),
-            in: forceTangent(ecs, p.id)?.in,
-            out: forceTangent(ecs, p.id)?.out,
-        }));
-        spikeSeededFor = id;
-        spikeSel = new Set();
-        spikeHitState = null;
-        spikeHandleEdit = null;
-    });
-});
-// the handle layer only ever addresses the ACTIVE (single) selection's own segment — any
-// selection change that leaves it addressing nothing (deselect, multi-set, a different
-// segment) exits the layer, mirroring the production `editHandles` dismiss-by-subject rule.
-$effect(() => {
-    if (spikeHandleEdit !== null && !(spikeSel.size === 1 && spikeSel.has(spikeHandleEdit))) {
-        spikeHandleEdit = null;
-    }
-});
-// screen-space boundary/segment candidates for `pickHit`, exactly its own convention
-// (already-projected x — `segmentspike.ts`'s docblock).
-function spikeCandidates(): { boundaries: BoundaryCandidate[]; segs: SegmentCandidate[] } {
-    const offset = spikeOffset;
-    const boundaries: BoundaryCandidate[] = spikePoints.map((p, i) => ({
-        index: i,
-        x: markerX(offset + p.s),
-    }));
-    const segs: SegmentCandidate[] = segments(spikePoints).map((sg) => ({
-        index: sg.index,
-        x0: markerX(offset + sg.a.s),
-        x1: markerX(offset + sg.b.s),
-    }));
-    return { boundaries, segs };
-}
-// S1 residue (specs/kex2d-segment-spike.md, "S1 residue → S2/S3"): `pickHit`'s `"boundary"` hit
-// doesn't resolve to one owning segment — a boundary is shared by up to two. S2's call: a
-// boundary hit selects the segment for which it is the RIGHT (trailing) boundary, since that is
-// the ONE boundary the Approach singles out as a segment's own duration handle — a click near a
-// boundary line selects the same segment a duration drag on that line would act on. Boundary 0
-// owns no segment on its right, so it falls back to its only neighbour, segment 0 (its own
-// LEADING boundary) — never `null`, since every boundary borders at least one real segment.
-function spikeResolveSegment(hit: SpikeHit): number | null {
-    if (hit.kind === "segment") return hit.index;
-    if (hit.kind === "boundary") return hit.index > 0 ? hit.index - 1 : 0;
-    return null;
-}
-// screen-space candidates for the active segment's own two value knobs — the SAME projection
-// `drawSpike` places them at (`markerX`/`yOf`), fed to `nearestWithin` (`segmentspike.ts`).
-function spikeKnobCandidates(activeIdx: number): PointCandidate[] {
-    const offset = spikeOffset;
-    return segmentKnobs(spikePoints, activeIdx).map((k) => ({
-        id: String(k.index),
-        x: markerX(offset + k.s),
-        y: yOf(k.g),
-    }));
-}
-// screen-space candidates for the handle layer's own two bezier control points
-// (`segmentControls`'s p1/p2 — the SAME production evaluator the arc and the closed-form
-// duration/value gestures read, no second geometry).
-function spikeHandleCandidates(segmentIndex: number): PointCandidate[] | null {
-    const a = spikePoints[segmentIndex];
-    const b = spikePoints[segmentIndex + 1];
-    if (!a || !b) return null;
-    const offset = spikeOffset;
-    const cps = segmentControls(a, b);
-    return [
-        { id: "out", x: markerX(offset + cps[1].s), y: yOf(cps[1].g) },
-        { id: "in", x: markerX(offset + cps[2].s), y: yOf(cps[2].g) },
-    ];
-}
-// materialize both bounding sides of the active segment explicit (Cubic-derived when a side
-// carries no stored offset yet — `segmentSeed`'s own default, Approach "Cubic is the default"),
-// so both control points are grabbable immediately and neither jumps on first grab. Mirrors
-// production's `materializeCustom` seed, over the LOCAL array only.
-function spikeEnterHandleEdit(segmentIndex: number): void {
-    const a = spikePoints[segmentIndex];
-    const b = spikePoints[segmentIndex + 1];
-    if (!a || !b) return;
-    const out = a.out ?? segmentSeed(a, b, "out");
-    const inn = b.in ?? segmentSeed(a, b, "in");
-    spikePoints = spikePoints.map((p, i) =>
-        i === segmentIndex ? { ...p, out } : i === segmentIndex + 1 ? { ...p, in: inn } : p,
-    );
-    spikeHandleEdit = segmentIndex;
-}
-// manual double-press timing for the value knob (production's own `keyframeDown`/`FDBL_MS`
-// idiom): the knob's own drag defers pointer capture past `DRAG_PX` (below) specifically so the
-// compatibility click stream survives, but relying on that alone still needs a timing check
-// rather than a native `dblclick` (this chartzone's own `ondblclick` is `undefined` while armed).
-const SPIKE_DBL_MS = 300;
-let spikeLastKnobDownT = 0;
-let spikeLastKnobDownIdx = -1;
-
-/** one in-flight spike gesture past pointerdown — a duration drag on a boundary line's body, a
- *  value drag on a knob, or an offset drag on a handle-layer control point. `armed` is the
- *  `DRAG_PX` dead-zone latch: pointer capture (`beginDrag`) is taken only once it flips true, so
- *  a sub-threshold click never retargets the compatibility click stream (Approach's own
- *  constraint, stated for the knob because that is the one surface a retargeted stream would
- *  break — the manual double-press timing above needs no native `dblclick` either way, but the
- *  capture-timing discipline is kept uniform across all three drag kinds rather than special-
- *  cased to the one surface it was measured against). */
-type SpikeDrag =
-    | {
-          kind: "boundary";
-          boundaryIndex: number;
-          startX: number;
-          startS: number;
-          // ripple is applied FROM this frozen snapshot on every pointermove, never from the
-          // already-rippled `spikePoints` a prior move wrote — the delta below is measured from
-          // the ORIGINAL grab, not incremental, so reapplying it against the live array would
-          // compound (each move's delta landing on top of the last move's own edit).
-          origPoints: ForcePoint[];
-          pointerId: number;
-          armed: boolean;
-      }
-    | { kind: "knob"; boundaryIndex: number; startY: number; pointerId: number; armed: boolean }
-    | {
-          kind: "handle";
-          segmentIndex: number;
-          side: "out" | "in";
-          startX: number;
-          startY: number;
-          pointerId: number;
-          armed: boolean;
-      };
-let spikeDrag: SpikeDrag | null = $state(null);
-
-function spikeBeginBoundaryDrag(boundaryIndex: number, e: PointerEvent): void {
-    const rect = canvas.getBoundingClientRect();
-    spikeDrag = {
-        kind: "boundary",
-        boundaryIndex,
-        startX: e.clientX - rect.left,
-        startS: spikePoints[boundaryIndex].s,
-        origPoints: spikePoints,
-        pointerId: e.pointerId,
-        armed: false,
-    };
-    window.addEventListener("pointermove", spikeDragMove);
-    window.addEventListener("pointerup", spikeDragUp);
-    window.addEventListener("pointercancel", spikeDragUp);
-}
-function spikeBeginKnobDrag(boundaryIndex: number, e: PointerEvent): void {
-    const rect = canvas.getBoundingClientRect();
-    spikeDrag = {
-        kind: "knob",
-        boundaryIndex,
-        startY: e.clientY - rect.top,
-        pointerId: e.pointerId,
-        armed: false,
-    };
-    window.addEventListener("pointermove", spikeDragMove);
-    window.addEventListener("pointerup", spikeDragUp);
-    window.addEventListener("pointercancel", spikeDragUp);
-}
-function spikeBeginHandleDrag(segmentIndex: number, side: "out" | "in", e: PointerEvent): void {
-    const rect = canvas.getBoundingClientRect();
-    spikeDrag = {
-        kind: "handle",
-        segmentIndex,
-        side,
-        startX: e.clientX - rect.left,
-        startY: e.clientY - rect.top,
-        pointerId: e.pointerId,
-        armed: false,
-    };
-    window.addEventListener("pointermove", spikeDragMove);
-    window.addEventListener("pointerup", spikeDragUp);
-    window.addEventListener("pointercancel", spikeDragUp);
-}
-function spikeDragMove(e: PointerEvent): void {
-    if (spikeDrag === null) return;
-    const rect = canvas.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    if (spikeDrag.kind === "boundary") {
-        const dx = cx - spikeDrag.startX;
-        if (!spikeDrag.armed) {
-            if (!armDrag(false, dx, 0)) return;
-            spikeDrag.armed = true;
-            beginDrag(canvas, spikeDrag.pointerId); // capture only past the dead zone
-        }
-        // screen x -> arclength through the SAME axis the arc/boundaries draw through (dOf/
-        // uAtPx), never a raw px-per-unit guess — ripple's own delta, from the grab origin.
-        const newS = dOf(uAtPx(cx)) - spikeOffset;
-        const delta = newS - spikeDrag.startS;
-        if (spikeDrag.boundaryIndex >= 1 && spikeDrag.boundaryIndex < spikeDrag.origPoints.length) {
-            spikePoints = rippleDuration(spikeDrag.origPoints, spikeDrag.boundaryIndex, delta);
-        }
-    } else if (spikeDrag.kind === "knob") {
-        const dy = cy - spikeDrag.startY;
-        if (!spikeDrag.armed) {
-            if (!armDrag(false, 0, dy)) return;
-            spikeDrag.armed = true;
-            beginDrag(canvas, spikeDrag.pointerId);
-        }
-        const newG = yToG(cy);
-        const idx = spikeDrag.boundaryIndex;
-        spikePoints = spikePoints.map((p, i) => (i === idx ? { ...p, g: newG } : p));
-    } else {
-        const dx = cx - spikeDrag.startX;
-        const dy = cy - spikeDrag.startY;
-        if (!spikeDrag.armed) {
-            if (!armDrag(false, dx, dy)) return;
-            spikeDrag.armed = true;
-            beginDrag(canvas, spikeDrag.pointerId);
-        }
-        const { segmentIndex, side } = spikeDrag;
-        const a = spikePoints[segmentIndex];
-        const b = spikePoints[segmentIndex + 1];
-        if (!a || !b) return;
-        // the offset is relative to the side's OWN anchoring keyframe (a for out, b for in) —
-        // `profile.ts`'s own `Offset` convention (production's `applyTan`).
-        const anchor = side === "out" ? a : b;
-        const offset = { ds: dOf(uAtPx(cx)) - spikeOffset - anchor.s, dg: yToG(cy) - anchor.g };
-        spikePoints = spikePoints.map((p, i) =>
-            i === segmentIndex && side === "out"
-                ? { ...p, out: offset }
-                : i === segmentIndex + 1 && side === "in"
-                  ? { ...p, in: offset }
-                  : p,
-        );
-    }
-}
-function spikeDragUp(): void {
-    if (spikeDrag === null) return;
-    spikeDrag = null;
-    window.removeEventListener("pointermove", spikeDragMove);
-    window.removeEventListener("pointerup", spikeDragUp);
-    window.removeEventListener("pointercancel", spikeDragUp);
-    // beginDrag's own window pointerup/pointercancel listeners release capture + the drag flag
-    // for the SAME event that reaches here (mirrors `keyframeUp`) — nothing further to release,
-    // and an unarmed (sub-dead-zone) press never took capture in the first place.
-}
-function cancelSpikeDrag(): void {
-    if (spikeDrag === null) return;
-    const armed = spikeDrag.armed;
-    spikeDrag = null;
-    window.removeEventListener("pointermove", spikeDragMove);
-    window.removeEventListener("pointerup", spikeDragUp);
-    window.removeEventListener("pointercancel", spikeDragUp);
-    if (armed) endDragGesture(); // an unmount/blur mid-drag has no pointerup to release it
-}
-
-// click a segment's area (or a boundary line, resolved above) to select it; Shift toggles
-// membership for a multi-set (Approach "Multi-segment selection is allowed"). A click that hits
-// neither deselects. S3: past a plain click, this is also where every gesture's pointerdown
-// half lives — the handle layer's own two control points (highest priority: they float over
-// everything else while the layer is open), the active segment's two value knobs (a double-
-// press summons the handle layer; a single press arms a vertical value drag), and the boundary
-// line body itself (arms a horizontal duration-ripple drag) — one handler, per the S2 residue
-// ("extends `spikeChartDown`'s pointerdown into `DRAG_PX` drag detection rather than adding a
-// second handler").
-function spikeChartDown(e: PointerEvent): void {
-    if (e.button !== 0) return;
-    if (spikeSectionId === null || spikePoints.length < 2) return;
-    const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-
-    if (spikeHandleEdit !== null) {
-        const cands = spikeHandleCandidates(spikeHandleEdit);
-        if (cands) {
-            const side = nearestWithin(px, py, cands, SPIKE_HIT_R);
-            if (side === "out" || side === "in") {
-                spikeBeginHandleDrag(spikeHandleEdit, side, e);
-                return;
-            }
-        }
-        spikeHandleEdit = null; // a miss exits the layer; the click resolves normally below
-    }
-
-    const activeIdx = spikeSel.size === 1 ? [...spikeSel][0] : null;
-    if (activeIdx !== null) {
-        const hitId = nearestWithin(px, py, spikeKnobCandidates(activeIdx), SPIKE_HIT_R);
-        if (hitId !== null) {
-            const boundaryIndex = Number(hitId);
-            if (spikeLastKnobDownIdx === boundaryIndex && e.timeStamp - spikeLastKnobDownT < SPIKE_DBL_MS) {
-                spikeLastKnobDownT = 0;
-                spikeLastKnobDownIdx = -1;
-                spikeEnterHandleEdit(activeIdx);
-                return;
-            }
-            spikeLastKnobDownT = e.timeStamp;
-            spikeLastKnobDownIdx = boundaryIndex;
-            spikeBeginKnobDrag(boundaryIndex, e);
-            return;
-        }
-    }
-
-    const { boundaries, segs } = spikeCandidates();
-    const { hit, state } = pickHit(px, boundaries, segs, SPIKE_HIT_R, spikeHitState);
-    spikeHitState = state;
-    const idx = spikeResolveSegment(hit);
-    if (idx === null) {
-        spikeSel = new Set();
-        return;
-    }
-    if (e.shiftKey) {
-        const next = new Set(spikeSel);
-        if (next.has(idx)) next.delete(idx);
-        else next.add(idx);
-        spikeSel = next;
-        return;
-    }
-    spikeSel = new Set([idx]);
-    // a boundary hit at index >= 1 is also that segment's own RIGHT (duration-handle) boundary
-    // — arm a potential horizontal drag on it (boundary 0 terminates no segment, `rippleDuration`'s
-    // own precondition, so it never arms one).
-    if (hit.kind === "boundary" && hit.index >= 1) spikeBeginBoundaryDrag(hit.index, e);
-}
-// the popup's own typed-field writes (S3) — the same two pure laws the drags use, never a second
-// path: duration goes through `rippleDuration` (ripple, the only law), value and easing write
-// the boundary directly (exactly what the knob drag / a menu pick would write).
-function spikeSetDuration(activeIdx: number, val: number): void {
-    if (!Number.isFinite(val)) return;
-    const a = spikePoints[activeIdx];
-    const b = spikePoints[activeIdx + 1];
-    if (!a || !b) return;
-    const delta = val - (b.s - a.s);
-    spikePoints = rippleDuration(spikePoints, activeIdx + 1, delta);
-}
-function spikeSetValue(boundaryIndex: number, val: number): void {
-    if (!Number.isFinite(val)) return;
-    spikePoints = spikePoints.map((p, i) => (i === boundaryIndex ? { ...p, g: val } : p));
-}
-function spikeSetEase(boundaryIndex: number, val: number): void {
-    if (val !== Easing.Linear && val !== Easing.Cubic && val !== Easing.Quintic) return;
-    spikePoints = spikePoints.map((p, i) => (i === boundaryIndex ? { ...p, ease: val } : p));
-}
 // ── geo node ticks (read-only, kex2d-geo-ux stage 2): a small circle in the marker
 // lane per INTERIOR node of a geo section, positioned via the section's own span
 // offset (`Clip.s0`) plus the partial-sum arclength from `bakeOut.ds` up to the
@@ -4270,10 +3854,7 @@ function render(ctx: CanvasRenderingContext2D): void {
     // over arclength (the chart's x-axis is distance). the curve carries no
     // infeasibility/selection overlay of its own, so no priority layering is needed
     // here (unlike the viewport polyline).
-    // S2 of kex2d-segment-spike: while armed, the spike's own arc is the only force curve drawn
-    // (Locked decision "suppresses the production force chrome... at draw time" — the arm's whole
-    // point is a chart with no keyframe glyphs of the production kind on it).
-    if (curve && !spikeArmed) {
+    if (curve) {
         ctx.lineWidth = 1.6;
         for (const seg of kindSegments(ecs)) {
             ctx.strokeStyle = seg.color;
@@ -4341,117 +3922,7 @@ function render(ctx: CanvasRenderingContext2D): void {
     }
     ctx.globalAlpha = 1;
 
-    if (spikeArmed) drawSpike(ctx);
-
     ctx.restore();
-}
-
-// S2 of kex2d-segment-spike (specs/kex2d-segment-spike.md): draws the segment grip language —
-// the arc through `sampleForce` (the SAME evaluator the document reads, Locked decision "no
-// second evaluator"), one line per boundary, and the active segment's own knobs. Called from
-// `render()`, inside the SAME clip region the production curve draws in — one more layer on the
-// one canvas, never a second surface.
-function drawSpike(ctx: CanvasRenderingContext2D): void {
-    if (spikeSectionId === null || spikePoints.length === 0) return;
-    const offset = spikeOffset;
-    const len = spikeLen;
-    const activeIdx = spikeSel.size === 1 ? [...spikeSel][0] : null;
-
-    // the arc: sampleForce at each screen column across the section's own span.
-    const ax0 = Math.max(LEFT_GUT, Math.floor(markerX(offset)));
-    const ax1 = Math.min(w, Math.ceil(markerX(offset + len)));
-    if (ax1 > ax0) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = COLOR_FORCE;
-        ctx.beginPath();
-        for (let x = ax0; x <= ax1; x++) {
-            const s = clamp(dOf(uAtPx(x)) - offset, 0, len);
-            const y = yOf(sampleForce(spikePoints, s));
-            if (x === ax0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-    }
-
-    // one vertical line per boundary: brightened + thickened on any selected segment's own
-    // boundaries (Approach "Selection is conveyed by line thickness + brightness"); the active
-    // single segment's own RIGHT boundary lifts one rung further — the hover rung declaring its
-    // duration-handle gesture (Channel check, the duration handle's own row: "the brightened
-    // boundary declaring its gesture through the hover rung on the line's body").
-    for (let i = 0; i < spikePoints.length; i++) {
-        const x = markerX(offset + spikePoints[i].s);
-        if (x < LEFT_GUT - 2 || x > w + 2) continue;
-        const bounded = spikeSel.has(i - 1) || spikeSel.has(i);
-        const isRight = activeIdx !== null && i === activeIdx + 1;
-        ctx.lineWidth = isRight ? 3 : bounded ? 2.4 : 1.4;
-        ctx.strokeStyle = isRight
-            ? hovered(selected(COLOR_FORCE))
-            : bounded
-              ? selected(COLOR_FORCE)
-              : COLOR_FORCE;
-        ctx.beginPath();
-        ctx.moveTo(x, TOP);
-        ctx.lineTo(x, h - BOT_PAD);
-        ctx.stroke();
-    }
-
-    // knobs at the active segment's own two boundaries ONLY — hidden on a multi-set (Approach
-    // "Knobs appear at both the start and end boundary of the ACTIVE selected segment only" /
-    // "Knobs hide on a multi-set to signal the absent controls"). The existing point-glyph
-    // register (ink outline), reused for value at this new site — hollow stays off the knob
-    // (Channel check: hollow-vs-filled is constraint-target versus keyframe, not spent here).
-    if (activeIdx !== null) {
-        for (const k of segmentKnobs(spikePoints, activeIdx)) {
-            const x = markerX(offset + k.s);
-            const y = yOf(k.g);
-            ctx.beginPath();
-            ctx.arc(x, y, SPIKE_KNOB_R, 0, Math.PI * 2);
-            ctx.fillStyle = selected(COLOR_FORCE);
-            ctx.fill();
-            ctx.strokeStyle = "#0e0d0c";
-            ctx.lineWidth = 1;
-            ctx.stroke();
-        }
-    }
-
-    // S3: the handle layer, stepped into by double-clicking a knob — the active segment's own
-    // two bezier control points (`segmentControls`, the SAME evaluator the arc above reads) plus
-    // an arm back to the boundary each belongs to, mirroring production's tangent-handle draw.
-    if (spikeHandleEdit !== null) {
-        const a = spikePoints[spikeHandleEdit];
-        const b = spikePoints[spikeHandleEdit + 1];
-        if (a && b) {
-            const cps = segmentControls(a, b);
-            const ax = markerX(offset + a.s);
-            const ay = yOf(a.g);
-            const bx = markerX(offset + b.s);
-            const by = yOf(b.g);
-            const p1x = markerX(offset + cps[1].s);
-            const p1y = yOf(cps[1].g);
-            const p2x = markerX(offset + cps[2].s);
-            const p2y = yOf(cps[2].g);
-            ctx.strokeStyle = "#8a8a8a";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(ax, ay);
-            ctx.lineTo(p1x, p1y);
-            ctx.moveTo(bx, by);
-            ctx.lineTo(p2x, p2y);
-            ctx.stroke();
-            for (const [hx, hy] of [
-                [p1x, p1y],
-                [p2x, p2y],
-            ] as const) {
-                ctx.beginPath();
-                ctx.arc(hx, hy, THANDLE_R, 0, Math.PI * 2);
-                ctx.fillStyle = "#e0e0e0";
-                ctx.fill();
-                ctx.strokeStyle = "#0e0d0c";
-                ctx.lineWidth = 1;
-                ctx.stroke();
-            }
-        }
-    }
 }
 
 // the navigator preview (VSCode-minimap / DAW-overview style): a faint miniature of
@@ -4652,7 +4123,6 @@ function cancelAll(): void {
     cancelLenDrag(); // and any in-flight extent drag
     cancelLabelScrub(); // and any in-flight label scrub (its listeners live on the label, not window)
     cancelStripDrag(); // and any in-flight strip resize/body drag
-    cancelSpikeDrag(); // and any in-flight spike duration/value/handle drag (S3)
     endDragGesture(); // clear the drag flag (no release event tore it down)
 }
 onMount(() => {
@@ -5226,9 +4696,7 @@ onMount(() => {
             <!-- the chart is the force-authoring surface (whole-track): double-click over
                  a force section's arc drops a point at that (s, g); a bare click on empty
                  chart deselects. authoring is by cursor position — no section selection
-                 needed. the diamonds sit above it. S2 of kex2d-segment-spike: while armed,
-                 the zone routes to `spikeChartDown` (segment/boundary selection, read-only) and
-                 drops double-click creation entirely — zero writes while armed, Locked decision. -->
+                 needed. the diamonds sit above it. -->
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="chartzone"
@@ -5236,8 +4704,8 @@ onMount(() => {
                     y={TOP}
                     width={Math.max(0, w - LEFT_GUT)}
                     height={Math.max(0, h - BOT_PAD - TOP)}
-                    ondblclick={spikeArmed ? undefined : chartCreate}
-                    onpointerdown={spikeArmed ? spikeChartDown : marqueeDown}
+                    ondblclick={chartCreate}
+                    onpointerdown={marqueeDown}
                     role="presentation"
                 />
             {/if}
@@ -5418,46 +4886,43 @@ onMount(() => {
                  the KEYFRAME idiom (authored input), no drop-line, no driving/driven.
                  an invisible fat hit circle (FHIT_R) carries the grab + hover so the 5px
                  diamond isn't a pixel-hunt (the AE/Unity fat-pick-zone). the visible
-                 diamond is inert; the chartzone owns creation. S2 of kex2d-segment-spike:
-                 suppressed while armed — production force chrome, Locked decision. -->
-            {#if !spikeArmed}
-                <g class="fmarkers" clip-path="url(#fclip)">
-                    {#each forcePts as p (p.id)}
-                        {@const mx = ptX(p)}
-                        {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
-                            {@const my = yOf(dispG(p))}
-                            <!-- in-mode lock styling (kex2d-optimize-mode stage 4): a locked key wears
-                                 the CAD driven idiom — dashed + faded, still measures (it stays a
-                                 keyframe the profile reads; the solve just never moves it). free keys
-                                 keep the normal diamond. -->
-                            <g
-                                class="fpt"
-                                class:sel={selForceSet.has(p.id)}
-                                class:active={p.id === selForce}
-                                class:driven={optClip !== null &&
-                                    optClip.id === p.section &&
-                                    lockedSet.has(p.id)}
-                            >
-                                <circle
-                                    class="fhit"
-                                    cx={mx}
-                                    cy={my}
-                                    r={FHIT_R}
-                                    onpointerdown={(e) => keyframeDown(e, "force", p)}
-                                    oncontextmenu={(e) => forceCtx(e, p)}
-                                    role="button"
-                                    tabindex="-1"
-                                    aria-label="Force point"
-                                />
-                                <polygon
-                                    class="fmarker"
-                                    points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
-                                />
-                            </g>
-                        {/if}
-                    {/each}
-                </g>
-            {/if}
+                 diamond is inert; the chartzone owns creation. -->
+            <g class="fmarkers" clip-path="url(#fclip)">
+                {#each forcePts as p (p.id)}
+                    {@const mx = ptX(p)}
+                    {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
+                        {@const my = yOf(dispG(p))}
+                        <!-- in-mode lock styling (kex2d-optimize-mode stage 4): a locked key wears
+                             the CAD driven idiom — dashed + faded, still measures (it stays a
+                             keyframe the profile reads; the solve just never moves it). free keys
+                             keep the normal diamond. -->
+                        <g
+                            class="fpt"
+                            class:sel={selForceSet.has(p.id)}
+                            class:active={p.id === selForce}
+                            class:driven={optClip !== null &&
+                                optClip.id === p.section &&
+                                lockedSet.has(p.id)}
+                        >
+                            <circle
+                                class="fhit"
+                                cx={mx}
+                                cy={my}
+                                r={FHIT_R}
+                                onpointerdown={(e) => keyframeDown(e, "force", p)}
+                                oncontextmenu={(e) => forceCtx(e, p)}
+                                role="button"
+                                tabindex="-1"
+                                aria-label="Force point"
+                            />
+                            <polygon
+                                class="fmarker"
+                                points="{mx},{my - FMARKER_R} {mx + FMARKER_R},{my} {mx},{my + FMARKER_R} {mx - FMARKER_R},{my}"
+                            />
+                        </g>
+                    {/if}
+                {/each}
+            </g>
             <!-- velocity-strip keyframes (T2: value in the graph): diamonds in the velocity
                  channel, drawn for every strip (Locked decision "Visibility"). `.sel` reads real
                  container membership (`selStripKfSet.has(k.id)`), the same as a force keyframe's
@@ -5502,7 +4967,7 @@ onMount(() => {
                  thin arm from the diamond to each knob (solid = explicit stored offset,
                  hollow = the derived flat ghost). the wide invisible .thit carries the grab;
                  a drag authors the explicit tangent (the force analogue of geo tangent edit). -->
-            {#if editHandles && !spikeArmed}
+            {#if editHandles}
                 {@const eh = editHandles}
                 {@const px = ptX(eh.pt)}
                 {@const py = yOf(eh.pt.g)}
@@ -5548,103 +5013,6 @@ onMount(() => {
                 </g>
             {/if}
         </svg>
-        <!-- S3 of kex2d-segment-spike (specs/kex2d-segment-spike.md): the contextual popup at
-             the selection — duration, value, and easing, single-selection only (Approach "The
-             contextual popup is likewise single-selection only"), hidden while the handle layer
-             is open (that layer's own popover role isn't built this stage — closing it on entry
-             keeps the two surfaces from stacking). Every write below lands on the LOCAL
-             `spikePoints` array only, through the SAME two pure laws the drags use
-             (`rippleDuration` for duration, a direct `g`/`ease` write for value/easing) — no
-             second edit path. The direction axis lives behind "More" (Approach "easing behind a
-             'more settings' affordance") and is DISPLAY-ONLY: the substrate (`profile.ts`) has no
-             direction concept, and this spike adds no second evaluator to give it one (Locked
-             decision) — it renders the read the person is judging, not a working control. -->
-        {#if spikeArmed && spikeHandleEdit === null && spikeSel.size === 1}
-            {@const activeIdx = [...spikeSel][0]}
-            {@const spA = spikePoints[activeIdx]}
-            {@const spB = spikePoints[activeIdx + 1]}
-            {#if spA && spB}
-                {@const spKx = markerX(spikeOffset + spB.s)}
-                {@const spKy = yOf(spB.g)}
-                {#if spKx >= LEFT_GUT - TIP_HALF && spKx <= w + TIP_HALF}
-                    {@const spAx = clamp(spKx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
-                    {@const spAy = clamp(spKy, TOP, Math.max(TOP, h - BOT_PAD - TIP_H))}
-                    {@const durText = fmt(spB.s - spA.s, 2)}
-                    {@const valText = fmt(spB.g, 2)}
-                    <div class="ptip spike-tip" style="left: {spAx}px; top: {spAy}px">
-                        <div class="fld">
-                            <span class="key">Dur</span>
-                            <input
-                                type="number"
-                                step="0.1"
-                                value={durText}
-                                onchange={(e) =>
-                                    spikeSetDuration(
-                                        activeIdx,
-                                        Number.parseFloat((e.currentTarget as HTMLInputElement).value),
-                                    )}
-                                onfocus={(e) => e.currentTarget.select()}
-                                aria-label="Segment duration (m)"
-                            />
-                            <span class="unit">m</span>
-                        </div>
-                        <div class="fld">
-                            <span class="key">F</span>
-                            <input
-                                type="number"
-                                step="0.1"
-                                value={valText}
-                                onchange={(e) =>
-                                    spikeSetValue(
-                                        activeIdx + 1,
-                                        Number.parseFloat((e.currentTarget as HTMLInputElement).value),
-                                    )}
-                                onfocus={(e) => e.currentTarget.select()}
-                                aria-label="Boundary value (g)"
-                            />
-                            <span class="unit">g</span>
-                        </div>
-                        <div class="fld">
-                            <span class="key">Ease</span>
-                            <select
-                                value={spA.ease ?? Easing.Cubic}
-                                onchange={(e) => spikeSetEase(activeIdx, Number((e.currentTarget as HTMLSelectElement).value))}
-                                aria-label="Segment easing"
-                            >
-                                <option value={Easing.Linear}>Linear</option>
-                                <option value={Easing.Cubic}>Cubic</option>
-                                <option value={Easing.Quintic}>Quintic</option>
-                            </select>
-                        </div>
-                        <button
-                            type="button"
-                            class="spike-more"
-                            onclick={() => (spikeMoreSettings = !spikeMoreSettings)}
-                        >
-                            {spikeMoreSettings ? "Less" : "More"}
-                        </button>
-                        {#if spikeMoreSettings}
-                            <div class="fld">
-                                <span class="key">Dir</span>
-                                <select
-                                    value={spikeDirection}
-                                    onchange={(e) =>
-                                        (spikeDirection = (e.currentTarget as HTMLSelectElement).value as
-                                            | "in"
-                                            | "out"
-                                            | "in-out")}
-                                    aria-label="Easing direction (display only, not yet wired to the substrate)"
-                                >
-                                    <option value="in">In</option>
-                                    <option value="out">Out</option>
-                                    <option value="in-out">In-Out</option>
-                                </select>
-                            </div>
-                        {/if}
-                    </div>
-                {/if}
-            {/if}
-        {/if}
         <!-- the selected handle's typed (Δs, Δg) fields: the SAME popover surface, summoned at
              the handle knob when a handle is picked (the readout swaps from the keyframe to the
              handle). inert while the handle drags (it's the live readout then). commits go
@@ -6165,26 +5533,6 @@ onMount(() => {
         overflow: hidden; /* the focus wash clips to the rounded corners */
         transform: translate(-50%, calc(-100% - 12px));
         animation: tip-in 120ms var(--ease-out);
-    }
-    /* S3 of kex2d-segment-spike: the contextual popup's own select + "more settings" toggle —
-       thrown-away styling (the popup dies with the module at S5), just enough to read as one
-       surface with `.fld`'s existing rows rather than bare unstyled controls. */
-    .spike-tip select {
-        font: inherit;
-        background: transparent;
-        color: inherit;
-        border: none;
-        outline: none;
-    }
-    .spike-tip .spike-more {
-        margin: 3px 8px 0;
-        padding: 2px 6px;
-        font: inherit;
-        font-size: 11px;
-        background: transparent;
-        color: var(--fg-dim, inherit);
-        border: 1px solid var(--border);
-        border-radius: 3px;
     }
     .ptip.below {
         transform: translate(-50%, 12px);
