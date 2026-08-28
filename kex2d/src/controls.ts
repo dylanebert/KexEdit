@@ -12,9 +12,11 @@ import {
     activeKind,
     beginDrag,
     clearHover,
+    deselectAll,
     editor,
     endDrag as endDragGesture,
     enterTangentEdit,
+    exitForceEdit,
     exitTangentEdit,
     type Hover,
     openContext,
@@ -22,9 +24,14 @@ import {
     openNodeMenu,
     select,
     selectForce,
+    selectForceHandle,
     selectNodes,
+    selectOneShot,
     selectSection,
     selectStart,
+    selectStrip,
+    selectStripKf,
+    type SelKind,
     snapActive,
     toggleSnap,
     writeHover,
@@ -858,12 +865,13 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
     marqueeArmed = false;
     marquee.rect = null;
     if (!armed || !rect) {
-        if (!shift) {
-            select(null);
-            selectForce(null); // markers select in the viewport now, so empty-click clears them too
-            selectSection(null);
-            selectStart(false);
-        }
+        // a plain click on empty space clears EVERY kind (shift preserves) — the S2 dismissal law
+        // (editor-ui.md § Multi context UI): one empty-click reads the member set, never one
+        // kind's view. the old hand-paired sweep cleared node/force/section/start and left a
+        // co-selected strip, strip keyframe, or one-shot standing, so `deselectAll` — the same
+        // route the timeline's empty-click twins already take — is the one call every kind
+        // answers to.
+        if (!shift) deselectAll();
         return;
     }
     const s = trackSamples(ecs);
@@ -875,10 +883,9 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
         shift ? "toggle" : "replace",
     );
     if (!shift && res.ids.length === 0) {
-        select(null);
-        selectForce(null); // an empty plain marquee deselects all, like an empty click
-        selectSection(null);
-        selectStart(false);
+        // an empty plain marquee deselects all, like an empty click — the whole member set,
+        // every kind at once (S2: `deselectAll`, the timeline twin's own route).
+        deselectAll();
     } else {
         selectNodes(res.ids, res.active);
     }
@@ -1017,6 +1024,67 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     }
     const [ox, oy] = localTipAt(s, eid, worldX, worldY);
     setTangent(ecs, section, order, editTangent(tan, side, ox, oy));
+}
+
+// ── the dismissal law (S2): a dismissal reads the unified member set, never one kind's view. ───
+// one press on a cross-kind set clears every member of every kind
+// (editor-ui.md § Multi context UI: "Esc clears the whole set as one dismissal rung, not N"):
+// the viewport's Escape rung and its empty-click / empty-marquee twins route through
+// `deselectAll` (editor.ts) — the same route the timeline's empty-click twins already take —
+// and the timeline's per-kind Escape rungs call the exported ladders below: each clears the
+// whole set the moment the selection spans kinds outside the rung's own, except the oneShot
+// rung, whose set is single-kind by construction (its own doc states why). the within-kind peel
+// ladders are sub-mode nesting, not sibling kinds — strip keyframe under strip, handle under
+// force point, tangent edit under node — and survive unchanged: `escapeCrossesKinds` takes the
+// rung's own `domain` (the strip rung passes BOTH strip kinds), so nesting inside the domain
+// still peels one layer per press. the ladders live here, beside their viewport twins, because
+// this is the .ts seam `tests/controls.test.ts` arms them through — Timeline.svelte's keydown
+// rungs call these exact functions, so the armed path is the production path.
+
+/** whether the member set holds any member of a kind outside `domain` — the cross-kind read
+ *  behind the S2 dismissal law. answers dismissal-rung kind-domain routing and is NOT the
+ *  set-level multi predicate (`multi()`, `editor.ts`), which S5 finishes. `domain` names the
+ *  rung's own kind(s): a strip keyframe under its owning strip is nesting, not a sibling kind,
+ *  so the strip rung passes both strip kinds and a plain strip-keyframe click (which keeps the
+ *  owning strip, `sweepOtherKinds`) is NOT cross-kind — its peel ladder runs. */
+export function escapeCrossesKinds(domain: readonly SelKind[]): boolean {
+    const inside = (k: SelKind) => domain.includes(k);
+    return (
+        (!inside("node") && editor.nodes.ids.size > 0) ||
+        (!inside("force") && editor.forces.ids.size > 0) ||
+        (!inside("section") && editor.sections.ids.size > 0) ||
+        (!inside("strip") && editor.strips.ids.size > 0) ||
+        (!inside("stripKf") && editor.stripKfs.ids.size > 0) ||
+        (!inside("start") && editor.start) ||
+        (!inside("oneShot") && editor.oneShot)
+    );
+}
+
+/** the timeline's oneShot Escape rung (Timeline.svelte's keydown handler calls this): the
+ *  singleton's own clear. every add-path (editor.ts) reassigns `_active` off "oneShot" on
+ *  add, so a oneShot-active set is single-kind by construction — no cross-kind clear to
+ *  take. */
+export function oneShotEscape(): void {
+    selectOneShot(false);
+}
+
+/** the timeline's strip/stripKf Escape rung: a cross-kind set clears whole; within the velocity
+ *  domain the peel ladder is unchanged — a selected strip keyframe peels first (keeping the
+ *  strip), the next press clears the strip. */
+export function stripEscape(): void {
+    if (escapeCrossesKinds(["strip", "stripKf"])) deselectAll();
+    else if (editor.stripKf !== null) selectStripKf(null);
+    else selectStrip(null);
+}
+
+/** the timeline's force Escape rung: a cross-kind set clears whole; within the force kind the
+ *  peel ladder is unchanged — deselect the handle first (back to the keyframe readout), then
+ *  exit handle edit (keep the point selected), then clear the selection. */
+export function forceEscape(): void {
+    if (escapeCrossesKinds(["force"])) deselectAll();
+    else if (editor.forceHandle !== null) selectForceHandle(null);
+    else if (editor.forceEdit !== null) exitForceEdit();
+    else selectForce(null);
 }
 
 /** wire canvas pointer + window keyboard handling, returning `{ detach, startManip }`. tied to the
@@ -1529,9 +1597,13 @@ export function attachControls(
                 activeKind() === "start"
             ) {
                 e.preventDefault();
-                select(null);
-                selectSection(null);
-                selectStart(false);
+                // S2 (the dismissal law, editor-ui.md § Multi context UI): the clear reads the
+                // member set, never one kind's view — the old hand-paired sweep cleared
+                // node/section/start and left a co-selected strip, strip keyframe, or one-shot
+                // standing through a viewport Esc. `deselectAll` clears every member of every
+                // kind in the ONE press the rule demands ("Esc clears the whole set as one
+                // dismissal rung, not N").
+                deselectAll();
             }
             return;
         }
