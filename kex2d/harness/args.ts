@@ -254,8 +254,8 @@ export interface Verdict {
  * is where a retries change would show up. Only `reference` follows from the knobs: a run at
  * non-default workers or settle is a sound run whose shots are simply not the reference set.
  */
-export function verdict(facts: RunFacts): Verdict {
-    const failure = failureOf(facts);
+export function verdict(facts: RunFacts, declared: ReadonlySet<string> = DECLARED_TITLES): Verdict {
+    const failure = failureOf(facts, declared);
     // Deciding field: `exitCode === 0 && failedTitles.length === 0` — the existing invariant that
     // `reference: true` requires a fully green run. A declared red has `failure === null` but is
     // not fully green, so this check is separate from `failure === null`.
@@ -266,13 +266,14 @@ export function verdict(facts: RunFacts): Verdict {
     };
 }
 
-function failureOf({
-    selective,
-    exitCode,
-    collected,
-    counts,
-    failedTitles,
-}: RunFacts): string | null {
+// `declared` is a parameter rather than a direct `DECLARED_TITLES` read so the mechanism can be
+// exercised against a synthetic set: the committed set is EMPTY whenever no intermittent is
+// outstanding (its goal state), and a positive control that can only run while a real defect is
+// tolerated would make the tolerance path untestable exactly when the corpus is healthy.
+function failureOf(
+    { selective, exitCode, collected, counts, failedTitles }: RunFacts,
+    declared: ReadonlySet<string>,
+): string | null {
     if (exitCode === null) return "the spawn ceiling fired — Playwright never exited";
     if (exitCode !== 0) {
         // A selective run's red is an iteration signal, not a gate decision — the declared set
@@ -283,9 +284,7 @@ function failureOf({
         // A full red run: check every failed title against the declared set. Deciding field:
         // `testTitle(t)` — the title, not the raw `file:line` line — the roster's identity key.
         if (failedTitles.length === 0) return `Playwright exited ${exitCode}`;
-        const undeclared = failedTitles
-            .map(testTitle)
-            .filter((title) => !DECLARED_TITLES.has(title));
+        const undeclared = failedTitles.map(testTitle).filter((title) => !declared.has(title));
         if (undeclared.length > 0) return `red outside the declared set: ${undeclared.join(", ")}`;
         // All reds are declared — the run stands (exits 0), but `reference: false` (not fully green).
         return null;

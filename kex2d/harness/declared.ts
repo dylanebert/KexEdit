@@ -64,30 +64,17 @@ export interface DeclaredEntry {
  * `dblclick` events — so `chartCreate` never fired. Fixed by using `Meta` instead (both bypass
  * snap via `snapActive(e.ctrlKey || e.metaKey)`), and the entry was removed from the declared set.
  *
- * The band-click fix (2026-08-29) retired the S5 axis-law entry and **re-owned the other**, because
- * the two reds turned out to belong to two different defects that the shared owner string hid. The
- * axis-law flow does press the band, and it now selects on one click with no hover poll and no
- * bounded retry — that entry is gone. The popup-label flow presses no band at all: it reds at a
- * *keyframe* click (`section.pw.ts:2552`), where the pressed point comes from the fresh `stripKfPx`
- * projection while the diamond's DOM hit circle still renders from the tick-paced `stripKfPts`. So
- * its owner moves to the roadmap item that names THAT class, which is the corpus arm doing its job:
- * an owner is what makes a red findable, and an owner naming the wrong defect makes it unfindable
- * with the alarm cleared.
+ * The band-click fix (2026-08-29) retired the S5 axis-law entry and re-owned the other onto the
+ * keyframe-click class it actually belonged to — the corpus arm doing its job, since an owner
+ * naming the wrong defect makes a red unfindable with the alarm cleared.
+ *
+ * The keyframe-press fix retired that last entry, so THE SET IS NOW EMPTY — its goal state, not a
+ * disabled gate. Empty means every red in a full run is undeclared and fails the run. The tolerance
+ * path stays exercised against a synthetic set (`verdict`'s `declared` parameter, `args.ts`),
+ * because a positive control that can only run while a real defect is tolerated would go dark
+ * exactly when the corpus is healthy.
  */
-export const DECLARED: readonly DeclaredEntry[] = [
-    {
-        title: "popup label scrub reaches the strip keyframe and one-shot popovers (S10, F8)",
-        owner: {
-            kind: "roadmap",
-            ref: "A strip keyframe click can land a frame ahead of its own diamond",
-        },
-        evidence: {
-            at: "2026-08-28T00:49:18.247Z",
-            head: "0ab41a0",
-            branch: "kex2d-capture-roster/s2",
-        },
-    },
-];
+export const DECLARED: readonly DeclaredEntry[] = [];
 
 /** the declared titles, for O(1) membership in `verdict()` */
 export const DECLARED_TITLES: ReadonlySet<string> = new Set(DECLARED.map((e) => e.title));

@@ -437,3 +437,105 @@ test("__kex hook freshness — a band press in the create's own frame selects th
         `a band press in the create's own frame selected ${String(result.selected)} instead of the strip ${String(result.id)} under the pointer — the classifier read a stale $derived`,
     ).toBe(result.id);
 });
+
+// ── the keyframe twin of the band-press arm above (`A strip keyframe click can land a frame ahead
+// of its own diamond`). Same class, one surface over, and the fix is the same law: a press is
+// classified against a FRESH projection, never against rendered geometry.
+//
+// The defect: `stripKfPx` computes the diamond's position fresh from the ECS, while the diamond's
+// own DOM hit circle (`.fhit`) is positioned from the tick-paced `stripKfPts` `$derived`. A flow
+// that creates (or moves) a keyframe and presses at the hook's coordinate in the SAME frame presses
+// where the circle is *about* to be — so the press lands on no circle at all, falls through to the
+// chart's own rect, and (before the fix) armed a marquee whose empty-click branch DESELECTS. That
+// is what made the two witnessed reds intermittent: the press only misses when no RAF tick happens
+// to land between the create and the press.
+//
+// The fix routes both entry points — the circle and the chartzone beneath it — through `chartDown`,
+// which re-reads the ECS and classifies by position (`classifyKfHit`, `src/kf-hit.ts`), the same
+// shape `bandDown`/`freshBandStrips` already had.
+//
+// The press is dispatched IN THE PAGE for the same reason the band arm's is: a real pointer costs a
+// CDP round trip, which lets RAF ticks fire between the create and the press — the exact
+// non-determinism this arm exists to remove. The event lands on the real chartzone rect and runs the
+// real handler, so what is synthetic is the event source, not the handler under test.
+//
+// RED-FIRST WITNESS: with the fix reverse-applied (chartzone back to `onpointerdown={marqueeDown}`)
+// this arm reds, `stripKfSelActive` reading null against the created keyframe's own id — the
+// empty-chart deselect, which is the user-visible defect itself. Restored, it greens.
+test("__kex hook freshness — a strip keyframe press in the create's own frame selects the new keyframe", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    // a settled strip to hang the keyframe on — created and allowed to reach the render, so the
+    // ONLY unsettled state at press time is the keyframe this arm creates below.
+    const strip = await page.evaluate(() => {
+        const kex = (window as unknown as { __kex: Record<string, (...a: unknown[]) => unknown> })
+            .__kex;
+        const len = kex.dOf(kex.uTotal()) as number;
+        return {
+            id: kex.addStripAt(len * 0.55, len * 0.85, 5) as number | null,
+            start: len * 0.55,
+            end: len * 0.85,
+        };
+    });
+    expect(strip.id, "addStripAt refused (overlap?)").not.toBeNull();
+    await frames(page, 2);
+
+    // nothing selected going in, so the assertion below can only be satisfied by the press itself
+    // (`kex2d-harness.md`'s positive-control law — a pre-selected keyframe would make it vacuous).
+    expect(await kexCall(page, "stripKfSelActive")).toBe(null);
+
+    const result = await page.evaluate(
+        ({ stripId, at }) => {
+            const kex = (
+                window as unknown as { __kex: Record<string, (...a: unknown[]) => unknown> }
+            ).__kex;
+            const zone = document.querySelector(".chartzone");
+            if (zone === null) return { error: "no .chartzone" };
+            const canvas = document.querySelector("canvas.chart");
+            if (canvas === null) return { error: "no canvas.chart" };
+            const chart = canvas.getBoundingClientRect();
+
+            // synchronous create — the ECS now carries a keyframe the tick-gated `stripKfPts`
+            // `$derived` has never seen, so no `.fhit` circle exists for it. No RAF runs before
+            // the press below.
+            const id = kex.placeStripKf(stripId, at, 7) as number;
+            const px = (kex.stripKfPx() as { id: number; x: number; y: number }[]).find(
+                (p) => p.id === id,
+            );
+            if (px === undefined) return { error: "the new keyframe has no chart px" };
+
+            zone.dispatchEvent(
+                new PointerEvent("pointerdown", {
+                    bubbles: true,
+                    cancelable: true,
+                    button: 0,
+                    clientX: px.x,
+                    clientY: px.y,
+                }),
+            );
+            return {
+                id,
+                selected: kex.stripKfSelActive() as number | null,
+                // the diamond's own DOM circle count, to witness that the press really did land
+                // in a frame where the render had not caught up.
+                circles: document.querySelectorAll(".fmarkers .fhit").length,
+                chartLeft: chart.left,
+            };
+        },
+        { stripId: strip.id as number, at: (strip.start + strip.end) / 2 },
+    );
+
+    expect(result.error, `arm setup failed: ${result.error ?? ""}`).toBeUndefined();
+    // THE ASSERTION: the press selected the keyframe it landed on. Before the fix the press hits no
+    // circle (the new diamond is undrawn) and the chartzone's marquee branch deselects, so this
+    // reads null.
+    expect(
+        result.selected,
+        `a strip keyframe press in the create's own frame selected ${String(result.selected)} instead of the keyframe ${String(result.id)} under the pointer — the press was classified against rendered geometry, not a fresh projection`,
+    ).toBe(result.id);
+});

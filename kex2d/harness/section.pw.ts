@@ -2762,10 +2762,6 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    // the render-lag settle: "strip keyframe arrow-nudge"'s own note at its matching line, same
-    // mechanism (the downstream keyframe click's DOM circle trails the fresh `stripKfPx` read).
-    await frames(page, 2);
-
     // Get the new strip's seeded keyframes — one at its own start, one at its own end (S4's
     // seeded-boundary-keyframes idiom). `stripDefaultExtentAt` (S2: track-global, no longer
     // clamped to a single section's own authored `Section.length`, which reads 0 for a geo
@@ -2909,17 +2905,6 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    // The keyframe clicks downstream read `stripKfPx` — a hook computed fresh from the ECS —
-    // while the diamond's own DOM hit rect is rendered from the tick-paced `stripKfPts`
-    // `$derived`, so the projected point can be one frame ahead of the circle the pointer must
-    // land on. No readable condition exists for that lag: the `.fhit` circles carry no per-id
-    // attribute to locate, so a locator assert cannot name THIS keyframe's own rect
-    // (kex2d-harness.md: frames(page,N) is lawful only where the awaited quantity has none).
-    // Measured, not argued: with this settle removed, `strip keyframe arrow-nudge` reds at its
-    // midpoint-keyframe click at full-suite scale (2026-08-29, one full `bun run capture`) while
-    // greening in isolation — the render-lag class, not the band-press one the fix retired.
-    await frames(page, 2);
-
     // Get the new strip's seeded keyframes (2 at start/end).
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -3057,10 +3042,6 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    // the render-lag settle: "strip keyframe arrow-nudge"'s own note at its matching line, same
-    // mechanism (the downstream keyframe click's DOM circle trails the fresh `stripKfPx` read).
-    await frames(page, 2);
-
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
     if (!created) throw new Error("newly-created strip not found");
@@ -3225,10 +3206,6 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    // the render-lag settle: "strip keyframe arrow-nudge"'s own note at its matching line, same
-    // mechanism (the downstream keyframe click's DOM circle trails the fresh `stripKfPx` read).
-    await frames(page, 2);
-
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
     if (!created) throw new Error("newly-created strip not found");

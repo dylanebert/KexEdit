@@ -513,23 +513,29 @@ describe("verdict — the boolean gate against the declared set", () => {
         defaultKnobs: true,
         failedTitles: [] as string[],
     };
-    // the one declared title, as a raw Playwright failed-title line (the format `failedTitles()`
-    // parses from stdout, and the format `verdict()` receives in `RunFacts.failedTitles`). S3
-    // retired the S6c2 entry (the flow's `Control`+dblclick suppressed `click`/`dblclick` on
-    // macOS), so this now uses one of the two remaining declared titles (the band-click defect's).
+    // a declared title, as a raw Playwright failed-title line (the format `failedTitles()` parses
+    // from stdout, and the format `verdict()` receives in `RunFacts.failedTitles`). The committed
+    // set is EMPTY — its goal state, once no intermittent is outstanding — so the tolerance path is
+    // exercised against a SYNTHETIC set passed to `verdict`, never the module's own. Reading the
+    // committed set here would silently stop testing the mechanism the moment the corpus went
+    // healthy, which is exactly when the assertion looks most reassuring.
     const declaredRed =
         "[chromium] › section.pw.ts:2536:1 › popup label scrub reaches the strip keyframe and one-shot popovers (S10, F8)";
+    const synthDeclared: ReadonlySet<string> = new Set([testTitle(declaredRed)]);
     // an undeclared title — not in `DECLARED_TITLES`
     const undeclaredRed =
         "[chromium] › section.pw.ts:2015:1 › strip keyframe deselect on empty chart click";
 
     test("a run whose only reds are declared exits 0 and stamps reference: false", () => {
-        const v = verdict({
-            ...full,
-            exitCode: 1,
-            counts: runCounts("  1 failed\n  83 passed\n"),
-            failedTitles: [declaredRed],
-        });
+        const v = verdict(
+            {
+                ...full,
+                exitCode: 1,
+                counts: runCounts("  1 failed\n  83 passed\n"),
+                failedTitles: [declaredRed],
+            },
+            synthDeclared,
+        );
         expect(v.failure).toBeNull();
         expect(v.reference).toBe(false);
     });
@@ -547,12 +553,15 @@ describe("verdict — the boolean gate against the declared set", () => {
     });
 
     test("a run with both declared and undeclared reds exits 1 naming the undeclared title", () => {
-        const v = verdict({
-            ...full,
-            exitCode: 1,
-            counts: runCounts("  2 failed\n  82 passed\n"),
-            failedTitles: [declaredRed, undeclaredRed],
-        });
+        const v = verdict(
+            {
+                ...full,
+                exitCode: 1,
+                counts: runCounts("  2 failed\n  82 passed\n"),
+                failedTitles: [declaredRed, undeclaredRed],
+            },
+            synthDeclared,
+        );
         expect(v.failure).toContain("red outside the declared set");
         expect(v.failure).toContain("strip keyframe deselect on empty chart click");
         // the declared title is NOT named — only the undeclared one is the regression
@@ -604,8 +613,24 @@ describe("declared — the committed declaration module", () => {
     // each carrying an owner and its first-seen evidence. The corpus arm reds an entry whose
     // owner names nothing live and a title matching no test in `stage.files`.
 
-    test("the declared set is non-empty (the gate has at least one tolerated title)", () => {
-        expect(DECLARED.length).toBeGreaterThan(0);
+    // The set is EMPTY whenever no intermittent is outstanding, which is its goal state — so this
+    // asserts the consequence of emptiness rather than a population count. A count assertion in
+    // either direction fits the number to today's corpus: non-empty reds the moment the last defect
+    // is fixed, and empty reds the moment a real one is declared.
+    test("an empty declared set tolerates nothing — every red in a full run fails it", () => {
+        const v = verdict(
+            {
+                selective: false,
+                exitCode: 1,
+                collected: 84,
+                counts: runCounts("  1 failed\n  83 passed\n"),
+                defaultKnobs: true,
+                failedTitles: ["[chromium] › section.pw.ts:1:1 › any red at all"],
+            },
+            new Set<string>(),
+        );
+        expect(v.failure).toContain("red outside the declared set");
+        expect(v.reference).toBe(false);
     });
 
     test("every declared entry has a title, an owner, and first-seen evidence", () => {

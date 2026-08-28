@@ -76,6 +76,7 @@ import {
     setForceTangentMode,
 } from "./history";
 import { forceKeyAct } from "./keys";
+import { classifyKfHit, type KfHitCandidate, type KfKind } from "./kf-hit";
 import { classifyOneShotHit, classifyStripHit, type StripHit, type StripHitCandidate } from "./strip-hit";
 import { V_FLOOR } from "./bake";
 import { redoRouted, undoRouted } from "./pin";
@@ -1476,7 +1477,8 @@ function chartCreate(e: MouseEvent): void {
 // effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a keyframe
 // drag: the per-axis gesture-start magnet is the "change just one axis" affordance, so a
 // dominant-axis lock is redundant here.
-type KfKind = "force" | "strip";
+// `KfKind` itself lives in `kf-hit.ts`, imported above: the hit classifier is typed over the
+// same kind vocabulary, and two copies would drift the moment a third kind lands.
 // every keyframe kind, in declaration order — the marquee's own resolve loop (S9) iterates
 // this so a third kind never needs its own copy of the deselect/marquee-merge call.
 const KF_KINDS: readonly KfKind[] = ["force", "strip"];
@@ -1846,6 +1848,79 @@ let marqueeRect: Rect | null = $state(null); // canvas-local px; drawn as the SV
 let marqueeArmed = false; // past the dead zone → the rect is live AND the canvas holds capture
 let marqueeShift = false;
 let marqueePointer = -1; // the pressed pointer, captured on arm (not on down)
+// ── the chart's keyframe press path, `freshBandStrips`/`bandDown`'s own law one surface over.
+//
+// A `.fhit` circle is positioned from the tick-paced `forcePts`/`stripKfPts` `$derived`s, so a
+// keyframe created or moved and pressed in the SAME frame is still drawn at its previous position:
+// a press at the keyframe's CURRENT position lands where the diamond is about to be and hits no
+// element at all. The band had exactly this defect and took exactly this fix — classify every press
+// through a FRESH projection instead of trusting rendered geometry.
+//
+// The circles keep their `pointer-events` and their handler: they are what a real mouse (and
+// Playwright's own actionability check) hits on a settled frame, and what CSS `:hover` lands on.
+// What changed is that the handler no longer trusts the closure's captured point — BOTH entry
+// points, the circle and the chart-wide rect beneath it, route through `chartDown`, which re-reads
+// the ECS and resolves the press by position. A press that misses every (stale) circle falls
+// through to the chartzone and is classified there, which is the case the circles cannot serve.
+//
+// Right-click is deliberately NOT routed here: `forceCtx` stays on the circle's own
+// `oncontextmenu` (the chart-inertness registry in `tests/menu.test.ts` pins chartzone as having
+// no handler at all). A right-click can only target a diamond a person can already see, so it is
+// never dispatched at a position the current frame has not drawn.
+function freshKfPts(kind: KfKind): (ForcePt | StripKfPt)[] {
+    const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+    return kind === "force"
+        ? computeForcePts(computeClips(freshSpans, ecs), freshSpans, ecs)
+        : computeStripKfPts(computeBandStrips(freshSpans, ecs), freshSpans, ecs);
+}
+
+// the pointer-hit candidates over ONE fresh keyframe snapshot, with the snapshot kept so the
+// caller resolves the hit's point against the SAME read of the ECS it classified against
+// (`bandCandidates`' own "never one fresh and one stale" law). Candidates outside the chart's
+// own clip (`#fclip`) are dropped: a clipped diamond is not hit-testable in the DOM either, so
+// including it here would make the rect hit a keyframe the circle path cannot.
+function freshKfSnapshot(): {
+    cand: KfHitCandidate[];
+    at: (kind: KfKind, id: number) => ForcePt | StripKfPt | undefined;
+} {
+    const byKind = new Map<KfKind, (ForcePt | StripKfPt)[]>();
+    const cand: KfHitCandidate[] = [];
+    const yLo = TOP;
+    const yHi = Math.max(TOP, h - BOT_PAD);
+    for (const kind of KF_KINDS) {
+        const desc = kfDesc(kind);
+        const pts = freshKfPts(kind);
+        byKind.set(kind, pts);
+        for (const p of pts) {
+            const x = ptX(p);
+            const y = desc.valToY(desc.val(p));
+            if (x < LEFT_GUT || x > w) continue;
+            if (y < yLo || y > yHi) continue;
+            cand.push({ kind, id: p.id, x, y });
+        }
+    }
+    return { cand, at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id) };
+}
+
+// every left-button press on the chart — from a diamond's own hit circle OR from the chart-wide
+// rect beneath it. Classifies fresh, then hands off to the existing `keyframeDown` with the point
+// read from the same snapshot; a miss is an empty-chart press and falls through to the marquee,
+// which owns the deselect grammar.
+function chartDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const snap = freshKfSnapshot();
+    const hit = classifyKfHit(e.clientX - rect.left, e.clientY - rect.top, snap.cand, FHIT_R);
+    if (hit !== null) {
+        const pt = snap.at(hit.kind, hit.id);
+        if (pt !== undefined) {
+            keyframeDown(e, hit.kind, pt);
+            return;
+        }
+    }
+    marqueeDown(e);
+}
+
 function marqueeDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     // layered dismissal: a chart click while a popover field is focused only blurs it (the
@@ -4510,13 +4585,13 @@ onMount(() => {
             // move/widen changed the bake.
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
-                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
-                const freshStrips = computeBandStrips(freshSpans, ecs);
-                return computeStripKfPts(freshStrips, freshSpans, ecs).map((k) => ({
-                    id: k.id,
-                    x: rect.left + uPx(k.u),
-                    y: rect.top + vOf(k.v),
-                }));
+                // This IS `chartDown`'s own candidate list (`freshKfSnapshot`), reached by name
+                // rather than recomputed here — the `stripPx`/`bandCandidates` precedent, and for
+                // the same reason: a flow's pixel probe and the press path's classifier can never
+                // disagree about where a diamond is. Clipped keyframes are absent from both.
+                return freshKfSnapshot()
+                    .cand.filter((c) => c.kind === "strip")
+                    .map((c) => ({ id: c.id, x: rect.left + c.x, y: rect.top + c.y }));
             };
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a
@@ -4705,7 +4780,7 @@ onMount(() => {
                     width={Math.max(0, w - LEFT_GUT)}
                     height={Math.max(0, h - BOT_PAD - TOP)}
                     ondblclick={chartCreate}
-                    onpointerdown={marqueeDown}
+                    onpointerdown={chartDown}
                     role="presentation"
                 />
             {/if}
@@ -4909,7 +4984,7 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                onpointerdown={(e) => keyframeDown(e, "force", p)}
+                                onpointerdown={chartDown}
                                 oncontextmenu={(e) => forceCtx(e, p)}
                                 role="button"
                                 tabindex="-1"
@@ -4950,7 +5025,7 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                onpointerdown={(e) => keyframeDown(e, "strip", k)}
+                                onpointerdown={chartDown}
                                 role="button"
                                 tabindex="-1"
                                 aria-label="Velocity keyframe"
