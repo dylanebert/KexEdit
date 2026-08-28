@@ -165,7 +165,7 @@ only there. The UI reads it through the per-RAF tick and writes it only through 
 setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface a
 future authoring agent drives — the same one the capture harness pokes through `__kex`.
 
-**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
 (`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two
@@ -213,7 +213,8 @@ stay distance-internal and land with nothing to convert (their goldens are froze
 canonical text form — a canonically-emitted `Kex2dDocument` capturing the four `Track` scalars
 above plus every section/node/force-point/strip/strip-keyframe/one-shot, `version`-stamped with a
 forward-only migration seam. `saveDocument(ecs)` / `loadDocument(ecs, text)` are the boundary: save
-never throws, load parses + validates the WHOLE file before touching the ECS (a refused load
+throws only on a non-finite scalar in the live ECS (`numLit`'s guard — an ECS-integrity bug, not a
+file case), load parses + validates the WHOLE file before touching the ECS (a refused load
 leaves the live document untouched) and clears the undo stack, since a load is a new document, not
 an edit to undo past. Module detail, the emitter's ordering/idempotence discipline, and the f32
 exactness argument: `.claude/rules/kex2d-map.md`'s `doc.ts` entry.

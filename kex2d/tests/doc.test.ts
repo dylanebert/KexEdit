@@ -430,6 +430,21 @@ describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", ()
         // of any other test in this run having advanced the process-wide id counter.
         expect(saveDocument(b)).toBe(text);
 
+        // Capture b's bake BEFORE constructing a second State. `samples`/`bakeOut`
+        // (`track.ts:1108`/`1123`) are module-level Maps keyed by raw numeric entity id, and
+        // `track.ts:1123`'s own OWED note names the collision: two independent `State()`s both
+        // start id counting at 0, so `b` and a freshly-built `a` below both resolve to track
+        // entity 1 and share ONE map slot. `bakedArrays` already copies out of the typed arrays
+        // (`Array.from`), so reading it now, before `a.state.step(0)` overwrites that slot, is
+        // what makes the comparison below discriminate the FIXTURE's own bake rather than
+        // comparing `a`'s bake to itself through the shared slot (silently vacuous either way —
+        // proven by mutation: friction, a node's `x`, and the one-shot `value` each edited in the
+        // committed fixture text used to pass clean; this ordering reds on all three, witnessed
+        // 2026-08-28 by reverting the one-shot edit alone: `value: 22` -> `10` in the committed
+        // file, without touching the code below, failed with the expected diff, then the fixture
+        // was restored via `git show fe14c27:kex2d/tests/fixtures/hill-explicit-golden.kex`).
+        const bBaked = bakedArrays(bEid);
+
         // the bake matches the scenario this fixture was minted from — bakedArrays carries no
         // ids, so this comparison is unaffected by the loaded track's ids differing from a
         // freshly-authored one's.
@@ -437,7 +452,7 @@ describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", ()
         if (!s) throw new Error("scenario not found");
         const a = scenarioTrack(s);
         a.state.step(0);
-        expect(bakedArrays(bEid)).toEqual(bakedArrays(a.eid));
+        expect(bBaked).toEqual(bakedArrays(a.eid));
     });
 });
 

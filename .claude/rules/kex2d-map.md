@@ -749,7 +749,8 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   section/node/force-point/strip/strip-keyframe/one-shot. `.kex`, JSON inside, text canonical.
   `docFromEcs`/`docToTrackSnapshot` are the two-way projection against `snapshotAll`'s own
   `TrackSnapshot` (`track.ts`); `saveDocument(ecs): string` / `loadDocument(ecs, text): void` are
-  the boundary — save never throws, load parses + validates the WHOLE text through
+  the boundary — save throws only on a non-finite scalar in the live ECS (`numLit`'s guard — an
+  ECS-integrity bug, not a file case), load parses + validates the WHOLE text through
   `parseDocument` before a single ECS write, so a refused load leaves the live document
   untouched, then `restoreAll` + the four `Track` setters replace it and the undo stack clears
   (a load is a new document, not an edit to undo past).
