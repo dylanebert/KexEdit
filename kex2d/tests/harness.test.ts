@@ -1023,9 +1023,44 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         // the roster mechanism alone stays silent — no branch ever gets bucketed
         expect(summary.roster).toEqual([{ title: "deselect", units: [] }]);
         // which is exactly why the count exists as its own signal
-        expect(summary.unresolvedHeadReds).toBe(2);
+        expect(summary.unresolvedBranchReds).toBe(2);
         const breaches = tripwires(summary);
-        expect(breaches.some((b) => b.startsWith("head:"))).toBe(true);
+        expect(breaches.some((b) => b.startsWith("branch:"))).toBe(true);
+    });
+
+    test("a detached-HEAD red (head non-null, branch null) trips the tripwire, not the roster", () => {
+        // A detached HEAD has a resolvable HEAD (a valid SHA) but an unresolvable branch:
+        // `capture.ts` maps `--abbrev-ref HEAD`'s "HEAD" to null. The roster's per-branch
+        // bucketing skips a null branch slug, so the title reads as "not yet recurring"
+        // forever — the exact miscategorization the tripwire exists to catch. Distinct from
+        // the broken-git arm above, which nulls both head and branch: this arm has head
+        // non-null, so the old head-based predicate does not count it.
+        const redDetached = (): RunRecord =>
+            run({
+                head: "aaaaaaa",
+                branch: null,
+                exitCode: 1,
+                failedTitles: ["section.pw.ts:2017 › deselect"],
+            });
+        const summary = summarize([redDetached()]);
+        // the roster mechanism stays silent — no branch ever gets bucketed
+        expect(summary.roster).toEqual([{ title: "deselect", units: [] }]);
+        // which is exactly why the count exists as its own signal
+        expect(summary.unresolvedBranchReds).toBe(1);
+        const breaches = tripwires(summary);
+        expect(breaches.some((b) => b.startsWith("branch:"))).toBe(true);
+
+        // a dirty-tree run with the same detached HEAD does NOT trip — dirty runs are a
+        // deliberate exclusion (the Locked decision: an uncommitted edit enters nothing at
+        // all), not a broken identity.
+        const dirtyDetached = run({
+            head: "aaaaaaa",
+            branch: null,
+            dirty: true,
+            exitCode: 1,
+            failedTitles: ["section.pw.ts:2017 › deselect"],
+        });
+        expect(summarize([dirtyDetached]).unresolvedBranchReds).toBe(0);
     });
 
     test("capture.ts stamps every phase the reader consumes", () => {
