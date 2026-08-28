@@ -174,7 +174,6 @@ import {
     setStrip,
     setStripKeyframe,
     keyframeRoom,
-    owningStrip,
     stripBoundsAt,
     stripDefaultExtentAt,
     stripKeyframes,
@@ -1641,8 +1640,21 @@ let lastFdownId = -1;
 interface KfDesc {
     sel: Selection;
     pts: (ForcePt | StripKfPt)[];
-    select: (id: number | null, mode?: SelectMode) => void;
-    selectMany: (ids: number[], active: number | null) => void;
+    // the strip kind's BOTH non-null forms require the owning strip as their containment
+    // input — the third param carries it (`StripKfPt.strip`, the caller's own hit data,
+    // never an ECS read); the force kind ignores it. the field type keeps it optional (the
+    // force kind has none to carry), so the strip kind's closure below is the fail-closed
+    // seam that refuses an owner-less non-null call.
+    select: (id: number | null, mode?: SelectMode, owner?: number) => void;
+    // the strip kind's marquee write takes each keyframe's owning strip — keyed by keyframe
+    // id, off the strip-kf render points (`StripKfPt.strip`, the caller's own hit data,
+    // never an ECS read) — so the added members store the containment flag like the click
+    // forms do. optional: the force kind's write has no owner to record and passes none.
+    selectMany: (
+        ids: number[],
+        active: number | null,
+        owners?: ReadonlyMap<number, number>,
+    ) => void;
     activate: (id: number) => void;
     val: (p: ForcePt | StripKfPt) => number; // value mapping: which field is "the value" (g or v)
     valToY: (v: number) => number;
@@ -1674,23 +1686,33 @@ function kfDesc(kind: KfKind): KfDesc {
         // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
         // filter was the siloing — not a visibility gate.
         pts: stripKfPts,
-        // the plain click resolves the OWNER from the ECS per click (`owningStrip`, the same
-        // containment read Delete answers through) — never through the active strip, so the
-        // replace sweep keeps exactly the strip that owns the clicked keyframe: a co-selected
-        // non-owning strip is a sibling and drops.
-        select: (id, mode) => {
+        // both click forms resolve the OWNER from the click's own hit data — the owner param
+        // `keyframeDown` reads off the strip-kf render point (`StripKfPt.strip`), never through
+        // an ECS read and never through the active strip. the replace sweep keeps exactly
+        // the strip that owns the clicked keyframe: a co-selected non-owning strip is a
+        // sibling and drops. the toggle form records the same owner as the added member's
+        // containment flag, so `stripKfOwner` reads true for a shift-clicked keyframe too.
+        // `selectStripKf`'s overloads now require that owner on BOTH non-null forms (the
+        // stripKf-never-without-owner state invariant); the descriptor's shared field type
+        // still leaves it optional (the force kind has none to carry), so an owner-less strip
+        // call type-checks HERE — this closure is the fail-closed seam, refusing it rather
+        // than forwarding it. a stale id off a lagging frame still selects here and is peeled
+        // by the strip-keyframe dismissal $effect above (`stripKfPts` no longer contains it)
+        // — the same self-healing every other stale member rides, and the cost of the click
+        // no longer depending on a read completing under load.
+        select: (id, mode, owner) => {
             if (id === null) selectStripKf(null);
-            else if (mode === "toggle") selectStripKf(id, "toggle");
-            else {
-                // unresolvable owner = a stale id (the kf is gone) — a click on a phantom
-                // keyframe selects nothing, the same nothing a band click on a strip that is
-                // gone selects: band hits classify through `classifyStripHit` over live
-                // `bandCandidates`, so a strip that no longer exists was never hit-testable
-                const owner = owningStrip(ecs, id);
-                if (owner !== null) selectStripKf(id, "replace", owner);
+            else if (owner !== undefined) {
+                if (mode === "toggle") selectStripKf(id, "toggle", owner);
+                else selectStripKf(id, "replace", owner); // mode's default is "replace"
             }
         },
-        selectMany: selectStripKfs,
+        // the set write's owner map is now REQUIRED on `selectStripKfs` (the same invariant:
+        // no stripKf member without its owner), but the shared field type keeps it optional for
+        // the force kind, and strictFunctionTypes refuses the required→optional drop — so this
+        // wrapper carries the seam instead. an owner-less call through it lands on an EMPTY map,
+        // which adds nothing (fail closed per id), so the invariant holds here too.
+        selectMany: (ids, active, owners) => selectStripKfs(ids, active, owners ?? new Map()),
         activate: activateStripKf,
         val: (p) => (p as StripKfPt).v,
         valToY: vOf,
@@ -1722,10 +1744,15 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         else if (editor.strip !== k.strip) selectStrip(k.strip);
     }
     const desc = kfDesc(kind);
+    // the strip kind's containment input rides the hit data's own render point — the owner of
+    // the clicked keyframe (`StripKfPt.strip`), no ECS read on the path. BOTH select forms
+    // take it: the replace form's sweep keeps exactly the owning strip, and the toggle form
+    // records it as the added member's containment flag. the force kind has no owner.
+    const owner = kind === "strip" ? (pt as StripKfPt).strip : undefined;
     // shift-click TOGGLES set membership — a selection gesture, not a drag. ONE path, both
     // kinds (S9 closes F7: the twin `if`/`else` limbs collapse to this single call).
     if (e.shiftKey) {
-        desc.select(pt.id, "toggle");
+        desc.select(pt.id, "toggle", owner);
         return;
     }
     if (kind === "force") {
@@ -1742,7 +1769,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     }
     // clicked-selected-vs-unselected rule — ONE path, both kinds.
     if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);
-    else desc.select(pt.id);
+    else desc.select(pt.id, "replace", owner);
     // lockdown: another section's force keys SELECT but never drag (strip already returned
     // above when locked).
     if (kind === "force" && !sectionEditable(editor.pinning, pt.section)) return;
@@ -2019,7 +2046,18 @@ function marqueeUp(): void {
         if (hitIds.length === 0) continue;
         anyHits = true;
         const res = merge(desc.sel, hitIds, shift ? "toggle" : "replace");
-        desc.selectMany(res.ids, res.active);
+        // the strip kind's hit points carry each keyframe's owning strip (`StripKfPt.strip`,
+        // the caller's own hit data, never an ECS read) — an owners map keyed by keyframe id,
+        // built over the MERGED set so a shift-marquee's pre-selected members keep their
+        // flag too. the force kind has no owner to record and passes none.
+        let owners: Map<number, number> | undefined;
+        if (kind === "strip") {
+            const resSet = new Set(res.ids);
+            owners = new Map<number, number>();
+            for (const p of desc.pts)
+                if (resSet.has(p.id)) owners.set(p.id, (p as StripKfPt).strip);
+        }
+        desc.selectMany(res.ids, res.active, owners);
         // ensure owning strips are selected for strip-kf hits (the layered invariant)
         if (kind === "strip") {
             const hitSet = new Set(hitIds);

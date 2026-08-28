@@ -693,8 +693,8 @@ export interface StripKfMember {
 
 /** resolve the selected strip-keyframe members per OWNING strip — never through the single
  *  active strip. a marquee across two strips selects keyframes of both, and each member's
- *  clamp bounds come from the strip that OWNS it (the ECS read `owningStrip`/track.ts — the
- *  Delete path's own containment read — never a view of one strip), so the whole selected set
+ *  clamp bounds come from the strip that OWNS it (read inline from `StripKeyframe.strip`,
+ *  the same containment relation the Delete path resolves in set form), so the whole selected set
  *  moves, not just the active strip's slice of it. each member's owning strip is checked once
  *  against the strip/oneShot edit-lockdown gate (`stripEditableAtEcs`, the same consent
  *  boundary `mixedSetDelete` reads): any locked owner sets `anyLocked` and the caller's gesture
