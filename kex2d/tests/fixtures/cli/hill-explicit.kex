@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
+  "sections": [
+    {
+      "id": 6,
+      "order": 0,
+      "kind": 0,
+      "length": 0,
+      "nodes": [
+        {"order":0,"x":0,"y":0,"theta":0},
+        {"order":1,"x":20,"y":0,"theta":0},
+        {"order":2,"x":38,"y":7,"theta":0.7417825776253247},
+        {"order":3,"x":56,"y":11,"theta":0,"tangent":{"mode":1,"inX":9,"inY":0,"outX":9,"outY":0}},
+        {"order":4,"x":74,"y":7,"theta":-0.4373378917478839},
+        {"order":5,"x":92,"y":0,"theta":-0.30444468587744083},
+        {"order":6,"x":112,"y":0,"theta":0.30444468587744083}
+      ],
+      "points": []
+    }
+  ],
+  "strips": [],
+  "oneShot": [
+    {"id":6,"value":22}
+  ]
+}
