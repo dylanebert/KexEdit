@@ -514,9 +514,11 @@ describe("verdict — the boolean gate against the declared set", () => {
         failedTitles: [] as string[],
     };
     // the one declared title, as a raw Playwright failed-title line (the format `failedTitles()`
-    // parses from stdout, and the format `verdict()` receives in `RunFacts.failedTitles`)
+    // parses from stdout, and the format `verdict()` receives in `RunFacts.failedTitles`). S3
+    // retired the S6c2 entry (the flow's `Control`+dblclick suppressed `click`/`dblclick` on
+    // macOS), so this now uses one of the two remaining declared titles (the band-click defect's).
     const declaredRed =
-        "[chromium] › force.pw.ts:2047:1 › timeline domain flow — Time-view double-click create writes arclength (S6c2)";
+        "[chromium] › section.pw.ts:2536:1 › popup label scrub reaches the strip keyframe and one-shot popovers (S10, F8)";
     // an undeclared title — not in `DECLARED_TITLES`
     const undeclaredRed =
         "[chromium] › section.pw.ts:2015:1 › strip keyframe deselect on empty chart click";
@@ -554,7 +556,7 @@ describe("verdict — the boolean gate against the declared set", () => {
         expect(v.failure).toContain("red outside the declared set");
         expect(v.failure).toContain("strip keyframe deselect on empty chart click");
         // the declared title is NOT named — only the undeclared one is the regression
-        expect(v.failure).not.toContain("S6c2");
+        expect(v.failure).not.toContain("popup label scrub");
         expect(v.reference).toBe(false);
     });
 
