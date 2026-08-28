@@ -770,6 +770,14 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   names a recovery remedy. Round-trip + f32-exactness + rejection-arm oracles, a committed golden
   fixture's own round-trip arm, and the two-edit diff artifact: `tests/doc.test.ts` +
   `tests/fixtures/hill-explicit-golden.kex` + `tests/two-edit-diff.ts`.
+  **`loadDocument` owns the ECS and nothing beside it**, which is sound for a headless driver and
+  is exactly what an interactive load must finish: it drives raw `restoreAll` (so `history.ts`'s
+  structural-op wrapper never runs and `editor.selection` keeps ids the load invalidated), leaves
+  the module-level `provenance` sidecar untouched (a respawned section landing on an id a stale
+  entry keys on inherits that entry's solve certification), and `restoreAll` itself destroys the
+  live ECS before respawning with no rollback. Validation is type- and range-shaped, not
+  structural — a hand-edited file with a zero-node geo section, duplicate ids, or a `start > end`
+  strip parses and loads — so a UI or CLI that opens untrusted files owes those arms.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `velocityCurve` (`forceCurve`'s
