@@ -2,6 +2,7 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
     keyframeCuttable,
+    mixedSetDelete,
     nodeCuttable,
     sectionEditable,
     sectionOpsAllowed,
@@ -12,8 +13,10 @@ import {
     armDrag,
     attachControls,
     beyondDeadZone,
+    crossKind,
     DRAG_PX,
     dragFreeTo,
+    forceEscape,
     formatDeg,
     formatLen,
     freezeChains,
@@ -23,6 +26,7 @@ import {
     nodeFrame,
     nodeMetrics,
     normDeg,
+    oneShotEscape,
     pickForce,
     pickForceOrStart,
     pickHover,
@@ -31,8 +35,26 @@ import {
     sectionsDeletable,
     sectionsJoinable,
     selectedMetrics,
+    stripEscape,
 } from "../src/controls";
-import { beginDrag, editor, enterTangentEdit, exitTangentEdit } from "../src/editor";
+import {
+    activeKind,
+    beginDrag,
+    deselectAll,
+    editor,
+    endDrag as endDragGesture,
+    enterForceEdit,
+    enterTangentEdit,
+    exitTangentEdit,
+    select,
+    selectForce,
+    selectForceHandle,
+    selectOneShot,
+    selectSection,
+    selectStrip,
+    selectStripKf,
+} from "../src/editor";
+import { addStrip, history } from "../src/history";
 import { forceKeyAct, modeKeyAct, nodeKeyAct, sectionKeyAct } from "../src/keys";
 import { editHandleSets } from "../src/tangents";
 import { LENGTH_MIN } from "../src/magnet";
@@ -71,8 +93,10 @@ import {
     sectionInfo,
     seedTangent,
     setTangent,
+    stripAt,
     Track,
 } from "../src/track";
+import { marquee, setCamera } from "../src/view";
 
 // a synthetic view transform (world→screen affine, sy < 0 for the Y-flip) — the drag paths take
 // screen px, so a device-free test projects through this.
@@ -1463,5 +1487,300 @@ describe("attachControls's pointerleave and remount teardown both clear the hove
             detach();
             expectCleared();
         });
+    });
+});
+
+// ── the S2 dismissal law (kex2d-selection-laws): a dismissal reads the unified member set, ────
+// never one kind's view ────────────────────────────────────────────────────────────────────
+// editor-ui.md § Multi context UI: "Esc clears the whole set as one dismissal rung, not N." one
+// press on a cross-kind selection clears every member of every kind, from EITHER surface — the
+// viewport's Escape rung and its empty-click / empty-marquee twins used to hand-pair partial
+// per-kind sweeps (node/force/section/start) and leave a co-selected strip, strip keyframe, or
+// one-shot standing; the timeline's per-kind rungs peeled one kind at a time. the viewport arms
+// below fire the REAL listeners `attachControls` registers (the window keydown closure, the
+// canvas pointerdown/up pair), and the timeline arms call the rung ladders `Timeline.svelte`'s
+// own keydown handler calls (`forceEscape`/`stripEscape`/`oneShotEscape`, `controls.ts` — the
+// production dismissal paths, not restatements). every selection is built through the production
+// selectors (`selectForce` + `"toggle"` = the shift-click pair, `selectStrip`/`selectStripKf` =
+// the band click / plain keyframe click, `enterTangentEdit`/`enterForceEdit` = the summons).
+describe("S2 — one dismissal reads the member set: one press clears a cross-kind selection", () => {
+    afterEach(() => {
+        deselectAll();
+        endDragGesture(); // the window shims swallow `beginDrag`'s own release listeners
+        marquee.rect = null;
+    });
+
+    /** the whole member set, every kind at once: each kind view empty, no active member left
+     *  for a key to route through. */
+    function expectNothingSelected(): void {
+        expect(editor.nodes.ids.size).toBe(0);
+        expect(editor.forces.ids.size).toBe(0);
+        expect(editor.sections.ids.size).toBe(0);
+        expect(editor.strips.ids.size).toBe(0);
+        expect(editor.stripKfs.ids.size).toBe(0);
+        expect(editor.start).toBe(false);
+        expect(editor.oneShot).toBe(false);
+        expect(activeKind()).toBeNull();
+    }
+
+    /** a canvas double recording every listener `attachControls` registers (keyed by event
+     *  type) and carrying the DOM reads its pointer handlers take — `getBoundingClientRect` for
+     *  `pointerToCanvas`, `clientWidth/Height` for `viewTransform`. */
+    function recordingCanvas(): {
+        el: HTMLCanvasElement;
+        on: (type: string) => (e: unknown) => void;
+    } {
+        const listeners = new Map<string, (e: unknown) => void>();
+        const el = {
+            style: {},
+            clientWidth: 1000,
+            clientHeight: 800,
+            getBoundingClientRect: () => ({ left: 0, top: 0 }),
+            addEventListener(type: string, fn: (e: unknown) => void) {
+                listeners.set(type, fn);
+            },
+            removeEventListener() {},
+            setPointerCapture() {},
+            hasPointerCapture: () => false,
+            releasePointerCapture() {},
+        } as unknown as HTMLCanvasElement;
+        return {
+            el,
+            on: (type: string) => {
+                const fn = listeners.get(type);
+                if (!fn) throw new Error(`no ${type} listener registered`);
+                return fn;
+            },
+        };
+    }
+
+    /** a window double recording the keydown/blur listeners `attachControls` registers on
+     *  `window` — the headless suite has no `window` of its own (the same shim shape the hover
+     *  describe above uses, minus the discard). the `keydown` handed to the arm resolves the
+     *  recorded listener LAZILY, on each press — the arm registers `attachControls` itself
+     *  inside the shim's lifetime. */
+    function withRecordingWindow(fn: (keydown: (e: unknown) => void) => void): void {
+        const listeners = new Map<string, (e: unknown) => void>();
+        const g = globalThis as Record<string, unknown>;
+        g.window = {
+            addEventListener(type: string, l: (e: unknown) => void) {
+                listeners.set(type, l);
+            },
+            removeEventListener() {},
+        };
+        try {
+            fn((e: unknown) => {
+                const keydown = listeners.get("keydown");
+                if (!keydown) throw new Error("no keydown listener registered");
+                keydown(e);
+            });
+        } finally {
+            delete g.window;
+        }
+    }
+
+    /** the shared viewport fixture: a two-node geo track, baked, behind TX's own affine (zoom
+     *  40, origin (500, 400)) — the nodes land at screen (500, 400) and (1460, 400), so
+     *  everything near (10, 10) is empty space. */
+    function bakedTrack(): { state: State; sec: number } {
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        setCamera({ zoom: 40, ox: 500, oy: 400 });
+        return { state, sec };
+    }
+
+    // ── the viewport surface: Escape ──
+
+    test("one VIEWPORT Escape clears a cross-kind set (force + node, active node) — one press, every kind", () => {
+        withRecordingWindow((keydown) => {
+            const { el } = recordingCanvas();
+            const { detach } = attachControls(el, new State());
+            // the production shift-click pair: a plain click replace-selects the force marker,
+            // the shift-click toggle ADDS the node without sweeping — {force, node}, active
+            // node, so the viewport rung (controls.ts) is the handler whose guard passes.
+            selectForce(3);
+            select(7, "toggle");
+            expect(activeKind()).toBe("node");
+            keydown({ key: "Escape", preventDefault() {} });
+            expectNothingSelected();
+            detach();
+        });
+    });
+
+    test("the tangent-edit peel still comes first — one press exits the mode, only the next clears", () => {
+        withRecordingWindow((keydown) => {
+            const { el } = recordingCanvas();
+            const { detach } = attachControls(el, new State());
+            // the production summon (double-click) replace-selects node 7 and layers tangent
+            // edit; the shift-click pair then ADDS the force — cross-kind, mode still open
+            // (a toggle never reconciles the sub-mode away).
+            enterTangentEdit(7);
+            selectForce(3, "toggle");
+            expect(editor.tangentEdit).toBe(7);
+            keydown({ key: "Escape", preventDefault() {} }); // press 1: the mode peels...
+            expect(editor.tangentEdit).toBeNull();
+            expect(editor.nodes.ids.size).toBe(1); // ...and the SET survives the press
+            expect(editor.forces.ids.size).toBe(1);
+            // press 2 routes to the timeline's force rung (the active member is the force):
+            // the cross-kind clear, through the same ladder `Timeline.svelte` calls.
+            forceEscape();
+            expectNothingSelected();
+            detach();
+        });
+    });
+
+    // ── the viewport surface: the empty clear ──
+
+    test("a VIEWPORT empty CLICK clears a cross-kind set (strip + section) — the unarmed release", () => {
+        withRecordingWindow(() => {
+            const { el, on } = recordingCanvas();
+            const { state, sec } = bakedTrack();
+            const { detach } = attachControls(el, state);
+            // the production pair: the timeline band click `selectStrip`, the clip shift-click
+            // `selectSection` toggle — {strip, section}, cross-kind.
+            selectStrip(5);
+            selectSection(sec, "toggle");
+            expect(editor.strips.ids.size).toBe(1);
+            expect(editor.sections.ids.size).toBe(1);
+            on("pointerdown")({
+                button: 0,
+                pointerId: 1,
+                clientX: 10,
+                clientY: 10,
+                shiftKey: false,
+            });
+            on("pointerup")({});
+            endDragGesture(); // stand in for `beginDrag`'s own release listener, while the shim lives
+            expectNothingSelected();
+            detach();
+        });
+    });
+
+    test("a VIEWPORT empty MARQUEE (armed, no hits) clears a cross-kind set too", () => {
+        withRecordingWindow(() => {
+            const { el, on } = recordingCanvas();
+            const { state } = bakedTrack();
+            const { detach } = attachControls(el, state);
+            selectStrip(5);
+            selectForce(3, "toggle"); // the chart shift-click — {strip, force}, cross-kind
+            on("pointerdown")({
+                button: 0,
+                pointerId: 1,
+                clientX: 10,
+                clientY: 10,
+                shiftKey: false,
+            });
+            on("pointermove")({ pointerId: 1, clientX: 60, clientY: 60 }); // past DRAG_PX: armed
+            on("pointerup")({});
+            endDragGesture(); // stand in for `beginDrag`'s own release listener, while the shim lives
+            expectNothingSelected();
+            detach();
+        });
+    });
+
+    test("a strip is not Delete-able after a viewport empty click — the production delete op finds nothing", () => {
+        withRecordingWindow(() => {
+            const { el, on } = recordingCanvas();
+            const { state } = bakedTrack();
+            const strip = addStrip(history, state, 0, 10, 12); // the band's own authoring act
+            if (strip === null) throw new Error("strip refused");
+            const { detach } = attachControls(el, state);
+            selectStrip(strip); // the production band-click selector
+            expect(editor.strips.ids.size).toBe(1);
+            on("pointerdown")({
+                button: 0,
+                pointerId: 1,
+                clientX: 10,
+                clientY: 10,
+                shiftKey: false,
+            });
+            on("pointerup")({});
+            endDragGesture(); // stand in for `beginDrag`'s own release listener, while the shim lives
+            expectNothingSelected();
+            // the op the Delete key routes to (Timeline's strip rung calls this exact op): with
+            // the member set empty there is nothing Delete-able — the strip ENTITY survives.
+            expect(mixedSetDelete(state)).toBe(false);
+            expect(stripAt(state, strip)).not.toBeNull();
+            detach();
+        });
+    });
+
+    // ── the timeline surface: the per-kind rungs ──
+
+    test("one TIMELINE Escape rung clears a cross-kind set (node + force, active force)", () => {
+        // the production pair: the viewport body click `select`, then the chart shift-click
+        // `selectForce` toggle ADDS the keyframe — {node, force}, active force, so the
+        // timeline's force rung is the handler whose guard passes.
+        select(7);
+        selectForce(3, "toggle");
+        expect(activeKind()).toBe("force");
+        forceEscape();
+        expectNothingSelected();
+    });
+
+    test("one TIMELINE Escape rung clears a cross-kind set (force + strip, active strip)", () => {
+        selectForce(3);
+        selectStrip(5, "toggle"); // the band shift-click
+        expect(activeKind()).toBe("strip");
+        stripEscape();
+        expectNothingSelected();
+    });
+
+    test("one TIMELINE Escape rung clears a cross-kind set (oneShot + strip, active strip)", () => {
+        selectOneShot(true); // the one-shot's own select — replace, clears the rest
+        selectStrip(5, "toggle"); // ...and the band shift-click adds the strip, active strip
+        expect(activeKind()).toBe("strip");
+        stripEscape();
+        expectNothingSelected();
+    });
+
+    // ── the within-kind peel ladders survive ──
+
+    test("within the force kind the ladder is unchanged: handle peels, then handle edit, then the set", () => {
+        selectForce(5);
+        enterForceEdit(5); // the production double-click summon
+        selectForceHandle("in"); // grabbing a summoned handle
+        forceEscape(); // press 1: back to the keyframe readout
+        expect(editor.forceHandle).toBeNull();
+        expect(editor.forceEdit).toBe(5);
+        expect(editor.forces.ids.size).toBe(1);
+        forceEscape(); // press 2: handle edit exits, the point stays selected
+        expect(editor.forceEdit).toBeNull();
+        expect(editor.forces.ids.size).toBe(1);
+        forceEscape(); // press 3: the selection clears
+        expectNothingSelected();
+    });
+
+    test("within the velocity domain the ladder is unchanged: a strip keyframe peels before its strip", () => {
+        // the production plain click on a strip keyframe — `selectStripKf`'s containment sweep
+        // keeps the owning strip, so {strip, stripKf} by construction: nesting, not siblings.
+        selectStrip(1);
+        selectStripKf(10);
+        expect(editor.strips.ids.size).toBe(1);
+        expect(editor.stripKfs.ids.size).toBe(1);
+        stripEscape(); // press 1: the keyframe selection peels, the strip stays
+        expect(editor.stripKfs.ids.size).toBe(0);
+        expect(editor.strips.ids.size).toBe(1);
+        stripEscape(); // press 2: the strip clears
+        expectNothingSelected();
+    });
+
+    test("the oneShot rung still clears its own singleton within the kind", () => {
+        selectOneShot(true);
+        oneShotEscape();
+        expectNothingSelected();
+    });
+
+    // ── the cross-kind read itself ──
+
+    test("crossKind reads the member set: the velocity pair is nesting, a force beside it a sibling", () => {
+        selectStrip(1);
+        selectStripKf(10); // the containment pair — {strip, stripKf} by construction
+        expect(crossKind(["strip", "stripKf"])).toBe(false); // nesting, not cross-kind
+        expect(crossKind(["force"])).toBe(true); // both members sit outside the force domain
+        selectForce(3, "toggle"); // a genuine sibling joins
+        expect(crossKind(["strip", "stripKf"])).toBe(true);
     });
 });
