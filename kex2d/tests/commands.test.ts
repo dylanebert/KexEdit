@@ -138,8 +138,14 @@ function normIds(text: string): string {
 }
 
 /** run `direct` (the hand-authored UI-shaped call sequence) against one fixture and
- *  `commands.applyOp` against another, then assert the two live documents agree — byte-raw by
- *  default, or with allocator ids normalized out when `createsId` is set. */
+ *  `commands.applyOp` against another, then assert the two documents agree — byte-raw by
+ *  default, or with allocator ids normalized out when `createsId` is set.
+ *
+ *  `docA` is captured BEFORE `b` is constructed: track.ts's component storage is module-scoped
+ *  and indexed purely by eid, and two fixtures allocate identical eid sequences, so a read of
+ *  `a` taken after `applyOp(b, …)` returns `b`'s values — a value-only divergence in `applyOp`
+ *  was invisible to the late-read ordering at every call site. Mutation-proven: with `direct`
+ *  writing g=999 where the op writes g=4, the late read stayed green and this ordering reds. */
 function expectSameDoc(
     op: Parameters<typeof applyOp>[2],
     direct: (state: State, h: History) => void,
@@ -148,12 +154,12 @@ function expectSameDoc(
     const a = fixture();
     const ha = createHistory();
     direct(a, ha);
+    const docA = saveDocument(a);
 
     const b = fixture();
     const hb = createHistory();
     const result = applyOp(b, hb, op);
 
-    const docA = saveDocument(a);
     const docB = saveDocument(b);
     if (createsId) expect(normIds(docB)).toBe(normIds(docA));
     else expect(docB).toBe(docA);
