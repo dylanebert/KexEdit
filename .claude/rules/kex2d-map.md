@@ -743,6 +743,32 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   by convention is `bakeLive` returning false in-window: the override's bake carries display values
   under the authored hash, so everything that certifies bake truth (Reset, Convert, Solve) grays for
   the window instead of reading a contaminated bake as authored state.
+- `doc.ts` — the kex2d document (`kex2d-serialization` spec): a canonical, lossless text form of
+  the authored ECS state (`AGENTS.md` § Authoring API's component list) — the four `Track`
+  scalars (`ds`/`domain`/`friction`/`resistance`, NOT `count`, bake output) plus every
+  section/node/force-point/strip/strip-keyframe/one-shot. `.kex`, JSON inside, text canonical.
+  `docFromEcs`/`docToTrackSnapshot` are the two-way projection against `snapshotAll`'s own
+  `TrackSnapshot` (`track.ts`); `saveDocument(ecs): string` / `loadDocument(ecs, text): void` are
+  the boundary — save never throws, load parses + validates the WHOLE text through
+  `parseDocument` before a single ECS write, so a refused load leaves the live document
+  untouched, then `restoreAll` + the four `Track` setters replace it and the undo stack clears
+  (a load is a new document, not an edit to undo past).
+  **Canonical emitter, not `JSON.stringify(doc, null, 2)`.** `serializeDocument` fixes key order
+  per entity (mirroring each component's own field order), one entity per line: sections by
+  `order`, nodes by `order`, force points/strips/strip-keyframes by their STABLE `id` (never by
+  `s`/`start`, which the bake sorts by for its own reasons — sorting the document by a value a
+  drag can move would reorder the emitted list on every edit) — a value edit is a one-line diff
+  (`tests/two-edit-diff.ts` demonstrates it: save → two unrelated setter edits → save diffs to
+  exactly two changed lines). `numLit` is the one seam every number crosses: a stored f32 widens
+  exactly to the f64 `JSON.stringify`'s shortest-round-tripping-decimal algorithm serializes, so
+  parse + the f32 component write (`Math.fround`) recovers identical bits — `numLit` diverges
+  from raw `JSON.stringify` only at `-0` (`JSON.stringify(-0) === "0"`, which `JSON.parse` reads
+  back as +0, a DIFFERENT f32 bit pattern), and refuses a non-finite input rather than emitting
+  unparseable JSON. `CURRENT_VERSION` + a forward-only migration seam (one function per version
+  step, applied in sequence at parse) bridge an older file up; every thrown validation error
+  names a recovery remedy. Round-trip + f32-exactness + rejection-arm oracles, a committed golden
+  fixture's own round-trip arm, and the two-edit diff artifact: `tests/doc.test.ts` +
+  `tests/fixtures/hill-explicit-golden.kex` + `tests/two-edit-diff.ts`.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `velocityCurve` (`forceCurve`'s

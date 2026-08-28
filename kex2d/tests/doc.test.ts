@@ -405,6 +405,42 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
     });
 });
 
+describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", () => {
+    // a checked-in document (the "hill-explicit" scenario, saved through saveDocument) —
+    // distinct from the corpus round-trip above, which never touches disk: this arm proves the
+    // COMMITTED bytes stay canonical and loadable, so a future emitter-format drift shows up as
+    // a diff against a real file rather than only against a freshly-minted in-memory string.
+    const goldenPath = new URL("./fixtures/hill-explicit-golden.kex", import.meta.url);
+
+    test("loads, round-trips, and re-serializes byte-identical to the committed file", async () => {
+        const text = await Bun.file(goldenPath).text();
+
+        // canonical idempotence over the committed bytes themselves.
+        expect(serializeDocument(parseDocument(text))).toBe(text);
+
+        const b = new State();
+        b.addSystem(BakeSystem);
+        loadDocument(b, text);
+        b.step(0);
+        const bEid = trackEntity(b);
+        if (bEid === null) throw new Error("no track after load");
+
+        // `restoreAll` spawns every row at its DOCUMENT id (`track.ts`'s `restoreAll`), so a
+        // save right back out reproduces the committed bytes exactly — ids included, independent
+        // of any other test in this run having advanced the process-wide id counter.
+        expect(saveDocument(b)).toBe(text);
+
+        // the bake matches the scenario this fixture was minted from — bakedArrays carries no
+        // ids, so this comparison is unaffected by the loaded track's ids differing from a
+        // freshly-authored one's.
+        const s = scenarios.find((x) => x.name === "hill-explicit");
+        if (!s) throw new Error("scenario not found");
+        const a = scenarioTrack(s);
+        a.state.step(0);
+        expect(bakedArrays(bEid)).toEqual(bakedArrays(a.eid));
+    });
+});
+
 describe("saveDocument / loadDocument on a no-op cycle", () => {
     test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
         const { state, eid } = flatTrack();

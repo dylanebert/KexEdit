@@ -209,6 +209,15 @@ time-constrained (a keyframe held at t=3s when upstream speed changed under the 
 the lens it stays at its metre — the give-up is recorded, not silently dropped). Invoked solves
 stay distance-internal and land with nothing to convert (their goldens are frozen in meters).
 
+**The document format** (`src/doc.ts`, `.kex` extension, JSON inside) is this authored surface's
+canonical text form — a canonically-emitted `Kex2dDocument` capturing the four `Track` scalars
+above plus every section/node/force-point/strip/strip-keyframe/one-shot, `version`-stamped with a
+forward-only migration seam. `saveDocument(ecs)` / `loadDocument(ecs, text)` are the boundary: save
+never throws, load parses + validates the WHOLE file before touching the ECS (a refused load
+leaves the live document untouched) and clears the undo stack, since a load is a new document, not
+an edit to undo past. Module detail, the emitter's ordering/idempotence discipline, and the f32
+exactness argument: `.claude/rules/kex2d-map.md`'s `doc.ts` entry.
+
 ## Code map
 
 The per-file map — what each module owns, its seams and test homes, module by module — plus the
