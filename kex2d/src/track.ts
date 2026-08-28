@@ -635,6 +635,30 @@ export function spawnOneShot(ecs: State, id: number, value: number): void {
     OneShot.value.set(eid, value);
 }
 
+/** bump the module-private stable-id counters (`nextSectionId`/`nextForceId`/`nextStripId`/
+ *  `nextStripKfId`/`nextOneShotId`) past every id a just-spawned batch used, so the NEXT
+ *  `create*` call can't re-issue one already on the board. `spawn*` (undo/redo's own respawn,
+ *  and now {@link module:doc}'s document load) never advances these counters itself — safe
+ *  within one process, since every id it ever spawns was already `< next*Id` at the moment it
+ *  was destroyed. A document loaded into a FRESH process (`doc.ts`'s `loadDocument`, the future
+ *  CLI's own entry point) has no such guarantee — its ids come from whatever counter state the
+ *  authoring session was at, which a fresh process's counters (reset to 0) know nothing about —
+ *  so `doc.ts` calls this once after every load. No-op for a same-session save→load (the ids it
+ *  names are already covered). */
+export function reserveIds(ids: {
+    section?: Iterable<number>;
+    force?: Iterable<number>;
+    strip?: Iterable<number>;
+    stripKeyframe?: Iterable<number>;
+    oneShot?: Iterable<number>;
+}): void {
+    for (const id of ids.section ?? []) nextSectionId = Math.max(nextSectionId, id + 1);
+    for (const id of ids.force ?? []) nextForceId = Math.max(nextForceId, id + 1);
+    for (const id of ids.strip ?? []) nextStripId = Math.max(nextStripId, id + 1);
+    for (const id of ids.stripKeyframe ?? []) nextStripKfId = Math.max(nextStripKfId, id + 1);
+    for (const id of ids.oneShot ?? []) nextOneShotId = Math.max(nextOneShotId, id + 1);
+}
+
 /** destroy the one-shot by stable id (no-op if already gone). Mirrors {@link destroyStrip}
  *  minus the child-keyframe cleanup — a one-shot carries no keyframes. */
 export function destroyOneShot(ecs: State, id: number): void {

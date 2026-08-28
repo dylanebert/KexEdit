@@ -3,6 +3,7 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
+import { loadDocument, saveDocument } from "./doc";
 import { activeKind, editor, sandbox, select, selectionHook } from "./editor";
 import {
     addStrip,
@@ -527,6 +528,13 @@ if (import.meta.env.DEV) {
         // of the same arithmetic agree, not that the op landed where the click showed). read-only,
         // like cam()/guides().
         ctxCut: (): { at: number; t?: number } | null => editor.context?.cut ?? null,
+        // the document boundary (`doc.ts`) — the capture harness's own save/load round-trip
+        // assert, and the same two calls a future CLI entry point makes. `load` throws on a
+        // rejected document (unknown version, malformed/truncated text) and leaves the live
+        // document untouched; the flow driving this reads the thrown message, never a return
+        // value, for the refusal case.
+        save: (): string => saveDocument(ecs),
+        load: (text: string): void => loadDocument(ecs, text),
     };
 }
 
