@@ -63,25 +63,23 @@ export interface DeclaredEntry {
  * but on macOS `Control+Click` is a right-click (context menu), which suppresses `click` and
  * `dblclick` events — so `chartCreate` never fired. Fixed by using `Meta` instead (both bypass
  * snap via `snapActive(e.ctrlKey || e.metaKey)`), and the entry was removed from the declared set.
+ *
+ * The band-click fix (2026-08-29) retired the S5 axis-law entry and **re-owned the other**, because
+ * the two reds turned out to belong to two different defects that the shared owner string hid. The
+ * axis-law flow does press the band, and it now selects on one click with no hover poll and no
+ * bounded retry — that entry is gone. The popup-label flow presses no band at all: it reds at a
+ * *keyframe* click (`section.pw.ts:2552`), where the pressed point comes from the fresh `stripKfPx`
+ * projection while the diamond's DOM hit circle still renders from the tick-paced `stripKfPts`. So
+ * its owner moves to the roadmap item that names THAT class, which is the corpus arm doing its job:
+ * an owner is what makes a red findable, and an owner naming the wrong defect makes it unfindable
+ * with the alarm cleared.
  */
 export const DECLARED: readonly DeclaredEntry[] = [
     {
         title: "popup label scrub reaches the strip keyframe and one-shot popovers (S10, F8)",
         owner: {
             kind: "roadmap",
-            ref: "A band click before the RAF flush selects nothing",
-        },
-        evidence: {
-            at: "2026-08-28T00:49:18.247Z",
-            head: "0ab41a0",
-            branch: "kex2d-capture-roster/s2",
-        },
-    },
-    {
-        title: "mixed-set drag axis law: horizontal moves all, vertical moves none when the set spans both domains (S5)",
-        owner: {
-            kind: "roadmap",
-            ref: "A band click before the RAF flush selects nothing",
+            ref: "A strip keyframe click can land a frame ahead of its own diamond",
         },
         evidence: {
             at: "2026-08-28T00:49:18.247Z",

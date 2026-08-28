@@ -1541,22 +1541,6 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness (2026-08-25, this test, the
-    // `:1582` roster member 7/8 base): armed a 150ms-per-rAF-callback `requestAnimationFrame`
-    // delay (via a temporary `page.addInitScript`, scoped to the 6 callbacks right after this
-    // line so unrelated reactivity downstream stays unperturbed) — the pre-fix 200ms
-    // fixed-time sleep reds under it (exit 1, timeout on the drag-changed-v poll, the bandDown
-    // edge-resize having missed the stale-cached strip); this `frames(page, 2)` greens under the
-    // identical delay (exit 0). Both runs: `bun run capture -- -g "velocity strip keyframe
-    // editing flow"`.
-    //
-    // RE-VERIFIED (kex2d-capture-deflake S2, 2026-08-25): `capture -g "velocity strip keyframe
-    // editing flow" --repeat-each 8` exits 0, 8/8 — the S1 witness above still holds on this
-    // tree; still constructs its scenario, not vacuous.
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -1722,12 +1706,6 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
-    // editing flow"'s own docblock at its matching line, same mechanism.
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -1877,21 +1855,6 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
-    // editing flow"'s own docblock at its matching line, same mechanism.
-    //
-    // RE-VERIFIED (kex2d-capture-deflake S2, 2026-08-25, roster member `section.pw.ts:1791` at
-    // base `6b88280`): `capture -g "velocity strip keyframe drag origin flow" --repeat-each 8`
-    // exits 0, 8/8 on this tree — the no-readable-condition claim above still holds (checked
-    // against source, not inherited: neither `bandStrips` nor `selStrip` is exposed on `__kex`,
-    // and this edge-drag widen goes through `bandDown` → `bandCandidates` → `bandStrips`, the
-    // identical mechanism S1 verified and forced-race-witnessed on the sibling arm this comment
-    // cites), so the settle stays lawful. This is a `-g`-scoped rerun, not full-suite-load
-    // evidence — a full `bun run capture` acceptance sweep is S3's one-time spend, not owed here.
 
     // S4: creation seeds two keyframes at start/end, sized to the min-extent strip's own
     // width — a dblclick at the strip's midpoint would land on a diamond's own hit area
@@ -2031,9 +1994,9 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     await kexCall(page, "placeStripKf", stripId, 30, 3);
     await expect.poll(async () => ((await stripKeyframesOf(stripId)) as unknown[]).length).toBe(4);
 
-    // select the strip through a real band click — wait on `bandHit` (not a frame count) so
-    // the $derived behind `void tick` has flushed before the click lands (the production
-    // defect that makes the band-click setup class intermittent).
+    // select the strip through a real band click. No settle and no hover poll before it: the
+    // classifier computes its candidates fresh from the ECS (`freshBandStrips`), so a press is
+    // never racing a tick-gated projection of the strip it lands on.
     const bandBb = await page.locator(".hbandzone").boundingBox();
     const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
     const stripPx = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
@@ -2041,15 +2004,6 @@ test("strip keyframe deselect on empty chart click", async ({ page, boot }) => {
     if (!bandBb || !chartCanvasBb || !sp) throw new Error("layout not ready");
     const bandY = bandBb.y + bandBb.height / 2;
     const bandClickX = chartCanvasBb.x + (sp.x0 + sp.x1) / 2;
-    // move the mouse to the strip's band center BEFORE polling `bandHit` — the hit
-    // classifier reads the cursor's current position, so the poll must run after the move.
-    await page.mouse.move(bandClickX, bandY);
-    await expect
-        .poll(async () => {
-            const hit = (await kexCall(page, "bandHit")) as { kind: string; id?: number };
-            return hit.kind === "body" && hit.id === stripId;
-        })
-        .toBe(true);
     await page.mouse.click(bandClickX, bandY);
     await expect.poll(selectedStrip).toBe(stripId);
 
@@ -2808,12 +2762,9 @@ test("strip keyframe multi-member drag", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
-    // editing flow"'s own docblock at its matching line, same mechanism.
+    // the render-lag settle: "strip keyframe arrow-nudge"'s own note at its matching line, same
+    // mechanism (the downstream keyframe click's DOM circle trails the fresh `stripKfPx` read).
+    await frames(page, 2);
 
     // Get the new strip's seeded keyframes — one at its own start, one at its own end (S4's
     // seeded-boundary-keyframes idiom). `stripDefaultExtentAt` (S2: track-global, no longer
@@ -2958,12 +2909,16 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
-    // editing flow"'s own docblock at its matching line, same mechanism.
+    // The keyframe clicks downstream read `stripKfPx` — a hook computed fresh from the ECS —
+    // while the diamond's own DOM hit rect is rendered from the tick-paced `stripKfPts`
+    // `$derived`, so the projected point can be one frame ahead of the circle the pointer must
+    // land on. No readable condition exists for that lag: the `.fhit` circles carry no per-id
+    // attribute to locate, so a locator assert cannot name THIS keyframe's own rect
+    // (kex2d-harness.md: frames(page,N) is lawful only where the awaited quantity has none).
+    // Measured, not argued: with this settle removed, `strip keyframe arrow-nudge` reds at its
+    // midpoint-keyframe click at full-suite scale (2026-08-29, one full `bun run capture`) while
+    // greening in isolation — the render-lag class, not the band-press one the fix retired.
+    await frames(page, 2);
 
     // Get the new strip's seeded keyframes (2 at start/end).
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
@@ -3102,12 +3057,9 @@ test("strip keyframe snap landing", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
-    // editing flow"'s own docblock at its matching line, same mechanism.
+    // the render-lag settle: "strip keyframe arrow-nudge"'s own note at its matching line, same
+    // mechanism (the downstream keyframe click's DOM circle trails the fresh `stripKfPx` read).
+    await frames(page, 2);
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -3273,12 +3225,9 @@ test("strip keyframe overlap refusal", async ({ page, boot }) => {
     await clickMenuItem(page, ".smenu", "Add velocity strip");
     await expect.poll(async () => (await stripsOf()).length).toBe(beforeStrips.length + 1);
     await expect.poll(async () => await kexCall(page, "selectedStrip")).not.toBe(null);
-    await frames(page, 2); // bandStrips/selStrip are $derived behind void tick with no __kex
-    // hook exposing them (bandDown's hit-test resolves through bandCandidates -> bandStrips) --
-    // no readable condition exists for either, so this settles by frame count, never a
-    // registered root property (kex2d-harness.md: frames(page,N) is lawful only where the awaited
-    // quantity has no readable condition). Forced-race witness: "velocity strip keyframe
-    // editing flow"'s own docblock at its matching line, same mechanism.
+    // the render-lag settle: "strip keyframe arrow-nudge"'s own note at its matching line, same
+    // mechanism (the downstream keyframe click's DOM circle trails the fresh `stripKfPx` read).
+    await frames(page, 2);
 
     const beforeIds = new Set(beforeStrips.map((s) => s.id));
     const created = ((await stripsOf()) as { id: number }[]).find((s) => !beforeIds.has(s.id));
@@ -4429,22 +4378,10 @@ test("mixed-domain arrow nudge moves all stations, value for none (S5)", async (
         (s) => s.id === stripId,
     );
     if (!sp) throw new Error("created strip has no band px");
-    // bandDown reads `bandStrips`, a `$derived` paced by `void tick` — a click landing before
-    // the derived flushes sees no strip and selects nothing. Wait on the band's own hit read
-    // (`bandHit`, which resolves through that same `bandStrips`) to report this strip's body
-    // at the target point before clicking, then a bounded retry guards any residual race.
+    // one click, no hover poll and no retry: `bandDown` hit-tests against a snapshot computed
+    // fresh from the ECS, so the press cannot miss a strip the ECS already carries.
     const clickX = chartCanvasBb.x + (sp.x0 + sp.x1) / 2;
-    await page.mouse.move(clickX, bandY);
-    await expect
-        .poll(async () => {
-            const hit = (await kexCall(page, "bandHit")) as { kind: string; id?: number };
-            return hit.kind === "body" && hit.id === stripId;
-        })
-        .toBe(true);
-    for (let attempt = 0; attempt < 3; attempt++) {
-        await page.mouse.click(clickX, bandY);
-        if ((await kexCall(page, "selectedStrip")) === stripId) break;
-    }
+    await page.mouse.click(clickX, bandY);
     await expect.poll(async () => kexCall(page, "selectedStrip")).toBe(stripId);
 
     let kfPx: { id: number; x: number; y: number }[] = [];
