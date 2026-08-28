@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
+  "sections": [
+    {
+      "id": 4,
+      "order": 0,
+      "kind": 0,
+      "length": 0,
+      "nodes": [
+        {"order":0,"x":0,"y":0,"theta":0},
+        {"order":1,"x":20,"y":0,"theta":0},
+        {"order":2,"x":35,"y":8,"theta":0.9799146525074566},
+        {"order":3,"x":60,"y":8,"theta":-0.9799146525074566}
+      ],
+      "points": []
+    }
+  ],
+  "strips": [],
+  "oneShot": [
+    {"id":4,"value":18}
+  ]
+}

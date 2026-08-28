@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
+  "sections": [
+    {
+      "id": 3,
+      "order": 0,
+      "kind": 0,
+      "length": 0,
+      "nodes": [
+        {"order":0,"x":0,"y":0,"theta":0},
+        {"order":1,"x":20,"y":0,"theta":0},
+        {"order":2,"x":40,"y":8,"theta":0.7610127542247298},
+        {"order":3,"x":60,"y":8,"theta":-0.7610127542247298},
+        {"order":4,"x":80,"y":0,"theta":0},
+        {"order":5,"x":95,"y":-5,"theta":-0.6435011087932844},
+        {"order":6,"x":115,"y":-5,"theta":0.6435011087932844},
+        {"order":7,"x":135,"y":0,"theta":-0.15354378253955608},
+        {"order":8,"x":155,"y":0,"theta":0.15354378253955608}
+      ],
+      "points": []
+    }
+  ],
+  "strips": [],
+  "oneShot": [
+    {"id":3,"value":18}
+  ]
+}
