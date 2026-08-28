@@ -21,10 +21,11 @@
 //     slack. One-sided on purpose: this is an anti-ROT instrument, and a suite that got faster
 //     is the outcome, not the breach. A speedup that bought its time by dropping work is the
 //     suite-count oracle's to catch, not this reader's.
-//   - rate: one failing title recorded on two or more DISTINCT heads. That is the protocol's own
-//     definition of a roster entry ("a single-flow red recurring across runs is a defect with an
-//     owner, never weather"), not a rate cutoff. Distinct heads, so N repro runs inside one pass
-//     cannot manufacture a recurrence.
+//   - rate: one failing title recorded on two or more DISTINCT branch units (slug prefixes).
+//     A recurrence must mean the red crossed a unit boundary, so the axis is the branch's slug
+//     prefix — not distinct heads, which an author manufacturing recurrences by iterating on
+//     one in-flight unit inflates. Dirty-tree runs and legacy (pre-version) records are excluded
+//     from the roster population; legacy records keep feeding the duration windows.
 //
 // The history lives outside any checkout, at a machine-stable path (`resolveHistory`, below) — not
 // because it is gitignored (every unit's confirmation capture runs from a fresh worktree that starts
@@ -45,6 +46,9 @@ export type Durations = {
     total: number;
 };
 
+/** the record schema version this reader writes and consumes; absent on legacy (pre-version) records */
+export const RECORD_VERSION = 2;
+
 /** one capturing run, as appended by `capture.ts` after it writes `RUN.json` */
 export type RunRecord = {
     at: string;
@@ -55,6 +59,12 @@ export type RunRecord = {
     exitCode: number | null;
     failedTitles: string[];
     durations: Durations;
+    /** record schema version; absent on legacy (pre-version) records */
+    version?: number;
+    /** the branch name; required when version >= RECORD_VERSION, absent on legacy records */
+    branch?: string | null;
+    /** whether the tree was dirty; required when version >= RECORD_VERSION, absent on legacy records */
+    dirty?: boolean;
 };
 
 /** the phases a trend is read over, in the order the run spends them */
@@ -70,12 +80,20 @@ export const WINDOW = 5;
 /** the type each top-level field must carry — the presence check and the type check both walk
  * this table, so a hand-typed second list can never disagree with what the reader actually
  * requires */
-type FieldType = "string" | "string-or-null" | "boolean" | "number-or-null" | "string[]" | "object";
+type FieldType =
+    | "string"
+    | "string-or-null"
+    | "boolean"
+    | "number"
+    | "number-or-null"
+    | "string[]"
+    | "object";
 
 const TYPE_DESCRIPTIONS: Record<FieldType, string> = {
     string: "a string",
     "string-or-null": "a string or null",
     boolean: "a boolean",
+    number: "a finite number",
     "number-or-null": "a finite number or null",
     "string[]": "an array of strings",
     object: "an object",
@@ -89,6 +107,8 @@ function matchesType(value: unknown, type: FieldType): boolean {
             return value === null || typeof value === "string";
         case "boolean":
             return typeof value === "boolean";
+        case "number":
+            return typeof value === "number" && Number.isFinite(value);
         case "number-or-null":
             return value === null || (typeof value === "number" && Number.isFinite(value));
         case "string[]":
@@ -108,6 +128,15 @@ export const FIELDS = [
     { name: "exitCode", type: "number-or-null" },
     { name: "failedTitles", type: "string[]" },
     { name: "durations", type: "object" },
+] as const satisfies readonly { name: keyof RunRecord; type: FieldType }[];
+
+/** fields required when version >= RECORD_VERSION; absent on legacy (pre-version) records.
+ * The new fields arrive behind a record version, never as a defaulted field — `parseHistory`
+ * fails loud on a versioned record missing one of these, and the 227 existing legacy records
+ * keep feeding durations while feeding no roster entry. */
+export const VERSIONED_FIELDS = [
+    { name: "branch", type: "string-or-null" as const },
+    { name: "dirty", type: "boolean" as const },
 ] as const satisfies readonly { name: keyof RunRecord; type: FieldType }[];
 
 /**
@@ -153,6 +182,22 @@ export function parseHistory(text: string, label: string = "runs.jsonl"): RunRec
                 throw new Error(
                     `${where}: "${field.name}" is not ${TYPE_DESCRIPTIONS[field.type]}`,
                 );
+        }
+        // version gates the versioned fields: absent = legacy, present = versioned. A versioned
+        // record missing `branch` or `dirty` fails loud — the new fields never arrive as defaults.
+        if ("version" in raw) {
+            if (!matchesType(raw.version, "number"))
+                throw new Error(`${where}: "version" is not ${TYPE_DESCRIPTIONS.number}`);
+            if ((raw.version as number) >= RECORD_VERSION) {
+                for (const field of VERSIONED_FIELDS) {
+                    if (!(field.name in raw))
+                        throw new Error(`${where}: missing field "${field.name}"`);
+                    if (!matchesType(raw[field.name], field.type))
+                        throw new Error(
+                            `${where}: "${field.name}" is not ${TYPE_DESCRIPTIONS[field.type]}`,
+                        );
+                }
+            }
         }
         const durations = raw.durations as Record<string, unknown>;
         for (const phase of PHASES) {
@@ -211,11 +256,13 @@ export type Summary = {
     /** the population's first and last stamps — what window a person is being shown; null when empty */
     span: { since: string; until: string } | null;
     phases: PhaseTrend[];
-    /** failing titles by the distinct heads they were recorded on, most-recurrent first */
-    roster: { title: string; heads: string[] }[];
+    /** failing titles by the distinct branch-slug prefixes they were recorded on, most-recurrent first.
+     * Only versioned, non-dirty records populate the roster — legacy and dirty-tree records are
+     * excluded, so a run on an uncommitted edit enters nothing at all. */
+    roster: { title: string; units: string[] }[];
     /** full reds whose HEAD did not resolve (`git rev-parse --short HEAD` returned empty,
-     * mapped to null in `capture.ts`) — invisible to the roster's per-head bucketing, since a
-     * null head can never be counted as distinct from itself or from a real head. Recorded so a
+     * mapped to null in `capture.ts`) — invisible to the roster's per-branch bucketing when the
+     * branch is also null, since a null branch can never be counted as distinct. Recorded so a
      * broken git identity on this seat cannot read as "not yet recurring" forever. */
     unresolvedHeadReds: number;
 };
@@ -224,6 +271,30 @@ function median(xs: number[]): number {
     const sorted = [...xs].sort((a, b) => a - b);
     const mid = sorted.length >> 1;
     return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * extract the test title from a Playwright failed-title line: `[project] › file:line:col › title`.
+ * The title is the part after the last ` › ` separator, so the same test recorded under different
+ * line numbers (a line-key split) reads as one roster entry. Zero duplicate titles across 79 tests
+ * in `harness/*.pw.ts` — the title is a lawful key.
+ * @example testTitle("[chromium] › shot.pw.ts:2017:1 › deselect")
+ */
+export function testTitle(failedTitle: string): string {
+    const idx = failedTitle.lastIndexOf(" › ");
+    return idx === -1 ? failedTitle : failedTitle.slice(idx + 3);
+}
+
+/**
+ * extract the branch-slug prefix from a branch name: `kex2d-capture-roster/s1` → `kex2d-capture-roster`.
+ * The slug prefix is the unit identifier — the part before the first `/` — so N commits of one
+ * in-flight unit count as one occurrence, not N distinct heads. A null or absent branch returns null.
+ * @example branchSlug("kex2d-capture-roster/s1")
+ */
+export function branchSlug(branch: string | null | undefined): string | null {
+    if (branch === null || branch === undefined) return null;
+    const idx = branch.indexOf("/");
+    return idx === -1 ? branch : branch.slice(0, idx);
 }
 
 /**
@@ -255,12 +326,20 @@ export function summarize(records: RunRecord[]): Summary {
         }
     }
 
-    const heads = new Map<string, string[]>();
-    for (const r of full)
-        for (const title of r.failedTitles) {
-            const seen = heads.get(title) ?? [];
-            if (r.head !== null && !seen.includes(r.head)) seen.push(r.head);
-            heads.set(title, seen);
+    // roster population: only versioned, non-dirty records. Legacy (pre-version) records and
+    // dirty-tree runs are excluded — a run on an uncommitted edit is the author's iteration, not a
+    // ship, and enters nothing at all. Legacy records keep feeding the duration windows above.
+    const rosterRecords = full.filter(
+        (r) => r.version !== undefined && r.version >= RECORD_VERSION && !r.dirty,
+    );
+    const units = new Map<string, string[]>();
+    for (const r of rosterRecords)
+        for (const rawTitle of r.failedTitles) {
+            const title = testTitle(rawTitle);
+            const slug = branchSlug(r.branch);
+            const seen = units.get(title) ?? [];
+            if (slug !== null && !seen.includes(slug)) seen.push(slug);
+            units.set(title, seen);
         }
 
     return {
@@ -268,9 +347,9 @@ export function summarize(records: RunRecord[]): Summary {
         red: full.filter((r) => r.exitCode !== 0).length,
         span: full.length === 0 ? null : { since: full[0].at, until: full[full.length - 1].at },
         phases,
-        roster: [...heads.entries()]
-            .map(([title, hs]) => ({ title, heads: hs }))
-            .sort((a, b) => b.heads.length - a.heads.length),
+        roster: [...units.entries()]
+            .map(([title, slugs]) => ({ title, units: slugs }))
+            .sort((a, b) => b.units.length - a.units.length),
         unresolvedHeadReds: full.filter((r) => r.exitCode !== 0 && r.head === null).length,
     };
 }
@@ -284,9 +363,9 @@ export function tripwires(summary: Summary): string[] {
                 `duration: ${p.phase} median over the last ${WINDOW} runs (${ms(p.recentMedian)}) is above the whole prior window's range (${ms(p.priorMin)}–${ms(p.priorMax)})`,
             );
     for (const entry of summary.roster)
-        if (entry.heads.length >= 2)
+        if (entry.units.length >= 2)
             breaches.push(
-                `rate: "${entry.title}" reddened on ${entry.heads.length} distinct heads (${entry.heads.join(", ")}) — a roster entry is a defect with an owner`,
+                `rate: "${entry.title}" reddened on ${entry.units.length} distinct branch units (${entry.units.join(", ")}) — a roster entry is a defect with an owner`,
             );
     if (summary.unresolvedHeadReds > 0)
         breaches.push(
@@ -320,7 +399,7 @@ if (import.meta.main) {
             `  ${p.phase.padEnd(8)} recent median ${ms(p.recentMedian)}  prior median ${ms(p.priorMedian)}  prior range ${ms(p.priorMin)}–${ms(p.priorMax)}`,
         );
     for (const entry of summary.roster)
-        console.log(`  roster: ${entry.title} — heads ${entry.heads.join(", ")}`);
+        console.log(`  roster: ${entry.title} — units ${entry.units.join(", ")}`);
     const breaches = tripwires(summary);
     for (const breach of breaches) console.error(`TRIPWIRE ${breach}`);
     process.exit(breaches.length === 0 ? 0 : 1);

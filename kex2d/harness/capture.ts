@@ -21,7 +21,7 @@ import {
 } from "./args";
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
-import { appendRun } from "./trend";
+import { appendRun, RECORD_VERSION } from "./trend";
 import { detectDisplay } from "./wsl";
 
 // Wall-clock origin for the phase stamps `RUN.json` records. Taken before anything is parsed so
@@ -236,12 +236,18 @@ const git = (args: string[]): string =>
     new TextDecoder()
         .decode(Bun.spawnSync(["git", ...args], { cwd: projectDir, stdout: "pipe" }).stdout)
         .trim();
+const head = git(["rev-parse", "--short", "HEAD"]) || null;
+const dirty = git(["status", "--porcelain"]) !== "";
+// `--abbrev-ref HEAD` returns "HEAD" in a detached state — not a real branch name
+const branchRaw = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+const branch = branchRaw && branchRaw !== "HEAD" ? branchRaw : null;
 writeFileSync(
     join(outDir, "RUN.json"),
     `${JSON.stringify(
         {
-            head: git(["rev-parse", "--short", "HEAD"]) || null,
-            dirty: git(["status", "--porcelain"]) !== "",
+            head,
+            branch,
+            dirty,
             args: testArgs,
             exitCode: run.exitCode,
             env: { workers, headed, shotMs, port, stage: stageName },
@@ -265,7 +271,10 @@ writeFileSync(
 // full run WIPES, so it can record a run but never a distribution or an across-ship roster.
 appendRun({
     at: new Date().toISOString(),
-    head: git(["rev-parse", "--short", "HEAD"]) || null,
+    head,
+    branch,
+    dirty,
+    version: RECORD_VERSION,
     selective,
     defaultKnobs,
     exitCode: run.exitCode,
