@@ -192,8 +192,9 @@ export function multi(): boolean {
  *
  *  a plain function, not a `$derived`, per `multi()`'s note above: `editor` has no invalidation
  *  signal of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the
- *  existing derived predicates document. the dismissal rungs call it at event time, where the
- *  read is fresh by construction.
+ *  existing derived predicates document. its one caller is the pin-mode rung below, which calls it
+ *  at event time, where the read is fresh by construction — the later clear rungs read
+ *  `controls.ts`'s `escapeCrossesKinds` instead, being the rung after the yield.
  *
  *  @example
  *  // the pin-mode Escape rung's live-selection layer (App.svelte's modeKeyAct call)
