@@ -36,9 +36,10 @@
  *  step whose `maxDurationS` IS `exposureCapS` (90), by construction, so a run past 90s on any of
  *  those DOES breach. `-Gz` is the one exception — the brief's own Gz table reads "> 40 s | 1.0 g
  *  | —" for the negative column (no established value past 40s; S5 brief §Gz), so `-Gz`'s last
- *  step stops at 40s and this module CANNOT flag a sustained −Gz excursion past 40s: it is an
- *  unvalidated silent-pass region for that one band, not a bug in the run logic — a future caller
- *  wanting to catch it needs a real source number first, not an extrapolated one. */
+ *  step stops at 40s. Any excursion at or beyond −1.1g still breaches once it outlasts that step's
+ *  40s cap (a `-` band matches every run deeper than its threshold, at any duration) — what the
+ *  missing source number leaves unvalidated is −Gz *magnitude*: an excursion strictly between 0
+ *  and −1.1g passes silently at any duration, a gap the brief's table carries, not a bug here. */
 
 import type { BakeOutLike } from "./stats";
 import { cumulativeArclength } from "./stats";
@@ -129,7 +130,7 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
             axis: "Gz",
             sign: "-",
             citation:
-                'Approach S5 pinned bands (spec): "−Gz −2g @0.2 s → −1.1g @11.8 s" — the extended F2291-only −2.8g bungee tier and EN 13814\'s exclusion of it are out of scope here. S5 brief §Gz table\'s negative column reads "—" past 40s (no established value) — this band stops at 40s BY CONTRACT, not by omission; see module docblock.',
+                'Approach S5 pinned bands (spec): "−Gz −2g @0.2 s → −1.1g @11.8 s" — the extended F2291-only −2.8g bungee tier and EN 13814\'s exclusion of it are out of scope here. S5 brief §Gz table\'s negative column reads "—" past 40s (no established value) — this band\'s last step caps at 40s BY CONTRACT, not by omission (excursions ≤ −1.1g past 40s still breach that step; the ungated region is magnitudes between 0 and −1.1g); see module docblock.',
             steps: [
                 { thresholdG: -2.0, maxDurationS: 11.8, exact: true },
                 { thresholdG: -1.1, maxDurationS: 40, exact: true },
