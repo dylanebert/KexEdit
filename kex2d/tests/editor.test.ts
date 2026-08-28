@@ -929,27 +929,29 @@ describe("writeHover / clearHover — the one seam every hover write and clear g
 // Cut single-subject gate, arrow-nudge group move) stay per-kind — the law governs context, never
 // bulk-op applicability.
 describe("multi — the set-level multi predicate", () => {
-    test("empty selection reads false", () => {
+    // every arm constructs its selection through the production selectors a click calls
+    // (`selectStrip`, `selectStripKf`, `selectForce`, `deselectAll`), not through `ensureStrip`
+    // or toggle helpers — so the containment sweep (`sweepOtherKinds`) actually runs and the
+    // arms exercise the same path the popover guard reads.
+
+    test("an empty selection reads false", () => {
+        deselectAll();
         expect(multi()).toBe(false);
     });
 
-    test("a single-member selection reads false", () => {
+    test("a genuinely cross-kind two-member set (one force + one strip keyframe) reads true", () => {
+        // the defect the law names: a per-kind `ids.size > 1` predicate reads this as single-select
+        // (forces.ids.size === 1, stripKfs.ids.size === 1), but the whole set has ≥2 members.
+        // built through the production shift-click path: plain-click a force, then shift-click
+        // (toggle) a strip keyframe — `toggleSingle` does not sweep, so both kinds survive.
         selectForce(5);
-        expect(multi()).toBe(false);
-    });
-
-    test("a two-member same-kind selection reads true", () => {
-        selectForce(5);
-        selectForce(6, "toggle");
+        selectStripKf(10, "toggle");
         expect(multi()).toBe(true);
     });
 
-    test("a cross-kind two-member selection (one force + one strip keyframe) reads true", () => {
-        // the defect the law names: a per-kind `ids.size > 1` predicate reads this as single-select
-        // (forces.ids.size === 1, stripKfs.ids.size === 1), but the whole set has ≥2 members
+    test("a same-kind two-member set reads true", () => {
         selectForce(5);
-        ensureStrip(1);
-        selectStripKf(10, "toggle");
+        selectForce(6, "toggle");
         expect(multi()).toBe(true);
     });
 
@@ -959,5 +961,21 @@ describe("multi — the set-level multi predicate", () => {
         expect(multi()).toBe(true);
         selectForce(6, "toggle");
         expect(multi()).toBe(false);
+    });
+
+    test("the containment pair selectStrip then selectStripKf — driven as a plain click drives it — reads true today (S5 is the flip point)", () => {
+        // a plain click on a strip keyframe first selects the owning strip (`selectStrip`), then
+        // selects the keyframe (`selectStripKf` in replace mode, whose `sweepOtherKinds(["stripKf",
+        // "strip"])` keeps the strip). the result is a two-member set by construction: {strip, stripKf}.
+        // `multi()` returns true today — a size-only set-level predicate cannot distinguish the
+        // owning-strip co-selection from a genuine multi-set, so it hides the keyframe's own popover
+        // on every single-subject click. S5 migrates this site to a containment-aware read that
+        // tells the two apart; S5 is gated behind S4, so pin the current behavior here.
+        selectStrip(1);
+        selectStripKf(10);
+        // both members are present — the pair is {strip:1, stripKf:10}
+        expect(editor.strips.ids.has(1)).toBe(true);
+        expect(editor.stripKfs.ids.has(10)).toBe(true);
+        expect(multi()).toBe(true);
     });
 });

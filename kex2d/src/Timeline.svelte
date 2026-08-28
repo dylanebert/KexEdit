@@ -1277,10 +1277,19 @@ const selStripKfPt = $derived.by((): StripKfPt | null => {
     if (editor.stripKf === null) return null;
     return stripKfPts.find((k) => k.id === editor.stripKf) ?? null;
 });
-// the strip-keyframe popover hides on a multi-set via the set-level `multi()` export (S1,
-// editor-ui.md Multi context UI), same as the force keyframe's does — the per-kind
-// `editor.stripKfs.ids.size > 1` predicate this replaced read a two-member cross-kind selection
-// as single-select.
+// whether the strip-keyframe selection is a multi-set — this site stays per-kind, NOT set-level.
+// A plain click on a strip keyframe lands a two-member set by construction: `selectStripKf` calls
+// `sweepOtherKinds(["stripKf","strip"])`, so the owning strip is co-selected on every single-subject
+// click. A size-only set-level `multi()` would read that two-member set as multi and hide the
+// keyframe's own popover on every single-subject click — the popover that is the whole point of
+// selecting one keyframe. S5 migrates this site to a containment-aware read that distinguishes the
+// owning-strip co-selection from a genuine multi-set; until S5 the per-kind `ids.size > 1` is the
+// correct guard. `multiForce`'s twin in shape; read `tick` directly (`multiForce`'s in-place-mutation
+// note applies identically here).
+const multiStripKf = $derived.by((): boolean => {
+    void tick;
+    return editor.stripKfs.ids.size > 1;
+});
 // the whole selected strip-keyframe SET (membership, for the diamond highlight) — `selForceSet`'s
 // twin. read through the tick like the rest of `editor`; the per-frame `stripKfPts` rebuild
 // re-evaluates the `.has` in the render loop.
@@ -5214,7 +5223,7 @@ onMount(() => {
              `scrubStart` is parameterized over `scrubSubject()` rather than force-only); `v`
              carries its m/s unit (S5, Locked decision finding 11 near half) the same `.unit` span
              the position field wears, never a second axis (that's the far half, out of scope). -->
-        {:else if selStripKfPt && !multi()}
+        {:else if selStripKfPt && !multiStripKf}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                 {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
