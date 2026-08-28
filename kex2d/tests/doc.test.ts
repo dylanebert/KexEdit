@@ -478,4 +478,21 @@ describe("saveDocument / loadDocument on a no-op cycle", () => {
         const { state } = flatTrack();
         expect(docFromEcs(state).version).toBe(CURRENT_VERSION);
     });
+
+    // `Track.count` is bake-derived (spec `kex2d-serialization` Locked decision), so
+    // `loadDocument` must zero a REUSED entity's stale count itself — nothing else does until
+    // the next `state.step`. Read `Track.count` BEFORE stepping, or `BakeSystem` re-bakes it
+    // regardless of whether `loadDocument` zeroed it, hiding the very branch this pins (deleting
+    // `doc.ts`'s reuse-path `Track.count.set(trackEid, 0)` still leaves every other arm in this
+    // file green).
+    test("loadDocument zeroes a reused Track's stale count before the next bake", () => {
+        const { state, eid } = flatTrack();
+        state.step(0);
+        const staleCount = Track.count.get(eid);
+        expect(staleCount).toBeGreaterThan(0); // sanity: the track baked samples before reload
+
+        loadDocument(state, saveDocument(state));
+
+        expect(Track.count.get(eid)).toBe(0);
+    });
 });

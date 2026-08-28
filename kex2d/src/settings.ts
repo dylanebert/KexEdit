@@ -1,6 +1,7 @@
 /** per-user editor preferences: the settings an author configures once and expects to find on the
- *  next visit. kex2d has no document save/load, so they persist to `localStorage` (the
- *  PlayCanvas/Figma model — sticky per user, per origin) as one small JSON object under `SNAP_KEY`.
+ *  next visit. The document (`doc.ts`) deliberately doesn't carry them — per-user prefs aren't
+ *  authored track state — so they persist to `localStorage` (the PlayCanvas/Figma model — sticky
+ *  per user, per origin) as one small JSON object under `SNAP_KEY`.
  *
  *  Today that's the two **manipulator** snap quanta — the angle grid and the chord-length grid the
  *  polar controls resolve through. `magnet.ts` reads this singleton per quantize, so an edited
