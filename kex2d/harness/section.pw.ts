@@ -2999,6 +2999,117 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     expect(sAfterLeft).toBeLessThan(sAfterRight); // it moved left
 });
 
+// The two-strip arrow-nudge flow — the per-OWNING-strip member resolution. The nudge
+// handler resolves the selected strip-keyframe set through `stripKfMembers` (controls.ts),
+// never through the single active strip: a marquee across two strips selects keyframes of
+// BOTH owners, and each member's clamp bounds come from the strip that owns it. Pre-fix, the
+// handler read `stripKeyframes(ecs, editor.strip).filter(...)` — only the ACTIVE strip's
+// keyframes came back, so a two-strip marquee nudged just the active strip's slice and the
+// other owner's keyframes stayed put (the same defect class the marquee arms above pinned
+// for the candidate pool).
+//
+// RED-FIRST WITNESS: stubbed the site back to the single-active-strip resolution
+// (`stripKeyframes(ecs, editor.strip!).filter(...)`) — the flow red at strip A's keyframe:
+// `sAfterA - sBeforeA` expected 0.1, received 0 (strip A is NOT the marquee's active strip,
+// so its interior keyframe never moved; strip B's did). Restored; green.
+//
+// The marquee leaves a STRIP as the active member (each hit's `ensureStrip` promotes its
+// owner, the last ensured one active) — the arrow guard reads `editor.stripKf`, so the flow
+// performs the production activation click on a selected keyframe of the ACTIVE strip first
+// (a plain click on an already-selected member activates it without clearing the set), then
+// nudges. The interior keyframes sit at one shared v well under the strips' values, so the
+// marquee box excludes both strips' seeded boundary keyframes (they sit at the strips' band
+// values, far outside the box's y range) — a caught boundary keyframe at its own strip's
+// bound would clamp the group delta to 0 and mask the resolution entirely.
+test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page, boot }) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+
+    // two strips at non-overlapping positions (avoiding the seed strip at station 0), each
+    // with one INTERIOR keyframe at the SAME v — the marquee box is then one narrow y band
+    // that excludes both strips' boundary keyframes (they sit at the strips' values, 5 and 3)
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripA = (await kexCall(page, "addStripAt", len * 0.3, len * 0.5, 5)) as number;
+    const stripB = (await kexCall(page, "addStripAt", len * 0.6, len * 0.9, 3)) as number;
+    if (stripA === null || stripB === null) throw new Error("strip creation failed (overlap?)");
+    const kfA = (await kexCall(page, "placeStripKf", stripA, len * 0.4, 1)) as number;
+    const kfB = (await kexCall(page, "placeStripKf", stripB, len * 0.75, 1)) as number;
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfA) && kfPx.some((k) => k.id === kfB);
+        })
+        .toBe(true);
+    const pxA = kfPx.find((k) => k.id === kfA)!;
+    const pxB = kfPx.find((k) => k.id === kfB)!;
+
+    // marquee across both strips' interior keyframes — the co-selection that spans two
+    // owning strips (the shape the marquee arms above established)
+    const xLo = Math.min(pxA.x, pxB.x) - 8;
+    const xHi = Math.max(pxA.x, pxB.x) + 8;
+    const yLo = Math.min(pxA.y, pxB.y) - 12;
+    const yHi = Math.max(pxA.y, pxB.y) + 12;
+    await marqueeDrag(page, xLo, yLo, xHi, yHi);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBeGreaterThanOrEqual(2);
+    const sel = (await stripKfSelIds()).sort((a, b) => a - b);
+    expect(sel).toContain(kfA);
+    expect(sel).toContain(kfB);
+
+    // the marquee leaves the last ensured owner ACTIVE (a strip, not a keyframe) — the
+    // production activation click on one of the ACTIVE strip's selected keyframes promotes
+    // it to the active member without clearing anything, so the arrow guard's
+    // `editor.stripKf` read passes
+    const activeStrip = (await kexCall(page, "selectedStrip")) as number | null;
+    if (activeStrip === null) throw new Error("marquee left no active strip");
+    const activeKf = activeStrip === stripA ? kfA : kfB;
+    const activePx = activeStrip === stripA ? pxA : pxB;
+    await page.mouse.click(activePx.x, activePx.y);
+    await expect.poll(async () => kexCall(page, "stripKfSelActive")).toBe(activeKf);
+    await frames(page, 1); // let the per-RAF tick propagate the active member
+
+    // the pointer stays over the chart (the click) — `editor.hover` is "timeline"
+    const sBeforeA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sBeforeB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+
+    // ArrowRight → BOTH owners' keyframes move by NUDGE_S (0.1), one shared multi-set delta
+    // (no rounding — the multi-set regime), each clamped by its OWN strip's bounds
+    await page.keyboard.press("ArrowRight");
+    await frames(page, 1);
+    const sAfterA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sAfterB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+    expect(sAfterA - sBeforeA).toBeCloseTo(0.1, 5); // strip A's keyframe moved — not just the active strip's slice
+    expect(sAfterB - sBeforeB).toBeCloseTo(0.1, 5);
+
+    // ArrowLeft back — both move back, the shared delta again
+    await page.keyboard.press("ArrowLeft");
+    await frames(page, 1);
+    const sBackA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sBackB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+    expect(sBackA).toBeCloseTo(sBeforeA, 5);
+    expect(sBackB).toBeCloseTo(sBeforeB, 5);
+});
+
 // S1 capture arm (B3): strip-keyframe SNAP. `applyKeyframeDrag`'s s-axis snap resolves through
 // `stripKfSTargets` (Timeline.svelte:1299, called at :1444) and v-axis through `vTargets`
 // (:1291, called at :1460) — both kind-specific target builders feeding the shared `snapAxis`.

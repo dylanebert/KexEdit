@@ -135,6 +135,7 @@ import {
     latchAngle,
     oneShotEscape,
     stripEscape,
+    stripKfMembers,
 } from "./controls";
 import {
     ANGLE_STEP_MAX,
@@ -173,8 +174,7 @@ import {
     setStrip,
     setStripKeyframe,
     keyframeRoom,
-    stripAt,
-    Strip,
+    owningStrip,
     stripBoundsAt,
     stripDefaultExtentAt,
     stripKeyframes,
@@ -1674,7 +1674,21 @@ function kfDesc(kind: KfKind): KfDesc {
         // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
         // filter was the siloing — not a visibility gate.
         pts: stripKfPts,
-        select: selectStripKf,
+        // the plain click resolves the OWNER from the ECS per click (`owningStrip`, the same
+        // containment read Delete answers through) — never through the active strip, so the
+        // replace sweep keeps exactly the strip that owns the clicked keyframe: a co-selected
+        // non-owning strip is a sibling and drops.
+        select: (id, mode) => {
+            if (id === null) selectStripKf(null);
+            else if (mode === "toggle") selectStripKf(id, "toggle");
+            else {
+                // unresolvable owner = a stale id (the kf is gone) — a click on a phantom
+                // keyframe selects nothing, the same nothing `stripAt` returning null always
+                // meant for a strip click
+                const owner = owningStrip(ecs, id);
+                if (owner !== null) selectStripKf(id, "replace", owner);
+            }
+        },
         selectMany: selectStripKfs,
         activate: activateStripKf,
         val: (p) => (p as StripKfPt).v,
@@ -4348,29 +4362,28 @@ onMount(() => {
                 // strip keyframe is selected and the pointer is over the timeline. Shift coarse;
                 // one press = one undo entry.
                 //
-                // read the strip + its keyframes from the ECS directly, not `stripKfPts` (a
-                // `$derived` behind the RAF `void tick`, same class the GEO nudge's `nodeLocal`
-                // already fixed, `controls.ts`):
+                // resolve the members per OWNING strip from the ECS directly, not through the
+                // single active strip and not `stripKfPts` (a `$derived` behind the RAF `void
+                // tick`, same class the GEO nudge's `nodeLocal` already fixed, `controls.ts`):
+                // a marquee across two strips selects keyframes of both, and each member's
+                // clamp bounds come from the strip that owns it — `stripKfMembers` (controls.ts,
+                // a synchronous ECS query) resolves every selected kf through its owner, so
+                // the whole set moves, never just the active strip's slice.
+                //
                 // a second nudge fired before `tick` has advanced since the first nudge's write
                 // reads the PRE-write `s` as its base, rounds to the same grid point one step
                 // short, and commits a wrong value (section.pw.ts:2344, witnessed:
                 // `toBeCloseTo` Expected 11.1, Received 11 with no frame between the two
-                // presses). `stripAt`/`stripKeyframes` are synchronous ECS queries.
-                const stripEid = stripAt(ecs, editor.strip!);
-                if (stripEid === null) return;
-                const members = stripKeyframes(ecs, editor.strip!).filter((k) =>
-                    editor.stripKfs.ids.has(k.id),
-                );
+                // presses). `stripKfMembers` is the same synchronous-ECS class as before.
+                const { members, anyLocked } = stripKfMembers(ecs, editor.stripKfs.ids);
                 if (members.length === 0) return;
-                if (!stripEditableAt(Strip.start.get(stripEid))) return;
+                if (anyLocked) return; // the lockdown is all-or-nothing, like Del
                 e.preventDefault();
                 skipLanding();
                 const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
                 const stepV = e.shiftKey ? NUDGE_V_COARSE : NUDGE_V;
                 const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                 const dv = e.key === "ArrowUp" ? stepV : e.key === "ArrowDown" ? -stepV : 0;
-                const lo = Strip.start.get(stripEid);
-                const len = Strip.end.get(stripEid);
                 if (editor.forces.ids.size > 0) {
                     // S5: mixed-domain nudge — station (ds) moves every member; value (dv)
                     // moves NO member when the set spans both keyframe domains (force + strip).
@@ -4380,7 +4393,7 @@ onMount(() => {
                     // writes it back (the axis-law red: a vertical nudge rewinds a force's
                     // station after a horizontal nudge changed it). `sections`/`sectionForces`
                     // are synchronous ECS queries, same class as the stripKf handler's own
-                    // `stripKeyframes(ecs, ...)` read above.
+                    // `stripKfMembers` read above.
                     const forceMembers = sections(ecs)
                         .filter((s) => s.kind === SectionKind.Force)
                         .flatMap((s) =>
@@ -4400,11 +4413,7 @@ onMount(() => {
                             0,
                         ))
                             setForcePoint(ecs, w.id, w.s, w.v);
-                        for (const w of nudgeKeyframes(
-                            members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
-                            ds,
-                            0,
-                        ))
+                        for (const w of nudgeKeyframes(members, ds, 0))
                             setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
                         commit(history);
                         return;
@@ -4414,11 +4423,7 @@ onMount(() => {
                     ecs,
                     members.map((m) => m.id),
                 );
-                for (const w of nudgeKeyframes(
-                    members.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
-                    ds,
-                    dv,
-                ))
+                for (const w of nudgeKeyframes(members, ds, dv))
                     setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
                 commit(history);
             }
@@ -4503,34 +4508,31 @@ onMount(() => {
                         // S5: mixed-domain nudge — station (ds) moves every member; value
                         // (dg) moves NO member when the set spans both keyframe domains (force +
                         // strip). one gesture (`beginKeyframeMoves`) so one undo restores all.
-                        const stripEid = editor.strip !== null ? stripAt(ecs, editor.strip) : null;
-                        if (stripEid !== null && stripEditableAt(Strip.start.get(stripEid))) {
-                            const skMembers = stripKeyframes(ecs, editor.strip!).filter((k) =>
-                                editor.stripKfs.ids.has(k.id),
+                        // the strip-kf subset resolves per OWNING strip (`stripKfMembers`, same
+                        // synchronous-ECS class as the force read above) and the lockdown is
+                        // all-or-nothing on it: a locked owner blocks the WHOLE strip-kf subset
+                        // from the mixed move (never a silent moving subset) — the forces still
+                        // nudge alone below, unchanged.
+                        const { members: skMembers, anyLocked } = stripKfMembers(
+                            ecs,
+                            editor.stripKfs.ids,
+                        );
+                        if (skMembers.length > 0 && !anyLocked) {
+                            beginKeyframeMoves(
+                                ecs,
+                                members.map((m) => m.id),
+                                skMembers.map((m) => m.id),
                             );
-                            if (skMembers.length > 0) {
-                                const lo = Strip.start.get(stripEid);
-                                const len = Strip.end.get(stripEid);
-                                beginKeyframeMoves(
-                                    ecs,
-                                    members.map((m) => m.id),
-                                    skMembers.map((m) => m.id),
-                                );
-                                for (const w of nudgeKeyframes(
-                                    members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
-                                    ds,
-                                    0,
-                                ))
-                                    setForcePoint(ecs, w.id, w.s, w.v);
-                                for (const w of nudgeKeyframes(
-                                    skMembers.map((m) => ({ id: m.id, s: m.s, v: m.v, len, lo })),
-                                    ds,
-                                    0,
-                                ))
-                                    setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
-                                commit(history);
-                                return;
-                            }
+                            for (const w of nudgeKeyframes(
+                                members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
+                                ds,
+                                0,
+                            ))
+                                setForcePoint(ecs, w.id, w.s, w.v);
+                            for (const w of nudgeKeyframes(skMembers, ds, 0))
+                                setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
+                            commit(history);
+                            return;
                         }
                     }
                     beginForceMoves(

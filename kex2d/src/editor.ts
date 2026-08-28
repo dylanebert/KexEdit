@@ -260,8 +260,12 @@ interface EditorState {
      *  selection: non-empty `stripKfs` implies `editor.strip !== null` (the owning strip is
      *  selected, so its keyframe diamonds are drawn). Clicking a diamond selects it for Delete
      *  (shift-click toggles membership); Escape peels the set before clearing the strip selection
-     *  (the force keyframe's own Escape ladder). NOT a mutually-exclusive selection kind. */
-    stripKf: number | null;
+     *  (the force keyframe's own Escape ladder). NOT a mutually-exclusive selection kind.
+     *  READ-ONLY, unlike its sibling active views: the replace-select sweep is per-member
+     *  containment and needs the owning strip — an ECS read this module deliberately lacks
+     *  (selection lives outside the ECS). the clearing path is `selectStripKf(null)`, and the
+     *  plain-click number path resolves the owner and calls `selectStripKf(id, "replace", owner)`. */
+    readonly stripKf: number | null;
     tangentEdit: number | null;
     /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
      *  summoned), or null — the force analogue of `tangentEdit`, layered on force selection:
@@ -577,9 +581,6 @@ export const editor: EditorState = {
     },
     get stripKf(): number | null {
         return kindActiveId("stripKf");
-    },
-    set stripKf(v: number | null) {
-        selectStripKf(v);
     },
     tangentEdit: null,
     forceEdit: null,
@@ -1195,7 +1196,10 @@ export function selectStrip(id: number | null, mode: SelectMode = "replace"): vo
 
 /** ensure a strip member is in the unified set without clearing other kinds (S2: shift-click on
  *  a strip keyframe from a different strip adds the owning strip to the set rather than
- *  replace-selecting it, so the co-selection survives). no-op when the strip is already a member. */
+ *  replace-selecting it, so the co-selection survives). no-op when the strip is already a
+ *  member; when it ADDS, the new member becomes the active one — the same last-added-member
+ *  promotion every add-path here performs (the singleton `selectStrip`/`selectStripKfs`'
+ *  marquee set write), so the marquee's last ensured strip is the active strip. */
 export function ensureStrip(id: number): void {
     if (!memberHas("strip", id)) {
         memberAdd("strip", id);
@@ -1206,15 +1210,36 @@ export function ensureStrip(id: number): void {
 /** select a velocity-strip keyframe by its stable id — `selectForce`'s own two-form shape,
  *  reached through the same `Timeline.svelte kfDesc` descriptor `keyframeDown` calls for either
  *  kind (S9, F7). "replace" (default) collapses the set to `id` (or clears it when null);
- *  "toggle" adds/removes it (shift-click). the replace form sweeps the other top-level kinds
- *  (keeping the owning strip) — this is the plain-click path, and `sweepOtherKinds` survives
- *  here alone (S2 deleted it from the shift/marquee paths). a sub-selection layered on strip
- *  selection: the owning strip stays selected (its diamonds are drawn), and the set becomes the
- *  Delete/Escape target. selection state in editor, Delete through the history wrapper. */
-export function selectStripKf(id: number | null, mode: SelectMode = "replace"): void {
+ *  "toggle" adds/removes it (shift-click). the replace form sweeps the other top-level kinds,
+ *  then keeps ONLY the strip that owns the clicked keyframe (`owner`, required with a non-null
+ *  id, resolved from the ECS by the plain-click caller through `owningStrip`/track.ts — the
+ *  Delete path's own ancestor read) — containment is per member, not per kind, so a
+ *  co-selected strip that owns nothing in the new set drops like any other sibling. this is
+ *  the plain-click path, and `sweepOtherKinds` survives here alone (S2 deleted it from the
+ *  shift/marquee paths). a sub-selection layered on strip selection: the owning strip stays
+ *  selected (its diamonds are drawn), and the set becomes the Delete/Escape target. selection
+ *  state in editor, Delete through the history wrapper. */
+export function selectStripKf(id: null, mode?: SelectMode): void;
+export function selectStripKf(id: number, mode: "toggle"): void;
+export function selectStripKf(id: number, mode: "replace", owner: number): void;
+export function selectStripKf(
+    id: number | null,
+    mode: SelectMode = "replace",
+    owner?: number,
+): void {
     if (id === null || mode === "replace") {
         if (id !== null) {
             sweepOtherKinds(["stripKf", "strip"]);
+            // containment is per member: only the strip that OWNS the clicked keyframe survives
+            // the sweep — the strip kind as a whole is not an ancestor. a co-selected strip
+            // that owns nothing in the new set is a sibling, and drops exactly like every
+            // other kind. `owner` is the strip the plain-click caller resolves from the ECS
+            // (the SAME read the Delete path answers through, `owningStrip`/track.ts), so
+            // Delete and replace-select agree on what an ancestor is; with no owner resolvable
+            // (an untyped caller — the overloads make this unreachable) NOTHING is kept, the
+            // fail-closed direction for a containment exception
+            for (const [key, m] of _members)
+                if (m.kind === "strip" && m.id !== owner) _members.delete(key);
             clearKind("stripKf");
             memberAdd("stripKf", id);
             _active = { kind: "stripKf", id };

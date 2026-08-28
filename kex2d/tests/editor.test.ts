@@ -311,7 +311,7 @@ describe("one selection model — empty-ruler / empty-lane deselect", () => {
         expect(editor.forceHandle).toBeNull();
         selectSection(4);
         selectStrip(5);
-        selectStripKf(6);
+        selectStripKf(6, "replace", 5);
         selectStart(true);
         deselectAll();
         expect(editor.sections.ids.size).toBe(0);
@@ -337,7 +337,7 @@ describe("one selection model — empty-ruler / empty-lane deselect", () => {
 describe("strip-keyframe multi-select", () => {
     test("replace collapses the set to one member; toggle adds/removes", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         expect([...editor.stripKfs.ids]).toEqual([10]);
         expect(editor.stripKf).toBe(10);
         selectStripKf(20, "toggle");
@@ -350,7 +350,7 @@ describe("strip-keyframe multi-select", () => {
 
     test("toggling out the active promotes the most-recently-added survivor", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         selectStripKf(20, "toggle");
         selectStripKf(20, "toggle"); // remove the active member
         expect([...editor.stripKfs.ids]).toEqual([10]);
@@ -359,7 +359,7 @@ describe("strip-keyframe multi-select", () => {
 
     test("activateStripKf promotes a member active without disturbing the set; a non-member is a no-op", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         selectStripKf(20, "toggle"); // {10, 20}, active 20
         activateStripKf(10);
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]); // set unchanged
@@ -370,7 +370,7 @@ describe("strip-keyframe multi-select", () => {
 
     test("deselecting the owning strip clears the keyframe set (the sub-selection's own invariant)", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         selectStripKf(20, "toggle");
         selectStrip(null);
         expect(editor.stripKfs.ids.size).toBe(0);
@@ -379,7 +379,7 @@ describe("strip-keyframe multi-select", () => {
 
     test("selecting a different top-level kind sweeps the strip-keyframe set (the same exclusivity every other sub-selection observes)", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         selectStripKf(20, "toggle");
         selectSection(5);
         expect(editor.stripKfs.ids.size).toBe(0);
@@ -393,14 +393,14 @@ describe("strip-keyframe multi-select", () => {
     test("selecting a strip keyframe clears the force selection (replace-select sweep)", () => {
         selectForce(99);
         expect(editor.force).toBe(99);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         expect(editor.force).toBeNull(); // was left selected before S9
         expect(editor.stripKf).toBe(10);
     });
 
     test("selecting a force keyframe clears the strip-keyframe selection (the reverse already held)", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         expect(editor.stripKf).toBe(10);
         selectForce(99);
         expect(editor.stripKf).toBeNull();
@@ -464,7 +464,7 @@ describe("S2: cross-kind co-selection — shift-click extends across kinds", () 
 describe("S2: cross-kind co-selection — marquee extends across kinds", () => {
     test("selectForces does NOT clear the strip-keyframe set (marquee extends, not replaces)", () => {
         ensureStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         selectStripKf(20, "toggle");
         selectForces([5, 6], 6);
         expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
@@ -491,7 +491,7 @@ describe("S2: cross-kind co-selection — marquee extends across kinds", () => {
 describe("S2: plain click stays replace-select (not widened)", () => {
     test("plain-clicking a force keyframe clears the strip-keyframe set", () => {
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         selectForce(5);
         expect(editor.stripKfs.ids.size).toBe(0);
         expect([...editor.forces.ids]).toEqual([5]);
@@ -510,10 +510,32 @@ describe("S2: plain click stays replace-select (not widened)", () => {
         // keyframeDown skips its own selectStrip (the strip is already selected) and
         // reaches selectStripKf's replace path with the force kind still live, so
         // sweepOtherKinds(["stripKf", "strip"]) clears the force (sibling), keeping the strip (ancestor)
-        selectStripKf(20);
+        selectStripKf(20, "replace", 1);
         expect(editor.force).toBeNull(); // swept by sweepOtherKinds, not by selectStrip
         expect(editor.strip).toBe(1); // the owning strip survives (containment, not sibling)
         expect([...editor.stripKfs.ids]).toEqual([20]);
+    });
+
+    test("plain-clicking a strip keyframe drops a NON-OWNING co-selected strip (containment is per member)", () => {
+        // the ancestor exception keeps the strip that OWNS the clicked keyframe, never the
+        // whole strip kind: a co-selected strip that owns nothing in the new set is a
+        // sibling, not an ancestor, and the replace sweep drops it with every other kind.
+        // built through the production selectors, the plain-click sequence `keyframeDown`
+        // drives: the band click `selectStrip` (replace) + the band shift-click `selectStrip`
+        // (toggle) co-select two strips with the owner active, so the plain click skips its
+        // own `selectStrip` (the owner is already the active strip) and `selectStripKf`'s
+        // replace sweep is the only thing that can drop the non-owner — the arm fails if it
+        // doesn't run.
+        // RED-FIRST WITNESS: ran against the whole-kind sweep
+        // (`sweepOtherKinds(["stripKf", "strip"])` alone) — the arm red at the non-owner
+        // assertion, `editor.strips.ids.has(1)` was true (the non-owning strip survived).
+        // Restored the per-member drop; green.
+        selectStrip(1);
+        selectStrip(2, "toggle"); // two strips co-selected, strip 2 active
+        selectStripKf(21, "replace", 2); // plain click on strip 2's keyframe — owner already active
+        expect(editor.strips.ids.has(2)).toBe(true); // the owning strip survives (containment)
+        expect(editor.strips.ids.has(1)).toBe(false); // the non-owner drops
+        expect([...editor.stripKfs.ids]).toEqual([21]);
     });
 });
 
@@ -977,7 +999,7 @@ describe("multi — the set-level multi predicate", () => {
         // on every single-subject click. S5 migrates this site to a containment-aware read that
         // tells the two apart; S5 is gated behind S4, so pin the current behavior here.
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         // both members are present — the pair is {strip:1, stripKf:10}
         expect(editor.strips.ids.has(1)).toBe(true);
         expect(editor.stripKfs.ids.has(10)).toBe(true);
@@ -1016,7 +1038,7 @@ describe("anySelected — the set-level live-selection read", () => {
         // a plain click on a strip keyframe selects the owning strip first, then the keyframe —
         // the two-member containment set is still a live selection, not an empty one.
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         expect(anySelected()).toBe(true);
         selectOneShot(true);
         expect(anySelected()).toBe(true);

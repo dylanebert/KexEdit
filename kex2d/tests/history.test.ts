@@ -1700,7 +1700,7 @@ test("undo/redo across 'select strip, then select one of its keyframes' restores
 
     // select the strip, then select one of its keyframes — the gesture whose snapshot was null.
     selectStrip(stripId);
-    selectStripKf(kfId);
+    selectStripKf(kfId, "replace", stripId);
     expect(editor.strip).toBe(stripId);
     expect(editor.stripKf).toBe(kfId);
 
