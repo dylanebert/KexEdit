@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { keyframeActs, nodeActs, sectionActs } from "../src/acts";
 import {
     beginLanding,
@@ -18,9 +18,6 @@ import { history } from "../src/history";
 import { enterPinMode, exitPinMode } from "../src/pin";
 import { TangentMode } from "../src/spline";
 import {
-    addNode,
-    appendSection,
-    BakeSystem,
     EXTEND_DIST,
     Handle,
     handleTangent,
@@ -29,95 +26,121 @@ import {
     sectionHandles,
     sections,
     SectionKind,
-    createSection,
-    createTrack,
-    createForcePoint,
     setTangent,
-    setStartSpeed,
 } from "../src/track";
+import { build } from "./helpers/build";
 
 // the third member of the menu triple's own coverage (kex2d-act-factory stage 2): drives each
 // factory's acts against a real ECS track — history.test.ts/ops.test.ts's shape — testing the ACT
 // layer (a record entry does the thing and carries its own guard), never re-testing the underlying
 // ops (`removeSection`, `trimTrack`, …) those files already pin.
+//
+// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
+// than `track.ts`'s raw entity primitives — this file tests the ACT layer, which consumes an
+// authored track, not the authoring layer itself.
 
 /** a bare geo track: one section, `n` flat nodes at `i * EXTEND_DIST` along x. */
 function geoTrack(n = 2): { state: State; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    for (let i = 0; i < n; i++) addNode(state, sec, i * EXTEND_DIST, 0);
-    state.step(0);
-    return { state, sec };
+    const b = build();
+    const sec = b.appendSection(SectionKind.Geo);
+    // the default seed already places node 1 at `EXTEND_DIST` (`appendSection`'s own sticky
+    // default), so `n = 2` needs no further authoring; `n > 2` extends the tip.
+    for (let i = 2; i < n; i++) b.addNode(sec, i * EXTEND_DIST, 0);
+    b.bake();
+    return { state: b.ecs, sec };
 }
 
 /** two geo sections, chained. */
 function twoGeoSections(): { state: State; a: number; b: number } {
-    const { state, sec: a } = geoTrack(2);
-    const b = appendSection(state, SectionKind.Geo);
-    state.step(0);
-    return { state, a, b };
+    const bd = build();
+    const a = bd.appendSection(SectionKind.Geo);
+    const b = bd.appendSection(SectionKind.Geo);
+    bd.bake();
+    return { state: bd.ecs, a, b };
 }
 
 /** three geo sections, chained — the smallest chain where a bulk delete of TWO is not the
  *  last-section floor. */
 function threeGeoSections(): { state: State; a: number; b: number; c: number } {
-    const { state, a, b } = twoGeoSections();
-    const c = appendSection(state, SectionKind.Geo);
-    state.step(0);
-    return { state, a, b, c };
+    const bd = build();
+    const a = bd.appendSection(SectionKind.Geo);
+    const b = bd.appendSection(SectionKind.Geo);
+    const c = bd.appendSection(SectionKind.Geo);
+    bd.bake();
+    return { state: bd.ecs, a, b, c };
+}
+
+/** the five-keyframe force section shape (pin.test.ts's own), authored onto an in-flight
+ *  `Build` — the repeated body every force fixture below opens with. `append-section`
+ *  seeds a force section with its own two continuation keyframes (AGENTS.md's Model
+ *  (force authoring)); `force-create` doesn't dedupe against them (unlike `force-move`'s
+ *  `stationTaken` guard), so those two are cleared before authoring the five explicit
+ *  ones or the section would carry seven. */
+function fiveKeyframeForceSection(bd: ReturnType<typeof build>): number {
+    const sec = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+    bd.sectionLength(sec, 40);
+    bd.addForce(sec, 0, 1);
+    bd.addForce(sec, 10, 1.5);
+    bd.addForce(sec, 20, 1);
+    bd.addForce(sec, 30, 0.8);
+    bd.addForce(sec, 40, 1);
+    bd.startSpeed(20);
+    return sec;
 }
 
 /** a force section, seeded with five keyframes (pin.test.ts's shape). */
 function forceTrack(): { state: State; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Force, 40);
-    createForcePoint(state, sec, 0, 1);
-    createForcePoint(state, sec, 10, 1.5);
-    createForcePoint(state, sec, 20, 1);
-    createForcePoint(state, sec, 30, 0.8);
-    createForcePoint(state, sec, 40, 1);
-    setStartSpeed(state, 20);
-    state.step(0);
-    return { state, sec };
+    const bd = build();
+    const sec = fiveKeyframeForceSection(bd);
+    bd.bake();
+    return { state: bd.ecs, sec };
 }
 
 /** two force sections, chained — `b`'s two keyframes come from `appendSection`'s own
  *  continuation seed (kex2d/AGENTS.md's Model (force authoring)). */
 function twoForceSections(): { state: State; a: number; b: number } {
-    const { state, sec: a } = forceTrack();
-    const b = appendSection(state, SectionKind.Force);
-    state.step(0);
-    return { state, a, b };
+    const bd = build();
+    const a = fiveKeyframeForceSection(bd);
+    const b = bd.appendSection(SectionKind.Force);
+    bd.bake();
+    return { state: bd.ecs, a, b };
 }
 
 /** a pinnable force section (`a`) plus an UNRELATED force section (`b`) carrying its own
- *  interior keyframe — `twoForceSections`' `b` only has the two boundary continuation
- *  keyframes (non-interior, so a cut there would no-op on its OWN merits and couldn't
- *  distinguish a consent-boundary leak from a correct refusal). `b`'s middle key at s=20
- *  is a genuine landmark Cut point. */
+ *  interior keyframe — a plain 2-section chain, `b` built directly rather than through
+ *  `twoForceSections()` + a raw third section: the original raw-ECS fixture went through
+ *  `twoForceSections()` for `a` and then hand-called `createSection` at `b`'s SAME order,
+ *  leaving `twoForceSections()`'s own (unused) `b` orphaned in the ECS — three sections
+ *  total, two sharing an order. Neither test below reads the section count's absolute
+ *  value (only that Cut leaves it UNCHANGED) or `b`'s order, so the clean two-section chain
+ *  is the same fixture minus that accident. `b`'s middle key at s=20 is the genuine
+ *  landmark Cut point (`twoForceSections`' own `b` only has the two boundary continuation
+ *  keyframes — non-interior, so a cut there would no-op on its own merits and couldn't
+ *  distinguish a consent-boundary leak from a correct refusal). */
 function twoForceSectionsInterior(): { state: State; a: number; b: number } {
-    const { state, a } = twoForceSections();
-    const b = createSection(state, 1, SectionKind.Force, 40);
-    createForcePoint(state, b, 0, 1);
-    createForcePoint(state, b, 20, 1);
-    createForcePoint(state, b, 40, 1);
-    state.step(0);
-    return { state, a, b };
+    const bd = build();
+    const a = fiveKeyframeForceSection(bd);
+    const b = bd.appendSection(SectionKind.Force);
+    bd.sectionLength(b, 40);
+    bd.addForce(b, 0, 1);
+    bd.addForce(b, 20, 1);
+    bd.addForce(b, 40, 1);
+    bd.bake();
+    return { state: bd.ecs, a, b };
 }
 
 /** a pinnable force section (`a`) plus an UNRELATED geo section (`geo`) with an interior,
  *  cuttable node (order 2 of 4) — the consent-boundary repro's shape for `nodeActs.cut`. */
 function forceAndGeoSections(): { state: State; force: number; geo: number } {
-    const { state, sec: force } = forceTrack();
-    const geo = appendSection(state, SectionKind.Geo);
-    addNode(state, geo, 2 * EXTEND_DIST, 0);
-    addNode(state, geo, 3 * EXTEND_DIST, 0);
-    state.step(0);
-    return { state, force, geo };
+    const bd = build();
+    const force = fiveKeyframeForceSection(bd);
+    const geo = bd.appendSection(SectionKind.Geo);
+    bd.addNode(geo, 2 * EXTEND_DIST, 0);
+    bd.addNode(geo, 3 * EXTEND_DIST, 0);
+    bd.bake();
+    return { state: bd.ecs, force, geo };
 }
 
 afterEach(() => {

@@ -1,4 +1,4 @@
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
     beginLanding,
@@ -23,51 +23,56 @@ import {
     undoRouted,
 } from "../src/pin";
 import {
-    BakeSystem,
     bakeOut,
-    createForcePoint,
-    createSection,
-    createStrip,
-    createTrack,
     samples,
     sectionForces,
     sectionInfo,
     type TrackSnapshot,
     SectionKind,
     setForcePoint,
-    setTrackFriction,
-    setTrackResistance,
-    setStartSpeed,
     snapshotAll,
     stripsForStep,
 } from "../src/track";
 import { resolveStep } from "../src/profile";
+import { build, type Build } from "./helpers/build";
 
 // Pin mode's document seam (`pin.ts`) over the real ECS + history substrate: the sandbox
 // contract, the landing, the downstream freeze, and the paced landing's display override. The
 // masked exit-restore KERNEL the mode invokes is a separate unit — `tests/optimize.test.ts`.
+//
+// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
+// than `track.ts`'s raw entity primitives.
 
+/** the five-keyframe force section shape (this file's own — acts.test.ts carries an identical
+ *  copy under the same name, per this repo's one-fixture-per-file convention). `append-section`
+ *  seeds a force section with its own two continuation keyframes (AGENTS.md's Model
+ *  (force authoring)); `force-create` doesn't dedupe against them (unlike `force-move`'s
+ *  `stationTaken` guard), so those two are cleared before authoring the five explicit ones or
+ *  the section would carry seven. Returns the live `Build` too, so a caller needing further
+ *  un-baked authoring (a second section, an extra strip) doesn't have to re-derive the fixture. */
 function forceTrack(coeffs?: { friction: number; resistance: number }): {
     state: State;
     eid: number;
     sec: number;
+    bd: Build;
 } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
+    const bd = build();
     if (coeffs) {
-        setTrackFriction(eid, coeffs.friction);
-        setTrackResistance(eid, coeffs.resistance);
+        bd.friction(coeffs.friction);
+        bd.resistance(coeffs.resistance);
     }
-    const sec = createSection(state, 0, SectionKind.Force, 40);
-    createForcePoint(state, sec, 0, 1);
-    createForcePoint(state, sec, 10, 1.5);
-    createForcePoint(state, sec, 20, 1);
-    createForcePoint(state, sec, 30, 0.8);
-    createForcePoint(state, sec, 40, 1);
-    setStartSpeed(state, 20);
-    state.step(0);
-    return { state, eid, sec };
+    const sec = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+    bd.sectionLength(sec, 40);
+    bd.addForce(sec, 0, 1);
+    bd.addForce(sec, 10, 1.5);
+    bd.addForce(sec, 20, 1);
+    bd.addForce(sec, 30, 0.8);
+    bd.addForce(sec, 40, 1);
+    bd.startSpeed(20);
+    bd.bake();
+    return { state: bd.ecs, eid: bd.trackEid, sec, bd };
 }
 
 function docState(state: State, eid: number): { snap: TrackSnapshot; hash: string } {
@@ -139,12 +144,12 @@ describe("runPinSection — the document seam", () => {
         // independent `State()`s each start their own id counter at 0, so two separate tracks
         // would collide in that shared map. Reading the SAME track's stamp before and after
         // authoring its coefficients sidesteps that entirely.
-        const { state, eid, sec } = forceTrack();
+        const { state, sec, bd } = forceTrack();
         const zeroStamp = enterPin(state, sec)?.stamp;
         if (!zeroStamp) throw new Error("no session");
-        setTrackFriction(eid, 0.021);
-        setTrackResistance(eid, 2.5e-4);
-        state.step(0);
+        bd.friction(0.021);
+        bd.resistance(2.5e-4);
+        bd.bake();
         const nonzeroStamp = enterPin(state, sec)?.stamp;
         if (!nonzeroStamp) throw new Error("no session");
         expect(nonzeroStamp.v).not.toBe(zeroStamp.v);
@@ -750,13 +755,15 @@ describe("the downstream freeze (kex2d-optimize-mode stage 7)", () => {
     });
 
     function twoSections(): { state: State; eid: number; sec: number; secB: number } {
-        const { state, eid, sec } = forceTrack();
-        const secB = createSection(state, 1, SectionKind.Force, 30);
-        createForcePoint(state, secB, 0, 1);
-        createForcePoint(state, secB, 10, 1.3);
-        createForcePoint(state, secB, 20, 1);
-        createForcePoint(state, secB, 30, 1);
-        state.step(0);
+        const { state, eid, sec, bd } = forceTrack();
+        const secB = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, secB).map((r) => r.id));
+        bd.sectionLength(secB, 30);
+        bd.addForce(secB, 0, 1);
+        bd.addForce(secB, 10, 1.3);
+        bd.addForce(secB, 20, 1);
+        bd.addForce(secB, 30, 1);
+        bd.bake();
         return { state, eid, sec, secB };
     }
 
@@ -1034,9 +1041,9 @@ describe("velocity strips — the pin invariant (C3)", () => {
         // carried no strips argument at all, so a strip on the pinning section was silently
         // ignored by the stamp/ghost (verified by reverting `pin.ts`'s `strips` argument and
         // observing the stamp arm below fail — see the next test).
-        const { state, eid, sec } = forceTrack();
-        createStrip(state, 15, 25, 6);
-        state.step(0);
+        const { state, eid, sec, bd } = forceTrack();
+        bd.addStrip(15, 25, 6);
+        bd.bake();
 
         // corrupt the two bake-derived maps this construction path could reach — proving the
         // strip resolution below cannot be reading through either of them (a mistaken read
@@ -1062,11 +1069,11 @@ describe("velocity strips — the pin invariant (C3)", () => {
     });
 
     test("enterPin's stamp/ghost reflect a strip reaching the section's exit — the construction actually threads it", () => {
-        const { state, sec } = forceTrack(); // length 40, entry v0 = 20
+        const { state, sec, bd } = forceTrack(); // length 40, entry v0 = 20
         // reaches the section's own exit, so the stamp's v is exactly the strip's value —
         // the exit is the ONE state `enterPin`'s stamp exposes directly.
-        createStrip(state, 30, 40, 7);
-        state.step(0);
+        bd.addStrip(30, 40, 7);
+        bd.bake();
         const session = enterPin(state, sec);
         expect(session).not.toBeNull();
         if (!session) return;
@@ -1083,9 +1090,9 @@ describe("velocity strips — the pin invariant (C3)", () => {
     // RED before the strips field: the solve marched WITHOUT the strip while the stamp was taken
     // WITH it — 1.575 m x (this arm, witnessed), against a no-strip control at 7e-6 m.
     test("a strip on a pinned section's track: the landed draft re-bakes to the stamp", async () => {
-        const { state, eid, sec } = forceTrack();
-        createStrip(state, 15, 25, 9);
-        state.step(0);
+        const { state, eid, sec, bd } = forceTrack();
+        bd.addStrip(15, 25, 9);
+        bd.bake();
         if (!enterPinMode(state, sec)) throw new Error("no session");
         const session = editor.pinning;
         if (!session) throw new Error("no session");

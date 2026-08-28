@@ -1,23 +1,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { State, type System } from "@dylanebert/shallot";
+import type { State, System } from "@dylanebert/shallot";
 import { COLOR_ACCENT, hovered } from "../src/colors";
 import { deselectAll, editor, enterTangentEdit, selectStart } from "../src/editor";
 import { AnchorDrawSystem, infeasibleSpans, TangentDrawSystem } from "../src/render";
 import { TangentMode } from "../src/spline";
-import {
-    addNode,
-    bakeOut,
-    BakeSystem,
-    createSection,
-    createTrack,
-    EXTEND_DIST,
-    handleAt,
-    SectionKind,
-    seedTangent,
-    setTangent,
-    Track,
-} from "../src/track";
+import { bakeOut, handleAt, SectionKind, seedTangent, setTangent, Track } from "../src/track";
 import { Canvas2D, frameCamera } from "../src/view";
+import { build } from "./helpers/build";
 import { type DrawCall, fakeCanvasElement, recordingContext } from "./helpers/recording-ctx";
 
 // ── kex2d-followups follow-up 9: the two `colors.test.ts` source pins on `render.ts`
@@ -26,22 +15,23 @@ import { type DrawCall, fakeCanvasElement, recordingContext } from "./helpers/re
 // promotion: drive the real render systems over a bare `State` through a recording `ctx` double
 // and read the ACTUAL `strokeStyle`/`fillStyle` a draw call used, not the source text that
 // produced it.
+//
+// kex2d-cli S6: fixtures below are authored through the shared `Build` helper
+// (`tests/helpers/build.ts`) rather than `track.ts`'s raw entity primitives — this file
+// tests the draw systems, which consume an authored track, not the authoring layer itself.
 
 const CANVAS_W = 800;
 const CANVAS_H = 600;
 
 /** a flat one-section geo track: node 0 at the section entry (the local origin, also the
  *  world origin here), node 1 a straight extend away — the same seed shape `tests/track.test.ts`
- *  uses, baked once so every node has a real sample point to draw at. */
+ *  uses, baked once so every node has a real sample point to draw at. `appendSection`'s own
+ *  sticky default already places node 1 at `EXTEND_DIST`, so no follow-up `moveNode` is needed. */
 function track(): { state: State; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, EXTEND_DIST, 0);
-    state.step(0);
-    return { state, sec };
+    const b = build();
+    const sec = b.appendSection(SectionKind.Geo);
+    b.bake();
+    return { state: b.ecs, sec };
 }
 
 /** point `Canvas2D` at a fresh recorder + a fixed-size fake canvas, and re-frame the camera to
@@ -282,13 +272,11 @@ describe("infeasibleSpans — the ghost strip's own pure reader", () => {
     // prove `firstInfeasible` fires) composes correctly end to end — the pure walk above reading
     // real `bakeOut.feasible`/`cart.forceCurve`-shaped `s`, not a hand-built array.
     test("composes with a real bake: the walk's span brackets bakeOut.firstInfeasible", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 16, 27.7); // the steep climb: depletes energy partway up
-        state.step(0);
+        const b = build();
+        const sec = b.appendSection(SectionKind.Geo);
+        b.moveNode(sec, 1, 16, 27.7); // the steep climb: depletes energy partway up
+        b.bake();
+        const eid = b.trackEid;
         const out = bakeOut.get(eid);
         if (!out) throw new Error("bakeOut missing");
         expect(out.firstInfeasible).toBeGreaterThan(0); // there is red (cart.test.ts's own arm)

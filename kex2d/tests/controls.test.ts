@@ -57,7 +57,6 @@ import {
     selectStripKfs,
     ensureStrip,
 } from "../src/editor";
-import { addStrip, addStripKeyframe, history } from "../src/history";
 import { forceKeyAct, modeKeyAct, nodeKeyAct, sectionKeyAct } from "../src/keys";
 import { editHandleSets } from "../src/tangents";
 import { LENGTH_MIN } from "../src/magnet";
@@ -76,13 +75,6 @@ import {
 import { localize } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
-    addNode,
-    appendSection,
-    BakeSystem,
-    convertSection,
-    createForcePoint,
-    createSection,
-    createTrack,
     EXTEND_DIST,
     forceMarkers,
     exitWorld,
@@ -102,6 +94,7 @@ import {
 } from "../src/track";
 import { enterPinMode, exitPinMode } from "../src/pin";
 import { marquee, setCamera } from "../src/view";
+import { build } from "./helpers/build";
 
 // a synthetic view transform (world→screen affine, sy < 0 for the Y-flip) — the drag paths take
 // screen px, so a device-free test projects through this.
@@ -300,19 +293,22 @@ test("a degenerate (zero) ray never snaps — no landmark to favor", () => {
 // stored `Auto` heading, rotated by the section entry frame. node 0 (no previous node) stays null.
 // this is the authored source, not the flanking-sample bake re-derivation the readout drifted on.
 
-/** a fresh single geo section: node 0 at the local origin (the pinned entry) + a shape node. */
-function geoTrack(): { state: State; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    return { state, sec };
+/** a fresh single geo section: node 0 at the local origin (the pinned entry) + node 1 —
+ *  `append-section`'s own default two-node flat seed (kex2d-cli S6's shared builder,
+ *  `tests/helpers/build.ts`, over `commands.ts`'s op vocabulary rather than `track.ts`'s raw
+ *  `createSection`). Node 1's SEEDED position reads the module-scoped `stickyGeoChord` default
+ *  (`track.ts`), mutable across the whole test process — so every caller below explicitly
+ *  repositions it with `bd.moveNode(sec, 1, x, y)` rather than trusting the seed, keeping every
+ *  fixture deterministic regardless of that global. */
+function geoTrack(): { state: State; sec: number; bd: ReturnType<typeof build> } {
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Geo);
+    return { state: bd.ecs, sec, bd };
 }
 
 test("node 0 (the entry anchor) has no readout — the null guard holds", () => {
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, EXTEND_DIST, 0);
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, EXTEND_DIST, 0);
     state.step(0);
     const node0 = handleAt(state, sec, 0);
     if (node0 === null) throw new Error("node 0 missing");
@@ -323,10 +319,9 @@ test("an INTERIOR node reports its authored heading (not null — display is not
     // node1 placed up-right → its frozen tip heading is π/2 (reflect(0, π/4)); adding node2 makes it
     // interior, heading frozen. the old readout gated the angle on `lastHandle`, so an interior node
     // showed NO angle — this pins the fix: an interior node reports its real heading.
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 10); // tip heading = reflect(0, atan2(10,10)) = π/2
-    addNode(state, sec, 20, 10); // node1 is now interior, heading frozen at π/2
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 10); // tip heading = reflect(0, atan2(10,10)) = π/2
+    bd.addNode(sec, 20, 10); // node1 is now interior, heading frozen at π/2
     state.step(0);
     const interior = handleAt(state, sec, 1);
     if (interior === null) throw new Error("interior node missing");
@@ -340,9 +335,8 @@ test("an explicit out-vector governs the readout heading, not the recovered geom
     // a Free tip with an out-vector pointing 30° local. exitWorld reads that authored vector, not a
     // flanking-sample bisector — the fix for the on-ray drift (the old readout re-derived from the
     // reshaping curve). entry frame is identity here, so world = local = 30°.
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 0);
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 0);
     const tip = lastHandle(state, sec);
     if (tip === null) throw new Error("tip missing");
     const a = (30 * Math.PI) / 180;
@@ -366,9 +360,8 @@ test("an explicit out-vector governs the readout heading, not the recovered geom
 // an explicit out-vector (the kex2d/AGENTS.md gotcha, and the round-8/13 family of bugs). Rotating the
 // authored vector must therefore rotate the ring; reading the dead field leaves it stuck.
 test("the ring base tracks the authored exit heading, not the stale Handle.theta", () => {
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 0);
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 0);
     const tip = lastHandle(state, sec);
     if (tip === null) throw new Error("tip missing");
     const order = Handle.order.get(tip);
@@ -404,9 +397,8 @@ test("the readout reports the node's quantities, invariant to the out-handle's l
     // source both the resting and handle-drag paths read) must report the node's exit heading + chord
     // to prev — both invariant to |out| — never the handle's own growing length. this is the source
     // the round-14 feed collapses onto; the old handle-length feed grew with the drag.
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 0); // node 1: chord to prev = 10 m, fixed by the node position
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 0); // node 1: chord to prev = 10 m, fixed by the node position
     const tip = lastHandle(state, sec);
     if (tip === null) throw new Error("tip missing");
     const a = (30 * Math.PI) / 180;
@@ -435,10 +427,9 @@ test("the section entry frame rotates the local heading into world", () => {
     // a curved first section leaves at a nonzero heading, so the appended section's entry frame is
     // rotated. a node whose LOCAL out-vector points along +x (0° local) must read the entry heading
     // in world — the rotation `tangents.ts` applies, mirrored here. a naive local read would show 0°.
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 10); // section 0 exits at ~π/2 → section 1's entry frame is rotated
-    const sec1 = appendSection(state, SectionKind.Geo);
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 10); // section 0 exits at ~π/2 → section 1's entry frame is rotated
+    const sec1 = bd.appendSection(SectionKind.Geo);
     state.step(0);
     const info1 = sectionInfo.get(sec1);
     if (!info1) throw new Error("section 1 info missing");
@@ -503,11 +494,10 @@ test("angle nudge rotates around the previous node by step/radius, holding the l
 /** a curved geo section, so the previous node's recovered secant (flanking baked samples) differs
  *  from its authored heading — which is what makes the drag-vs-rest divergence visible. */
 function curvedTip(): { state: State; tip: number; prev: number } {
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 0);
-    addNode(state, sec, 18, 7); // prev — a bend here makes the recovered secant ≠ the authored heading
-    addNode(state, sec, 26, 11); // tip
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 0);
+    bd.addNode(sec, 18, 7); // prev — a bend here makes the recovered secant ≠ the authored heading
+    bd.addNode(sec, 26, 11); // tip
     state.step(0);
     const tip = lastHandle(state, sec);
     if (tip === null) throw new Error("no tip");
@@ -560,11 +550,10 @@ test("length drag: the snapped metres shown equal the resting chord (5 m rests a
 // against the frozen prev→next chord), both axes on the SAME 1 m grid, no angle grid. This flips
 // the old "an interior node snaps its chord angle" pin below to the new law.
 test("an INTERIOR node's frame is the neighbor-chord frame, not polar (no angle grid any more)", () => {
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 6); // node 1 — the interior we drag
-    addNode(state, sec, 22, 8); // node 2
-    addNode(state, sec, 30, 6); // node 3 (tip) — makes node 1 a clean interior (not last / last-1)
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, 10, 6); // node 1 — the interior we drag
+    bd.addNode(sec, 22, 8); // node 2
+    bd.addNode(sec, 30, 6); // node 3 (tip) — makes node 1 a clean interior (not last / last-1)
     state.step(0);
     const interior = handleAt(state, sec, 1);
     if (interior === null) throw new Error("no interior node");
@@ -1070,10 +1059,9 @@ describe("applyMultiDelta — group-drag idempotence (no accumulation)", () => {
     // a colinear 3-node geo section: node 0 (entry) at origin, nodes 1 and 2 along +x at 10 m chords.
     // entry frame is identity (first section), so section-local == world here.
     function triple(): { state: State; n1: number; n2: number } {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 10, 0);
-        addNode(state, sec, 20, 0);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, 10, 0);
+        bd.addNode(sec, 20, 0);
         state.step(0);
         const n1 = handleAt(state, sec, 1);
         const n2 = handleAt(state, sec, 2);
@@ -1136,10 +1124,9 @@ describe("applyMultiDelta — group-drag idempotence (no accumulation)", () => {
 describe("tangent-edit free body drag (dragFreeTo)", () => {
     /** a curved three-node geo chain (first section, so entry = identity: world == local). */
     function curved(): { state: State; sec: number; tip: number } {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 10, 0);
-        addNode(state, sec, 18, 7); // the tip — a bend, so a re-head visibly swings theta
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, 10, 0);
+        bd.addNode(sec, 18, 7); // the tip — a bend, so a re-head visibly swings theta
         state.step(0);
         const tip = lastHandle(state, sec);
         if (tip === null) throw new Error("no tip");
@@ -1186,11 +1173,10 @@ describe("tangent-edit free body drag (dragFreeTo)", () => {
 // nearest behavior is pinned over a real baked force section, through the synthetic TX.
 describe("pickForce", () => {
     function forceTrack(): { state: State; sec: number } {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
-        convertSection(state, sec); // → force, two seed keyframes (entry + exit)
+        bd.convertSection(sec); // → force, two seed keyframes (entry + exit)
         state.step(1 / 60);
         return { state, sec };
     }
@@ -1223,9 +1209,8 @@ describe("pickForce", () => {
     });
 
     test("a geo track has no markers to pick", () => {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
         expect(pickForce(state, TX, TX.ox, TX.oy)).toBeNull();
     });
@@ -1236,14 +1221,13 @@ describe("pickForce", () => {
 // order made START — the only path to the v0 popover — permanently unclickable. Nearest
 // wins; an exact tie goes to START (the coincident seed stays reachable on the chart).
 describe("pickForceOrStart", () => {
-    function forceTrack(): { state: State; sec: number } {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+    function forceTrack(): { state: State; sec: number; bd: ReturnType<typeof build> } {
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
-        convertSection(state, sec); // → force-FIRST: the s=0 seed lands on the START diamond
+        bd.convertSection(sec); // → force-FIRST: the s=0 seed lands on the START diamond
         state.step(1 / 60);
-        return { state, sec };
+        return { state, sec, bd };
     }
 
     test("a click at the origin of a force-first track resolves START, not the seed key", () => {
@@ -1255,9 +1239,9 @@ describe("pickForceOrStart", () => {
     });
 
     test("nearest wins each way when START and a marker sit apart but overlap", () => {
-        const { state, sec } = forceTrack();
+        const { state, sec, bd } = forceTrack();
         // a key 0.5 m in: ~20 px from the origin at sx=40, so the two pick discs overlap.
-        const id = createForcePoint(state, sec, 0.5, 1);
+        const id = bd.addForce(sec, 0.5, 1);
         state.step(2 / 60);
         const m = forceMarkers(state).find((mk) => mk.id === id);
         if (!m) throw new Error("marker missing");
@@ -1284,10 +1268,9 @@ describe("pickHover", () => {
      *  separate glyphs: it's the only case where pick ORDER (not just radius) decides the
      *  read. */
     function tangentTrack(): { state: State; sec: number; tip: number } {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 10, 0);
-        addNode(state, sec, 18, 7);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, 10, 0);
+        bd.addNode(sec, 18, 7);
         state.step(0);
         const tip = lastHandle(state, sec);
         if (tip === null) throw new Error("no tip");
@@ -1349,11 +1332,10 @@ describe("pickHover", () => {
     });
 
     test("a force marker lights only when no knob or node is under the pointer", () => {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
-        convertSection(state, sec);
+        bd.convertSection(sec);
         state.step(1 / 60);
         const ms = forceMarkers(state);
         const m = ms[1]; // ms[0] (s=0) coincides with the START diamond — pickForceOrStart's own
@@ -1367,9 +1349,8 @@ describe("pickHover", () => {
     });
 
     test("the section span lights only when nothing else is under the pointer", () => {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
         // the segment midpoint, off any node/knob/marker pick radius.
         const midX = TX.ox + (EXTEND_DIST / 2) * TX.sx;
@@ -1586,13 +1567,12 @@ describe("S2 — one dismissal reads the member set: one press clears a cross-ki
     /** the shared viewport fixture: a two-node geo track, baked, behind TX's own affine (zoom
      *  40, origin (500, 400)) — the nodes land at screen (500, 400) and (1460, 400), so
      *  everything near (10, 10) is empty space. */
-    function bakedTrack(): { state: State; sec: number } {
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+    function bakedTrack(): { state: State; sec: number; bd: ReturnType<typeof build> } {
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
         setCamera({ zoom: 40, ox: 500, oy: 400 });
-        return { state, sec };
+        return { state, sec, bd };
     }
 
     // ── the viewport surface: Escape ──
@@ -1687,9 +1667,8 @@ describe("S2 — one dismissal reads the member set: one press clears a cross-ki
     test("a strip is not Delete-able after a viewport empty click — the production delete op finds nothing", () => {
         withRecordingWindow(() => {
             const { el, on } = recordingCanvas();
-            const { state } = bakedTrack();
-            const strip = addStrip(history, state, 0, 10, 12); // the band's own authoring act
-            if (strip === null) throw new Error("strip refused");
+            const { state, bd } = bakedTrack();
+            const strip = bd.addStrip(0, 10, 12); // the band's own authoring act
             const { detach } = attachControls(el, state);
             selectStrip(strip); // the production band-click selector
             expect(editor.strips.ids.size).toBe(1);
@@ -1801,15 +1780,13 @@ function twoStripTrack(): {
     kfA: number;
     kfB: number;
 } {
-    const { state, sec } = geoTrack();
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, EXTEND_DIST, 0);
+    const { state, sec, bd } = geoTrack();
+    bd.moveNode(sec, 1, EXTEND_DIST, 0);
     state.step(0);
-    const stripA = addStrip(history, state, 0, 10, 12);
-    const stripB = addStrip(history, state, 14, 23, 8);
-    if (stripA === null || stripB === null) throw new Error("strip refused (overlap or no edge)");
-    const kfA = addStripKeyframe(history, state, stripA, 5, 9);
-    const kfB = addStripKeyframe(history, state, stripB, 18, 6);
+    const stripA = bd.addStrip(0, 10, 12);
+    const stripB = bd.addStrip(14, 23, 8);
+    const kfA = bd.addStripKeyframe(stripA, 5, 9);
+    const kfB = bd.addStripKeyframe(stripB, 18, 6);
     return { state, stripA, stripB, kfA, kfB };
 }
 
@@ -1873,17 +1850,15 @@ describe("stripKfMembers — the strip-kf nudge read resolves per OWNING strip",
         // locked owner blocks the WHOLE gesture (anyLocked), never a silent moving subset —
         // and the lockdown is a FLAG on the read, not a filter: every member still resolves.
         // exiting the session unlocks it again.
-        const { state, sec } = geoTrack();
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, EXTEND_DIST, 0);
+        const { state, sec, bd } = geoTrack();
+        bd.moveNode(sec, 1, EXTEND_DIST, 0);
         state.step(0);
-        const force = appendSection(state, SectionKind.Force);
+        const force = bd.appendSection(SectionKind.Force);
         state.step(0);
-        const stripA = addStrip(history, state, 0, 10, 12);
-        const stripB = addStrip(history, state, 14, 23, 8);
-        if (stripA === null || stripB === null) throw new Error("strip refused");
-        addStripKeyframe(history, state, stripA, 5, 9);
-        addStripKeyframe(history, state, stripB, 18, 6);
+        const stripA = bd.addStrip(0, 10, 12);
+        const stripB = bd.addStrip(14, 23, 8);
+        bd.addStripKeyframe(stripA, 5, 9);
+        bd.addStripKeyframe(stripB, 18, 6);
         state.step(0); // strips change the bake (they're in `authoredHash`) — re-bake for a live one
         const ids = [
             ...stripKeyframes(state, stripA).map((k) => k.id),

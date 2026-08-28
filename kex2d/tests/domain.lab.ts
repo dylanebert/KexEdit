@@ -12,22 +12,19 @@
 // trip must read EXACTLY 0 deviation, not merely "within the old reshape tolerance."
 
 import "./setup";
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { convertDomain } from "../src/domain";
 import { createHistory } from "../src/history";
 import { Domain } from "../src/section";
 import {
-    addNode,
     bakeOut,
-    BakeSystem,
-    createForcePoint,
-    createSection,
-    createTrack,
     samples,
+    sectionForces,
     sectionInfo,
     type SectionInfo,
     SectionKind,
 } from "../src/track";
+import { build } from "./helpers/build";
 
 interface Pos {
     x: number;
@@ -56,19 +53,22 @@ export interface Scenario {
     force: number;
 }
 
+/** authored through the shared `Build` (kex2d-cli S6) rather than raw `track.ts` primitives.
+ *  `appendSection` seeds two continuation keyframes on a Force section, cleared before the
+ *  three exact stations (`acts.test.ts`'s `fiveKeyframeForceSection` gotcha) — this lab's own
+ *  exact-zero-deviation gate needs the same exact keyframe set the report reproduced. */
 export function buildScenario(len: number): Scenario {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const trackEid = createTrack(state);
-    const geo = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, geo, 0, 0);
-    addNode(state, geo, 10, 0);
-    const force = createSection(state, 1, SectionKind.Force, len);
-    createForcePoint(state, force, 0, 1);
-    createForcePoint(state, force, len * 0.5, 0.4);
-    createForcePoint(state, force, len, 1);
-    state.step(0);
-    return { state, trackEid, geo, force };
+    const bd = build();
+    const geo = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(geo, 1, 10, 0);
+    const force = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, force).map((r) => r.id));
+    bd.sectionLength(force, len);
+    bd.addForce(force, 0, 1);
+    bd.addForce(force, len * 0.5, 0.4);
+    bd.addForce(force, len, 1);
+    bd.bake();
+    return { state: bd.ecs, trackEid: bd.trackEid, geo, force };
 }
 
 export function exitPos(sc: Scenario): Pos {

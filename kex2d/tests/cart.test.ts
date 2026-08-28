@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { sectionActs } from "../src/acts";
 import {
     cartArc,
@@ -14,15 +14,7 @@ import {
     velocityCurve,
 } from "../src/cart";
 import {
-    addNode,
-    appendSection,
-    BakeSystem,
     bakeOut,
-    convertSection,
-    createForcePoint,
-    createSection,
-    createTrack,
-    deleteSection,
     samples,
     SectionKind,
     sectionCutAt,
@@ -31,37 +23,37 @@ import {
     sections,
     sectionSpans,
     setBakeFreeze,
-    setForcePoint,
-    setSectionLength,
     Track,
 } from "../src/track";
+import { build } from "./helpers/build";
 
 // cartPose rides the baked track; forceCurve reads the baked force per-sample over
 // arclength (the chart's distance axis). driven against the seeded flat chain,
 // where constant speed makes t linear in arclength — so the cart's x is a closed-form
 // check, not a fixture. device-free harness, like track.test.ts.
 
+// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
+// than `track.ts`'s raw entity primitives — this file tests `cart.ts`'s read paths, which
+// consume an authored track, not the authoring layer itself.
+
 /** a fresh flat track (entry anchor at the origin → node (32,0)), baked. */
 function baked(): { eid: number; tTotal: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 32, 0);
-    state.step(0);
-    const out = bakeOut.get(eid);
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec, 1, 32, 0); // the seed already places node 1 at EXTEND_DIST; pin it at 32
+    bd.bake();
+    const out = bakeOut.get(bd.trackEid);
     if (!out) throw new Error("bakeOut missing");
-    return { eid, tTotal: out.tTotal };
+    return { eid: bd.trackEid, tTotal: out.tTotal };
 }
 
 test("cartPose + forceCurve + velocityCurve are null before the bake has a chain", () => {
     // a fresh track with no nodes baked: Track.count is 0, so nothing to ride or sample.
-    const state = new State();
-    const eid = createTrack(state);
-    expect(cartPose(eid, 0)).toBeNull();
-    expect(forceCurve(eid)).toBeNull();
-    expect(velocityCurve(eid)).toBeNull();
+    const bd = build();
+    expect(cartPose(bd.trackEid, 0)).toBeNull();
+    expect(forceCurve(bd.trackEid)).toBeNull();
+    expect(velocityCurve(bd.trackEid)).toBeNull();
 });
 
 test("loopTime is the full track time when the whole chain is feasible", () => {
@@ -74,14 +66,11 @@ test("loopTime is the full track time when the whole chain is feasible", () => {
 
 test("loopTime resets at the first infeasible sample, not the crawl-through end", () => {
     // a steep climb that depletes energy partway up → an infeasible (red) tail.
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 16, 27.7);
-    state.step(0);
-    const out = bakeOut.get(eid);
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec, 1, 16, 27.7);
+    bd.bake();
+    const out = bakeOut.get(bd.trackEid);
     if (!out) throw new Error("bakeOut missing");
     expect(out.firstInfeasible).toBeGreaterThan(0); // there is red
     // the cart loops the moment it reaches red, before the slow energy-out tail.
@@ -120,15 +109,12 @@ test("velocityCurve's range genuinely differs from forceCurve's — the case for
     // a climb that sheds real speed: v drops well below its entry value while F_n swings through
     // its own separate g-range — the two channels have no common unit, so a shared axis would
     // either crush one or clip the other. Auto-fit must be per-channel.
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 16, 12); // a real climb, well short of stalling
-    state.step(0);
-    const f = forceCurve(eid);
-    const v = velocityCurve(eid);
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec, 1, 16, 12); // a real climb, well short of stalling
+    bd.bake();
+    const f = forceCurve(bd.trackEid);
+    const v = velocityCurve(bd.trackEid);
     if (!f || !v) throw new Error("no bake");
     const vLo = Math.min(...v.v.subarray(0, v.n));
     const vHi = Math.max(...v.v.subarray(0, v.n));
@@ -166,23 +152,27 @@ test("cartPose rides the baked track flat, anchor to end", () => {
 // (arclength held), the exact spatial-change-free case the spec cites.
 
 /** a fresh force section (extent DEFAULT_FORCE_LEN, flat 1g), on a track with the cart
- *  system, baked and with `cartState` seeded (held false). */
-function forceTrack(): { state: State; eid: number; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    state.addSystem(CartSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 32, 0);
-    state.step(0);
-    convertSection(state, sec); // → force, extent resets to the default
-    state.step(0);
-    return { state, eid, sec };
+ *  system, baked and with `cartState` seeded (held false). Returns the `Build` itself
+ *  too — the dependent tests keep authoring past this point (adding force points,
+ *  resizing the section). */
+function forceTrack(): {
+    bd: ReturnType<typeof build>;
+    state: State;
+    eid: number;
+    sec: number;
+} {
+    const bd = build();
+    bd.ecs.addSystem(CartSystem);
+    const sec = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec, 1, 32, 0);
+    bd.bake();
+    bd.convertSection(sec); // → force, extent resets to the default
+    bd.bake();
+    return { bd, state: bd.ecs, eid: bd.trackEid, sec };
 }
 
 test("a parked anchor holds its arclength while an edit re-times the ride", () => {
-    const { state, eid, sec } = forceTrack();
+    const { bd, state, eid, sec } = forceTrack();
     const st = cartState.get(eid);
     if (!st) throw new Error("cartState missing after step");
     st.held = true;
@@ -193,12 +183,14 @@ test("a parked anchor holds its arclength while an edit re-times the ride", () =
     expect(arc1).toBeCloseTo(20, 1);
 
     // an airtime crest re-times the traversal (velocity changes) at a fixed extent —
-    // the spec's keyframe-drag case: the parked place must not slide.
+    // the spec's keyframe-drag case: the parked place must not slide. (the section's reset
+    // seed already carries two flat continuation keyframes — this test doesn't need an
+    // exact keyframe set, just an airtime shape layered on top, so no clearing gotcha here.)
     const len = sections(state)[0].length;
-    createForcePoint(state, sec, len * 0.2, 1);
-    createForcePoint(state, sec, len * 0.5, 0);
-    createForcePoint(state, sec, len * 0.8, 1);
-    state.step(0);
+    bd.addForce(sec, len * 0.2, 1);
+    bd.addForce(sec, len * 0.5, 0);
+    bd.addForce(sec, len * 0.8, 1);
+    bd.bake();
 
     const arc2 = cartArc(eid);
     if (arc2 === null) throw new Error("cartArc null after re-time");
@@ -212,31 +204,29 @@ function t2Differs(a: number, b: number): boolean {
 }
 
 test("a parked offset clamps into the section when it shortens", () => {
-    const { state, eid, sec } = forceTrack();
-    setSectionLength(state, sec, 40);
-    state.step(0);
+    const { bd, state, eid, sec } = forceTrack();
+    bd.sectionLength(sec, 40);
+    bd.bake();
     const st = cartState.get(eid);
     if (!st) throw new Error("cartState missing");
     st.held = true;
     parkAtArc(state, eid, 30); // near the end of the 40m section
     expect(cartArc(eid)).toBeCloseTo(30, 1);
 
-    setSectionLength(state, sec, 20); // shorten under the parked offset
-    state.step(0);
+    bd.sectionLength(sec, 20); // shorten under the parked offset
+    bd.bake();
     expect(cartArc(eid)).toBeCloseTo(20, 1); // clamped to the new extent, not 30
 });
 
 test("a parked anchor re-resolves onto the chain when its section is deleted", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    state.addSystem(CartSystem);
-    const eid = createTrack(state);
-    const sec1 = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec1, 0, 0);
-    addNode(state, sec1, 32, 0);
-    state.step(0);
-    const sec2 = appendSection(state, SectionKind.Geo); // a second span past the first
-    state.step(0);
+    const bd = build();
+    bd.ecs.addSystem(CartSystem);
+    const sec1 = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec1, 1, 32, 0);
+    bd.bake();
+    const sec2 = bd.appendSection(SectionKind.Geo); // a second span past the first
+    bd.bake();
+    const { ecs: state, trackEid: eid } = bd;
 
     const st = cartState.get(eid);
     if (!st) throw new Error("cartState missing");
@@ -244,8 +234,8 @@ test("a parked anchor re-resolves onto the chain when its section is deleted", (
     parkAtArc(state, eid, 16); // mid the FIRST section
     expect(st.park?.section).toBe(sec1);
 
-    deleteSection(state, sec1); // the anchored section is gone
-    state.step(0);
+    bd.deleteSection(sec1); // the anchored section is gone
+    bd.bake();
     expect(st.park?.section).toBe(sec2); // re-resolved onto the survivor
     expect(cartArc(eid)).not.toBeNull();
     expect(cartArc(eid)).toBeCloseTo(16, 0); // ~same track place (sec2 now spans from 0)
@@ -257,17 +247,23 @@ test("a parked anchor re-resolves onto the chain when its section is deleted", (
 // `sectionSpans` already do; the mapping re-derived arc from raw chord distance and diverged
 // from the chart axis by the residual-gap length for every downstream park.
 test("trackMapping arclength follows the bake's ds convention across a frozen gap", () => {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const secA = createSection(state, 0, SectionKind.Force, 40);
-    createForcePoint(state, secA, 0, 1);
-    createForcePoint(state, secA, 20, 1.4);
-    createForcePoint(state, secA, 40, 1);
-    const secB = createSection(state, 1, SectionKind.Force, 30);
-    createForcePoint(state, secB, 0, 1);
-    createForcePoint(state, secB, 30, 1);
-    state.step(0);
+    const bd = build();
+    // `append-section` seeds a force section with its own two continuation keyframes
+    // (kex2d/AGENTS.md's Model (force authoring)); cleared before authoring the exact
+    // stations this fixture wants (`fiveKeyframeForceSection`'s pattern, acts.test.ts).
+    const secA = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, secA).map((r) => r.id));
+    bd.sectionLength(secA, 40);
+    bd.addForce(secA, 0, 1);
+    bd.addForce(secA, 20, 1.4);
+    bd.addForce(secA, 40, 1);
+    const secB = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, secB).map((r) => r.id));
+    bd.sectionLength(secB, 30);
+    bd.addForce(secB, 0, 1);
+    bd.addForce(secB, 30, 1);
+    bd.bake();
+    const { ecs: state, trackEid: eid } = bd;
 
     // freeze downstream at its current entry (what mode entry does), then move A's crest so
     // the live exit wanders off the frozen entry — the gap opens.
@@ -275,8 +271,8 @@ test("trackMapping arclength follows the bake's ds convention across a frozen ga
     if (!frozen) throw new Error("no downstream entry");
     setBakeFreeze({ section: secA, entry: { ...frozen } });
     const crest = sectionForces(state, secA)[1];
-    setForcePoint(state, crest.id, crest.s, crest.g + 0.5);
-    state.step(0);
+    bd.moveForce(crest.id, crest.s, crest.g + 0.5); // station unchanged, so the move clamp is a no-op
+    bd.bake();
 
     const out = bakeOut.get(eid);
     const s = samples.get(eid);
@@ -310,15 +306,12 @@ describe("playheadPosition — the keyboard Cut's playhead resolution (kex2d-str
     // a fresh geo track with room for an INTERIOR cut point (node 0 at the origin, node 1 at
     // (32,0) — the single segment's whole open interval is a valid `geoCutAt` landing).
     function geoTrack(): { state: State; eid: number; sec: number } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        state.addSystem(CartSystem);
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 32, 0);
-        state.step(0);
-        return { state, eid, sec };
+        const bd = build();
+        bd.ecs.addSystem(CartSystem);
+        const sec = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(sec, 1, 32, 0);
+        bd.bake();
+        return { state: bd.ecs, eid: bd.trackEid, sec };
     }
 
     // `controls.ts`'s own keyboard-cut resolution, replicated inline (the production seam:

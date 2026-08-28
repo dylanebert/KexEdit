@@ -3,6 +3,7 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
+import { applyOp } from "./commands";
 import { loadDocument, saveDocument } from "./doc";
 import { activeKind, editor, sandbox, select, selectionHook } from "./editor";
 import {
@@ -204,12 +205,24 @@ if (import.meta.env.DEV) {
         },
         // move a node in y — the "drag a node, the curve reacts" step, without pixels.
         // node 0's position is pinned at the local origin (the entry anchor never moves,
-        // even though its tangent is now editable), so nudging it is a no-op.
+        // even though its tangent is now editable), so nudging it is a no-op. Delegates to
+        // `commands.applyOp`'s `node-move` (kex2d-cli S6, AGENTS.md's Authoring API: a `__kex`
+        // write member delegates to the command layer where the mapping is 1:1 — this is,
+        // `node-move` refuses order 0 the same way and writes the same absolute position) —
+        // unused by the capture harness's own `Kex` mirror (`harness/flow.ts`), so recording an
+        // undo entry (which the old raw `Handle.pos.set` never did) changes no captured flow.
         nudge: (order: number, dy: number): void => {
             if (order === 0) return;
             const eid = handleAt(ecs, sec(), order);
-            if (eid !== null)
-                Handle.pos.set(eid, Handle.pos.x.get(eid), Handle.pos.y.get(eid) + dy);
+            if (eid === null) return;
+            const section = Handle.section.get(eid);
+            applyOp(ecs, history, {
+                type: "node-move",
+                section,
+                order,
+                x: Handle.pos.x.get(eid),
+                y: Handle.pos.y.get(eid) + dy,
+            });
         },
         // lay a gentle airtime hill (scaled to V0) so the flow starts from a shaped
         // track rather than the flat seed. node 0 stays at the local origin.

@@ -1,17 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { convertDomain, convertFailed, convertible, pickable } from "../src/domain";
 import { createHistory, redo, setSelectionHook, undo } from "../src/history";
 import { Domain } from "../src/section";
 import {
-    appendSection,
-    BakeSystem,
     bakeOut,
-    createForcePoint,
-    createSection,
-    createStrip,
-    createStripKeyframe,
-    createTrack,
     Handle,
     handleAt,
     sectionAt,
@@ -21,6 +14,7 @@ import {
     snapshotAll,
     trackDomain,
 } from "../src/track";
+import { build, type Build } from "./helpers/build";
 import { buildScenario, exitPos, roundTripDeviation } from "./domain.lab";
 
 // `domain.convertDomain` — the ruler-menu pick, as a track-global command. S6 ("Domain: arclength
@@ -41,30 +35,40 @@ import { buildScenario, exitPos, roundTripDeviation } from "./domain.lab";
 //      ever destroyed to begin with, unlike the old carry's respawned keyframes);
 //   5. degeneracies the old carry used to reject on (a stalled ride, a keyframe past the baked
 //      span) no longer have anything to reject — the flip doesn't read the table at all.
+//
+// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
+// than `track.ts`'s raw entity primitives.
 
+/** a force-only track at station `len`, with EXACTLY the keyframes in `pts` — `appendSection`
+ *  auto-seeds two continuation keyframes (kex2d/AGENTS.md's Model (force authoring)), cleared
+ *  before authoring `pts` so the section carries only what the caller asked for. Returns the
+ *  live `Build` too, so a caller needing further un-baked authoring (a stale-bake guard, an
+ *  extra strip) doesn't have to re-derive the fixture. */
 function forceTrack(
     len: number,
     pts: readonly [number, number][],
-): { state: State; eid: number; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Force, len);
-    for (const [s, g] of pts) createForcePoint(state, sec, s, g);
-    state.step(0);
-    return { state, eid, sec };
+): { state: State; eid: number; sec: number; bd: Build } {
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+    bd.sectionLength(sec, len);
+    for (const [s, g] of pts) bd.addForce(sec, s, g);
+    bd.bake();
+    return { state: bd.ecs, eid: bd.trackEid, sec, bd };
 }
 
 const kfs = (state: State, sec: number): number[] => sectionForces(state, sec).map((p) => p.s);
 
 describe("guards", () => {
     test("no live bake rejects: nothing written, nothing recorded", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 40);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 40, 1);
+        const bd = build();
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.sectionLength(sec, 40);
+        bd.addForce(sec, 0, 1);
+        bd.addForce(sec, 40, 1);
+        const state = bd.ecs;
         const h = createHistory();
 
         // never stepped — `bakeLive` is false, so there is nothing to display a Time reading
@@ -76,12 +80,12 @@ describe("guards", () => {
     });
 
     test("a bake that went stale under an edit rejects too", () => {
-        const { state, sec } = forceTrack(40, [
+        const { state, sec, bd } = forceTrack(40, [
             [0, 1],
             [40, 1],
         ]);
         const h = createHistory();
-        createForcePoint(state, sec, 20, 1.2); // authored past the last bake, not re-baked yet
+        bd.addForce(sec, 20, 1.2); // authored past the last bake, not re-baked yet
         expect(convertDomain(h, state, Domain.Time)).toBe(false);
         expect(trackDomain(state)).toBe(Domain.Distance);
         expect(h.undo.length).toBe(0);
@@ -98,28 +102,30 @@ describe("guards", () => {
     });
 
     test("convertible reads the same liveness gate a flip itself checks", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 40);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 40, 1);
+        const bd = build();
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.sectionLength(sec, 40);
+        bd.addForce(sec, 0, 1);
+        bd.addForce(sec, 40, 1);
+        const state = bd.ecs;
         expect(convertible(state)).toBe(false); // never baked
-        state.step(0);
+        bd.bake();
         expect(convertible(state)).toBe(true);
     });
 
     test("pickable: the active row is always enabled, the inactive row follows convertible", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 40);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 40, 1);
+        const bd = build();
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.sectionLength(sec, 40);
+        bd.addForce(sec, 0, 1);
+        bd.addForce(sec, 40, 1);
+        const state = bd.ecs;
         // unbaked: the active (Distance) row is still pickable (a no-op pick), the other isn't.
         expect(pickable(state, Domain.Distance)).toBe(true);
         expect(pickable(state, Domain.Time)).toBe(false);
-        state.step(0);
+        bd.bake();
         expect(pickable(state, Domain.Time)).toBe(true);
     });
 
@@ -151,9 +157,9 @@ describe("a flip is a pure view write (§ Validation a)", () => {
 
     for (const [len, pts] of [DiveAndRecover, MultiGPull]) {
         test(`leaves every authored component byte-identical, len=${len}`, () => {
-            const { state } = forceTrack(len, pts);
-            createStrip(state, len * 0.1, len * 0.3, 5);
-            state.step(0);
+            const { state, bd } = forceTrack(len, pts);
+            bd.addStrip(len * 0.1, len * 0.3, 5);
+            bd.bake();
             const before = snapshotAll(state);
             const h = createHistory();
             expect(convertDomain(h, state, Domain.Time)).toBe(true);
@@ -168,9 +174,9 @@ describe("a flip is a pure view write (§ Validation a)", () => {
         });
 
         test(`leaves the bake hash untouched, len=${len}`, () => {
-            const { state, eid } = forceTrack(len, pts);
-            createStrip(state, len * 0.1, len * 0.3, 5);
-            state.step(0);
+            const { state, eid, bd } = forceTrack(len, pts);
+            bd.addStrip(len * 0.1, len * 0.3, 5);
+            bd.bake();
             const distanceHash = bakeOut.get(eid)?.hash;
             const h = createHistory();
             convertDomain(h, state, Domain.Time);
@@ -226,14 +232,13 @@ describe("undo/redo", () => {
     });
 
     test("a live geo-node selection survives a flip and its undo — nothing was ever destroyed", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const geo = createSection(state, 0, SectionKind.Geo, 0);
-        const force = appendSection(state, SectionKind.Force);
-        createForcePoint(state, force, 0, 1);
-        createForcePoint(state, force, 24, 1);
-        state.step(0);
+        const bd = build();
+        const geo = bd.appendSection(SectionKind.Geo);
+        const force = bd.appendSection(SectionKind.Force);
+        bd.addForce(force, 0, 1);
+        bd.addForce(force, 24, 1);
+        bd.bake();
+        const state = bd.ecs;
 
         let restored: number | null = null;
         setSelectionHook({
@@ -279,15 +284,14 @@ describe("degeneracies the old carry used to reject on", () => {
     });
 
     test("a strip keyframe still flips, untouched", () => {
-        const { state } = forceTrack(40, [
+        const { state, bd } = forceTrack(40, [
             [0, 1],
             [40, 1],
         ]);
-        const stripId = createStrip(state, 5, 15, 8);
-        if (stripId === null) throw new Error("strip refused");
-        createStripKeyframe(state, stripId, 5, 6);
-        createStripKeyframe(state, stripId, 15, 10);
-        state.step(0);
+        const stripId = bd.addStrip(5, 15, 8);
+        bd.addStripKeyframe(stripId, 5, 6);
+        bd.addStripKeyframe(stripId, 15, 10);
+        bd.bake();
         const before = snapshotAll(state);
         const h = createHistory();
         expect(convertDomain(h, state, Domain.Time)).toBe(true);

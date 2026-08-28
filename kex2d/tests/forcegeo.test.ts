@@ -1,4 +1,4 @@
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { convertForce, MAX_LANDED_NODES, StaleConvert } from "../src/forcegeo";
 import { convertGeo } from "../src/geoforce";
@@ -8,13 +8,7 @@ import { createHistory, type History, splitSection, undo } from "../src/history"
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
-    addNode,
-    appendSection,
-    BakeSystem,
     bakeOut,
-    createForcePoint,
-    createSection,
-    createTrack,
     Handle,
     handleTangent,
     sectionAt,
@@ -28,12 +22,12 @@ import {
     setForcePoint,
     setTangent,
     setTrackDomain,
-    setStartSpeed,
     snapshotAll,
     Track,
     trackDomain,
     trackDs,
 } from "../src/track";
+import { build, type Build } from "./helpers/build";
 import { budgetFit, divergingFit, dyingFit, withFitWorker } from "./helpers/fitworker";
 import { drift, type Stations, stations } from "./helpers/stations";
 
@@ -43,18 +37,24 @@ import { drift, type Stations, stations } from "./helpers/stations";
 // document seam — atomicity, byte-identical undo, downstream continuity, and that a fit which
 // does not finish writes nothing at all.
 
-/** a track carrying one force hump (the shape a fit is invoked on), baked. */
-function humpForceTrack(): { state: State; eid: number; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Force, 40);
-    createForcePoint(state, sec, 0, 1);
-    createForcePoint(state, sec, 20, 1.4);
-    createForcePoint(state, sec, 40, 1);
-    setStartSpeed(state, 18);
-    state.step(0);
-    return { state, eid, sec };
+/** a track carrying one force hump (the shape a fit is invoked on), baked — authored through
+ *  the shared `Build` (kex2d-cli S6) rather than raw `track.ts` primitives. `appendSection`
+ *  seeds two continuation keyframes on a Force section (`AGENTS.md`'s Model (force
+ *  authoring)); `force-create` doesn't dedupe against them, so they're cleared before adding
+ *  the three exact stations (`acts.test.ts`'s `fiveKeyframeForceSection` docblock, same
+ *  gotcha). `bd` rides along on the return so the handful of callers that append a downstream
+ *  section (below) can keep authoring through the command layer too. */
+function humpForceTrack(): { state: State; eid: number; sec: number; bd: Build } {
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+    bd.sectionLength(sec, 40);
+    bd.addForce(sec, 0, 1);
+    bd.addForce(sec, 20, 1.4);
+    bd.addForce(sec, 40, 1);
+    bd.startSpeed(18);
+    bd.bake();
+    return { state: bd.ecs, eid: bd.trackEid, sec, bd };
 }
 
 /** a track carrying one hand-authored hill (the shape kex2d-provenance's symptom is named
@@ -62,18 +62,19 @@ function humpForceTrack(): { state: State; eid: number; sec: number } {
  *  the track-start one-shot (S3, its own point kind, never a `Strip` row) once — a section
  *  kind-flip never touches it, so it carries through every round trip below with no
  *  special-case code (`preserveEntrySpeedAcrossConvert`, the pre-S3 mechanism this needed,
- *  retired at S2). */
+ *  retired at S2). Authored through `Build` (kex2d-cli S6): node 0 is the fixed local-origin
+ *  anchor `appendSection` already seeds, node 1 is that same seed's default tip repositioned
+ *  (`moveNode`), and the tail two nodes are appended fresh. */
 function hillTrack(): { state: State; eid: number; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 10, 2);
-    addNode(state, sec, 20, 4);
-    addNode(state, sec, 30, 2);
-    setStartSpeed(state, 18);
-    state.step(0);
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec, 1, 10, 2);
+    bd.addNode(sec, 20, 4);
+    bd.addNode(sec, 30, 2);
+    bd.startSpeed(18);
+    bd.bake();
+    const state = bd.ecs;
+    const eid = bd.trackEid;
     return { state, eid, sec };
 }
 
@@ -129,8 +130,8 @@ describe("convertForce", () => {
         // a literal pick of the target's own last dense sample, so the miss should be at f32
         // round-off, not a solver residual — 1e-3 is the geoforce precedent's bound, loose by
         // comparison.
-        const { state, sec } = humpForceTrack();
-        const down = appendSection(state, SectionKind.Geo);
+        const { state, sec, bd } = humpForceTrack();
+        const down = bd.appendSection(SectionKind.Geo);
         state.step(0);
         const forceExit = { ...(sectionInfo.get(down)?.entry ?? { x: Number.NaN, y: Number.NaN }) };
 
@@ -247,21 +248,25 @@ describe("convertForce", () => {
         // position-authored in either domain. What must hold anyway is that the fit reads a
         // time-marched section correctly (`track.forceBake` threads the domain into `evalForce`)
         // and lands as one byte-identically undoable entry, with the store's seconds restored.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        setTrackDomain(state, Domain.Time);
+        const bd = build();
+        bd.domain(Domain.Time);
         // `humpForceTrack`'s profile in the time domain: the same hump over the duration a
-        // ~18 m/s cart takes to cover its 40 m.
-        const sec = createSection(state, 0, SectionKind.Force, 40 / 18);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 20 / 18, 1.4);
-        createForcePoint(state, sec, 40 / 18, 1);
-        const down = appendSection(state, SectionKind.Geo);
+        // ~18 m/s cart takes to cover its 40 m. `appendSection` seeds two continuation
+        // keyframes on a Force section, cleared before the three exact stations (same
+        // gotcha as `humpForceTrack`).
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.sectionLength(sec, 40 / 18);
+        bd.addForce(sec, 0, 1);
+        bd.addForce(sec, 20 / 18, 1.4);
+        bd.addForce(sec, 40 / 18, 1);
+        const down = bd.appendSection(SectionKind.Geo);
         // no entry speed authored (S5): the fit's own self-consistency claim below doesn't
         // depend on a specific launch speed, and `sec` gets converted, dropping any authored
         // one to the `V0` fallback anyway (`hillTrack`'s own doc).
-        state.step(0);
+        bd.bake();
+        const state = bd.ecs;
+        const eid = bd.trackEid;
         const before = docState(state, eid);
         const forceExit = { ...(sectionInfo.get(down)?.entry ?? { x: Number.NaN, y: Number.NaN }) };
         const h = createHistory();
@@ -306,8 +311,8 @@ describe("convertForce", () => {
     }, 60_000);
 
     test("a section that isn't force is refused", async () => {
-        const { state, sec } = humpForceTrack();
-        const geo = appendSection(state, SectionKind.Geo);
+        const { state, sec, bd } = humpForceTrack();
+        const geo = bd.appendSection(SectionKind.Geo);
         state.step(0);
         await expect(convertForce(createHistory(), state, geo)).rejects.toThrow(/not force/);
         await expect(convertForce(createHistory(), state, sec + 999)).rejects.toThrow(/no section/);
@@ -342,15 +347,14 @@ describe("provenance short-circuit", () => {
         // exactness claim isn't a property of one hand-picked shape. No entry speed authored
         // (S5): `hillTrack`'s own doc explains why (a multi-convert round trip on section 0
         // always drops it to the `V0` fallback) — this shape stays feasible there too.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 15, -3);
-        addNode(state, sec, 30, 0);
-        addNode(state, sec, 45, 4);
-        state.step(0);
+        const bd = build();
+        const sec = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(sec, 1, 15, -3);
+        bd.addNode(sec, 30, 0);
+        bd.addNode(sec, 45, 4);
+        bd.bake();
+        const state = bd.ecs;
+        const eid = bd.trackEid;
         const h = createHistory();
         const before = docState(state, eid);
 
@@ -378,24 +382,24 @@ describe("provenance short-circuit", () => {
     }, 60_000);
 
     test("an upstream edit that moves the section's entry falls through to the fit", async () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const upstream = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, upstream, 0, 0);
-        addNode(state, upstream, 15, 0);
-        const sec = createSection(state, 1, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        addNode(state, sec, 10, 2);
-        addNode(state, sec, 20, 4);
-        setStartSpeed(state, 18);
-        state.step(0);
+        const bd = build();
+        const upstream = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(upstream, 1, 15, 0);
+        const sec = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(sec, 1, 10, 2);
+        bd.addNode(sec, 20, 4);
+        bd.startSpeed(18);
+        bd.bake();
+        const state = bd.ecs;
         const h = createHistory();
 
         await convertGeo(h, state, sec);
         state.step(0);
 
         // move the upstream tip — the force section's entry (its stamp anchor) shifts under it.
+        // a raw component write, not `moveNode`: `node-move` also recomputes the node's
+        // auto-tangent (measured — its `theta` moved from 0 to ~0.76 rad on an identical
+        // position edit), which would change what geometry the fit reads, not just its entry.
         const handles = sectionHandles(state, upstream);
         Handle.pos.y.set(handles[handles.length - 1], 6);
         state.step(0);
@@ -430,20 +434,18 @@ describe("provenance short-circuit", () => {
         // is the upstream section's bake-dependent exit, so the same ds change genuinely
         // re-discretizes it and the entry-anchor check correctly falls through — no special-casing
         // needed, `entryExact` alone does the job.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const first = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, first, 0, 0);
-        addNode(state, first, 10, 2);
-        addNode(state, first, 20, 4);
-        const second = createSection(state, 1, SectionKind.Geo, 0);
-        addNode(state, second, 0, 0);
-        addNode(state, second, 8, -1);
-        addNode(state, second, 16, -2);
+        const bd = build();
+        const first = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(first, 1, 10, 2);
+        bd.addNode(first, 20, 4);
+        const second = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(second, 1, 8, -1);
+        bd.addNode(second, 16, -2);
         // no entry speed authored (S5): `first` gets converted below, dropping it to the `V0`
         // fallback (`hillTrack`'s own doc) — this shape stays feasible there.
-        state.step(0);
+        bd.bake();
+        const state = bd.ecs;
+        const eid = bd.trackEid;
         const h = createHistory();
 
         await convertGeo(h, state, first);
@@ -593,18 +595,19 @@ describe("document-layer fidelity", () => {
         // 0.5 g through that gradient, and the old reading was the corner-cutting shortfall
         // being divided out. 0.4 g keeps every property this case is here for (curved entry
         // frame, long extent, denser-than-target re-bake) on a shape the dialect does hold.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const hill = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, hill, 0, 0);
-        addNode(state, hill, 10, 2);
-        addNode(state, hill, 20, 4);
-        const sec = createSection(state, 1, SectionKind.Force, 90);
-        createForcePoint(state, sec, 0, 2.2);
-        createForcePoint(state, sec, 90, 0.4);
-        setStartSpeed(state, 18);
-        state.step(0);
+        const bd = build();
+        const hill = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(hill, 1, 10, 2);
+        bd.addNode(hill, 20, 4);
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.sectionLength(sec, 90);
+        bd.addForce(sec, 0, 2.2);
+        bd.addForce(sec, 90, 0.4);
+        bd.startSpeed(18);
+        bd.bake();
+        const state = bd.ecs;
+        const eid = bd.trackEid;
 
         const before = sectionStations(eid, sec);
         const result = await convertForce(createHistory(), state, sec);
@@ -630,18 +633,18 @@ describe("document-layer fidelity", () => {
         // `forceError` and the document's own re-baked `drift` — still have to AGREE (the same
         // consistency this test always pinned; only the outcome and its sign flipped with the
         // physics).
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const hill = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, hill, 0, 0);
-        addNode(state, hill, 10, 9);
-        addNode(state, hill, 20, 18);
-        const sec = createSection(state, 1, SectionKind.Force, 24);
-        createForcePoint(state, sec, 0, 2.2);
-        createForcePoint(state, sec, 24, -0.6);
-        setStartSpeed(state, 22);
-        state.step(0);
+        const bd = build();
+        const hill = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(hill, 1, 10, 9);
+        bd.addNode(hill, 20, 18);
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.addForce(sec, 0, 2.2);
+        bd.addForce(sec, 24, -0.6);
+        bd.startSpeed(22);
+        bd.bake();
+        const state = bd.ecs;
+        const eid = bd.trackEid;
 
         const before = sectionStations(eid, sec);
         const result = await convertForce(createHistory(), state, sec);
