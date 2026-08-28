@@ -866,10 +866,11 @@ function finishMarquee(ecs: State, canvas: HTMLCanvasElement): void {
     marquee.rect = null;
     if (!armed || !rect) {
         // a plain click on empty space clears EVERY kind (shift preserves) — the S2 dismissal law
-        // (kex2d-selection-laws): one empty-click reads the member set, never one kind's view. the
-        // old hand-paired sweep cleared node/force/section/start and left a co-selected strip,
-        // strip keyframe, or one-shot standing, so `deselectAll` — the same route the timeline's
-        // empty-click twins already take — is the one call every kind answers to.
+        // (editor-ui.md § Multi context UI): one empty-click reads the member set, never one
+        // kind's view. the old hand-paired sweep cleared node/force/section/start and left a
+        // co-selected strip, strip keyframe, or one-shot standing, so `deselectAll` — the same
+        // route the timeline's empty-click twins already take — is the one call every kind
+        // answers to.
         if (!shift) deselectAll();
         return;
     }
@@ -1025,26 +1026,27 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
     setTangent(ecs, section, order, editTangent(tan, side, ox, oy));
 }
 
-// ── the dismissal law (kex2d-selection-laws S2): a dismissal reads the unified member set, ───
-// never one kind's view. one press on a cross-kind set clears every member of every kind
+// ── the dismissal law (S2): a dismissal reads the unified member set, never one kind's view. ───
+// one press on a cross-kind set clears every member of every kind
 // (editor-ui.md § Multi context UI: "Esc clears the whole set as one dismissal rung, not N"):
 // the viewport's Escape rung and its empty-click / empty-marquee twins route through
 // `deselectAll` (editor.ts) — the same route the timeline's empty-click twins already take —
 // and the timeline's per-kind Escape rungs call the exported ladders below, which clear the
 // whole set the moment the selection spans kinds outside the rung's own. the within-kind peel
 // ladders are sub-mode nesting, not sibling kinds — strip keyframe under strip, handle under
-// force point, tangent edit under node — and survive unchanged: `crossKind` takes the rung's
-// own `domain` (the strip rung passes BOTH strip kinds), so nesting inside the domain still
-// peels one layer per press. the ladders live here, beside their viewport twins, because this
-// is the .ts seam `tests/controls.test.ts` arms them through — Timeline.svelte's keydown rungs
-// call these exact functions, so the armed path is the production path.
+// force point, tangent edit under node — and survive unchanged: `escapeCrossesKinds` takes the
+// rung's own `domain` (the strip rung passes BOTH strip kinds), so nesting inside the domain
+// still peels one layer per press. the ladders live here, beside their viewport twins, because
+// this is the .ts seam `tests/controls.test.ts` arms them through — Timeline.svelte's keydown
+// rungs call these exact functions, so the armed path is the production path.
 
 /** whether the member set holds any member of a kind outside `domain` — the cross-kind read
- *  behind the S2 dismissal law. `domain` names the rung's own kind(s): a strip keyframe under
- *  its owning strip is nesting, not a sibling kind, so the strip rung passes both strip kinds
- *  and a plain strip-keyframe click (which keeps the owning strip, `sweepOtherKinds`) is NOT
- *  cross-kind — its peel ladder runs. */
-export function crossKind(domain: readonly SelKind[]): boolean {
+ *  behind the S2 dismissal law. answers dismissal-rung kind-domain routing and is NOT the
+ *  set-level multi predicate (`multi()`, `editor.ts`), which S5 finishes. `domain` names the
+ *  rung's own kind(s): a strip keyframe under its owning strip is nesting, not a sibling kind,
+ *  so the strip rung passes both strip kinds and a plain strip-keyframe click (which keeps the
+ *  owning strip, `sweepOtherKinds`) is NOT cross-kind — its peel ladder runs. */
+export function escapeCrossesKinds(domain: readonly SelKind[]): boolean {
     const inside = (k: SelKind) => domain.includes(k);
     return (
         (!inside("node") && editor.nodes.ids.size > 0) ||
@@ -1057,18 +1059,19 @@ export function crossKind(domain: readonly SelKind[]): boolean {
     );
 }
 
-/** the timeline's oneShot Escape rung (Timeline.svelte's keydown handler calls this): a
- *  cross-kind set clears whole; within the kind, the singleton's own clear. */
+/** the timeline's oneShot Escape rung (Timeline.svelte's keydown handler calls this): the
+ *  singleton's own clear. every add-path (editor.ts) reassigns `_active` off "oneShot" on
+ *  add, so a oneShot-active set is single-kind by construction — no cross-kind clear to
+ *  take. */
 export function oneShotEscape(): void {
-    if (crossKind(["oneShot"])) deselectAll();
-    else selectOneShot(false);
+    selectOneShot(false);
 }
 
 /** the timeline's strip/stripKf Escape rung: a cross-kind set clears whole; within the velocity
  *  domain the peel ladder is unchanged — a selected strip keyframe peels first (keeping the
  *  strip), the next press clears the strip. */
 export function stripEscape(): void {
-    if (crossKind(["strip", "stripKf"])) deselectAll();
+    if (escapeCrossesKinds(["strip", "stripKf"])) deselectAll();
     else if (editor.stripKf !== null) selectStripKf(null);
     else selectStrip(null);
 }
@@ -1077,7 +1080,7 @@ export function stripEscape(): void {
  *  peel ladder is unchanged — deselect the handle first (back to the keyframe readout), then
  *  exit handle edit (keep the point selected), then clear the selection. */
 export function forceEscape(): void {
-    if (crossKind(["force"])) deselectAll();
+    if (escapeCrossesKinds(["force"])) deselectAll();
     else if (editor.forceHandle !== null) selectForceHandle(null);
     else if (editor.forceEdit !== null) exitForceEdit();
     else selectForce(null);
@@ -1593,11 +1596,12 @@ export function attachControls(
                 activeKind() === "start"
             ) {
                 e.preventDefault();
-                // S2 (kex2d-selection-laws): the clear reads the member set, never one kind's view —
-                // the old hand-paired sweep cleared node/section/start and left a co-selected
-                // strip, strip keyframe, or one-shot standing through a viewport Esc.
-                // `deselectAll` clears every member of every kind in the ONE press the rule
-                // demands ("Esc clears the whole set as one dismissal rung, not N").
+                // S2 (the dismissal law, editor-ui.md § Multi context UI): the clear reads the
+                // member set, never one kind's view — the old hand-paired sweep cleared
+                // node/section/start and left a co-selected strip, strip keyframe, or one-shot
+                // standing through a viewport Esc. `deselectAll` clears every member of every
+                // kind in the ONE press the rule demands ("Esc clears the whole set as one
+                // dismissal rung, not N").
                 deselectAll();
             }
             return;

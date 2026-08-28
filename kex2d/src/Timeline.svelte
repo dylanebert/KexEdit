@@ -4306,9 +4306,10 @@ onMount(() => {
         }
         // the track-start one-shot's own select/delete — Escape/Delete only, `editor.strip`'s
         // point-kind twin (S3): no drag, no keyframe sub-selection to peel first. the Escape rung
-        // is `controls.ts`'s `oneShotEscape` (S2, kex2d-selection-laws: one press on a cross-kind
-        // set clears the whole member set — the ladder lives beside its viewport twins where
-        // tests/controls.test.ts arms it).
+        // is `controls.ts`'s `oneShotEscape` (S2, the dismissal law, editor-ui.md § Multi context
+        // UI): a oneShot-active set is single-kind by construction (every add-path reassigns
+        // `_active` off "oneShot"), so the rung is the singleton's own clear — the ladder lives
+        // beside its viewport twins where tests/controls.test.ts arms it).
         if (activeKind() === "oneShot") {
             if (e.key === "Escape") {
                 e.preventDefault();
@@ -4324,8 +4325,9 @@ onMount(() => {
         // strip keyframe (a sub-selection layered on the strip) peels first: Delete removes
         // the keyframe (not the strip), and Escape clears the keyframe selection before
         // the strip's — the force keyframe's own Escape ladder. the Escape rung is
-        // `controls.ts`'s `stripEscape` (S2, kex2d-selection-laws: one press on a cross-kind set
-        // clears the whole member set; within the velocity domain the peel ladder is unchanged).
+        // `controls.ts`'s `stripEscape` (S2, the dismissal law, editor-ui.md § Multi context
+        // UI): one press on a cross-kind set clears the whole member set; within the velocity
+        // domain the peel ladder is unchanged).
         if (activeKind() === "strip" || activeKind() === "stripKf") {
             if (e.key === "Escape") {
                 e.preventDefault();
@@ -4429,12 +4431,13 @@ onMount(() => {
         // nobody's menu row and stay raw.
         if (activeKind() === "force") {
             if (e.key === "Escape") {
-                // S2 (kex2d-selection-laws): one press on a cross-kind set clears the whole
-                // member set; within the force kind the peel ladder is unchanged — deselect the
-                // handle first (back to the keyframe readout), then exit handle edit (keep the
-                // point selected), then clear the selection. the force menu takes Escape before
-                // this (capture). the ladder is `controls.ts`'s `forceEscape`, beside its
-                // viewport twins where tests/controls.test.ts arms it.
+                // S2 (the dismissal law, editor-ui.md § Multi context UI): one press on a
+                // cross-kind set clears the whole member set; within the force kind the peel
+                // ladder is unchanged — deselect the handle first (back to the keyframe
+                // readout), then exit handle edit (keep the point selected), then clear the
+                // selection. the force menu takes Escape before this (capture). the ladder is
+                // `controls.ts`'s `forceEscape`, beside its viewport twins where
+                // tests/controls.test.ts arms it.
                 e.preventDefault();
                 forceEscape();
             } else {

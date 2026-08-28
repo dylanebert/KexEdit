@@ -13,9 +13,9 @@ import {
     armDrag,
     attachControls,
     beyondDeadZone,
-    crossKind,
     DRAG_PX,
     dragFreeTo,
+    escapeCrossesKinds,
     forceEscape,
     formatDeg,
     formatLen,
@@ -1490,8 +1490,7 @@ describe("attachControls's pointerleave and remount teardown both clear the hove
     });
 });
 
-// ── the S2 dismissal law (kex2d-selection-laws): a dismissal reads the unified member set, ────
-// never one kind's view ────────────────────────────────────────────────────────────────────
+// ── the S2 dismissal law: a dismissal reads the unified member set, never one kind's view ──────
 // editor-ui.md § Multi context UI: "Esc clears the whole set as one dismissal rung, not N." one
 // press on a cross-kind selection clears every member of every kind, from EITHER surface — the
 // viewport's Escape rung and its empty-click / empty-marquee twins used to hand-pair partial
@@ -1775,12 +1774,12 @@ describe("S2 — one dismissal reads the member set: one press clears a cross-ki
 
     // ── the cross-kind read itself ──
 
-    test("crossKind reads the member set: the velocity pair is nesting, a force beside it a sibling", () => {
+    test("escapeCrossesKinds reads the member set: the velocity pair is nesting, a force beside it a sibling", () => {
         selectStrip(1);
         selectStripKf(10); // the containment pair — {strip, stripKf} by construction
-        expect(crossKind(["strip", "stripKf"])).toBe(false); // nesting, not cross-kind
-        expect(crossKind(["force"])).toBe(true); // both members sit outside the force domain
+        expect(escapeCrossesKinds(["strip", "stripKf"])).toBe(false); // nesting, not cross-kind
+        expect(escapeCrossesKinds(["force"])).toBe(true); // both members sit outside the force domain
         selectForce(3, "toggle"); // a genuine sibling joins
-        expect(crossKind(["strip", "stripKf"])).toBe(true);
+        expect(escapeCrossesKinds(["strip", "stripKf"])).toBe(true);
     });
 });
