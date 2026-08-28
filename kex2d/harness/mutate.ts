@@ -180,8 +180,9 @@ const PAIRS: Pair[] = [
     },
     {
         // S9 repair round (F7): `keyframeDown`'s shift-click toggle — ONE call, both kinds
-        // (`desc.select(pt.id, "toggle")`). Restricted to force alone, a strip shift-click no
-        // longer toggles. RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
+        // (`desc.select(pt.id, "toggle", owner)`). Restricted to force alone while retaining
+        // the owner argument, a strip shift-click no longer toggles without perturbing owner
+        // storage. RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
         // `e.shiftKey && kind === "force"` — the flow reds at the strip-keyframe
         // `stripKfSelIds().length toBe(0)` poll after the shift-click-toggle-back-out step
         // (exit 1, Playwright timeout). Restored byte-identical; green.
@@ -189,17 +190,18 @@ const PAIRS: Pair[] = [
         flow: "click, shift-click-toggle and empty-chart deselect read the same for a force keyframe and a strip keyframe (S9, F7)",
         mutations: [
             {
-                old: '    if (e.shiftKey) {\n        desc.select(pt.id, "toggle");\n        return;\n    }',
-                new: '    if (e.shiftKey && kind === "force") {\n        desc.select(pt.id, "toggle"); // MUTATED: strip shift-toggle disabled\n        return;\n    }',
+                old: '    if (e.shiftKey) {\n        desc.select(pt.id, "toggle", owner);\n        return;\n    }',
+                new: '    if (e.shiftKey && kind === "force") {\n        desc.select(pt.id, "toggle", owner); // MUTATED: strip shift-toggle disabled\n        return;\n    }',
             },
         ],
     },
     {
         // S9 repair round (F7): `keyframeDown`'s clicked-selected-vs-unselected rule — ONE
-        // path, both kinds (`desc.activate(pt.id)` vs `desc.select(pt.id)`). Restricted to
-        // force alone, a plain click on an already-selected strip keyframe now always
-        // COLLAPSES the set instead of promoting the clicked member active without disturbing
-        // it. RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
+        // path, both kinds (`desc.activate(pt.id)` vs `desc.select(pt.id, "replace", owner)`).
+        // Restricted to force alone while retaining the replace call's owner argument, a plain
+        // click on an already-selected strip keyframe now always COLLAPSES the set instead of
+        // promoting the clicked member active without disturbing it; owner storage is unchanged.
+        // RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
         // `desc.sel.ids.has(pt.id) && kind === "force"` — "strip keyframe multi-member drag"
         // reds at the "same delta (offset preserved)" assertion, because the drag-origin click
         // on the non-active member of a 2-member set collapses the set to one member instead
@@ -209,8 +211,8 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe multi-member drag",
         mutations: [
             {
-                old: "    if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);\n    else desc.select(pt.id);",
-                new: '    if (desc.sel.ids.has(pt.id) && kind === "force") desc.activate(pt.id); // MUTATED: strip activate-on-reselect disabled\n    else desc.select(pt.id);',
+                old: '    if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);\n    else desc.select(pt.id, "replace", owner);',
+                new: '    if (desc.sel.ids.has(pt.id) && kind === "force") desc.activate(pt.id); // MUTATED: strip activate-on-reselect disabled\n    else desc.select(pt.id, "replace", owner);',
             },
         ],
     },
@@ -225,12 +227,15 @@ const PAIRS: Pair[] = [
         ],
     },
     {
+        // S4: the nudge member read now resolves every selected keyframe through its owner via
+        // `stripKfMembers`, rather than filtering one active strip. Emptying only the resolved
+        // member list keeps the perturbation scoped to disabling the named nudge behavior.
         name: "nudge",
         flow: "strip keyframe arrow-nudge",
         mutations: [
             {
-                old: "                const members = stripKeyframes(ecs, editor.strip!).filter((k) =>\n                    editor.stripKfs.ids.has(k.id),\n                );",
-                new: "                const members: ReturnType<typeof stripKeyframes> = []; // MUTATED: nudge branch disabled",
+                old: "                const { members, anyLocked } = stripKfMembers(ecs, editor.stripKfs.ids);",
+                new: '                const { anyLocked } = stripKfMembers(ecs, editor.stripKfs.ids);\n                const members: ReturnType<typeof stripKfMembers>["members"] = []; // MUTATED: nudge branch disabled',
             },
         ],
     },
