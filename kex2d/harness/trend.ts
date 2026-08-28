@@ -37,6 +37,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { DECLARED_TITLES } from "./declared";
 
 /** the phases `capture.ts` stamps; `collect` is null on a selective run, which spends no --list pre-pass */
 export type Durations = {
@@ -389,6 +390,54 @@ function ms(v: number): string {
     return `${(v / 1000).toFixed(1)}s`;
 }
 
+/**
+ * The stale-entry removal summons: a declared entry absent from the recent unit-keyed population
+ * prints a summons. The summons is a printed message, NOT a tripwire — it does not cause exit 1,
+ * because a summons a person has not yet acted on should not block the gate. "Acknowledging" the
+ * summons means removing the entry from the declared set; once removed, reading the same fixture
+ * again returns no summons (the entry is no longer in the declared set).
+ *
+ * **Empty-population latch.** The summons is silent until the population can actually support the
+ * judgment — the v2 population is empty or tiny today (one baseline run), so firing for every
+ * entry would rebuild the very latch this spec exists to remove. The threshold is `WINDOW` recent
+ * versioned, non-dirty runs: if fewer than `WINDOW` such runs exist, the population is too small
+ * to say an entry has stopped recurring, and the summons stays silent. Deciding field:
+ * `version >= RECORD_VERSION && !dirty` — the same filter `summarize` uses for the roster
+ * population, so the summons and the roster read the same set.
+ *
+ * @example removalSummons(parseHistory(text), DECLARED_TITLES)
+ */
+export function removalSummons(
+    records: RunRecord[],
+    declaredTitles: ReadonlySet<string>,
+): string[] {
+    // The roster population: versioned, non-dirty, full default-knob runs. Deciding field:
+    // `version >= RECORD_VERSION && !dirty` — the same filter `summarize` uses for the roster.
+    const rosterRecords = records.filter(
+        (r) =>
+            !r.selective &&
+            r.defaultKnobs &&
+            r.version !== undefined &&
+            r.version >= RECORD_VERSION &&
+            !r.dirty,
+    );
+    // Silent until the population can support the judgment. Deciding field: `rosterRecords.length
+    // < WINDOW` — the v2 population is empty or tiny today, so firing for every entry would
+    // rebuild the very latch this spec exists to remove.
+    if (rosterRecords.length < WINDOW) return [];
+    const recent = rosterRecords.slice(-WINDOW);
+    const recentTitles = new Set<string>();
+    for (const r of recent)
+        for (const rawTitle of r.failedTitles) recentTitles.add(testTitle(rawTitle));
+    const summons: string[] = [];
+    for (const title of declaredTitles)
+        if (!recentTitles.has(title))
+            summons.push(
+                `removal: "${title}" has not reddened in the last ${WINDOW} versioned runs — consider removing it from the declared set`,
+            );
+    return summons;
+}
+
 if (import.meta.main) {
     // an explicit path is how this reader is witnessed without writing over the real history
     const path = process.argv[2] ?? HISTORY;
@@ -396,7 +445,8 @@ if (import.meta.main) {
         console.log(`no runs recorded yet (${path}) — run \`bun run capture\``);
         process.exit(0);
     }
-    const summary = summarize(parseHistory(readFileSync(path, "utf8"), path));
+    const records = parseHistory(readFileSync(path, "utf8"), path);
+    const summary = summarize(records);
     const span = summary.span === null ? "" : ` — ${summary.span.since} to ${summary.span.until}`;
     console.log(
         `full default-knob runs recorded: ${summary.population} (${summary.red} red)${span}`,
@@ -411,6 +461,9 @@ if (import.meta.main) {
         );
     for (const entry of summary.roster)
         console.log(`  roster: ${entry.title} — units ${entry.units.join(", ")}`);
+    // The stale-entry removal summons: printed, not a tripwire (does not cause exit 1).
+    const summons = removalSummons(records, DECLARED_TITLES);
+    for (const s of summons) console.log(`SUMMONS ${s}`);
     const breaches = tripwires(summary);
     for (const breach of breaches) console.error(`TRIPWIRE ${breach}`);
     process.exit(breaches.length === 0 ? 0 : 1);

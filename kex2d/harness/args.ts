@@ -2,6 +2,9 @@
 // dir may be wiped, and whether an env knob is a legal value. Split out of `capture.ts` (a script
 // that runs a capture on import) so both are unit-testable — `tests/harness.test.ts`.
 
+import { DECLARED_TITLES } from "./declared";
+import { testTitle } from "./trend";
+
 /** thrown by everything here; `capture.ts` turns it into the usage message + a nonzero exit */
 export class UsageError extends Error {}
 
@@ -209,6 +212,10 @@ export interface RunFacts {
     counts: RunCounts | null;
     /** the knobs that change WHAT the set is are all at their defaults (resolved in `capture.ts`) */
     defaultKnobs: boolean;
+    /** the titles of the flows that failed, parsed from the summary block (`failedTitles` above);
+     * empty on a green run. Deciding field for declared-set membership: the title (after `testTitle`
+     * extraction in `trend.ts`), not the raw `file:line` line — the roster's identity key. */
+    failedTitles: string[];
 }
 
 export interface Verdict {
@@ -221,23 +228,67 @@ export interface Verdict {
 /**
  * The gate decision: whether the run stands, and whether its shot set may be stamped `reference`.
  *
- * Fail-closed on every way a flow can be MISSING from the set: no exit at all, a bad exit, an
- * unaccounted-for tail, or a skip. A skipped test fails a full run like a truncation — it leaves
- * collected == accounted, so the suite-count oracle sees nothing while a flow silently never ran,
- * and no legitimate `test.skip` exists in this suite (display gating exits before Playwright ever
+ * A **boolean against the declared set** (`DECLARED_TITLES` in `declared.ts`): a full run whose
+ * reds are all declared exits 0 (stands) and stamps `reference: false`; a full run with any red
+ * outside the set exits 1 naming that title. The declared set is the committed punch list — never
+ * a tolerance floor — so the gate distinguishes a regression (a new red outside the set) from
+ * weather (a declared red with an owner). `reference: true` still requires a fully green run
+ * (the existing invariant): a declared red stands but is never the reference set, because the
+ * shot set it leaves is not the whole suite green. Deciding field for `reference`: `exitCode === 0
+ * && failedTitles.length === 0` — checked directly, not inferred from `failure === null` (which
+ * is null for a declared red).
+ *
+ * The declared-set check applies only to **full** (non-selective) runs. A selective run's red is
+ * an iteration signal (`mutate.ts`'s 12 pairings read coupling off exit codes), not a gate
+ * decision, so a selective run with a nonzero exit still fails with `"Playwright exited N"` —
+ * the same behavior `mutate.ts` and the `freshness` script have always seen. Deciding field:
+ * `selective` — a selective run never reaches the declared-set check.
+ *
+ * Fail-closed on every way a flow can be MISSING from the set: no exit at all, an unaccounted-for
+ * tail, or a skip. A skipped test fails a full run like a truncation — it leaves collected ==
+ * accounted, so the suite-count oracle sees nothing while a flow silently never ran, and no
+ * legitimate `test.skip` exists in this suite (display gating exits before Playwright ever
  * starts). `flaky` deliberately does not fail: that flow DID run and shot, and the config carries
- * `retries: 0` so nothing can report flaky today — `RUN.json` records the count either way, which is
- * where a retries change would show up. Only `reference` follows from the knobs: a run at
+ * `retries: 0` so nothing can report flaky today — `RUN.json` records the count either way, which
+ * is where a retries change would show up. Only `reference` follows from the knobs: a run at
  * non-default workers or settle is a sound run whose shots are simply not the reference set.
  */
 export function verdict(facts: RunFacts): Verdict {
     const failure = failureOf(facts);
-    return { reference: !facts.selective && facts.defaultKnobs && failure === null, failure };
+    // Deciding field: `exitCode === 0 && failedTitles.length === 0` — the existing invariant that
+    // `reference: true` requires a fully green run. A declared red has `failure === null` but is
+    // not fully green, so this check is separate from `failure === null`.
+    const fullyGreen = facts.exitCode === 0 && facts.failedTitles.length === 0;
+    return {
+        reference: !facts.selective && facts.defaultKnobs && failure === null && fullyGreen,
+        failure,
+    };
 }
 
-function failureOf({ selective, exitCode, collected, counts }: RunFacts): string | null {
+function failureOf({
+    selective,
+    exitCode,
+    collected,
+    counts,
+    failedTitles,
+}: RunFacts): string | null {
     if (exitCode === null) return "the spawn ceiling fired — Playwright never exited";
-    if (exitCode !== 0) return `Playwright exited ${exitCode}`;
+    if (exitCode !== 0) {
+        // A selective run's red is an iteration signal, not a gate decision — the declared set
+        // applies only to full runs. Deciding field: `selective` — a selective run never reaches
+        // the declared-set check, so `mutate.ts`'s coupling reads and the `freshness` script are
+        // unchanged.
+        if (selective) return `Playwright exited ${exitCode}`;
+        // A full red run: check every failed title against the declared set. Deciding field:
+        // `testTitle(t)` — the title, not the raw `file:line` line — the roster's identity key.
+        if (failedTitles.length === 0) return `Playwright exited ${exitCode}`;
+        const undeclared = failedTitles
+            .map(testTitle)
+            .filter((title) => !DECLARED_TITLES.has(title));
+        if (undeclared.length > 0) return `red outside the declared set: ${undeclared.join(", ")}`;
+        // All reds are declared — the run stands (exits 0), but `reference: false` (not fully green).
+        return null;
+    }
     if (selective) return null;
     if (counts === null || collected === null || counts.total !== collected)
         return `${counts?.total ?? "no"} of ${collected ?? "no"} collected tests accounted for — the run was truncated`;

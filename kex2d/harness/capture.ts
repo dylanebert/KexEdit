@@ -216,14 +216,15 @@ const counts = runCounts(run.stdout);
 // the recorded distribution reads it to decide whether this run's wall clock belongs in the same
 // population as the others (`trend.ts` — a non-default-knob run captured a different quantity).
 const defaultKnobs = workers === DEFAULT_WORKERS && !headed && shotMs === DEFAULT_SHOT_MS;
+const titles = failedTitles(run.stdout);
 const { reference, failure } = verdict({
     selective,
     exitCode: run.exitCode,
     collected,
     counts,
     defaultKnobs,
+    failedTitles: titles,
 });
-const titles = failedTitles(run.stdout);
 
 const durations = {
     collect: collectMs,
