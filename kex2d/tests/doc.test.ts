@@ -220,6 +220,15 @@ describe("f32 exactness: emit/parse/Math.fround round-trips identical bits", () 
         expect(Object.is(JSON.parse(JSON.stringify(-0)), -0)).toBe(false);
     });
 
+    test("numLit refuses a non-finite number rather than emitting invalid JSON", () => {
+        // plain JSON.stringify degrades NaN/Infinity to `null` (a different but still-valid
+        // failure); String(NaN)/String(Infinity) are "NaN"/"Infinity", neither parseable JSON —
+        // numLit throws instead of silently emitting unparseable text.
+        expect(() => numLit(Number.NaN)).toThrow(/non-finite/);
+        expect(() => numLit(Number.POSITIVE_INFINITY)).toThrow(/non-finite/);
+        expect(() => numLit(Number.NEGATIVE_INFINITY)).toThrow(/non-finite/);
+    });
+
     test("through the real ECS write path: f32 columns survive a save→load cycle bit-identical", () => {
         const rng = mulberry32(1234);
         const state = new State();
@@ -315,6 +324,67 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         const bad = JSON.stringify(doc);
 
         expect(() => loadDocument(state, bad)).toThrow(/nodes\[0\]\.theta/);
+        expect(snapshotAll(state)).toEqual(before);
+    });
+
+    // enum-shaped fields: an in-range integer isn't enough — an out-of-range value must refuse
+    // (not silently write a bogus enum member into the ECS, `Domain`/`Easing`/`TangentMode`
+    // each carry a small closed set of valid values, and every other field-parses-as-a-number
+    // check in this suite would let e.g. `"domain": 999` through unnoticed).
+
+    test("an out-of-range track.domain refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const beforeDomain = Track.domain.get(trackEntity(state) as number);
+        const doc = JSON.parse(saveDocument(state));
+        doc.track.domain = 999;
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/track\.domain/);
+        expect(snapshotAll(state)).toEqual(before);
+        expect(Track.domain.get(trackEntity(state) as number)).toBe(beforeDomain);
+    });
+
+    test("an out-of-range force point ease refuses and leaves the document untouched", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Force, 30);
+        createForcePoint(state, sec, 5, 1.5, Easing.Cubic);
+        createOneShot(state, 22);
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        doc.sections[0].points[0].ease = 999;
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.ease/);
+        expect(snapshotAll(state)).toEqual(before);
+        expect(trackEntity(state)).toBe(eid);
+    });
+
+    test("an out-of-range explicit tangent mode refuses and leaves the document untouched", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        spawnNode(state, sec, 1, 20, 4, 0, {
+            mode: TangentMode.Free,
+            inX: 5,
+            inY: 0,
+            outX: 5,
+            outY: 0,
+        });
+        createOneShot(state, 22);
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        doc.sections[0].nodes[1].tangent.mode = 0; // 0 (Auto) is never a valid EXPLICIT tangent
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/tangent\.mode/);
         expect(snapshotAll(state)).toEqual(before);
     });
 

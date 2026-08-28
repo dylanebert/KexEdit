@@ -24,11 +24,9 @@
 
 import type { State } from "@dylanebert/shallot";
 import { history } from "./history";
+import { Easing, type Offset } from "./profile";
 import { Domain } from "./section";
-import type { Offset } from "./profile";
-import type { Easing } from "./profile";
-import type { Tangent } from "./spline";
-import type { TangentMode } from "./spline";
+import { TangentMode, type Tangent } from "./spline";
 import {
     createTrack,
     DS_NOMINAL,
@@ -297,6 +295,10 @@ export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
  *  also confirmed) — so `JSON.stringify` alone breaks bit-identical f32 exactness for exactly
  *  this one value. `-0` is valid JSON (the grammar is `-? int frac? exp?`; `int` may be `0`). */
 export function numLit(n: number): string {
+    if (!Number.isFinite(n))
+        throw new Error(
+            `kex2d document: cannot serialize a non-finite number (${n}) — the live ECS holds invalid state (this is a bug, not a malformed-file case).`,
+        );
     return Object.is(n, -0) ? "-0" : String(n);
 }
 
@@ -413,10 +415,22 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
     return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** the document's `tangent` key is only ever present for an EXPLICIT tangent (`TangentMode`'s
+ *  1|2|3 — Aligned/Free/Mirror); the "no explicit tangent" sentinel (`Auto`, `TANGENT_AUTO` =
+ *  0, `track.ts`) is encoded as the key's ABSENCE, never as `{"mode":0,...}` — `toDocTangent`/
+ *  `toDocForceTangent` only ever call through with a defined `Tangent`/`ForceTangent`, which
+ *  `readTangent`/`readForceTangent` only return for a non-Auto mode. So a document carrying
+ *  `mode: 0` (or anything outside 1|2|3) inside a `tangent` object is malformed, not a valid
+ *  Auto encoding. */
+function isExplicitTangentMode(v: unknown): v is TangentMode {
+    return v === TangentMode.Aligned || v === TangentMode.Free || v === TangentMode.Mirror;
+}
+
 function validateGeoTangent(v: unknown, path: string): DocGeoTangent | undefined {
     if (v === undefined) return undefined;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
-    if (!isInt(v.mode)) fail(`${path}.mode is missing or not an integer`);
+    if (!isExplicitTangentMode(v.mode))
+        fail(`${path}.mode is missing or not a valid TangentMode (1, 2, or 3)`);
     for (const k of ["inX", "inY", "outX", "outY"] as const) {
         if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
     }
@@ -440,7 +454,8 @@ function validateOffset(v: unknown, path: string): DocOffset | undefined {
 function validateForceTangent(v: unknown, path: string): DocForceTangent | undefined {
     if (v === undefined) return undefined;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
-    if (!isInt(v.mode)) fail(`${path}.mode is missing or not an integer`);
+    if (!isExplicitTangentMode(v.mode))
+        fail(`${path}.mode is missing or not a valid TangentMode (1, 2, or 3)`);
     return {
         mode: v.mode as number,
         in: validateOffset(v.in, `${path}.in`),
@@ -469,7 +484,11 @@ function validatePoint(v: unknown, path: string): DocPoint {
     for (const k of ["s", "g"] as const) {
         if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
     }
-    if (!isInt(v.ease)) fail(`${path}.ease is missing or not an integer`);
+    if (
+        !isInt(v.ease) ||
+        (v.ease !== Easing.Linear && v.ease !== Easing.Cubic && v.ease !== Easing.Quintic)
+    )
+        fail(`${path}.ease is missing or not a valid Easing (0, 1, or 2)`);
     return {
         id: v.id as number,
         s: v.s as number,
@@ -534,9 +553,11 @@ function validateOneShot(v: unknown, i: number): DocOneShot {
 
 function validateTrack(v: unknown): DocTrack {
     if (!isPlainObject(v)) fail("track is missing or not an object");
-    for (const k of ["ds", "domain", "friction", "resistance"] as const) {
+    for (const k of ["ds", "friction", "resistance"] as const) {
         if (!isFiniteNumber(v[k])) fail(`track.${k} is missing or not a finite number`);
     }
+    if (!isInt(v.domain) || (v.domain !== Domain.Distance && v.domain !== Domain.Time))
+        fail("track.domain is missing or not a valid Domain (0 or 1)");
     return {
         ds: v.ds as number,
         domain: v.domain as number,
@@ -627,6 +648,10 @@ export function loadDocument(ecs: State, text: string): void {
 
     let trackEid = trackEntity(ecs);
     if (trackEid === null) trackEid = createTrack(ecs);
+    // `createTrack`'s fresh entity already zeroes `count`; a REUSED entity carries the previous
+    // document's bake-derived sample count until the next tick recomputes it — zero it here too,
+    // so there's no window where `Track.count` describes a document that's no longer live.
+    else Track.count.set(trackEid, 0);
 
     restoreAll(ecs, snap);
     Track.ds.set(trackEid, doc.track.ds);
