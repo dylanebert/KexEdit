@@ -1813,6 +1813,17 @@ function twoStripTrack(): {
     return { state, stripA, stripB, kfA, kfB };
 }
 
+/** the marquee's own hit data: every keyframe of both strips keyed to its OWNING strip — the
+ *  map `marqueeUp` builds off `StripKfPt.strip` (each render point carries the strip that owns
+ *  it), here read off the document the fixture just built, so the set writes below supply the
+ *  owner every non-null stripKf add now requires. */
+function stripKfOwners(state: State, stripA: number, stripB: number): Map<number, number> {
+    const owners = new Map<number, number>();
+    for (const k of stripKeyframes(state, stripA)) owners.set(k.id, stripA);
+    for (const k of stripKeyframes(state, stripB)) owners.set(k.id, stripB);
+    return owners;
+}
+
 describe("stripKfMembers — the strip-kf nudge read resolves per OWNING strip", () => {
     test("a two-strip marquee set: every member carries its OWNING strip's bounds, not the active strip's", () => {
         // RED-FIRST WITNESS: stubbed the resolution back to the single-active-strip shape
@@ -1830,6 +1841,7 @@ describe("stripKfMembers — the strip-kf nudge read resolves per OWNING strip",
                 ...stripKeyframes(state, stripB).map((k) => k.id),
             ],
             kfB,
+            stripKfOwners(state, stripA, stripB),
         );
         ensureStrip(stripA);
         ensureStrip(stripB);
@@ -1889,7 +1901,7 @@ describe("stripKfMembers — the strip-kf nudge read resolves per OWNING strip",
             ...stripKeyframes(state, stripA).map((k) => k.id),
             ...stripKeyframes(state, stripB).map((k) => k.id),
         ];
-        selectStripKfs(ids, null);
+        selectStripKfs(ids, null, stripKfOwners(state, stripA, stripB));
         expect(stripKfMembers(state, ids).anyLocked).toBe(false); // no session: editable
         expect(enterPinMode(state, force)).toBe(true); // pin the FORCE section
         const { members, anyLocked } = stripKfMembers(state, ids);

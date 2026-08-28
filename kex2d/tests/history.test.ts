@@ -1741,7 +1741,7 @@ test("undo/redo across a mixed force+strip+stripKf selection restores every memb
     // build a mixed set: force + strip + stripKf (shift-click extends across kinds)
     selectForce(forceId);
     ensureStrip(stripId);
-    selectStripKf(kfId, "toggle");
+    selectStripKf(kfId, "toggle", stripId);
     expect(editor.force).toBe(forceId);
     expect(editor.strip).toBe(stripId);
     expect(editor.stripKf).toBe(kfId);

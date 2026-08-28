@@ -341,10 +341,10 @@ describe("strip-keyframe multi-select", () => {
         selectStripKf(10, "replace", 1);
         expect([...editor.stripKfs.ids]).toEqual([10]);
         expect(editor.stripKf).toBe(10);
-        selectStripKf(20, "toggle");
+        selectStripKf(20, "toggle", 1); // keyframe 20 rides strip 1 too
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
         expect(editor.stripKf).toBe(20);
-        selectStripKf(10, "toggle"); // remove the non-active member
+        selectStripKf(10, "toggle", 1); // remove the non-active member
         expect([...editor.stripKfs.ids]).toEqual([20]);
         expect(editor.stripKf).toBe(20); // untouched — the removed member wasn't active
     });
@@ -352,8 +352,8 @@ describe("strip-keyframe multi-select", () => {
     test("toggling out the active promotes the most-recently-added survivor", () => {
         selectStrip(1);
         selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle");
-        selectStripKf(20, "toggle"); // remove the active member
+        selectStripKf(20, "toggle", 1);
+        selectStripKf(20, "toggle", 1); // remove the active member
         expect([...editor.stripKfs.ids]).toEqual([10]);
         expect(editor.stripKf).toBe(10);
     });
@@ -361,7 +361,7 @@ describe("strip-keyframe multi-select", () => {
     test("activateStripKf promotes a member active without disturbing the set; a non-member is a no-op", () => {
         selectStrip(1);
         selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle"); // {10, 20}, active 20
+        selectStripKf(20, "toggle", 1); // {10, 20}, active 20
         activateStripKf(10);
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]); // set unchanged
         expect(editor.stripKf).toBe(10); // promoted
@@ -372,7 +372,7 @@ describe("strip-keyframe multi-select", () => {
     test("deselecting the owning strip clears the keyframe set (the sub-selection's own invariant)", () => {
         selectStrip(1);
         selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle");
+        selectStripKf(20, "toggle", 1);
         selectStrip(null);
         expect(editor.stripKfs.ids.size).toBe(0);
         expect(editor.stripKf).toBeNull();
@@ -381,7 +381,7 @@ describe("strip-keyframe multi-select", () => {
     test("selecting a different top-level kind sweeps the strip-keyframe set (the same exclusivity every other sub-selection observes)", () => {
         selectStrip(1);
         selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle");
+        selectStripKf(20, "toggle", 1);
         selectSection(5);
         expect(editor.stripKfs.ids.size).toBe(0);
     });
@@ -414,7 +414,14 @@ describe("strip-keyframe multi-select", () => {
     test("selectStripKfs (the marquee multi-write) does NOT sweep the force set (S2: extends)", () => {
         selectForce(99);
         ensureStrip(1);
-        selectStripKfs([10, 20], 20);
+        selectStripKfs(
+            [10, 20],
+            20,
+            new Map([
+                [10, 1],
+                [20, 1],
+            ]),
+        );
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
         expect(editor.stripKf).toBe(20);
         expect(editor.force).toBe(99); // NOT swept — co-selection
@@ -433,7 +440,7 @@ describe("S2: cross-kind co-selection — shift-click extends across kinds", () 
     test("shift-clicking a force keyframe then a strip keyframe leaves both selected", () => {
         selectForce(5);
         ensureStrip(1); // shift-click adds the owning strip without clearing others
-        selectStripKf(10, "toggle");
+        selectStripKf(10, "toggle", 1);
         // both kinds co-exist in the unified set — the state S9 proved unreachable
         expect([...editor.forces.ids]).toEqual([5]);
         expect(editor.force).toBe(5);
@@ -451,7 +458,7 @@ describe("S2: cross-kind co-selection — shift-click extends across kinds", () 
     test("shift-clicking a strip keyframe with a force keyframe selected keeps both", () => {
         selectForce(5);
         ensureStrip(1);
-        selectStripKf(10, "toggle");
+        selectStripKf(10, "toggle", 1);
         // toggle the force out, then back in — the strip keyframe survives
         selectForce(5, "toggle");
         expect(editor.forces.ids.size).toBe(0);
@@ -466,7 +473,7 @@ describe("S2: cross-kind co-selection — marquee extends across kinds", () => {
     test("selectForces does NOT clear the strip-keyframe set (marquee extends, not replaces)", () => {
         ensureStrip(1);
         selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle");
+        selectStripKf(20, "toggle", 1);
         selectForces([5, 6], 6);
         expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
@@ -476,7 +483,14 @@ describe("S2: cross-kind co-selection — marquee extends across kinds", () => {
         selectForce(5);
         selectForce(6, "toggle");
         ensureStrip(1);
-        selectStripKfs([10, 20], 20);
+        selectStripKfs(
+            [10, 20],
+            20,
+            new Map([
+                [10, 1],
+                [20, 1],
+            ]),
+        );
         expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
         expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
     });
@@ -502,7 +516,7 @@ describe("S2: plain click stays replace-select (not widened)", () => {
         // build force+strip+stripKf through production entry points (shift-click extends)
         selectForce(5);
         ensureStrip(1);
-        selectStripKf(10, "toggle");
+        selectStripKf(10, "toggle", 1);
         // the mixed set is live: force + strip + stripKf co-exist
         expect(editor.force).toBe(5);
         expect(editor.strip).toBe(1);
@@ -608,6 +622,51 @@ describe("the shift-click and marquee add paths record the containment flag", ()
     });
 });
 
+// ── the state invariant the add APIs now carry: no stripKf member without its owner ──
+// `selectStripKf`'s toggle overload and `selectStripKfs`'s owners map both kept the owner
+// OPTIONAL until this repair — an owner-less call produced an owner-null member, the very
+// hole the stored flag exists to close (S5's ownership read would read a selected keyframe
+// as "not owned"). the overloads now REQUIRE the owner on every non-null add (the null clear
+// form stays distinct and takes none), and these arms witness the runtime backstop behind
+// the type: the formerly owner-less forms are cast back into reach — the `kfDesc` descriptor's
+// shared select/selectMany field types keep the param optional for the force kind, so the
+// type system alone cannot catch a future owner-less caller at that seam; the runtime
+// guards are the defense, and each must select NOTHING.
+describe("owner-less add forms fail closed — no stripKf member without its owner", () => {
+    test("an owner-less toggle call selects nothing (no member, no active write)", () => {
+        // the production selection first, so the refusal is observable against a live set
+        selectStrip(1);
+        selectStripKf(10, "replace", 1);
+        (selectStripKf as (id: number, mode: SelectMode, owner?: number) => void)(20, "toggle");
+        expect([...editor.stripKfs.ids]).toEqual([10]); // no owner-less member joined the set
+        expect(editor.stripKf).toBe(10); // the active write never ran either
+        expect(stripKfOwner(20)).toBeNull();
+    });
+
+    test("an owner-less set-write call selects nothing; a partial map adds only what it covers", () => {
+        selectStrip(1);
+        selectStripKf(10, "replace", 1);
+        // the formerly legal two-parameter form — the owners map omitted entirely
+        (
+            selectStripKfs as (
+                ids: number[],
+                active: number | null,
+                owners?: ReadonlyMap<number, number>,
+            ) => void
+        )([20, 30], 30);
+        expect([...editor.stripKfs.ids]).toEqual([]); // NOTHING was added
+        expect(editor.stripKf).toBeNull(); // the active fell back to the surviving strip
+        expect(stripKfOwner(20)).toBeNull();
+        expect(stripKfOwner(30)).toBeNull();
+        // a partial map: the covered id is added, the uncovered id is skipped — per id, never
+        // an owner-null member
+        selectStripKfs([20, 30], 30, new Map([[30, 1]]));
+        expect([...editor.stripKfs.ids]).toEqual([30]);
+        expect(stripKfOwner(20)).toBeNull();
+        expect(stripKfOwner(30)).toBe(1);
+    });
+});
+
 // ── S2 repair: the three criteria the adversarial pass added ──
 // each a demonstrated instance rather than a class claim. (a) the double-fire observable stays
 // pinned: one Delete on a node+force mixed selection produces exactly one edit. (b) one undo
@@ -648,7 +707,7 @@ describe("S2 repair: mixed-set snapshot/restore (criterion b)", () => {
         // build a mixed set: force + strip + stripKf
         selectForce(5);
         ensureStrip(1);
-        selectStripKf(10, "toggle");
+        selectStripKf(10, "toggle", 1);
         // snapshot captures every member — the old switch-on-active-kind shape dropped the passive kind
         const snap = selectionHook.snapshot(null as never); // ecs not needed for non-node kinds
         expect(snap).not.toBeNull();
@@ -1041,7 +1100,7 @@ describe("multi — the set-level multi predicate", () => {
         // runs `ensureStrip` (`Timeline.svelte` `keyframeDown`) and so lands three members: this
         // arm isolates the cross-kind pair with no containment member in it.
         selectForce(5);
-        selectStripKf(10, "toggle");
+        selectStripKf(10, "toggle", 1);
         expect(multi()).toBe(true);
     });
 

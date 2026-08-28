@@ -1640,9 +1640,11 @@ let lastFdownId = -1;
 interface KfDesc {
     sel: Selection;
     pts: (ForcePt | StripKfPt)[];
-    // the strip kind's replace form needs the owning strip as its containment input — the
-    // third param carries it (`StripKfPt.strip`, the caller's own hit data, never an ECS
-    // read); the force kind ignores it.
+    // the strip kind's BOTH non-null forms require the owning strip as their containment
+    // input — the third param carries it (`StripKfPt.strip`, the caller's own hit data,
+    // never an ECS read); the force kind ignores it. the field type keeps it optional (the
+    // force kind has none to carry), so the strip kind's closure below is the fail-closed
+    // seam that refuses an owner-less non-null call.
     select: (id: number | null, mode?: SelectMode, owner?: number) => void;
     // the strip kind's marquee write takes each keyframe's owning strip — keyed by keyframe
     // id, off the strip-kf render points (`StripKfPt.strip`, the caller's own hit data,
@@ -1690,18 +1692,27 @@ function kfDesc(kind: KfKind): KfDesc {
         // the strip that owns the clicked keyframe: a co-selected non-owning strip is a
         // sibling and drops. the toggle form records the same owner as the added member's
         // containment flag, so `stripKfOwner` reads true for a shift-clicked keyframe too.
-        // the descriptor's shared field type leaves owner optional for both kinds, so an
-        // owner-less strip replace type-checks; the handler deliberately fails closed. a stale
-        // id off a lagging frame still selects here and is peeled by the strip-keyframe
-        // dismissal $effect above (`stripKfPts` no longer contains it) — the same self-healing
-        // every other stale member rides, and the cost of the click no longer depending on a
-        // read completing under load.
+        // `selectStripKf`'s overloads now require that owner on BOTH non-null forms (the
+        // stripKf-never-without-owner state invariant); the descriptor's shared field type
+        // still leaves it optional (the force kind has none to carry), so an owner-less strip
+        // call type-checks HERE — this closure is the fail-closed seam, refusing it rather
+        // than forwarding it. a stale id off a lagging frame still selects here and is peeled
+        // by the strip-keyframe dismissal $effect above (`stripKfPts` no longer contains it)
+        // — the same self-healing every other stale member rides, and the cost of the click
+        // no longer depending on a read completing under load.
         select: (id, mode, owner) => {
             if (id === null) selectStripKf(null);
-            else if (mode === "toggle") selectStripKf(id, "toggle", owner);
-            else if (owner !== undefined) selectStripKf(id, "replace", owner);
+            else if (owner !== undefined) {
+                if (mode === "toggle") selectStripKf(id, "toggle", owner);
+                else selectStripKf(id, "replace", owner); // mode's default is "replace"
+            }
         },
-        selectMany: selectStripKfs,
+        // the set write's owner map is now REQUIRED on `selectStripKfs` (the same invariant:
+        // no stripKf member without its owner), but the shared field type keeps it optional for
+        // the force kind, and strictFunctionTypes refuses the required→optional drop — so this
+        // wrapper carries the seam instead. an owner-less call through it lands on an EMPTY map,
+        // which adds nothing (fail closed per id), so the invariant holds here too.
+        selectMany: (ids, active, owners) => selectStripKfs(ids, active, owners ?? new Map()),
         activate: activateStripKf,
         val: (p) => (p as StripKfPt).v,
         valToY: vOf,
