@@ -1690,8 +1690,8 @@ function kfDesc(kind: KfKind): KfDesc {
         // the strip that owns the clicked keyframe: a co-selected non-owning strip is a
         // sibling and drops. the toggle form records the same owner as the added member's
         // containment flag, so `stripKfOwner` reads true for a shift-clicked keyframe too.
-        // no owner param on the replace form = an untyped caller, and the fail-closed nothing
-        // is kept (the replace overload makes it unreachable from the typed calls). a stale
+        // the descriptor's shared field type leaves owner optional for both kinds, so an
+        // owner-less strip replace type-checks; the handler deliberately fails closed. a stale
         // id off a lagging frame still selects here and is peeled by the strip-keyframe
         // dismissal $effect above (`stripKfPts` no longer contains it) — the same self-healing
         // every other stale member rides, and the cost of the click no longer depending on a

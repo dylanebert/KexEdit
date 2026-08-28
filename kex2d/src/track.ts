@@ -844,11 +844,10 @@ export function stripKeyframeAt(ecs: State, id: number): number | null {
 
 /** the stable id of the strip that owns a strip keyframe — the per-member containment read
  *  ("which strip owns this keyframe"), or null when the keyframe doesn't resolve (a stale id
- *  across a delete). the Delete path's ancestor-keep answers "is this strip the owner"
- *  through this read's set form (`owningStrips`); the replace-select containment sweep no
- *  longer does — the click supplies the owner from its own hit data and the sweep stores it
- *  on the member (the stored containment flag, `Member`'s `owner` in editor.ts), so that
- *  path reads no ECS at all. */
+ *  across a delete). the Delete path answers ancestor containment through this read's set
+ *  form (`owningStrips`), while `controls.ts`'s nudge member resolver reads the same
+ *  `StripKeyframe.strip` relation inline. the replace-select sweep instead stores the owner
+ *  supplied by the click's hit data on `Member` in editor.ts. */
 export function owningStrip(ecs: State, kfId: number): number | null {
     const kfEid = stripKeyframeAt(ecs, kfId);
     return kfEid === null ? null : StripKeyframe.strip.get(kfEid);

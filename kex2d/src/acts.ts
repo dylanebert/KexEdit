@@ -278,9 +278,8 @@ export function mixedSetDelete(ecs: State): boolean {
     //   band is a sibling, not an ancestor — it deletes. The sweep law's ancestor-keep
     //   applies to Delete the same way it applies to replace-select.
     if (editor.strips.ids.size > 0) {
-        // resolve the set of strip ids that own a selected strip keyframe — the shared
-        // containment read (`owningStrips`/track.ts), the same read the replace-select sweep
-        // answers per member, so Delete and replace-select agree on what an ancestor is
+        // resolve the set of strip ids that own a selected strip keyframe through
+        // `owningStrips`/track.ts, so Delete can distinguish ancestors from siblings
         const owners = owningStrips(ecs, editor.stripKfs.ids);
         const deletable = [...editor.strips.ids].filter((id) => !owners.has(id));
         if (deletable.length > 0) {

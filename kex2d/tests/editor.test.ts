@@ -540,25 +540,18 @@ describe("S2: plain click stays replace-select (not widened)", () => {
     });
 });
 
-// ── the plain-click replace form reads no ECS ──
-// the pre-repair facet resolved the owner per click through `owningStrip` →
-// `stripKeyframeAt` (track.ts) and selected NOTHING when that read hadn't caught up — a
-// load-dependent no-op measured red twice consecutively at one full-file capture flow
-// ("popup label scrub reaches the strip keyframe and one-shot popovers"). the repair
-// removes the read from the path: the click's own hit data supplies the owner, and the
-// replace sweep stores it on the member — the stored containment flag, read back through
-// `stripKfOwner` with no store involvement at all.
+// ── the plain-click replace form stores containment ──
+// the production replace sequence stores the supplied owner on the strip-keyframe member,
+// so the owning strip survives while a non-owner does not. this arm asserts both sides of
+// that stored-flag property through `stripKfOwner` and the resulting strip selection.
 // RED-FIRST WITNESS: stubbed the sweep's flag write (`memberAdd("stripKf", id)` without
 // the owner) — the whole suite red at this arm alone, `stripKfOwner(21)` read null:
 // 1892 pass / 1 fail. Restored the write; 1893 pass / 0 fail.
-describe("the plain-click replace form reads no ECS", () => {
-    test("a plain click selects its keyframe with the owning strip absent from the ECS", () => {
+describe("the plain-click replace form stores containment", () => {
+    test("a plain click stores its keyframe's owning strip", () => {
         // the production plain-click sequence through the production selectors — the band
         // `selectStrip` `keyframeDown` performs, then the replace select — never
-        // `ensureStrip` or the toggle helpers. this file touches no ECS at all: strip 7 and
-        // keyframe 21 name nothing in any store, which is exactly the not-caught-up shape
-        // that red the capture flow — and the selection survives it anyway, because nothing
-        // on the path consults a store.
+        // `ensureStrip` or the toggle helpers.
         selectStrip(7);
         selectStripKf(21, "replace", 7);
         expect(editor.stripKf).toBe(21); // the keyframe is still selected
