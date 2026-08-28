@@ -1428,6 +1428,13 @@ naming→behavior bridge against the production factory records, the `acts.ts` h
 driven on a real ECS track, guards included; it tests the record's entry, not the `history` op
 underneath (that's `history.test.ts`/`ops.test.ts`).
 
+`tests/purity.test.ts` — the write-site census: walks every `src/` module for direct
+`<Component>.field.set(` sites and asserts each is gesture-bracketed (own function, or one
+same-file call level up) or inside {`track.ts`, `history.ts`, `doc.ts` load/rollback}. The
+signature is direct `.set(` only — a writer routing through `track.ts`'s own helpers (`main.ts`
+`seedHill`) is invisible to it, so the arm pins what it can see and `AGENTS.md` keeps the prose
+contract.
+
 ## Labs
 
 Run explicitly, never part of `bun test` — the kernel-atom / future-tier reference:

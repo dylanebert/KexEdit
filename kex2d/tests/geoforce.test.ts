@@ -36,7 +36,7 @@ import { divergingPool, withWorker } from "./helpers/pool";
 // finish writes nothing at all.
 
 /** a track carrying one geo hump (the shape a conversion is invoked on), baked — authored
- *  through the shared `Build` (kex2d-cli S6). `bd` rides along on the return for the two
+ *  through the shared `Build` (`tests/helpers/build.ts`). `bd` rides along on the return for the two
  *  callers below that append a downstream section through the command layer too. */
 function humpTrack(): { state: State; eid: number; sec: number; bd: Build } {
     const bd = build();
@@ -55,7 +55,7 @@ function humpTrack(): { state: State; eid: number; sec: number; bd: Build } {
  *  `setStartSpeed` authors the track-start one-shot (S3, its own point kind) once, here; a
  *  section kind-flip never touches it, so it carries through the round trip below with no
  *  special-case code (`preserveEntrySpeedAcrossConvert`, the pre-S3 mechanism this needed,
- *  retired at S2). Authored through `Build` (kex2d-cli S6): `appendSection` seeds two
+ *  retired at S2). Authored through `Build` (`tests/helpers/build.ts`): `appendSection` seeds two
  *  continuation keyframes on a Force section, cleared before the three exact ones
  *  (`acts.test.ts`'s `fiveKeyframeForceSection` gotcha). The easing tag has a command-layer
  *  op (`force-ease`, reached through `Build`'s generic `.op()` escape hatch — no dedicated

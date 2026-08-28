@@ -35,7 +35,7 @@ import { build } from "./helpers/build";
 // layer (a record entry does the thing and carries its own guard), never re-testing the underlying
 // ops (`removeSection`, `trimTrack`, …) those files already pin.
 //
-// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// the shared authoring builder: every fixture below is authored through the shared `Build` helper
 // (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
 // than `track.ts`'s raw entity primitives — this file tests the ACT layer, which consumes an
 // authored track, not the authoring layer itself.

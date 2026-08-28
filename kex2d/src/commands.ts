@@ -1,7 +1,8 @@
-/** the headless command layer (spec `kex2d-cli` S2): a typed op vocabulary dispatching to the
+/** the headless command layer: a typed op vocabulary dispatching to the
  *  SAME `track.ts` setters the UI drives, inside the SAME `history` gestures (`loadDocument` →
- *  ops → `saveDocument`) — the one dispatch layer the CLI (S3) and the migrated test suite (S6)
- *  will share. `applyOp` never opens a second write path: every branch below either calls a
+ *  ops → `saveDocument`) — the one dispatch layer the CLI (`cli.ts`) and the test suite's shared
+ *  authoring builder (`tests/helpers/build.ts`) both drive. `applyOp` never opens a second write
+ *  path: every branch below either calls a
  *  `history.ts` wrapper verbatim or reproduces one gesture the UI itself performs
  *  (`begin*`/write/`commit`), documented per op against the exact call site it mirrors.
  *
@@ -279,7 +280,7 @@ export type Op =
  *  side is a diff a reviewer can compare directly. */
 export function applyOp(ecs: State, h: History, op: Op): OpResult {
     switch (op.type) {
-        // `Timeline.svelte:2671`: `selectSection(appendSection(history, ecs, kind))`.
+        // `Timeline.svelte`'s `toggleAppend`: `selectSection(appendSection(history, ecs, kind))`.
         case "append-section": {
             const id = appendSectionH(h, ecs, op.kind);
             return ok(id);
@@ -325,12 +326,14 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok(eid);
         }
 
-        // `controls.ts:1184`/`1218`/`1534`/`1560`: `beginMove(ecs, section)` opens the gesture,
-        // the live pointer-move writes `Handle.pos.set` directly, and only the TIP re-heads
-        // (`controls.ts:1538`: `Handle.pos.set(...); reheadOnDrag(ecs, eid);` — the interior
-        // branch at `:1561` never calls it). node 0's position is pinned at the section's local
-        // origin (`main.ts:209`'s `nudge`'s own no-op comment) — refused here rather than let a
-        // silent write through.
+        // `controls.ts`'s `startManip` opens the gesture (`beginMove(ecs, section)`), and its
+        // pointer-move twin `dragManipTo` writes through `dragTo`, which writes `Handle.pos.set`
+        // directly and re-heads only the TIP — `dragTo`'s own
+        // `` `Handle.pos.set(...); reheadOnDrag(ecs, eid);` `` (`controls.ts`'s `onKeyDown`
+        // keyboard-nudge path is the same shape: its tip branch calls it too, its interior branch
+        // never does). node 0's position is pinned at the section's local origin (`main.ts`'s
+        // `__kex.nudge`'s own no-op comment) — refused here rather than let a silent write
+        // through.
         case "node-move": {
             const secEid = sectionAt(ecs, op.section);
             if (secEid === null)
@@ -382,7 +385,7 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok();
         }
 
-        // `Timeline.svelte:1486`: `createForce(history, ecs, c.id, s, sampleForce(...))` — no
+        // `Timeline.svelte`'s `chartCreate`: `createForce(history, ecs, c.id, s, sampleForce(...))` — no
         // setter guard of its own (`createForcePoint` writes unconditionally); the command layer
         // adds the existence check the UI gets for free by only ever offering a live section,
         // plus the kind check the UI gets for free by only ever offering a Force section
@@ -402,14 +405,13 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok(id);
         }
 
-        // `Timeline.svelte:3302`-`3304`: `beginForceMove(ecs, p.id); setForcePoint(ecs, p.id,
-        // clamp(s, 0, p.len), v); commit(history);` — the typed s/v field's own gesture
-        // (`kfFieldEdit`), which clamps `s` into the section's own extent `[0, p.len]`
-        // (`p.len` = `Section.length`, `ForcePt`'s own docblock at `Timeline.svelte:863`). This
-        // is the gesture this op mirrors, not the diamond DRAG (`keyframeDown`,
-        // `Timeline.svelte:1690`'s own "No clamp domain… a grabbed keyframe drags freely past
-        // its strip/segment extent" — a second, deliberately unclamped UI gesture on the same
-        // setter). Finding 2 (adversarial round 1): this branch called `setForcePoint` with
+        // `Timeline.svelte`'s `kfFieldEdit`: `beginForceMove(ecs, p.id); setForcePoint(ecs, p.id,
+        // clamp(s, 0, p.len), v); commit(history);` — the typed s/v field's own gesture, which
+        // clamps `s` into the section's own extent `[0, p.len]` (`p.len` = `Section.length`,
+        // `ForcePt`'s own docblock). This
+        // is the gesture this op mirrors, not the diamond DRAG (`keyframeDown`'s own "No clamp
+        // domain… a grabbed keyframe drags freely past its strip/segment extent" — a second,
+        // deliberately unclamped UI gesture on the same setter). Finding 2 (adversarial round 1): this branch called `setForcePoint` with
         // `op.s` unclamped, silently reproducing the drag's reach rather than the field's — out
         // of UI-reachable space for a "move" op with no drag semantics of its own.
         // `setForcePoint` refuses the `s` write alone when `stationTaken` (`track.ts:2122`),
@@ -441,7 +443,8 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return { applied: true, refusals };
         }
 
-        // `Timeline.svelte:2560`: `deleteStrips` — this op's force-point twin, `deleteForces`.
+        // `Timeline.svelte`'s `stripMenuItems`'s `remove` action: `deleteStrips` — this op's
+        // force-point twin, `deleteForces`.
         case "force-delete": {
             const found = op.ids.some((id) => forcePointState(ecs, id) !== undefined);
             if (!found) return refused("notFound", "none of the given force-point ids exist");
@@ -471,7 +474,7 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return { applied: true, refusals };
         }
 
-        // `Timeline.svelte:3274`: `addStrip(history, ecs, extent.start, extent.end, value)` —
+        // `Timeline.svelte`'s `createStripAt`: `addStrip(history, ecs, extent.start, extent.end, value)` —
         // `track.createStrip` itself reads all three guards before writing anything, so a
         // pre-check mirrors it exactly (`addStrip` returns null on any one of them).
         case "strip-create": {
@@ -496,8 +499,9 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return { applied: true, refusals: [], id };
         }
 
-        // `Timeline.svelte:3110`-`3115`: `beginStripMove(ecs, s.id)` then `setStrip(ecs, id,
-        // start, end, value)`. `setStrip` refuses the span write under `stripOverlapped ||
+        // `Timeline.svelte`'s `bandDown` opens the gesture (`beginStripMove(ecs, s.id)`) and
+        // `bandMove` writes it (`setStrip(ecs, id, start, end, value)`). `setStrip` refuses the
+        // span write under `stripOverlapped ||
         // !stripCoversOneEdge` (one combined condition, `track.ts:746`) and the value write
         // under `!validStripValue` independently — read both the same way.
         case "strip-move": {
@@ -525,7 +529,7 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return { applied: true, refusals };
         }
 
-        // `Timeline.svelte:1457`: `addStripKeyframe(history, ecs, st.id, d, ...)`.
+        // `Timeline.svelte`'s `chartCreate`: `addStripKeyframe(history, ecs, st.id, d, ...)`.
         // `createStripKeyframe` clamps `s` into the strip's extent rather than refusing
         // (`track.ts:855`) — a clamp, not a guard, so it's not reported as a refusal.
         case "strip-keyframe-create": {
@@ -535,7 +539,7 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok(id);
         }
 
-        // `Timeline.svelte:3308`-`3309`: `beginStripKeyframeMove(ecs, k.id)` then
+        // `Timeline.svelte`'s `kfFieldEdit`'s strip-keyframe branch: `beginStripKeyframeMove(ecs, k.id)` then
         // `setStripKeyframe(ecs, k.id, s, v)`. `setStripKeyframe` refuses `s` alone under
         // `stripKeyframeTaken`, landing `v` regardless (`track.ts:984`'s own mirror of
         // `setForcePoint`).
@@ -563,7 +567,7 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok();
         }
 
-        // `Timeline.svelte:2857`/`2890`: `beginLength(ecs, c.id)` then a live
+        // `Timeline.svelte`'s `lenDown`/`lenMove`: `beginLength(ecs, c.id)` then a live
         // `setSectionLength` write, `commitLength` on release. `commitLength`'s `armed` branch
         // also updates the session's sticky append default (`setStickyLen`) — UI session state,
         // not part of the document, so the command layer commits bare (`commit`, not
@@ -579,8 +583,9 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok();
         }
 
-        // `Timeline.svelte:3344`-`3345` (drag) / `:3280` (`addOneShot(history, ecs, V0)` on
-        // create): the one-shot's value is moved when it exists, created when it doesn't —
+        // `Timeline.svelte`'s `oneShotFieldEdit` (drag) / `createOneShotAt`
+        // (`addOneShot(history, ecs, V0)` on create): the one-shot's value is moved when it
+        // exists, created when it doesn't —
         // `entryOneShot`'s own "first hit wins" reading is what `addOneShot` never re-checks
         // (a real UI gesture only offers create when none exists).
         case "start-speed": {

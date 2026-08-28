@@ -16,7 +16,7 @@ import { type DrawCall, fakeCanvasElement, recordingContext } from "./helpers/re
 // and read the ACTUAL `strokeStyle`/`fillStyle` a draw call used, not the source text that
 // produced it.
 //
-// kex2d-cli S6: fixtures below are authored through the shared `Build` helper
+// the shared authoring builder: fixtures below are authored through the shared `Build` helper
 // (`tests/helpers/build.ts`) rather than `track.ts`'s raw entity primitives — this file
 // tests the draw systems, which consume an authored track, not the authoring layer itself.
 

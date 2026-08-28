@@ -3,7 +3,7 @@ import { State } from "@dylanebert/shallot";
 import { checkDocumentSemantics, loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { BakeSystem, snapshotAll, trackEntity } from "../src/track";
 
-// the document-boundary invariant validation (spec `kex2d-cli` S4): `parseDocument`'s
+// the document-boundary invariant validation: `parseDocument`'s
 // structural pass lets through a well-SHAPED document that violates an authoring invariant the
 // live setters enforce — `restoreAll`'s spawn path deliberately bypasses every one of those
 // guards (in-session undo snapshots are already-validated state), so a hand-authored `.kex`

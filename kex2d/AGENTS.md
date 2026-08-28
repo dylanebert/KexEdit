@@ -163,7 +163,7 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
 Authored state — everything that *defines* the track — lives in ECS components in `track.ts`, and
 only there. The UI reads it through the per-RAF tick and writes it only through the `track.ts`
 setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface the
-CLI (`src/cli.ts`, spec `kex2d-cli` S3) drives headlessly through `src/commands.ts`'s typed op
+CLI (`src/cli.ts`) drives headlessly through `src/commands.ts`'s typed op
 vocabulary — the demonstrated agent surface: stateless `stats`/`dump`/`edit`/`fmt`/`new`/`validate`
 subcommands over the `.kex` text form, dispatching to the SAME setters inside the SAME gestures the
 UI uses, so an agent edits a document exactly the way a person dragging a keyframe does. The
@@ -186,16 +186,18 @@ disciplines:
   own).
 
 Never mutate an authored component from a Svelte component or a read/render path — that divorces the
-edit from undo and from the single source of truth. Two sanctioned exceptions, both proven by a
-write-site census over every `src/` module (`tests/purity.test.ts`, kex2d-cli S6): `doc.ts`'s
-whole-document load/rollback (`loadDocument`/`checkDocumentSemantics`'s in-place restore) writes
+edit from undo and from the single source of truth. Two sanctioned exceptions, only one of them
+proven by a write-site census over every `src/` module (`tests/purity.test.ts`): `doc.ts`'s
+whole-document load/rollback (`loadDocument`'s own in-place restore on a geometry refusal) writes
 every authored field raw, with no `history` bracket — a fresh or reverted document is not an edit
-to undo past — and the DEV-only `__kex` hook (`main.ts`, never ships), whose `seedHill` poke
-destroys and recreates nodes raw as test *setup*, not authoring (its `nudge` member instead
-delegates to `commands.applyOp`'s `node-move` — the command layer, gesture and all — everywhere the
-mapping is 1:1; `seedHill`'s bulk rebuild has no single op to delegate to). The census walks the
-authored-component write sites outside `track.ts`/`history.ts` and reds if a NEW one appears
-un-gestured and outside these two.
+to undo past — and the census's own exemption set pins exactly this one. The DEV-only `__kex` hook
+(`main.ts`, never ships) is sanctioned in prose only: its `nudge` member delegates to
+`commands.applyOp`'s `node-move` — the command layer, gesture and all — everywhere the mapping is
+1:1, but `seedHill`'s bulk rebuild has no single op to delegate to, so it still bypasses `history`
+through `track.ts`'s own `addNode`/`ecs.destroy` rather than a direct `.set(` on an authored field —
+below the census's `.set(`-only signature, invisible to the walk rather than exempted by it. The
+census walks the authored-component write sites outside `track.ts`/`history.ts` and reds if a NEW
+one appears un-gestured and outside `doc.ts`.
 
 **Two coordinate frames, one lens.** Position-along-track has two names for two jobs:
 
@@ -376,6 +378,11 @@ sandbox + record-redirect seam (`editor.ts`/`history.ts`), and the downstream fr
   strip/keyframe gestures, not the START diamond's own popover), not a node — a
   geo→force convert carries no geo start position (destructive; position is cosmetic). Force
   extent's convert-vs-append default: Model (force authoring), above.
+- **Two `State`s alias silently.** `track.ts` component storage is module-scoped and eid-indexed
+  with no per-`State` bank, so two live `State`s allocating overlapping eids clobber each other's
+  rows — `loadDocument` validates geometry in-place with rollback and `checkDocumentSemantics`'s
+  scratch `State` is safe only one-document-per-process for exactly this reason. The 3D remake
+  keys component storage per `State`; do not copy this substrate shape.
 
 Per-module hazards live beside their module in `.claude/rules/kex2d-map.md` (Hard gotchas): the
 bake/recovery traps (`forces` vs `invertRange`, the continuous chord angle, `Handle.theta` out of

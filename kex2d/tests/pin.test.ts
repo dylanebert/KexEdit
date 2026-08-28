@@ -40,7 +40,7 @@ import { build, type Build } from "./helpers/build";
 // contract, the landing, the downstream freeze, and the paced landing's display override. The
 // masked exit-restore KERNEL the mode invokes is a separate unit — `tests/optimize.test.ts`.
 //
-// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// the shared authoring builder: every fixture below is authored through the shared `Build` helper
 // (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
 // than `track.ts`'s raw entity primitives.
 

@@ -12,7 +12,7 @@ import { build } from "./helpers/build";
 // translation (not the identity frame a first section's node 0 would give) and a view with
 // zoom + a y-flip (kex2d's screen convention, `cameraTx`'s `sy = -zoom`).
 //
-// kex2d-cli S6: the node geometry below is authored through the shared `Build` helper
+// the shared authoring builder: the node geometry below is authored through the shared `Build` helper
 // (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share; the
 // explicit `TangentMode.Free` tangents this file pins have no op counterpart (`commands.ts`'s
 // vocabulary carries no tangent-setting op), so `setTangent` stays a raw `track.ts` call.

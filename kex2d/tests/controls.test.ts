@@ -294,7 +294,7 @@ test("a degenerate (zero) ray never snaps — no landmark to favor", () => {
 // this is the authored source, not the flanking-sample bake re-derivation the readout drifted on.
 
 /** a fresh single geo section: node 0 at the local origin (the pinned entry) + node 1 —
- *  `append-section`'s own default two-node flat seed (kex2d-cli S6's shared builder,
+ *  `append-section`'s own default two-node flat seed (the shared authoring builder,
  *  `tests/helpers/build.ts`, over `commands.ts`'s op vocabulary rather than `track.ts`'s raw
  *  `createSection`). Node 1's SEEDED position reads the module-scoped `stickyGeoChord` default
  *  (`track.ts`), mutable across the whole test process — so every caller below explicitly

@@ -36,7 +36,7 @@ import { buildScenario, exitPos, roundTripDeviation } from "./domain.lab";
 //   5. degeneracies the old carry used to reject on (a stalled ride, a keyframe past the baked
 //      span) no longer have anything to reject — the flip doesn't read the table at all.
 //
-// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// the shared authoring builder: every fixture below is authored through the shared `Build` helper
 // (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
 // than `track.ts`'s raw entity primitives.
 

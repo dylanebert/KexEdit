@@ -9,7 +9,7 @@ import { dispatch } from "../src/cli";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { createHistory } from "../src/history";
 
-// the CLI's own suite (spec `kex2d-cli` S3): round-trip byte-identity over the committed
+// the CLI's own suite: round-trip byte-identity over the committed
 // `.kex` fixture corpus (`tests/fixtures/cli/`, minted by `tests/mint-cli-fixtures.ts` from
 // `scenarios.ts`), a CLI-edited file reopened via `loadDocument` equalling the same ops applied
 // directly through `commands.applyOp` (S2's own differential arm, run through the shell), and
@@ -32,7 +32,7 @@ function freshCopy(fixture: string): string {
 }
 
 function setup(): void {
-    workdir = mkdtempSync(join(tmpdir(), "kex2d-cli-"));
+    workdir = mkdtempSync(join(tmpdir(), "kex2d-shell-test-"));
 }
 
 function teardown(): void {
@@ -158,7 +158,7 @@ describe("validate: structural refusals + force-limit breaches", () => {
             const path = freshCopy(FIXTURE_NAMES[0]);
             const result = await dispatch(["validate", path]);
             const payload = JSON.parse(result.stdout);
-            expect(payload.structuralError).toBeNull();
+            expect(payload.structuralRefusals).toEqual([]);
             expect(Array.isArray(payload.forceLimitBreaches)).toBe(true);
             expect(result.exitCode).toBe(payload.valid ? 0 : 1);
         } finally {
@@ -175,8 +175,99 @@ describe("validate: structural refusals + force-limit breaches", () => {
             expect(result.exitCode).toBe(1);
             const payload = JSON.parse(result.stdout);
             expect(payload.valid).toBe(false);
-            expect(payload.structuralError.guard).toBe("documentInvalid");
+            expect(payload.structuralRefusals).toHaveLength(1);
+            expect(payload.structuralRefusals[0].guard).toBe("documentInvalid");
             expect(payload.forceLimitBreaches).toEqual([]);
+        } finally {
+            teardown();
+        }
+    });
+});
+
+// `loadDocument`'s semantic-refusal path throws a typed `SemanticRefusalError` carrying
+// `refusals: Refusal[]`, and every CLI path that catches a `loadDocument` throw emits those
+// guard names structured — `validate`'s `structuralRefusals` above, and `stats`/`edit`'s
+// (through `loadTrackFile`) `refusals` field beside the flattened `error.message` — rather than
+// only the one prose string the guard names would otherwise flatten into.
+describe("semantic refusals surface named guards structured, not just a flattened message", () => {
+    async function readInvariantFixture(name: string): Promise<string> {
+        const url = new URL(`./fixtures/invariants/${name}`, import.meta.url);
+        return Bun.file(url).text();
+    }
+
+    test("validate names every violated guard in structuralRefusals", async () => {
+        setup();
+        try {
+            const path = join(workdir, "duplicateId.kex");
+            writeFileSync(path, await readInvariantFixture("duplicateId-red.kex"));
+            const result = await dispatch(["validate", path]);
+            expect(result.exitCode).toBe(1);
+            const payload = JSON.parse(result.stdout);
+            expect(payload.valid).toBe(false);
+            expect(Array.isArray(payload.structuralRefusals)).toBe(true);
+            expect(payload.structuralRefusals.length).toBeGreaterThan(0);
+            expect(payload.structuralRefusals.map((r: { guard: string }) => r.guard)).toContain(
+                "duplicateId",
+            );
+        } finally {
+            teardown();
+        }
+    });
+
+    test("stats (through loadTrackFile) surfaces the same named guard in a `refusals` field", async () => {
+        setup();
+        try {
+            const path = join(workdir, "minForceExtent.kex");
+            writeFileSync(path, await readInvariantFixture("minForceExtent-red.kex"));
+            const result = await dispatch(["stats", path]);
+            expect(result.exitCode).toBe(1);
+            const payload = JSON.parse(result.stdout);
+            expect(payload.error.guard).toBe("documentInvalid");
+            expect(Array.isArray(payload.refusals)).toBe(true);
+            expect(payload.refusals.map((r: { guard: string }) => r.guard)).toContain(
+                "minForceExtent",
+            );
+        } finally {
+            teardown();
+        }
+    });
+
+    test("edit refuses a semantically invalid file with `refusals` naming the guard", async () => {
+        setup();
+        try {
+            const path = join(workdir, "stationTaken.kex");
+            writeFileSync(path, await readInvariantFixture("stationTaken-red.kex"));
+            const result = await dispatch([
+                "edit",
+                path,
+                "--ops",
+                JSON.stringify({ type: "noop" }),
+            ]);
+            expect(result.exitCode).toBe(1);
+            const payload = JSON.parse(result.stdout);
+            expect(payload.error.guard).toBe("documentInvalid");
+            expect(Array.isArray(payload.refusals)).toBe(true);
+            expect(payload.refusals.map((r: { guard: string }) => r.guard)).toContain(
+                "stationTaken",
+            );
+        } finally {
+            teardown();
+        }
+    });
+
+    test("a purely structural (JSON) failure carries no `refusals` field", async () => {
+        setup();
+        try {
+            const path = join(workdir, "bad.kex");
+            writeFileSync(path, "not json at all");
+            const result = await dispatch(["validate", path]);
+            const payload = JSON.parse(result.stdout);
+            expect(payload.structuralRefusals).toHaveLength(1);
+            expect(payload.structuralRefusals[0].guard).toBe("documentInvalid");
+
+            const statsResult = await dispatch(["stats", path]);
+            const statsPayload = JSON.parse(statsResult.stdout);
+            expect(statsPayload.refusals).toBeUndefined();
         } finally {
             teardown();
         }

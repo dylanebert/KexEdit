@@ -192,7 +192,7 @@ describe("pairwiseEllipseValue — pure primitive, synthetic multi-axis input", 
 });
 
 describe("DEFAULT_PROFILE — reference discipline", () => {
-    test("every band step marked exact corresponds to one of the brief's four exact-quoted breakpoints (0.2, 11.8, 40, 90)", () => {
+    test("every band step marked exact corresponds to one of Rohde's four exact-quoted breakpoints (0.2, 11.8, 40, 90)", () => {
         const ExactBreakpoints = new Set([11.8, 40, 90]); // 0.2 is `sustainedMinDurationS`, not a step
         for (const band of DEFAULT_PROFILE.bands) {
             for (const step of band.steps) {
@@ -229,7 +229,7 @@ describe("DEFAULT_PROFILE — reference discipline", () => {
         expect(round).toEqual(DEFAULT_PROFILE);
     });
 
-    test("every band names a citation into the brief or the spec's pinned bands", () => {
+    test("every band names a citation into Rohde", () => {
         for (const band of DEFAULT_PROFILE.bands) {
             expect(band.citation.length).toBeGreaterThan(0);
         }

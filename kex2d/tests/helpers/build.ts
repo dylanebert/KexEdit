@@ -1,5 +1,5 @@
-// Shared test authoring builder (kex2d-cli S6): every test that needs a fixture track
-// authors it through `commands.ts`'s op vocabulary — the SAME dispatch layer the CLI (S3)
+// Shared test authoring builder: every test that needs a fixture track
+// authors it through `commands.ts`'s op vocabulary — the SAME dispatch layer the CLI
 // and the UI (via `track.ts` setters inside `history` gestures) share — rather than
 // poking `track.ts`'s raw entity-creation primitives (`createSection`, `addNode`,
 // `createForcePoint`, …) directly. Two things a raw-ECS fixture still legitimately does,

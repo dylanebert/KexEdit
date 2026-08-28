@@ -53,7 +53,7 @@ export interface Scenario {
     force: number;
 }
 
-/** authored through the shared `Build` (kex2d-cli S6) rather than raw `track.ts` primitives.
+/** authored through the shared `Build` (`tests/helpers/build.ts`) rather than raw `track.ts` primitives.
  *  `appendSection` seeds two continuation keyframes on a Force section, cleared before the
  *  three exact stations (`acts.test.ts`'s `fiveKeyframeForceSection` gotcha) — this lab's own
  *  exact-zero-deviation gate needs the same exact keyframe set the report reproduced. */

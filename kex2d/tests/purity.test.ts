@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-// The write-site census (kex2d-cli S6, `menu.test.ts`'s module-graph walker precedent
+// The write-site census (`menu.test.ts`'s module-graph walker precedent
 // pointed at a different property): every module reachable from `src/` is scanned for a
 // literal write to an authored ECS component field (`Track.*.set(`, `Section.*.set(`, …
 // — the seven components AGENTS.md's Authoring API section names as the one source of
@@ -389,7 +389,7 @@ describe("authored-component writer census — no second write path", () => {
         const sites = writeSites();
         // `doc.ts`'s whole-document load writes `Track.ds` with no `history` bracket at
         // all — deliberately, a fresh document is not an edit to undo past.
-        expect(sites.some((s) => s.file === "doc.ts" && s.line === 793 && !s.gestured)).toBe(true);
+        expect(sites.some((s) => s.file === "doc.ts" && s.line === 810 && !s.gestured)).toBe(true);
         // `controls.ts`'s keyboard-nudge writes `Handle.pos` inline inside
         // `beginMove`…`commit`.
         expect(sites.some((s) => s.file === "controls.ts" && s.line === 1605 && s.gestured)).toBe(
