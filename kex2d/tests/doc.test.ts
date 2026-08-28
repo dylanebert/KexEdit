@@ -1,0 +1,360 @@
+import { describe, expect, test } from "bun:test";
+import { State } from "@dylanebert/shallot";
+import {
+    CURRENT_VERSION,
+    docFromEcs,
+    loadDocument,
+    numLit,
+    parseDocument,
+    saveDocument,
+    serializeDocument,
+} from "../src/doc";
+import { Easing } from "../src/profile";
+import { scenarios } from "../src/scenarios";
+import { TangentMode } from "../src/spline";
+import {
+    addNode,
+    bakeOut,
+    BakeSystem,
+    createForcePoint,
+    createOneShot,
+    createSection,
+    createStrip,
+    createTrack,
+    samples,
+    SectionKind,
+    snapshotAll,
+    spawnNode,
+    Track,
+    trackEntity,
+} from "../src/track";
+
+// the document boundary (spec `kex2d-serialization`): save → load → bake must be byte-identical
+// (the ECS's own f32 truth, round-tripped through JSON text), the canonical emitter must be
+// idempotent (`serialize(parse(text)) === text`), f32 must survive the text form exactly, and a
+// rejected load must leave the live document untouched. Device-free — pure ECS + JSON, no GPU.
+
+/** a fresh geo track carrying a scenario's exact node list — `spawnNode` (not `addNode`) so the
+ *  node's authored `theta`/`tangent` land byte-identical to the scenario's own values, matching
+ *  what `evalGeo` (the scenario corpus's own oracle) would see. */
+function scenarioTrack(s: (typeof scenarios)[number]): { state: State; eid: number } {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    Track.ds.set(eid, s.ds);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    s.nodes.forEach((n, i) => {
+        spawnNode(state, sec, i, n.x, n.y, n.theta, n.tangent);
+    });
+    createOneShot(state, s.v0);
+    return { state, eid };
+}
+
+/** a flat two-node geo track (the plugin's own seed shape) — the rejection-arm fixture, where
+ *  the exact geometry doesn't matter, only that it survives a refused load untouched. */
+function flatTrack(): { state: State; eid: number } {
+    const state = new State();
+    state.addSystem(BakeSystem);
+    const eid = createTrack(state);
+    const sec = createSection(state, 0, SectionKind.Geo, 0);
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, 24, 0);
+    createOneShot(state, 22);
+    return { state, eid };
+}
+
+function bakedArrays(eid: number) {
+    const count = Track.count.get(eid);
+    const s = samples.get(eid);
+    const out = bakeOut.get(eid);
+    if (!s || !out) throw new Error("track buffers missing");
+    return {
+        count,
+        posX: Array.from(s.posX.subarray(0, count)),
+        posY: Array.from(s.posY.subarray(0, count)),
+        theta: Array.from(s.theta.subarray(0, count)),
+        v: Array.from(out.v.subarray(0, count)),
+        t: Array.from(out.t.subarray(0, count)),
+        fN: Array.from(out.fN.subarray(0, Math.max(0, count - 1))),
+        ds: Array.from(out.ds.subarray(0, Math.max(0, count - 1))),
+    };
+}
+
+describe("round-trip over the scenarios.ts corpus", () => {
+    for (const s of scenarios) {
+        test(`${s.name}: save → load → bake is byte-identical`, () => {
+            const a = scenarioTrack(s);
+            a.state.step(0);
+
+            const text = saveDocument(a.state);
+
+            // canonical idempotence: re-emitting a parsed document reproduces the same text.
+            expect(serializeDocument(parseDocument(text))).toBe(text);
+
+            const b = new State();
+            b.addSystem(BakeSystem);
+            loadDocument(b, text);
+            b.step(0);
+            const bEid = trackEntity(b);
+            if (bEid === null) throw new Error("no track after load");
+
+            // authored-state deep equality (TrackSnapshot) — every section/node/point/strip/
+            // one-shot the document carries, plus the four Track scalars.
+            expect(snapshotAll(b)).toEqual(snapshotAll(a.state));
+            expect(Track.ds.get(bEid)).toBe(Track.ds.get(a.eid));
+            expect(Track.domain.get(bEid)).toBe(Track.domain.get(a.eid));
+            expect(Track.friction.get(bEid)).toBe(Track.friction.get(a.eid));
+            expect(Track.resistance.get(bEid)).toBe(Track.resistance.get(a.eid));
+
+            // bakeOut/samples arrays byte-identical.
+            expect(bakedArrays(bEid)).toEqual(bakedArrays(a.eid));
+        });
+    }
+});
+
+describe("a document with strips, a force section, and explicit tangents round-trips", () => {
+    function widerTrack(): { state: State; eid: number } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        Track.friction.set(eid, 0.03);
+        Track.resistance.set(eid, 3e-4);
+        const geo = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, geo, 0, 0);
+        spawnNode(state, geo, 1, 40, 8, 0.2, {
+            mode: TangentMode.Free,
+            inX: 10,
+            inY: -1,
+            outX: 12,
+            outY: 3,
+        });
+        addNode(state, geo, 80, 0);
+        const force = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, force, 0, 1.5, Easing.Cubic);
+        createForcePoint(state, force, 15, 2.5, Easing.Quintic, {
+            mode: TangentMode.Mirror,
+            in: { ds: 2, dg: 0.3 },
+        });
+        createStrip(state, 5, 25, 24);
+        createOneShot(state, 22);
+        return { state, eid };
+    }
+
+    test("save → load → bake is byte-identical, deep-equal, and idempotent", () => {
+        const a = widerTrack();
+        a.state.step(0);
+        const text = saveDocument(a.state);
+        expect(serializeDocument(parseDocument(text))).toBe(text);
+
+        const b = new State();
+        b.addSystem(BakeSystem);
+        loadDocument(b, text);
+        b.step(0);
+        const bEid = trackEntity(b);
+        if (bEid === null) throw new Error("no track after load");
+
+        expect(snapshotAll(b)).toEqual(snapshotAll(a.state));
+        expect(bakedArrays(bEid)).toEqual(bakedArrays(a.eid));
+    });
+});
+
+describe("f32 exactness: emit/parse/Math.fround round-trips identical bits", () => {
+    // deterministic PRNG (mulberry32) — reproducible without a committed seed table.
+    function mulberry32(seed: number): () => number {
+        let a = seed >>> 0;
+        return () => {
+            a |= 0;
+            a = (a + 0x6d2b79f5) | 0;
+            let t = Math.imul(a ^ (a >>> 15), 1 | a);
+            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    function bits(f: number): number {
+        return new Uint32Array(new Float32Array([f]).buffer)[0];
+    }
+
+    // through `numLit` — the module's own emit path (`emitFlat` routes every number through
+    // it), not raw `JSON.stringify`: `JSON.stringify(-0) === "0"` silently drops the sign,
+    // which `JSON.parse` would then read back as +0, a DIFFERENT f32 bit pattern — the exact
+    // gap `numLit` exists to close (its own docblock). A sweep against `JSON.stringify`
+    // directly would be exercising a mechanism this module doesn't use.
+
+    test("random f32 values", () => {
+        const rng = mulberry32(0xc0ffee);
+        for (let i = 0; i < 5000; i++) {
+            const raw = (rng() - 0.5) * 2 * 10 ** (1 + Math.floor(rng() * 12)); // wide magnitude spread
+            const f = Math.fround(raw);
+            const text = numLit(f);
+            const parsed = JSON.parse(text) as number;
+            const back = Math.fround(parsed);
+            expect(bits(back)).toBe(bits(f));
+        }
+    });
+
+    test("edge values: zero, negative zero, tiny denormals, large magnitudes", () => {
+        const edge = [
+            0,
+            -0,
+            1,
+            -1,
+            Number.MIN_VALUE,
+            -Number.MIN_VALUE,
+            3.4e38,
+            -3.4e38,
+            1e-30,
+            -1e-30,
+        ];
+        for (const raw of edge) {
+            const f = Math.fround(raw);
+            const back = Math.fround(JSON.parse(numLit(f)) as number);
+            expect(bits(back)).toBe(bits(f));
+        }
+    });
+
+    test("numLit vs raw JSON.stringify: -0 is the one value where they diverge (the gap numLit closes)", () => {
+        expect(numLit(-0)).toBe("-0");
+        expect(JSON.stringify(-0)).toBe("0");
+        expect(Object.is(JSON.parse(numLit(-0)), -0)).toBe(true);
+        expect(Object.is(JSON.parse(JSON.stringify(-0)), -0)).toBe(false);
+    });
+
+    test("through the real ECS write path: f32 columns survive a save→load cycle bit-identical", () => {
+        const rng = mulberry32(1234);
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const ds = Math.fround(0.5 + rng() * 0.5); // clear of MAX_SAMPLES for this node spread
+        Track.ds.set(eid, ds);
+        Track.friction.set(eid, Math.fround(rng() * 0.1));
+        Track.resistance.set(eid, Math.fround(rng() * 1e-3));
+        const sec = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, sec, 0, 0);
+        for (let i = 0; i < 8; i++) {
+            spawnNode(
+                state,
+                sec,
+                i + 1,
+                Math.fround((i + 1) * 15 + rng() * 5),
+                Math.fround((rng() - 0.5) * 10),
+                0,
+            );
+        }
+        createOneShot(state, 22);
+        state.step(0);
+
+        const text = saveDocument(state);
+        const b = new State();
+        b.addSystem(BakeSystem);
+        loadDocument(b, text);
+        const bEid = trackEntity(b);
+        if (bEid === null) throw new Error("no track after load");
+
+        expect(bits(Track.ds.get(bEid))).toBe(bits(Track.ds.get(eid)));
+        expect(bits(Track.friction.get(bEid))).toBe(bits(Track.friction.get(eid)));
+        expect(bits(Track.resistance.get(bEid))).toBe(bits(Track.resistance.get(eid)));
+        expect(snapshotAll(b)).toEqual(snapshotAll(state));
+    });
+});
+
+describe("rejection arms: refuse with a named remedy, touch nothing", () => {
+    test("an unknown (future) version refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        doc.version = CURRENT_VERSION + 999;
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/version .* newer than this build supports/);
+        expect(snapshotAll(state)).toEqual(before);
+    });
+
+    test("a version below any registered migration refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        doc.version = 0;
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/no migration path/);
+        expect(snapshotAll(state)).toEqual(before);
+    });
+
+    test("truncated JSON refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const good = saveDocument(state);
+        const truncated = good.slice(0, Math.floor(good.length / 2));
+
+        expect(() => loadDocument(state, truncated)).toThrow(/kex2d document:/);
+        expect(snapshotAll(state)).toEqual(before);
+    });
+
+    test("malformed shape (missing track object) refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        delete doc.track;
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/track/);
+        expect(snapshotAll(state)).toEqual(before);
+    });
+
+    test("malformed shape (a node missing a required field) refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        delete doc.sections[0].nodes[0].theta;
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/nodes\[0\]\.theta/);
+        expect(snapshotAll(state)).toEqual(before);
+    });
+
+    test("a root that isn't a JSON object refuses", () => {
+        expect(() => parseDocument("[1,2,3]")).toThrow(/root is not a JSON object/);
+        expect(() => parseDocument('"just a string"')).toThrow(/root is not a JSON object/);
+    });
+
+    test("every thrown error names a recovery remedy", () => {
+        expect(() => parseDocument("not json at all")).toThrow(/re-save from a working document/);
+    });
+
+    test("a refused load clears no undo history and creates no track entity in an empty ECS", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        expect(() => loadDocument(state, "not json")).toThrow();
+        expect(trackEntity(state)).toBeNull();
+    });
+});
+
+describe("saveDocument / loadDocument on a no-op cycle", () => {
+    test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
+        const { state, eid } = flatTrack();
+        state.step(0);
+        const before = snapshotAll(state);
+        const beforeBaked = bakedArrays(eid);
+
+        loadDocument(state, saveDocument(state));
+        state.step(0);
+
+        expect(snapshotAll(state)).toEqual(before);
+        // the Track ENTITY itself survives a load untouched (`restoreAll` only respawns
+        // sections/handles/forces/strips/keyframes/one-shot, never the Track entity) — `eid` is
+        // still the live track's own id.
+        expect(trackEntity(state)).toBe(eid);
+        expect(bakedArrays(eid)).toEqual(beforeBaked);
+    });
+
+    test("docFromEcs stamps CURRENT_VERSION", () => {
+        const { state } = flatTrack();
+        expect(docFromEcs(state).version).toBe(CURRENT_VERSION);
+    });
+});
