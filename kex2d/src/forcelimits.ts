@@ -24,12 +24,21 @@
  *  threshold and comparison direction. This shape gives the sub-0.2s "impact" exemption for
  *  free: a run's duration can only exceed a cap that is itself ≥ some positive number, so a run
  *  shorter than every cap in the table (impossible to construct below the tightest one, 0.2s+ε)
- *  never breaches — no separate impact-regime branch needed. `sustainedMinDurationS` (0.2) and
- *  `exposureCapS` (90) are carried on the profile for documentation and for a future caller that
- *  wants to flag "beyond the validated envelope" rather than silently trusting the last step past
- *  `exposureCapS` (this module does not extrapolate past it — the last step's own `maxDurationS`
- *  IS `exposureCapS` on every axis below, by construction, so a run past 90s DOES breach; there is
- *  no unvalidated silent-pass region). */
+ *  never breaches — no separate impact-regime branch needed. Each step also stands ALONE — a run
+ *  at-or-beyond a threshold breaches iff it outlasts THAT step's own cap, so two steps must never
+ *  share one `thresholdG` within a band (a lower cap at a shared threshold would never fire, since
+ *  the run would already have breached the higher cap first — dead weight at best, a false breach
+ *  at worst if the lower cap is tighter than reality; `bandThresholdsStrictlyDescending` in the
+ *  tests enforces this). `sustainedMinDurationS` (0.2) and `exposureCapS` (90) are carried on the
+ *  profile for documentation and for a future caller that wants to flag "beyond the validated
+ *  envelope" rather than silently trusting a gap in the table. This module does NOT extrapolate
+ *  past a band's own last step: `+Gz`, `Gx` (both signs), and `Gy` (both signs) each have a last
+ *  step whose `maxDurationS` IS `exposureCapS` (90), by construction, so a run past 90s on any of
+ *  those DOES breach. `-Gz` is the one exception — the brief's own Gz table reads "> 40 s | 1.0 g
+ *  | —" for the negative column (no established value past 40s; S5 brief §Gz), so `-Gz`'s last
+ *  step stops at 40s and this module CANNOT flag a sustained −Gz excursion past 40s: it is an
+ *  unvalidated silent-pass region for that one band, not a bug in the run logic — a future caller
+ *  wanting to catch it needs a real source number first, not an extrapolated one. */
 
 import type { BakeOutLike } from "./stats";
 import { cumulativeArclength } from "./stats";
@@ -109,7 +118,10 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
                 { thresholdG: 4.0, maxDurationS: 3.5, exact: false },
                 { thresholdG: 3.0, maxDurationS: 7.0, exact: false },
                 { thresholdG: 2.0, maxDurationS: 11.8, exact: true },
-                { thresholdG: 1.0, maxDurationS: 40, exact: true },
+                // ONE step past 11.8s, not two: the brief's "1.0 g" row runs from 40s to the
+                // 90s exposure cap with no intermediate breakpoint — a separate {1.0, 40} step
+                // sharing this threshold would falsely breach a compliant 1g hold in [40s, 90s)
+                // (checkBand evaluates every step independently; see module docblock).
                 { thresholdG: 1.0, maxDurationS: 90, exact: true },
             ],
         },
@@ -117,11 +129,10 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
             axis: "Gz",
             sign: "-",
             citation:
-                'Approach S5 pinned bands (spec): "−Gz −2g @0.2 s → −1.1g @11.8 s" — the extended F2291-only −2.8g bungee tier and EN 13814\'s exclusion of it are out of scope here.',
+                'Approach S5 pinned bands (spec): "−Gz −2g @0.2 s → −1.1g @11.8 s" — the extended F2291-only −2.8g bungee tier and EN 13814\'s exclusion of it are out of scope here. S5 brief §Gz table\'s negative column reads "—" past 40s (no established value) — this band stops at 40s BY CONTRACT, not by omission; see module docblock.',
             steps: [
                 { thresholdG: -2.0, maxDurationS: 11.8, exact: true },
                 { thresholdG: -1.1, maxDurationS: 40, exact: true },
-                { thresholdG: -1.1, maxDurationS: 90, exact: true },
             ],
         },
         {

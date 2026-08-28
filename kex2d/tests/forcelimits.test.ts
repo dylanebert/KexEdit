@@ -71,6 +71,30 @@ describe("checkBand — +Gz", () => {
         const breaches = checkBand(out, out.fN.length + 1, band);
         expect(breaches).toEqual([]);
     });
+
+    test(
+        "GREEN: 1g held for 60 s (inside the 40-90s window a duplicated {1.0, 40} step used to " +
+            "falsely breach) never breaches — the [40s, 90s) window IS sampled here",
+        () => {
+            const fN = new Array(600).fill(1.0);
+            const out = bakeAt(fN, 0.1); // 60s span — squarely inside [40s, 90s), the window a
+            // {thresholdG: 1.0, maxDurationS: 40} step (sharing the 90s step's threshold) used to
+            // falsely flag, since checkBand evaluates every step independently.
+            const breaches = checkBand(out, out.fN.length + 1, band);
+            expect(breaches).toEqual([]);
+        },
+    );
+
+    test("RED: 1g held for 95 s (past the 90s exposure cap) breaches the 1.0g/90s step", () => {
+        const fN = new Array(950).fill(1.0);
+        const out = bakeAt(fN, 0.1); // 95s span — past the last step's own 90s cap.
+        const breaches = checkBand(out, out.fN.length + 1, band);
+        const oneG = breaches.find((b) => b.thresholdG === 1.0);
+        expect(oneG).toBeDefined();
+        expect(oneG!.maxDurationS).toBe(90);
+        expect(oneG!.observedDurationS).toBeCloseTo(95.0, 6);
+        expect(breaches.length).toBe(1);
+    });
 });
 
 describe("checkBand — -Gz", () => {
@@ -176,6 +200,25 @@ describe("DEFAULT_PROFILE — reference discipline", () => {
             }
         }
     });
+
+    test(
+        "bandThresholdsStrictlyDescending: no band repeats a thresholdG (set-membership over the " +
+            "exact breakpoints alone is not enough — a duplicated threshold with a tighter, wrong " +
+            "cap would still pass the test above)",
+        () => {
+            for (const band of DEFAULT_PROFILE.bands) {
+                const magnitudes = band.steps.map((s) => Math.abs(s.thresholdG));
+                const seen = new Set<number>();
+                for (const m of magnitudes) {
+                    expect(seen.has(m)).toBe(false); // no duplicate |thresholdG| within one band
+                    seen.add(m);
+                }
+                for (let i = 1; i < magnitudes.length; i++) {
+                    expect(magnitudes[i]).toBeLessThan(magnitudes[i - 1]); // strictly descending
+                }
+            }
+        },
+    );
 
     test("no invented speed floor ships as a default", () => {
         expect(DEFAULT_PROFILE.speedFloorMps).toBeUndefined();
