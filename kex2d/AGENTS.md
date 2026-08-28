@@ -162,8 +162,13 @@ i·ds source convention) and integrates it (`section.evalForce`) from the sectio
 
 Authored state — everything that *defines* the track — lives in ECS components in `track.ts`, and
 only there. The UI reads it through the per-RAF tick and writes it only through the `track.ts`
-setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface a
-future authoring agent drives — the same one the capture harness pokes through `__kex`.
+setters, each wrapped in a `history` gesture. That's the purity contract, and it's the surface the
+CLI (`src/cli.ts`, spec `kex2d-cli` S3) drives headlessly through `src/commands.ts`'s typed op
+vocabulary — the demonstrated agent surface: stateless `stats`/`dump`/`edit`/`fmt`/`new`/`validate`
+subcommands over the `.kex` text form, dispatching to the SAME setters inside the SAME gestures the
+UI uses, so an agent edits a document exactly the way a person dragging a keyframe does. The
+capture harness's own `__kex` hook (below) is a narrower, DEV-only surface for driving the live UI
+under test, not the authoring surface itself.
 
 **The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
@@ -181,9 +186,16 @@ disciplines:
   own).
 
 Never mutate an authored component from a Svelte component or a read/render path — that divorces the
-edit from undo and from the single source of truth. The one deliberate exception is the DEV-only
-`__kex` hook (`main.ts`, never ships), whose `nudge`/`seedHill` poke components raw as test *setup*,
-not authoring.
+edit from undo and from the single source of truth. Two sanctioned exceptions, both proven by a
+write-site census over every `src/` module (`tests/purity.test.ts`, kex2d-cli S6): `doc.ts`'s
+whole-document load/rollback (`loadDocument`/`checkDocumentSemantics`'s in-place restore) writes
+every authored field raw, with no `history` bracket — a fresh or reverted document is not an edit
+to undo past — and the DEV-only `__kex` hook (`main.ts`, never ships), whose `seedHill` poke
+destroys and recreates nodes raw as test *setup*, not authoring (its `nudge` member instead
+delegates to `commands.applyOp`'s `node-move` — the command layer, gesture and all — everywhere the
+mapping is 1:1; `seedHill`'s bulk rebuild has no single op to delegate to). The census walks the
+authored-component write sites outside `track.ts`/`history.ts` and reds if a NEW one appears
+un-gestured and outside these two.
 
 **Two coordinate frames, one lens.** Position-along-track has two names for two jobs:
 

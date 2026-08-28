@@ -1,23 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { State } from "@dylanebert/shallot";
 import { handleTip, TangentMode } from "../src/spline";
 import { editHandleSets, localTipAt, stitchNode, tangentHandles } from "../src/tangents";
-import {
-    addNode,
-    appendSection,
-    BakeSystem,
-    createSection,
-    createTrack,
-    Handle,
-    handleAt,
-    lastHandle,
-    reheadOnDrag,
-    samples,
-    SectionKind,
-    sectionHandles,
-    setTangent,
-} from "../src/track";
+import { Handle, handleAt, lastHandle, samples, SectionKind, setTangent } from "../src/track";
 import { cameraTx, screenToWorld } from "../src/view";
+import { build } from "./helpers/build";
 
 // tangentHandles (local offset → world, rotated by the section entry heading → screen, via
 // tx) and localTipAt (its exact inverse: screen-derived world → local offset) are the two
@@ -25,6 +11,11 @@ import { cameraTx, screenToWorld } from "../src/view";
 // against a sign/rotation error, over a section whose entry frame carries real rotation +
 // translation (not the identity frame a first section's node 0 would give) and a view with
 // zoom + a y-flip (kex2d's screen convention, `cameraTx`'s `sy = -zoom`).
+//
+// kex2d-cli S6: the node geometry below is authored through the shared `Build` helper
+// (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share; the
+// explicit `TangentMode.Free` tangents this file pins have no op counterpart (`commands.ts`'s
+// vocabulary carries no tangent-setting op), so `setTangent` stays a raw `track.ts` call.
 
 /** an explicit tangent's f32 storage quantizes its components (`Handle.tin`/`tout`, `vec2` of
  *  `f32`) at ~2^-23 relative to the vector's own magnitude — the only lossy step in the round
@@ -39,18 +30,13 @@ describe("tangentHandles ∘ localTipAt inverse", () => {
     test("a handle's screen position round-trips to its stored local tangent, both sides", () => {
         // section B's entry is A's real (bent) exit — nonzero rotation AND translation, not the
         // identity frame section A's own node 0 sits at.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 24, 0);
-        const tip = sectionHandles(state, a)[1];
-        Handle.pos.set(tip, 24, 10);
-        reheadOnDrag(state, tip);
+        const bd = build();
+        const eid = bd.trackEid;
+        const a = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(a, 1, 24, 10); // the last handle reheads on its own move
 
-        const b = appendSection(state, SectionKind.Geo);
-        addNode(state, b, 20, -3); // a third node so node 1 keeps both neighbors (both handles show)
+        const b = bd.appendSection(SectionKind.Geo);
+        bd.addNode(b, 20, -3); // a third node so node 1 keeps both neighbors (both handles show)
         const mag = 6.7;
         const tan = {
             mode: TangentMode.Free,
@@ -59,8 +45,9 @@ describe("tangentHandles ∘ localTipAt inverse", () => {
             outX: mag * Math.cos(0.9) * 1.4,
             outY: mag * Math.sin(0.9) * 1.4,
         };
-        setTangent(state, b, 1, tan);
-        state.step(0);
+        setTangent(bd.ecs, b, 1, tan);
+        bd.bake();
+        const state = bd.ecs;
 
         const node = handleAt(state, b, 1);
         if (node === null) throw new Error("node missing");
@@ -91,13 +78,12 @@ describe("node-0 entry handle + boundary stitch", () => {
     const tx = cameraTx({ zoom: 1, ox: 0, oy: 0 });
 
     test("node 0 shows only its out-handle (the entry handle), never an in-handle", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 24, 0);
-        state.step(0);
+        const bd = build();
+        const eid = bd.trackEid;
+        const a = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(a, 1, 24, 0);
+        bd.bake();
+        const state = bd.ecs;
         const s = samples.get(eid);
         const node0 = handleAt(state, a, 0);
         if (!s || node0 === null) throw new Error("setup missing");
@@ -106,14 +92,12 @@ describe("node-0 entry handle + boundary stitch", () => {
     });
 
     test("stitchNode resolves a geo→geo boundary tip to the downstream node 0, and not otherwise", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 24, 0);
-        const b = appendSection(state, SectionKind.Geo); // B seeded with node 0 + node 1
-        state.step(0);
+        const bd = build();
+        const a = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(a, 1, 24, 0);
+        const b = bd.appendSection(SectionKind.Geo); // B seeded with node 0 + node 1
+        bd.bake();
+        const state = bd.ecs;
 
         const tipA = lastHandle(state, a);
         const node0B = handleAt(state, b, 0);
@@ -125,28 +109,25 @@ describe("node-0 entry handle + boundary stitch", () => {
     });
 
     test("a force downstream section is not stitched (only geo→geo)", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 24, 0);
-        appendSection(state, SectionKind.Force);
-        state.step(0);
+        const bd = build();
+        const a = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(a, 1, 24, 0);
+        bd.appendSection(SectionKind.Force);
+        bd.bake();
+        const state = bd.ecs;
         const tipA = lastHandle(state, a);
         if (tipA === null) throw new Error("tip missing");
         expect(stitchNode(state, tipA)).toBeNull();
     });
 
     test("editHandleSets on a boundary tip carries the downstream node-0 out-handle for write-through", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 24, 0);
-        const b = appendSection(state, SectionKind.Geo);
-        state.step(0);
+        const bd = build();
+        const eid = bd.trackEid;
+        const a = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(a, 1, 24, 0);
+        const b = bd.appendSection(SectionKind.Geo);
+        bd.bake();
+        const state = bd.ecs;
         const s = samples.get(eid);
         const tipA = lastHandle(state, a);
         const node0B = handleAt(state, b, 0);
@@ -164,7 +145,7 @@ describe("node-0 entry handle + boundary stitch", () => {
         const start = Handle.sample.get(node0B);
         const yBefore = s.posY[start + 2];
         setTangent(state, b, 0, { mode: TangentMode.Free, inX: 1, inY: 0, outX: 20, outY: 20 });
-        state.step(0);
+        bd.bake();
         const s2 = samples.get(eid);
         if (!s2) throw new Error("bake missing");
         // a sample a couple past the boundary now rides higher than the flat default did.

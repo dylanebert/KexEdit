@@ -1,4 +1,4 @@
-import { State } from "@dylanebert/shallot";
+import type { State } from "@dylanebert/shallot";
 import { describe, expect, test } from "bun:test";
 import { liveWorkers } from "../src/convert";
 import { convertForce } from "../src/forcegeo";
@@ -8,13 +8,7 @@ import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
-    addNode,
-    appendSection,
-    BakeSystem,
     bakeOut,
-    createForcePoint,
-    createSection,
-    createTrack,
     forceTangent,
     Handle,
     handleAt,
@@ -25,15 +19,14 @@ import {
     sectionInfo,
     SectionKind,
     type TrackSnapshot,
-    setForceEase,
     setForceTangent,
     setTrackDomain,
     setTrackFriction,
     setTrackResistance,
-    setStartSpeed,
     snapshotAll,
     trackDomain,
 } from "../src/track";
+import { build, type Build } from "./helpers/build";
 import { divergingPool, withWorker } from "./helpers/pool";
 
 // the invoked geo→force command (kex2d-geoforce-editor stage 2): the conversion tier solved
@@ -42,18 +35,17 @@ import { divergingPool, withWorker } from "./helpers/pool";
 // atomicity, byte-identical undo, downstream continuity, and that a conversion which does not
 // finish writes nothing at all.
 
-/** a track carrying one geo hump (the shape a conversion is invoked on), baked. */
-function humpTrack(): { state: State; eid: number; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 12, 4);
-    addNode(state, sec, 24, 0);
-    setStartSpeed(state, 18);
-    state.step(0);
-    return { state, eid, sec };
+/** a track carrying one geo hump (the shape a conversion is invoked on), baked — authored
+ *  through the shared `Build` (kex2d-cli S6). `bd` rides along on the return for the two
+ *  callers below that append a downstream section through the command layer too. */
+function humpTrack(): { state: State; eid: number; sec: number; bd: Build } {
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Geo);
+    bd.moveNode(sec, 1, 12, 4);
+    bd.addNode(sec, 24, 0);
+    bd.startSpeed(18);
+    bd.bake();
+    return { state: bd.ecs, eid: bd.trackEid, sec, bd };
 }
 
 /** a track carrying one hand-authored force hill — an easing tag AND an explicit handle, so a
@@ -63,20 +55,25 @@ function humpTrack(): { state: State; eid: number; sec: number } {
  *  `setStartSpeed` authors the track-start one-shot (S3, its own point kind) once, here; a
  *  section kind-flip never touches it, so it carries through the round trip below with no
  *  special-case code (`preserveEntrySpeedAcrossConvert`, the pre-S3 mechanism this needed,
- *  retired at S2). */
+ *  retired at S2). Authored through `Build` (kex2d-cli S6): `appendSection` seeds two
+ *  continuation keyframes on a Force section, cleared before the three exact ones
+ *  (`acts.test.ts`'s `fiveKeyframeForceSection` gotcha). The easing tag has a command-layer
+ *  op (`force-ease`, reached through `Build`'s generic `.op()` escape hatch — no dedicated
+ *  convenience method exists for it); the explicit tangent has no op in `commands.ts`'s
+ *  vocabulary at all, so `setForceTangent` stays a direct `track.ts` call on `bd.ecs`. */
 function hillForceTrack(): { state: State; eid: number; sec: number } {
-    const state = new State();
-    state.addSystem(BakeSystem);
-    const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Force, 40);
-    const a = createForcePoint(state, sec, 0, 1);
-    const b = createForcePoint(state, sec, 20, 1.4);
-    createForcePoint(state, sec, 40, 1);
-    setForceEase(state, b, Easing.Linear);
-    setForceTangent(state, a, { mode: TangentMode.Free, out: { ds: 5, dg: 0.1 } });
-    setStartSpeed(state, 18);
-    state.step(0);
-    return { state, eid, sec };
+    const bd = build();
+    const sec = bd.appendSection(SectionKind.Force);
+    bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+    bd.sectionLength(sec, 40);
+    const a = bd.addForce(sec, 0, 1);
+    const b = bd.addForce(sec, 20, 1.4);
+    bd.addForce(sec, 40, 1);
+    bd.op({ type: "force-ease", ids: [b], ease: Easing.Linear });
+    setForceTangent(bd.ecs, a, { mode: TangentMode.Free, out: { ds: 5, dg: 0.1 } });
+    bd.startSpeed(18);
+    bd.bake();
+    return { state: bd.ecs, eid: bd.trackEid, sec };
 }
 
 /** the whole authored document plus the bake's own input hash — the two readings that
@@ -127,8 +124,8 @@ describe("convertGeo", () => {
         // while replaying the same profile at the nominal quantum stops ~0.2 m short. 1e-3
         // separates the two by orders of magnitude — the solve's own ~0.5 m floor is far too
         // loose to tell them apart.
-        const { state, sec } = humpTrack();
-        const down = appendSection(state, SectionKind.Geo);
+        const { state, sec, bd } = humpTrack();
+        const down = bd.appendSection(SectionKind.Geo);
         state.step(0);
         const geoExit = { ...(sectionInfo.get(down)?.entry ?? { x: Number.NaN, y: Number.NaN }) };
 
@@ -273,8 +270,8 @@ describe("convertGeo", () => {
     }, 60_000);
 
     test("a section that isn't geo is refused", async () => {
-        const { state, sec } = humpTrack();
-        const force = appendSection(state, SectionKind.Force);
+        const { state, sec, bd } = humpTrack();
+        const force = bd.appendSection(SectionKind.Force);
         state.step(0);
         await expect(convertGeo(createHistory(), state, force)).rejects.toThrow(/not geo/);
         await expect(convertGeo(createHistory(), state, sec + 999)).rejects.toThrow(/no section/);
@@ -322,24 +319,28 @@ describe("provenance short-circuit (reverse)", () => {
     }, 60_000);
 
     test("an upstream edit that moves the section's entry falls through to the solve", async () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const upstream = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, upstream, 0, 0);
-        addNode(state, upstream, 15, 0);
-        const sec = createSection(state, 1, SectionKind.Force, 40);
-        createForcePoint(state, sec, 0, 1);
-        createForcePoint(state, sec, 20, 1.4);
-        createForcePoint(state, sec, 40, 1);
-        setStartSpeed(state, 18);
-        state.step(0);
+        const bd = build();
+        const upstream = bd.appendSection(SectionKind.Geo);
+        bd.moveNode(upstream, 1, 15, 0);
+        const sec = bd.appendSection(SectionKind.Force);
+        bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
+        bd.sectionLength(sec, 40);
+        bd.addForce(sec, 0, 1);
+        bd.addForce(sec, 20, 1.4);
+        bd.addForce(sec, 40, 1);
+        bd.startSpeed(18);
+        bd.bake();
+        const state = bd.ecs;
         const h = createHistory();
 
         await convertForce(h, state, sec);
         state.step(0);
 
         // move the upstream tip — the force section's entry (its stamp anchor) shifts under it.
+        // a raw component write, not `moveNode`: `node-move` also recomputes the node's
+        // auto-tangent (measured — its `theta` moved from 0 to ~0.76 rad on an identical
+        // position edit), which would change what geometry the downstream solve reads, not
+        // just its entry point.
         const handles = sectionHandles(state, upstream);
         Handle.pos.y.set(handles[handles.length - 1], 6);
         state.step(0);
