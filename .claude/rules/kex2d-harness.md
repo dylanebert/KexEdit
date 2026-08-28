@@ -174,9 +174,10 @@ job is to summon a person rather than to fail a run.
   fails loud, naming the field, instead of defaulting it and reporting a healthy trend off a
   column nobody is filling. The population is full default-knob runs only — a selective or
   knob-shifted run captured a different quantity.
-- **The roster half is what the escalation ladder depends on.** Ship protocol step 3 records an
-  unattributed failing title to the across-ship roster; that roster is only readable because
-  every run records its pass/fail here. A duration trend alone would read healthy while the red
+- **The roster half is what the escalation ladder depends on.** Ship protocol step 3 declares or
+  fixes a failing title rather than recording it — recording is automatic (`capture.ts` appends
+  every run to `runs.jsonl`), and what step 3 decides is ownership; that roster is only readable
+  because every run records its pass/fail here. A duration trend alone would read healthy while the red
   rate climbed, which is why the recorded quantity is rate as well as duration.
 - **Both tripwires derive from the recorded data, never from a fitted constant.** Duration: the
   recent window's median sitting **above** the prior window's whole observed range — the suite's own

@@ -150,8 +150,11 @@ function ownerLive(owner: DeclaredOwner, root: string): boolean {
 /**
  * Extract every test title from the staged `*.pw.ts` flow files. The staged set is `capture.ts`'s
  * `stage.files` list (a list, not a glob — `kex2d-harness.md` Verifier integrity). Deciding field:
- * the title string (after `testTitle` extraction from the `test("…")` / `test.fail("…")` call) —
- * the roster's identity key, not `file:line`.
+ * the title string, extracted from each `test("…")` / `test.fail("…")` call by this function's own
+ * source regex — the roster's identity key, not `file:line`. This is the *same* key `testTitle`
+ * yields, reached by a different extractor: `testTitle` parses a Playwright failed-title line
+ * (`[project] › file:line › title`) at read time, while this parses the flow source, so neither
+ * calls the other and the two must keep agreeing on the key for the corpus arm to mean anything.
  */
 function stagedTitles(root: string): Set<string> {
     const harnessDir = join(root, "kexedit", "kex2d", "harness");

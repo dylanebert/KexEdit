@@ -239,7 +239,8 @@ export interface Verdict {
  * is null for a declared red).
  *
  * The declared-set check applies only to **full** (non-selective) runs. A selective run's red is
- * an iteration signal (`mutate.ts`'s 12 pairings read coupling off exit codes), not a gate
+ * an iteration signal (`mutate.ts`'s pairings read coupling off exit codes — read the count off its
+ * own `PAIRS` array, never off a number written here), not a gate
  * decision, so a selective run with a nonzero exit still fails with `"Playwright exited N"` —
  * the same behavior `mutate.ts` and the `freshness` script have always seen. Deciding field:
  * `selective` — a selective run never reaches the declared-set check.
