@@ -1,5 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { arcToTime, dToU, type Mapping, timeToArc } from "./timeline";
+import { cumulativeArclength } from "./stats";
 import { bakeOut, samples, sectionSpans, toLocal, Track } from "./track";
 
 /** a content-anchored park position: the section (stable id) the parked playhead is
@@ -221,9 +222,8 @@ export function forceCurve(
     const out = bakeOut.get(trackEid);
     const count = Track.count.get(trackEid);
     if (!out || count < 2) return null;
-    const s = new Float64Array(count);
+    const s = cumulativeArclength(out.ds, count);
     const f = new Float32Array(count);
-    for (let i = 1; i < count; i++) s[i] = s[i - 1] + out.ds[i - 1];
     for (let i = 0; i < count; i++) f[i] = out.fN[Math.min(i, count - 2)];
     return { s, f, n: count };
 }
@@ -240,8 +240,7 @@ export function velocityCurve(
     const out = bakeOut.get(trackEid);
     const count = Track.count.get(trackEid);
     if (!out || count < 2) return null;
-    const s = new Float64Array(count);
-    for (let i = 1; i < count; i++) s[i] = s[i - 1] + out.ds[i - 1];
+    const s = cumulativeArclength(out.ds, count);
     return { s, v: out.v.subarray(0, count), n: count };
 }
 
@@ -256,12 +255,12 @@ export function trackMapping(trackEid: number): Mapping | null {
     if (!s || !out) return null;
     const n = Track.count.get(trackEid);
     if (n < 2) return null;
-    const arc = new Float64Array(n);
-    // the bake's OWN per-edge ds, never a chord re-derive: the two agree to f32 rounding on a
-    // normal chain, but the downstream freeze's seam is a zero-length gap EDGE over a real
-    // position jump (track.ts, stage 7) — a chord walk would offset every downstream park from
-    // the chart's own axis (`forceCurve`/`sectionSpans` both sum `out.ds`) by the residual gap.
-    for (let i = 1; i < n; i++) arc[i] = arc[i - 1] + out.ds[i - 1];
+    // `cumulativeArclength` sums the bake's OWN per-edge ds, never a chord re-derive: the two
+    // agree to f32 rounding on a normal chain, but the downstream freeze's seam is a
+    // zero-length gap EDGE over a real position jump (track.ts, stage 7) — a chord walk would
+    // offset every downstream park from the chart's own axis (`forceCurve`/`sectionSpans` both
+    // sum `out.ds`) by the residual gap.
+    const arc = cumulativeArclength(out.ds, n);
     const t = new Float64Array(n);
     for (let i = 0; i < n; i++) t[i] = out.t[i];
     return { arc, t, n };
