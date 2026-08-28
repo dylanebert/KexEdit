@@ -51,7 +51,8 @@
  *  exit `y`, so the 3-row `(x, y, θ)` pin pinned `v` too, except through the forward integrator's
  *  `sqrt(max(v², 0))` clamp injecting energy the stamp comparison could only infer. That reasoning
  *  is retired along with `μ = c = 0`: `OptimizeOpts.friction`/`.resistance` (the section's own
- *  authored `Track.friction`/`.resistance`, threaded to every `evalForce` call below) put a real
+ *  authored `Track.friction`/`.resistance`, threaded to every `evalForce` call below — as is
+ *  `.strips`, the section's own velocity override) put a real
  *  pin solve on the path-energy law's general form (`kex2d-map.md`), where the loss integral
  *  couples a force-ordinate DOF to `v` directly through the path swept, not only through `y` — so
  *  a stamped `v` is no longer implied by the three geometric rows and carries none here (the pin
@@ -93,7 +94,7 @@
 
 import { G } from "./forward";
 import { forceProfile, type ForcePoint, resolveStep, type Step } from "./profile";
-import { type Entry, evalForce, type SectionResult } from "./section";
+import { type Entry, evalForce, type SectionResult, type Strip } from "./section";
 
 /** the section's exit anchor a stamp addresses — `(x, y, θ)` are the solve's three residual rows;
  *  `v` is carried for readout only (the session's frozen ghost, `pin.ts`), never a fourth row: the
@@ -252,12 +253,24 @@ export interface OptimizeOpts {
      *  law, `kex2d-map.md`). */
     friction?: number;
     resistance?: number;
+    /** the section's own velocity strips, resolved to THIS step's edges (`track.stripsForStep`),
+     *  threaded to every `evalForce` call the solve makes exactly as the coefficients above are.
+     *  Omitted means no override, so an unstripped section's solve stays byte-identical.
+     *
+     *  Load-bearing, not a convenience: the stamp a pin session takes is computed WITH the
+     *  strips (`pin.enterPin`), so a solve marching without them targets a pose its own march —
+     *  and therefore the document's re-bake — cannot produce. Measured before this field
+     *  existed: `"solved"` with the re-baked exit 1.575 m x / 5.879 m y / 0.516 rad / 5.22 m/s
+     *  off the stamp, against a no-strip control at 7e-6 m (`tests/pin.test.ts`, the C3 arm). */
+    strips?: readonly Strip[];
 }
 
 /** the section's own recovered exit for a keyframe set — the same call the document bakes
  *  (`section.evalForce`), so a stamp taken here and a residual checked here are the identical
- *  computation the live bake would produce. `friction`/`resistance` (both defaulted 0, trailing —
- *  the substrate's positional-last convention) thread straight to `evalForce`'s own. */
+ *  computation the live bake would produce. `friction`/`resistance`/`strips` (the coefficients
+ *  defaulted 0, strips defaulted absent, all trailing — the substrate's positional-last
+ *  convention) thread straight to `evalForce`'s own. A caller stamping a section that carries
+ *  strips must pass them, or the stamp is a pose the document's own bake cannot reproduce. */
 export function computeExit(
     entry: Entry,
     points: readonly ForcePoint[],
@@ -265,10 +278,11 @@ export function computeExit(
     step: number,
     friction = 0,
     resistance = 0,
+    strips?: readonly Strip[],
 ): OptimizeStamp {
     const resolved = resolveStep(length, step);
     const dense = forceProfile(points, resolved);
-    const exit = evalForce(entry, dense, resolved, friction, resistance);
+    const exit = evalForce(entry, dense, resolved, friction, resistance, strips);
     return { x: exit.exit.x, y: exit.exit.y, theta: exit.exit.theta, v: exit.exit.v };
 }
 
@@ -333,6 +347,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     const { entry, points, locked, length, ds: rawStep, stamp } = opts;
     const friction = opts.friction ?? 0;
     const resistance = opts.resistance ?? 0;
+    const strips = opts.strips;
     const maxIters = opts.maxIters ?? MAX_ITERS;
     // conform once (the pairing seam) so every downstream forceProfile/evalForce call below
     // marches at the SAME exact step (`kex2d-section-extent` stage 4) — never the caller's raw
@@ -383,7 +398,7 @@ export function solveOptimize(opts: OptimizeOpts): OptimizeResult {
     // matters too (the invoke-time reading below, and `finalize`).
     const landAt = (g: ArrayLike<number>): SectionResult => {
         const dense = forceProfile(withG(points, g), step);
-        return evalForce(entry, dense, step, friction, resistance);
+        return evalForce(entry, dense, step, friction, resistance, strips);
     };
     const exitAt = (g: ArrayLike<number>): Entry => landAt(g).exit;
 

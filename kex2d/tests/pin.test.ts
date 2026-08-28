@@ -12,6 +12,7 @@ import {
 } from "../src/editor";
 import { beginForceMove, commit, createHistory, redo, undo } from "../src/history";
 import { liveOptimizeWorkers } from "../src/optimize-async";
+import { derivedTol } from "../src/optimize";
 import {
     enterPin,
     enterPinMode,
@@ -1073,13 +1074,22 @@ describe("velocity strips — the pin invariant (C3)", () => {
         endPin();
     });
 
-    test("a strip on a pinned section's track: the solve still lands", async () => {
-        const { state, sec } = forceTrack();
+    // The pin contract is that the LANDED draft reproduces the stamp when the document re-bakes
+    // it — `"solved"` alone cannot see a solve that targeted a stamp its own march can't produce.
+    // So this arm reads the exit off the LIVE BAKE after the landing (`samples`/`bakeOut` at the
+    // section's own `endSample`, the `pin.test.ts:797` seam arm's idiom) rather than calling the
+    // kernel again: "the document cannot reproduce this pose" is a claim about the bake, and a
+    // second kernel-side call would restate the solve's own arithmetic instead of checking it.
+    // RED before the strips field: the solve marched WITHOUT the strip while the stamp was taken
+    // WITH it — 1.575 m x (this arm, witnessed), against a no-strip control at 7e-6 m.
+    test("a strip on a pinned section's track: the landed draft re-bakes to the stamp", async () => {
+        const { state, eid, sec } = forceTrack();
         createStrip(state, 15, 25, 9);
         state.step(0);
         if (!enterPinMode(state, sec)) throw new Error("no session");
         const session = editor.pinning;
         if (!session) throw new Error("no session");
+        const stamp = { ...session.stamp };
         const rows = sectionForces(state, sec);
         setForcePoint(state, rows[2].id, rows[2].s, rows[2].g + 0.4);
         state.step(0);
@@ -1088,5 +1098,30 @@ describe("velocity strips — the pin invariant (C3)", () => {
         const result = await runPinSection(h, state, session, locked);
         expect(result.outcome).toBe("solved");
         expect(editor.pinning).toBeNull(); // Solve closed the mode
+
+        // the DOCUMENT's own re-bake of what landed — read off the live bake at the section's
+        // exit sample, not a second call in the kernel's own vocabulary, because "the document
+        // cannot reproduce this pose" is a claim about the bake and nothing else.
+        state.step(0);
+        const s = samples.get(eid);
+        const out = bakeOut.get(eid);
+        const info = sectionInfo.get(sec);
+        if (!s || !out || !info) throw new Error("no bake after landing");
+        const exit = {
+            x: s.posX[info.endSample],
+            y: s.posY[info.endSample],
+            theta: s.theta[info.endSample],
+            v: out.v[info.endSample],
+        };
+        const tol = derivedTol(stamp, 40, resolveStep(40, 20 / 40));
+        expect(Math.abs(exit.x - stamp.x)).toBeLessThan(tol.pos);
+        expect(Math.abs(exit.y - stamp.y)).toBeLessThan(tol.pos);
+        expect(Math.abs(exit.theta - stamp.theta)).toBeLessThan(tol.angle);
+        // v carries no residual row of its own (the kernel matches x/y/θ only — module header),
+        // so this bound is deliberately loose rather than derived: it exists to catch the one
+        // regression this arm is about, where a march that skipped the strip misses v by 5.22
+        // m/s. The f32 replay floor at v ≈ 9 over this step is ~1e-6, four orders below, so a
+        // tightening would be free — and would also start gating drift the pin never promised.
+        expect(Math.abs(exit.v - stamp.v)).toBeLessThan(0.1);
     });
 });

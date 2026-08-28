@@ -253,6 +253,11 @@ export async function runPinSection(
         if (locked.has(id)) lockedIdx.add(k);
     });
 
+    // the strips, resolved live off this section's own track-global offset exactly as `enterPin`
+    // resolved them to take the stamp — re-read here, not cached on the session, for the same
+    // reason the coefficients are (`runPinSection` re-reads its baking parameters at every
+    // invoke). Without them the kernel marches an unstripped section toward a stripped stamp.
+    const offset = sectionWindows(ecs).find((w) => w.id === sectionId)?.offset ?? 0;
     const kernelOpts: OptimizeOpts = {
         entry: spec.entry,
         points,
@@ -262,6 +267,7 @@ export async function runPinSection(
         stamp: session.stamp,
         friction: spec.friction,
         resistance: spec.resistance,
+        strips: stripsForStep(ecs, offset, spec.step),
     };
 
     const authored = authoredHash(ecs);
