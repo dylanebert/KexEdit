@@ -1031,8 +1031,9 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
 // (editor-ui.md § Multi context UI: "Esc clears the whole set as one dismissal rung, not N"):
 // the viewport's Escape rung and its empty-click / empty-marquee twins route through
 // `deselectAll` (editor.ts) — the same route the timeline's empty-click twins already take —
-// and the timeline's per-kind Escape rungs call the exported ladders below, which clear the
-// whole set the moment the selection spans kinds outside the rung's own. the within-kind peel
+// and the timeline's per-kind Escape rungs call the exported ladders below: each clears the
+// whole set the moment the selection spans kinds outside the rung's own, except the oneShot
+// rung, whose set is single-kind by construction (its own doc states why). the within-kind peel
 // ladders are sub-mode nesting, not sibling kinds — strip keyframe under strip, handle under
 // force point, tangent edit under node — and survive unchanged: `escapeCrossesKinds` takes the
 // rung's own `domain` (the strip rung passes BOTH strip kinds), so nesting inside the domain
