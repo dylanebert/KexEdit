@@ -15,14 +15,18 @@ import {
 } from "../harness/args";
 import {
     appendRun,
+    branchSlug,
     FIELDS,
     HISTORY,
     parseHistory,
     PHASES,
+    RECORD_VERSION,
     resolveHistory,
     type RunRecord,
     summarize,
+    testTitle,
     tripwires,
+    VERSIONED_FIELDS,
     WINDOW,
 } from "../harness/trend";
 import { provisioned, provisionKey, stalePrune } from "../harness/wsl";
@@ -822,6 +826,20 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         exitCode: 0,
         failedTitles: [],
         durations: { collect: 1_600, server: 500, run: 70_000, total: 74_000 },
+        version: RECORD_VERSION,
+        branch: "kex2d-test/s1",
+        dirty: false,
+        ...over,
+    });
+    // a legacy record: no version/branch/dirty — the 227 existing records' shape
+    const legacyRun = (over: Partial<RunRecord> = {}): RunRecord => ({
+        at: "2026-08-26T00:00:00.000Z",
+        head: "aaaaaaa",
+        selective: false,
+        defaultKnobs: true,
+        exitCode: 0,
+        failedTitles: [],
+        durations: { collect: 1_600, server: 500, run: 70_000, total: 74_000 },
         ...over,
     });
 
@@ -944,8 +962,8 @@ describe("trend — the recorded run distribution and its tripwires", () => {
             since: "2026-08-26T00:00:00.000Z",
             until: "2026-08-26T00:00:00.000Z",
         });
-        // the selective and knob-shifted reds carried the same title and contributed no head
-        expect(summary.roster).toEqual([{ title: "t", heads: ["aaaaaaa"] }]);
+        // the selective and knob-shifted reds carried the same title and contributed no unit
+        expect(summary.roster).toEqual([{ title: "t", units: ["kex2d-test"] }]);
     });
 
     test("a trend needs two full windows, and reads recent against the prior RANGE", () => {
@@ -974,30 +992,36 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         expect(breaches.every((b) => b.startsWith("duration:"))).toBe(true);
     });
 
-    test("the roster breaches on distinct heads, never on repeats within one pass", () => {
-        const red = (head: string): RunRecord =>
-            run({ head, exitCode: 1, failedTitles: ["section.pw.ts:2017 › deselect"] });
-        expect(tripwires(summarize([red("aaaaaaa"), red("aaaaaaa"), red("aaaaaaa")]))).toEqual([]);
-        const breach = tripwires(summarize([red("aaaaaaa"), red("bbbbbbb")]));
+    test("the roster breaches on distinct branch units, never on repeats within one pass", () => {
+        const red = (branch: string): RunRecord =>
+            run({ branch, exitCode: 1, failedTitles: ["section.pw.ts:2017 › deselect"] });
+        // same branch slug, three commits — one occurrence, no breach
+        expect(
+            tripwires(summarize([red("kex2d-foo/s1"), red("kex2d-foo/s1"), red("kex2d-foo/s1")])),
+        ).toEqual([]);
+        // two distinct branch slugs — breach
+        const breach = tripwires(summarize([red("kex2d-foo/s1"), red("kex2d-bar/s2")]));
         expect(breach).toHaveLength(1);
-        expect(breach[0]).toContain("2 distinct heads");
+        expect(breach[0]).toContain("2 distinct branch units");
     });
 
     test("a red run with an unresolved HEAD is a loud tripwire, never a silent roster drop", () => {
         // `git rev-parse --short HEAD` returning empty (`capture.ts` maps it to `null` at both
         // `RUN.json` and `appendRun`) makes `head: null` a live input, not a hypothetical one.
-        // The roster's per-head bucketing (`if (r.head !== null && ...) seen.push(r.head)`) can
-        // never place a null head into a distinct-heads count, so a title that keeps reddening
-        // on unresolved heads would otherwise read identically to "not yet recurring" forever —
-        // the exact miscategorization `coding.md`'s no-silent-swallowing clause names: an
-        // unpopulated signal reading as a healthy, sanctioned state rather than the broken-git
-        // wiring it actually is. Verdict: loud, not silent — a red run with no resolvable HEAD
-        // gets its own tripwire, since it can never earn one through the roster.
+        // A broken git identity means the branch is also null, so the roster's per-branch bucketing
+        // can never place it into a distinct-unit count — the title reads as "not yet recurring"
+        // forever, the exact miscategorization `coding.md`'s no-silent-swallowing clause names.
+        // Verdict: loud, not silent — a red run with no resolvable HEAD gets its own tripwire.
         const redNull = (): RunRecord =>
-            run({ head: null, exitCode: 1, failedTitles: ["section.pw.ts:2017 › deselect"] });
+            run({
+                head: null,
+                branch: null,
+                exitCode: 1,
+                failedTitles: ["section.pw.ts:2017 › deselect"],
+            });
         const summary = summarize([redNull(), redNull()]);
-        // the roster mechanism alone stays silent — no head ever gets bucketed
-        expect(summary.roster).toEqual([{ title: "section.pw.ts:2017 › deselect", heads: [] }]);
+        // the roster mechanism alone stays silent — no branch ever gets bucketed
+        expect(summary.roster).toEqual([{ title: "deselect", units: [] }]);
         // which is exactly why the count exists as its own signal
         expect(summary.unresolvedHeadReds).toBe(2);
         const breaches = tripwires(summary);
@@ -1010,7 +1034,7 @@ describe("trend — the recorded run distribution and its tripwires", () => {
         // requires is stamped and that the record reaches `appendRun`. It cannot see whether a
         // stamp brackets the right work; that is the capture run's own reading.
         const capture = readFileSync(join(import.meta.dir, "..", "harness", "capture.ts"), "utf8");
-        expect(capture).toContain('import { appendRun } from "./trend";');
+        expect(capture).toContain('import { appendRun, RECORD_VERSION } from "./trend";');
         expect(capture).toContain("appendRun({");
         for (const [phase, stamp] of [
             ["collect", "collectMs"],
@@ -1019,6 +1043,154 @@ describe("trend — the recorded run distribution and its tripwires", () => {
             ["total", "Math.round(performance.now() - started)"],
         ])
             expect(capture, `durations.${phase} is not stamped`).toContain(`${phase}: ${stamp},`);
+        // the new fields: version, branch, and dirty are passed to appendRun
+        expect(capture).toContain("version: RECORD_VERSION");
+        expect(capture).toContain("branch,");
+        expect(capture).toContain("dirty,");
+        // branch is computed beside the head, not dropped like dirty was before
+        expect(capture).toContain('git(["rev-parse", "--abbrev-ref", "HEAD"])');
+    });
+
+    test("the versioned-field registry cannot silently shrink", () => {
+        // `VERSIONED_FIELDS` is the conditional companion to `FIELDS`: the reader validates
+        // against it only when `version >= RECORD_VERSION`, so the two can never disagree on
+        // what a versioned record must carry. This is the registry's own membership pin.
+        expect(VERSIONED_FIELDS.map((f) => f.name)).toEqual(["branch", "dirty"]);
+    });
+
+    test("a versioned record missing a versioned field fails loud, naming the field", () => {
+        // The new fields arrive behind a record version, never as a defaulted field. A
+        // version-2 record missing `branch` or `dirty` fails loud — the reader does not default
+        // it and report a healthy trend off a column nobody is filling.
+        const versioned = { ...run() } as Record<string, unknown>;
+        for (const field of VERSIONED_FIELDS) {
+            const dropped = { ...versioned } as Record<string, unknown>;
+            delete dropped[field.name];
+            expect(
+                () => parseHistory(`${JSON.stringify(dropped)}\n`),
+                `dropping "${field.name}" from a versioned record did not red the reader`,
+            ).toThrow(`runs.jsonl line 1: missing field "${field.name}"`);
+        }
+    });
+
+    test("a wrongly-typed versioned field fails loud, naming the field and its expected type", () => {
+        const cases: [string, unknown, string][] = [
+            ["branch", 7, "a string or null"],
+            ["dirty", "false", "a boolean"],
+        ];
+        for (const [field, value, expectedType] of cases) {
+            const bad = { ...run(), [field]: value };
+            expect(
+                () => parseHistory(`${JSON.stringify(bad)}\n`),
+                `"${field}" = ${JSON.stringify(value)} did not red the reader`,
+            ).toThrow(`runs.jsonl line 1: "${field}" is not ${expectedType}`);
+        }
+    });
+
+    test("a non-finite version fails loud", () => {
+        const bad = { ...run(), version: "2" };
+        expect(() => parseHistory(`${JSON.stringify(bad)}\n`)).toThrow(
+            'runs.jsonl line 1: "version" is not a finite number',
+        );
+    });
+
+    test("testTitle extracts the title from a Playwright failed-title line", () => {
+        expect(testTitle("[chromium] › shot.pw.ts:2017:1 › deselect")).toBe("deselect");
+        expect(
+            testTitle(
+                "[chromium] › shot.pw.ts:2481:1 › popup label scrub reaches the strip keyframe",
+            ),
+        ).toBe("popup label scrub reaches the strip keyframe");
+        // a line with no ` › ` separator passes through unchanged
+        expect(testTitle("bare title")).toBe("bare title");
+    });
+
+    test("branchSlug extracts the unit prefix from a branch name", () => {
+        expect(branchSlug("kex2d-capture-roster/s1")).toBe("kex2d-capture-roster");
+        expect(branchSlug("main")).toBe("main");
+        expect(branchSlug(null)).toBeNull();
+        expect(branchSlug(undefined)).toBeNull();
+    });
+
+    // S1 criterion (a): one test recorded under two line keys across heads reads as ONE roster entry
+    test("(a) one test under two line keys reads as one roster entry", () => {
+        // The same test title appears at two different line numbers — today's reader keys on
+        // the full failedTitles string (including file:line), so it yields two entries. The
+        // title-keyed reader yields one.
+        const r1 = run({
+            head: "aaaaaaa",
+            branch: "kex2d-foo/s1",
+            exitCode: 1,
+            failedTitles: ["[chromium] › shot.pw.ts:2017:1 › deselect"],
+        });
+        const r2 = run({
+            head: "bbbbbbb",
+            branch: "kex2d-foo/s1",
+            exitCode: 1,
+            failedTitles: ["[chromium] › shot.pw.ts:2481:1 › deselect"],
+        });
+        const summary = summarize([r1, r2]);
+        expect(summary.roster).toHaveLength(1);
+        expect(summary.roster[0].title).toBe("deselect");
+    });
+
+    // S1 criterion (b): a dirty-tree run's failing titles enter NO roster entry
+    test("(b) a dirty-tree run's failing titles enter no roster entry", () => {
+        // Today's reader has no `dirty` field to read, so every full default-knob red enters the
+        // roster. The versioned reader excludes dirty-tree records — a run on an uncommitted
+        // edit is the author's iteration, not a ship.
+        const dirty = run({
+            head: "aaaaaaa",
+            branch: "kex2d-foo/s1",
+            dirty: true,
+            exitCode: 1,
+            failedTitles: ["[chromium] › shot.pw.ts:2017:1 › deselect"],
+        });
+        const summary = summarize([dirty]);
+        expect(summary.roster).toEqual([]);
+        // the dirty run still feeds the population (durations)
+        expect(summary.population).toBe(1);
+    });
+
+    // S1 criterion (c): N runs across N commits of one branch slug count as one occurrence, no breach
+    test("(c) N runs across N commits of one branch slug count as one occurrence, no breach", () => {
+        // Today's reader counts distinct heads — three commits of one in-flight unit breach at
+        // two. The branch-slug reader counts one distinct unit, so no breach.
+        const red = (head: string): RunRecord =>
+            run({
+                head,
+                branch: "kex2d-foo/s1",
+                exitCode: 1,
+                failedTitles: ["[chromium] › shot.pw.ts:2017:1 › deselect"],
+            });
+        const summary = summarize([red("aaaaaaa"), red("bbbbbbb"), red("ccccccc")]);
+        expect(summary.roster).toHaveLength(1);
+        expect(summary.roster[0].units).toEqual(["kex2d-foo"]);
+        expect(tripwires(summary)).toEqual([]);
+    });
+
+    // S1 criterion (d): a legacy record still feeds the duration windows AND feeds no roster entry
+    test("(d) a legacy record feeds durations and feeds no roster entry — both halves", () => {
+        // An exclusion that dropped legacy records from durations too would silently shrink the
+        // only long population. Assert both: the legacy record is in `population` (the `full`
+        // array that feeds duration windows) AND its failing title is absent from the roster.
+        const legacy = legacyRun({
+            head: "aaaaaaa",
+            exitCode: 1,
+            failedTitles: ["[chromium] › shot.pw.ts:2017:1 › legacy red"],
+        });
+        const versioned = run({
+            head: "bbbbbbb",
+            branch: "kex2d-foo/s1",
+            exitCode: 1,
+            failedTitles: ["[chromium] › shot.pw.ts:2017:1 › versioned red"],
+        });
+        const summary = summarize([legacy, versioned]);
+        // duration half: the legacy record is in the comparable population
+        expect(summary.population).toBe(2);
+        // roster half: only the versioned record's title appears
+        expect(summary.roster).toEqual([{ title: "versioned red", units: ["kex2d-foo"] }]);
+        expect(summary.roster.some((e) => e.title.includes("legacy red"))).toBe(false);
     });
 
     // RED-FIRST WITNESS for the CLI half (run by hand — this suite never shells out to a reader
