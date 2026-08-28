@@ -411,13 +411,30 @@ function fail(msg: string): never {
     );
 }
 
+/** thrown by the semantic-refusal path only (`failSemantics`, below) — carries the per-invariant
+ *  `Refusal[]` a structural `fail()` throw never has, so a CLI caller (`cli.ts`'s
+ *  `loadTrackFile`/`cmdEdit`/`cmdValidate`) can emit the violated guards structured instead of
+ *  re-flattening this error's own message string. `message` still reads exactly like a
+ *  structural rejection (same `kex2d document: … ` wrapper) for a caller matching on that prefix
+ *  or the recovery-remedy text alone. */
+export class SemanticRefusalError extends Error {
+    readonly refusals: Refusal[];
+    constructor(message: string, refusals: Refusal[]) {
+        super(message);
+        this.name = "SemanticRefusalError";
+        this.refusals = refusals;
+    }
+}
+
 /** every semantic-invariant refusal throws through here, one thrown message naming every
  *  violated guard — `fail`'s own remedy suffix, so a semantic rejection reads exactly like a
  *  structural one to a caller matching on `/kex2d document:/` or the recovery-remedy text. */
 function failSemantics(refusals: Refusal[]): never {
     const detail = refusals.map((r) => `${r.guard}: ${r.message}`).join("; ");
-    fail(
-        `document violates ${refusals.length} invariant${refusals.length === 1 ? "" : "s"} — ${detail}`,
+    const msg = `document violates ${refusals.length} invariant${refusals.length === 1 ? "" : "s"} — ${detail}`;
+    throw new SemanticRefusalError(
+        `kex2d document: ${msg}. The file may be truncated, corrupted, or hand-edited invalid — re-save from a working document to recover.`,
+        refusals,
     );
 }
 
@@ -603,7 +620,7 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     };
 }
 
-// ── semantic invariant validation (spec `kex2d-cli` S4) ──────────────────────────────────
+// ── semantic invariant validation (document-boundary guard census) ───────────────────────
 //
 // `validateDocument` above is purely structural (types present, enums in range) — it lets
 // through a document that is well-SHAPED but violates an authoring invariant the live setters
@@ -818,10 +835,16 @@ function checkGeometryInvariants(ecs: State): Refusal[] {
 }
 
 /** the full document-boundary invariant check — every setter guard `restoreAll`'s spawn path
- *  bypasses, read against `doc` rather than any live `ecs`. This is the validation entry point
- *  a CLI `validate` verb calls (spec `kex2d-cli` S4): pass a `parseDocument`-produced document,
- *  get back every violated guard (empty when the document is fully valid — structurally AND
- *  semantically). Skips the geometry pass when the doc-level pass already found something: a
+ *  bypasses, read against `doc` rather than any live `ecs`. Pass a `parseDocument`-produced
+ *  document, get back every violated guard (empty when the document is fully valid —
+ *  structurally AND semantically). **Not** the entry point `cli.ts`'s `validate` verb calls —
+ *  that verb runs `loadDocument` on its own headless `State` (it needs the loaded, baked track
+ *  for the force-limit check that follows), so its structural/semantic refusals come off
+ *  `loadDocument`'s thrown `SemanticRefusalError.refusals`, not this function. This export is
+ *  for a caller with no live `ecs` to load into and no other `State` concurrently live in the
+ *  process (a bare unit test; `tests/invariants.test.ts`'s own oracle) — it builds its own
+ *  throwaway scratch state (`buildScratchEcs`) for the geometry half. Skips the geometry pass
+ *  when the doc-level pass already found something: a
  *  document with duplicate ids or a kind-mismatched section produces a meaningless or unsafe
  *  scratch ECS to build geometry checks against. */
 export function checkDocumentSemantics(doc: Kex2dDocument): Refusal[] {
@@ -882,15 +905,20 @@ export function saveDocument(ecs: State): string {
 }
 
 /** replace the live document with `text`'s — the document-boundary convention of every editor
- *  (spec Locked decision): parses + validates the WHOLE file first (throwing, touching
- *  nothing, on any rejection), only then destroys/respawns the ECS state
- *  (`restoreAll`) and writes the four `Track` scalars `restoreAll` doesn't own. Clears the
- *  undo stack — a load is a new document, not an edit to undo past. Reserves every stable id
- *  the file used (`reserveIds`) so a `create*` call right after a load can't collide with one. */
+ *  (spec Locked decision): parses + validates structurally first (throwing, touching nothing,
+ *  on a structural or doc-shape semantic rejection), only then destroys/respawns the ECS state
+ *  (`restoreAll`) and writes the four `Track` scalars `restoreAll` doesn't own. **The geometry
+ *  half of semantic validation is the one exception**: it needs a real, in-place `ecs` to
+ *  resolve a strip's edge range against (below), so the candidate loads BEFORE that guard runs
+ *  and an in-place rollback (never a second `State` — the two-`State`-aliasing hazard, `AGENTS.md`
+ *  Hard gotchas) restores the caller's live document on refusal — the live ECS is touched and
+ *  then unwound, not left untouched throughout. Clears the undo stack on a landed load — a load
+ *  is a new document, not an edit to undo past. Reserves every stable id the file used
+ *  (`reserveIds`) so a `create*` call right after a load can't collide with one. */
 export function loadDocument(ecs: State, text: string): void {
     const doc = parseDocument(text); // throws first; the live document is untouched until here
 
-    // semantic invariants, doc-shape half (spec `kex2d-cli` S4) — pure, no ECS touched, so this
+    // semantic invariants, doc-shape half (`checkDocInvariants`) — pure, no ECS touched, so this
     // throws exactly like a structural refusal above: nothing written, nothing to undo.
     const docRefusals = checkDocInvariants(doc);
     if (docRefusals.length > 0) failSemantics(docRefusals);

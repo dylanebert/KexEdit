@@ -206,7 +206,7 @@ if (import.meta.env.DEV) {
         // move a node in y — the "drag a node, the curve reacts" step, without pixels.
         // node 0's position is pinned at the local origin (the entry anchor never moves,
         // even though its tangent is now editable), so nudging it is a no-op. Delegates to
-        // `commands.applyOp`'s `node-move` (kex2d-cli S6, AGENTS.md's Authoring API: a `__kex`
+        // `commands.applyOp`'s `node-move` (AGENTS.md's Authoring API: a `__kex`
         // write member delegates to the command layer where the mapping is 1:1 — this is,
         // `node-move` refuses order 0 the same way and writes the same absolute position) —
         // unused by the capture harness's own `Kex` mirror (`harness/flow.ts`), so recording an

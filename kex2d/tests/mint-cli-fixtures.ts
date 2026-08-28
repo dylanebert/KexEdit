@@ -1,4 +1,4 @@
-/** Mints the CLI's committed `.kex` fixture corpus (spec `kex2d-cli` S3), invoked by path
+/** Mints the CLI's committed `.kex` fixture corpus, invoked by path
  *  (`bun run tests/mint-cli-fixtures.ts`, no `package.json` script — `coding.md` Suite speed,
  *  `tests/mint-goldens.ts`'s own precedent). Every fixture is a geo section carrying one
  *  `scenarios.ts` node list, exactly `tests/doc.test.ts`'s own `scenarioTrack` shape — authored

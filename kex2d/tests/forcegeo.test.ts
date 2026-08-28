@@ -38,7 +38,7 @@ import { drift, type Stations, stations } from "./helpers/stations";
 // does not finish writes nothing at all.
 
 /** a track carrying one force hump (the shape a fit is invoked on), baked — authored through
- *  the shared `Build` (kex2d-cli S6) rather than raw `track.ts` primitives. `appendSection`
+ *  the shared `Build` (`tests/helpers/build.ts`) rather than raw `track.ts` primitives. `appendSection`
  *  seeds two continuation keyframes on a Force section (`AGENTS.md`'s Model (force
  *  authoring)); `force-create` doesn't dedupe against them, so they're cleared before adding
  *  the three exact stations (`acts.test.ts`'s `fiveKeyframeForceSection` docblock, same
@@ -62,7 +62,7 @@ function humpForceTrack(): { state: State; eid: number; sec: number; bd: Build }
  *  the track-start one-shot (S3, its own point kind, never a `Strip` row) once — a section
  *  kind-flip never touches it, so it carries through every round trip below with no
  *  special-case code (`preserveEntrySpeedAcrossConvert`, the pre-S3 mechanism this needed,
- *  retired at S2). Authored through `Build` (kex2d-cli S6): node 0 is the fixed local-origin
+ *  retired at S2). Authored through `Build` (`tests/helpers/build.ts`): node 0 is the fixed local-origin
  *  anchor `appendSection` already seeds, node 1 is that same seed's default tip repositioned
  *  (`moveNode`), and the tail two nodes are appended fresh. */
 function hillTrack(): { state: State; eid: number; sec: number } {

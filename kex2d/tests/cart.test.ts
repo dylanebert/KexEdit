@@ -32,7 +32,7 @@ import { build } from "./helpers/build";
 // where constant speed makes t linear in arclength — so the cart's x is a closed-form
 // check, not a fixture. device-free harness, like track.test.ts.
 
-// kex2d-cli S6: every fixture below is authored through the shared `Build` helper
+// the shared authoring builder: every fixture below is authored through the shared `Build` helper
 // (`tests/helpers/build.ts`), the same `applyOp` dispatch the CLI and the UI share, rather
 // than `track.ts`'s raw entity primitives — this file tests `cart.ts`'s read paths, which
 // consume an authored track, not the authoring layer itself.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-/** the headless CLI (spec `kex2d-cli` S3): stateless, file-in/file-out subcommands over the
- *  `.kex` document — no session, no server, no RPC (Locked decision: "every invocation loads,
- *  acts, saves/reports, exits"). One dispatcher (`dispatch`, exported so the test suite drives
+/** the headless CLI: stateless, file-in/file-out subcommands over the
+ *  `.kex` document — no session, no server, no RPC: every invocation loads, acts, saves/reports,
+ *  exits. One dispatcher (`dispatch`, exported so the test suite drives
  *  it in-process rather than spawning a process per case — the ~12s gate can't afford that) that
  *  every verb below routes through; the process entry point at the bottom is a thin wrapper
  *  (`argv` in, exit code + stdout text out).
@@ -24,8 +24,14 @@
 
 import { existsSync } from "node:fs";
 import { State } from "@dylanebert/shallot";
-import { applyOp, type Op, type OpResult } from "./commands";
-import { loadDocument, parseDocument, saveDocument, serializeDocument } from "./doc";
+import { applyOp, type Op, type OpResult, type Refusal } from "./commands";
+import {
+    loadDocument,
+    parseDocument,
+    saveDocument,
+    SemanticRefusalError,
+    serializeDocument,
+} from "./doc";
 import { checkForceLimits, DEFAULT_PROFILE } from "./forcelimits";
 import { createHistory } from "./history";
 import { computeStats } from "./stats";
@@ -100,7 +106,11 @@ async function loadTrackFile(file: string): Promise<LoadOutcome> {
     try {
         loadDocument(state, text);
     } catch (e) {
-        return { ok: false, result: errResult(1, "documentInvalid", (e as Error).message) };
+        const extra = e instanceof SemanticRefusalError ? { refusals: e.refusals } : undefined;
+        return {
+            ok: false,
+            result: errResult(1, "documentInvalid", (e as Error).message, extra),
+        };
     }
     state.step(0);
     const trackEid = trackEntity(state);
@@ -184,7 +194,8 @@ async function cmdEdit(file: string, opsText: string): Promise<CliResult> {
     try {
         loadDocument(state, text);
     } catch (e) {
-        return errResult(1, "documentInvalid", (e as Error).message);
+        const extra = e instanceof SemanticRefusalError ? { refusals: e.refusals } : undefined;
+        return errResult(1, "documentInvalid", (e as Error).message, extra);
     }
 
     const h = createHistory();
@@ -254,9 +265,11 @@ async function cmdNew(file: string, force: boolean): Promise<CliResult> {
     return okResult({ created: file });
 }
 
-/** structural refusals (`doc.loadDocument`) plus force-limit breaches (`forcelimits.
- *  checkForceLimits`, `DEFAULT_PROFILE` — S4 will widen the structural half for free once
- *  load-time invariant validation lands; this verb doesn't duplicate it). */
+/** structural + semantic refusals (`doc.loadDocument`'s per-invariant `Refusal[]`, off its thrown
+ *  `SemanticRefusalError`) plus force-limit breaches (`forcelimits.checkForceLimits`,
+ *  `DEFAULT_PROFILE`). `structuralRefusals` is the named-guard list `loadDocument`'s S4 boundary
+ *  enforces — empty on a structurally+semantically valid document, never a single flattened
+ *  prose string. */
 async function cmdValidate(file: string): Promise<CliResult> {
     let text: string;
     try {
@@ -269,12 +282,16 @@ async function cmdValidate(file: string): Promise<CliResult> {
     try {
         loadDocument(state, text);
     } catch (e) {
+        const structuralRefusals: Refusal[] =
+            e instanceof SemanticRefusalError
+                ? e.refusals
+                : [{ guard: "documentInvalid", message: (e as Error).message }];
         return {
             exitCode: 1,
             stdout: jsonOut({
                 ok: false,
                 valid: false,
-                structuralError: { guard: "documentInvalid", message: (e as Error).message },
+                structuralRefusals,
                 forceLimitBreaches: [],
             }),
         };
@@ -287,10 +304,9 @@ async function cmdValidate(file: string): Promise<CliResult> {
             stdout: jsonOut({
                 ok: false,
                 valid: false,
-                structuralError: {
-                    guard: "noTrack",
-                    message: "the loaded document carries no track entity",
-                },
+                structuralRefusals: [
+                    { guard: "noTrack", message: "the loaded document carries no track entity" },
+                ],
                 forceLimitBreaches: [],
             }),
         };
@@ -301,7 +317,12 @@ async function cmdValidate(file: string): Promise<CliResult> {
     const valid = breaches.length === 0;
     return {
         exitCode: valid ? 0 : 1,
-        stdout: jsonOut({ ok: valid, valid, structuralError: null, forceLimitBreaches: breaches }),
+        stdout: jsonOut({
+            ok: valid,
+            valid,
+            structuralRefusals: [],
+            forceLimitBreaches: breaches,
+        }),
     };
 }
 

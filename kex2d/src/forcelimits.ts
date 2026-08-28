@@ -1,8 +1,8 @@
-/** the force-limit PROFILE (data) and a VALIDATOR over `stats.ts`'s bake readback — S5 of
- *  `kex2d-cli`. Every default here cites Rohde, "Some Details About the Development of
+/** the force-limit PROFILE (data) and a VALIDATOR over `stats.ts`'s bake readback.
+ *  Every default here cites Rohde, "Some Details About the Development of
  *  Acceleration Limits for Amusement Rides," 2nd ed., March 2024 (vdv-freizeittechnologie.de),
  *  the G-Force Task Group's own reproduction of ASTM F2291-23b §7 Figs 6-8 / EN 13814-2019's
- *  harmonized appendix — full readings in `scratch/kex2d-cli/force-limit-brief.md`. Naming: this
+ *  harmonized appendix — page/figure refs cited inline per band, below. Naming: this
  *  is NOT `profile.ts` (the force-authoring primitive, keyframes → dense F_n(s) — a different
  *  concept sharing the word "profile"); this module never imports it.
  *
@@ -34,22 +34,23 @@
  *  envelope" rather than silently trusting a gap in the table. This module does NOT extrapolate
  *  past a band's own last step: `+Gz`, `Gx` (both signs), and `Gy` (both signs) each have a last
  *  step whose `maxDurationS` IS `exposureCapS` (90), by construction, so a run past 90s on any of
- *  those DOES breach. `-Gz` is the one exception — the brief's own Gz table reads "> 40 s | 1.0 g
- *  | —" for the negative column (no established value past 40s; S5 brief §Gz), so `-Gz`'s last
+ *  those DOES breach. `-Gz` is the one exception — Rohde's own Gz table (p.26, Fig 7.4) reads
+ *  "> 40 s | 1.0 g | —" for the negative column (no established value past 40s), so `-Gz`'s last
  *  step stops at 40s. Any excursion at or beyond −1.1g still breaches once it outlasts that step's
  *  40s cap (a `-` band matches every run deeper than its threshold, at any duration) — what the
  *  missing source number leaves unvalidated is −Gz *magnitude*: an excursion strictly between 0
- *  and −1.1g passes silently at any duration, a gap the brief's table carries, not a bug here. */
+ *  and −1.1g passes silently at any duration, a gap Rohde's own table carries, not a bug here. */
 
 import type { BakeOutLike } from "./stats";
 import { cumulativeArclength } from "./stats";
 
-/** true iff the researcher brief's own "exact-quoted breakpoints" list (S5 researcher brief
- *  §Gaps/cautions #3: 0.2 s, 11.8 s, 40 s, 90 s) names this step's `maxDurationS` — false means
- *  graph-read off a source figure (marked `~` in the brief's tables). Note: the brief's p.26
- *  prose quote also states "1 second" verbatim, but its own gaps list excludes 1.0 s from the
- *  exact set — this module follows the gaps list, the brief's more conservative statement, and
- *  marks the 1.0 s/3.5 s/7.0 s/2.0 s/4.5 s breakpoints below `exact: false`. */
+/** true iff this step's `maxDurationS` is one of Rohde's exactly-quoted breakpoints — 0.2 s,
+ *  11.8 s, 40 s, 90 s (the only durations Rohde states as numbers rather than reading off a
+ *  figure) — false means graph-read off a source figure (Figs 6-8, marked `~` below). Note:
+ *  Rohde's p.26 prose quote also states "1 second" verbatim, but the surrounding duration list
+ *  is otherwise graph-read — this module treats only the four exactly-quoted breakpoints above
+ *  as exact, the more conservative reading, and marks the 1.0 s/3.5 s/7.0 s/2.0 s/4.5 s
+ *  breakpoints below `exact: false`. */
 export interface DurationLimitStep {
     /** g level (signed) this step's cap applies at-or-beyond, in the band's own direction
      *  (positive band: fN ≥ thresholdG; negative band: fN ≤ thresholdG). */
@@ -69,40 +70,41 @@ export interface AxisBand {
      *  shortest-duration) step first — `checkForceLimits` reports every step a run breaches, not
      *  just the tightest, so ordering here is documentation, not a search precondition. */
     steps: DurationLimitStep[];
-    /** the brief section/table this band's numbers came from. */
+    /** the Rohde section/table (page + figure) this band's numbers came from. */
     citation: string;
 }
 
 export interface ForceLimitProfile {
     name: string;
     source: string;
-    /** s — below this, an excursion is an "impact" event outside the g-band regime (S5 brief
-     *  §Regime; F2291 Annex X11, no pinnable g-number). Carried for documentation; the duration
-     *  model above enforces it structurally (see module docblock). */
+    /** s — below this, an excursion is an "impact" event outside the g-band regime (Rohde's own
+     *  regime split; F2291 Annex X11, no pinnable g-number). Carried for documentation; the
+     *  duration model above enforces it structurally (see module docblock). */
     sustainedMinDurationS: number;
-    /** s — sustained limits are only validated up to this exposure (S5 brief §Regime, p.8). */
+    /** s — sustained limits are only validated up to this exposure (Rohde p.8). */
     exposureCapS: number;
     bands: AxisBand[];
-    /** OPTIONAL, uncited. S5 researcher brief §Gaps/cautions #1: no published minimum-speed /
-     *  rollback number exists in the pinned source (F2291's own text unrecovered). Never
-     *  defaulted — a caller sets it, or it stays undefined and no speed-floor check runs. */
+    /** OPTIONAL, uncited. No published minimum-speed/rollback number exists in Rohde or the
+     *  standards it reproduces (F2291's own text unrecovered). Never defaulted — a caller sets
+     *  it, or it stays undefined and no speed-floor check runs. */
     speedFloorMps?: number;
 }
 
-/** Table 7.1 (S5 brief, p.37) consolidated admissible bounds, BASE-RESTRAINT row only — the
- *  prone (x: -3.50..6.00) and extended-Gz/bungee (z: -2.80..6.00, F2291-only) rows are excluded,
- *  matching the Approach's pinned-bands scope note ("bungee-scoped — exclude"). Used by
- *  `pairwiseEllipseValue` below; not consumed by `checkForceLimits` (no x/y channel yet). */
+/** Table 7.1 (Rohde p.37) consolidated admissible bounds, BASE-RESTRAINT row only — the
+ *  prone (x: -3.50..6.00) and extended-Gz/bungee (z: -2.80..6.00, F2291-only) rows are excluded:
+ *  the extended −Gz tier is bungee-scoped, out of kex2d's ride class, and EN 13814 excludes it
+ *  too. Used by `pairwiseEllipseValue` below; not consumed by `checkForceLimits` (no x/y channel
+ *  yet). */
 export const TABLE_7_1_BASE_BOUNDS: Record<AxisName, { min: number; max: number }> = {
     Gx: { min: -2.0, max: 6.0 },
     Gy: { min: -3.0, max: 3.0 },
     Gz: { min: -2.0, max: 6.0 },
 };
 
-/** the shipped defaults, built ONLY from the pinned bands in the spec's Approach S5 bullet /
- *  the researcher brief. `+Gz`/`-Gz` are the two bands `checkForceLimits` actually evaluates
- *  (kex2d's one real channel); `Gx`/`Gy` ship as data for a future 3D caller and are exercised
- *  only by this module's own synthetic tests. */
+/** the shipped defaults, built ONLY from Rohde's own pinned bands (per-band citation below).
+ *  `+Gz`/`-Gz` are the two bands `checkForceLimits` actually evaluates (kex2d's one real
+ *  channel); `Gx`/`Gy` ship as data for a future 3D caller and are exercised only by this
+ *  module's own synthetic tests. */
 export const DEFAULT_PROFILE: ForceLimitProfile = {
     name: "rohde-2024-astm-f2291-en13814",
     source: 'Rohde, "Some Details About the Development of Acceleration Limits for Amusement Rides," 2nd ed., March 2024 (vdv-freizeittechnologie.de) — G-Force Task Group summary of ASTM F2291-23b §7 Figs 6-8 / EN 13814-2019 harmonized appendix.',
@@ -113,13 +115,13 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
             axis: "Gz",
             sign: "+",
             citation:
-                'S5 brief §Gz table (p.26 Fig 7.4) + prose quote p.26: "6 g … 1 second, after a transition 4 g, followed by 3 g, after 12 seconds 2 g, after 40 seconds 1 g."',
+                'Rohde §7 Gz table (p.26, Fig 7.4) + prose quote p.26: "6 g … 1 second, after a transition 4 g, followed by 3 g, after 12 seconds 2 g, after 40 seconds 1 g."',
             steps: [
                 { thresholdG: 6.0, maxDurationS: 1.0, exact: false },
                 { thresholdG: 4.0, maxDurationS: 3.5, exact: false },
                 { thresholdG: 3.0, maxDurationS: 7.0, exact: false },
                 { thresholdG: 2.0, maxDurationS: 11.8, exact: true },
-                // ONE step past 11.8s, not two: the brief's "1.0 g" row runs from 40s to the
+                // ONE step past 11.8s, not two: Rohde's "1.0 g" row runs from 40s to the
                 // 90s exposure cap with no intermediate breakpoint — a separate {1.0, 40} step
                 // sharing this threshold would falsely breach a compliant 1g hold in [40s, 90s)
                 // (checkBand evaluates every step independently; see module docblock).
@@ -130,7 +132,7 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
             axis: "Gz",
             sign: "-",
             citation:
-                'Approach S5 pinned bands (spec): "−Gz −2g @0.2 s → −1.1g @11.8 s" — the extended F2291-only −2.8g bungee tier and EN 13814\'s exclusion of it are out of scope here. S5 brief §Gz table\'s negative column reads "—" past 40s (no established value) — this band\'s last step caps at 40s BY CONTRACT, not by omission (excursions ≤ −1.1g past 40s still breach that step; the ungated region is magnitudes between 0 and −1.1g); see module docblock.',
+                "Rohde §7 Gz table (p.26, Fig 7.4), negative column: −2g @0.2 s → −1.1g @11.8 s, reading \"—\" past 40s (no established value) — the extended F2291-only −2.8g bungee tier and EN 13814's exclusion of it are out of scope here. This band's last step caps at 40s BY CONTRACT, not by omission (excursions ≤ −1.1g past 40s still breach that step; the ungated region is magnitudes between 0 and −1.1g); see module docblock.",
             steps: [
                 { thresholdG: -2.0, maxDurationS: 11.8, exact: true },
                 { thresholdG: -1.1, maxDurationS: 40, exact: true },
@@ -140,7 +142,7 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
             axis: "Gx",
             sign: "+",
             citation:
-                "S5 brief §Gx table (p.19-22 Fig 7.2), base/OTSR restraint column only (prone excluded).",
+                "Rohde §7 Gx table (p.19-22, Fig 7.2), base/OTSR restraint column only (prone excluded).",
             steps: [
                 { thresholdG: 6.0, maxDurationS: 2.0, exact: false },
                 { thresholdG: 4.0, maxDurationS: 4.5, exact: false },
@@ -152,13 +154,13 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
             axis: "Gx",
             sign: "-",
             citation:
-                'Approach S5 pinned bands (spec): "−Gx −2g flat (base restraint)" — flat ceiling, no duration-varying tier.',
+                "Rohde §7 Gx table (p.19-22, Fig 7.2), negative column: −2g flat (base restraint) — flat ceiling, no duration-varying tier.",
             steps: [{ thresholdG: -2.0, maxDurationS: 90, exact: true }],
         },
         {
             axis: "Gy",
             sign: "+",
-            citation: "S5 brief §Gy table (p.18 Fig 7.1), both standards.",
+            citation: "Rohde §7 Gy table (p.18, Fig 7.1), both standards.",
             steps: [
                 { thresholdG: 3.5, maxDurationS: 2.0, exact: false },
                 { thresholdG: 2.0, maxDurationS: 90, exact: true },
@@ -167,7 +169,7 @@ export const DEFAULT_PROFILE: ForceLimitProfile = {
         {
             axis: "Gy",
             sign: "-",
-            citation: "S5 brief §Gy table (p.18 Fig 7.1), both standards.",
+            citation: "Rohde §7 Gy table (p.18, Fig 7.1), both standards.",
             steps: [
                 { thresholdG: -3.5, maxDurationS: 2.0, exact: false },
                 { thresholdG: -2.0, maxDurationS: 90, exact: true },
@@ -289,13 +291,13 @@ function admissibleBound(value: number, bound: { min: number; max: number }): nu
     return value >= 0 ? bound.max : Math.abs(bound.min);
 }
 
-/** the pairwise combined-axis "egg" check (S5 brief §Combined-axis "eggs", p.36-38; S5 Approach
- *  pinned bands): `(a1/adm1)² + (a2/adm2)² `, checked against `≤ 1` by the caller
+/** the pairwise combined-axis "egg" check (Rohde §Combined-axis "eggs", p.36-38):
+ *  `(a1/adm1)² + (a2/adm2)² `, checked against `≤ 1` by the caller
  *  (`pairwiseEllipseOk`). A PURE, axis-agnostic primitive — proven against Rohde's stated formula
  *  on synthetic multi-axis input in this module's own tests, not wired to `checkForceLimits`
  *  (kex2d has one real channel, `fN`/Gz; no x/y reading exists to pair it with). The 3-axis sum
  *  form (all three terms in one sum) is Rohde's own extrapolation, NOT published in either
- *  standard — this module ships only the pairwise form the brief marks as the standard's own. */
+ *  standard — this module ships only the pairwise form Rohde marks as the standard's own. */
 export function pairwiseEllipseValue(
     a1: number,
     bound1: { min: number; max: number },

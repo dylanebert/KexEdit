@@ -65,7 +65,7 @@ function clamp(x: number, lo: number, hi: number): number {
     return Math.min(Math.max(x, lo), hi);
 }
 
-// S2's own oracle (spec `kex2d-cli`, Approach S2): for each op family, the command-layer edit
+// the command layer's own differential oracle: for each op family, the command-layer edit
 // and the direct setter edit — the exact call sequence the UI itself performs, cited inline in
 // `commands.ts`'s own docblocks — land byte-identical documents. No second write path.
 //
