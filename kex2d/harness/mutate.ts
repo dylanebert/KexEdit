@@ -180,10 +180,10 @@ const PAIRS: Pair[] = [
     },
     {
         // S9 repair round (F7): `keyframeDown`'s shift-click toggle — ONE call, both kinds
-        // (`desc.select(pt.id, "toggle", owner)`). Restricted to force alone while retaining
-        // the owner argument, a strip shift-click no longer toggles without perturbing owner
-        // storage. RED-FIRST WITNESS (this repair, re-witnessed): mutated the guard to
-        // `e.shiftKey && kind === "force"` — the flow reds at the strip-keyframe
+        // (`desc.select(pt.id, "toggle", owner)`). Suppressing only the strip call retains the
+        // Shift branch's unconditional return and the force call's owner-bearing production
+        // shape, so no replace/activate/drag or alternate owner-bearing operation is reached.
+        // RED-FIRST WITNESS (this repair, re-witnessed): the flow reds at the strip-keyframe
         // `stripKfSelIds().length toBe(0)` poll after the shift-click-toggle-back-out step
         // (exit 1, Playwright timeout). Restored byte-identical; green.
         name: "shift-toggle",
@@ -191,7 +191,7 @@ const PAIRS: Pair[] = [
         mutations: [
             {
                 old: '    if (e.shiftKey) {\n        desc.select(pt.id, "toggle", owner);\n        return;\n    }',
-                new: '    if (e.shiftKey && kind === "force") {\n        desc.select(pt.id, "toggle", owner); // MUTATED: strip shift-toggle disabled\n        return;\n    }',
+                new: '    if (e.shiftKey) {\n        if (kind === "force") desc.select(pt.id, "toggle", owner); // MUTATED: strip shift-toggle disabled\n        return;\n    }',
             },
         ],
     },
