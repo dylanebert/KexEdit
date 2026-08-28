@@ -405,6 +405,57 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
     });
 });
 
+describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", () => {
+    // a checked-in document (the "hill-explicit" scenario, saved through saveDocument) —
+    // distinct from the corpus round-trip above, which never touches disk: this arm proves the
+    // COMMITTED bytes stay canonical and loadable, so a future emitter-format drift shows up as
+    // a diff against a real file rather than only against a freshly-minted in-memory string.
+    const goldenPath = new URL("./fixtures/hill-explicit-golden.kex", import.meta.url);
+
+    test("loads, round-trips, and re-serializes byte-identical to the committed file", async () => {
+        const text = await Bun.file(goldenPath).text();
+
+        // canonical idempotence over the committed bytes themselves.
+        expect(serializeDocument(parseDocument(text))).toBe(text);
+
+        const b = new State();
+        b.addSystem(BakeSystem);
+        loadDocument(b, text);
+        b.step(0);
+        const bEid = trackEntity(b);
+        if (bEid === null) throw new Error("no track after load");
+
+        // `restoreAll` spawns every row at its DOCUMENT id (`track.ts`'s `restoreAll`), so a
+        // save right back out reproduces the committed bytes exactly — ids included, independent
+        // of any other test in this run having advanced the process-wide id counter.
+        expect(saveDocument(b)).toBe(text);
+
+        // Capture b's bake BEFORE constructing a second State. `samples`/`bakeOut`
+        // (`track.ts:1108`/`1123`) are module-level Maps keyed by raw numeric entity id, and
+        // `track.ts:1123`'s own OWED note names the collision: two independent `State()`s both
+        // start id counting at 0, so `b` and a freshly-built `a` below both resolve to track
+        // entity 1 and share ONE map slot. `bakedArrays` already copies out of the typed arrays
+        // (`Array.from`), so reading it now, before `a.state.step(0)` overwrites that slot, is
+        // what makes the comparison below discriminate the FIXTURE's own bake rather than
+        // comparing `a`'s bake to itself through the shared slot (silently vacuous either way —
+        // proven by mutation: friction, a node's `x`, and the one-shot `value` each edited in the
+        // committed fixture text used to pass clean; this ordering reds on all three, witnessed
+        // 2026-08-28 by reverting the one-shot edit alone: `value: 22` -> `10` in the committed
+        // file, without touching the code below, failed with the expected diff, then the fixture
+        // was restored via `git show fe14c27:kex2d/tests/fixtures/hill-explicit-golden.kex`).
+        const bBaked = bakedArrays(bEid);
+
+        // the bake matches the scenario this fixture was minted from — bakedArrays carries no
+        // ids, so this comparison is unaffected by the loaded track's ids differing from a
+        // freshly-authored one's.
+        const s = scenarios.find((x) => x.name === "hill-explicit");
+        if (!s) throw new Error("scenario not found");
+        const a = scenarioTrack(s);
+        a.state.step(0);
+        expect(bBaked).toEqual(bakedArrays(a.eid));
+    });
+});
+
 describe("saveDocument / loadDocument on a no-op cycle", () => {
     test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
         const { state, eid } = flatTrack();
