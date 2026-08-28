@@ -190,8 +190,9 @@ export type ModeKeyState = {
     /** an edit sub-mode (tangent edit, force handle edit) is open — it peels first. Escape only. */
     editing: boolean;
     /** a live selection — any member of the unified member set, node/force/section/strip/
-     *  strip-keyframe/START/one-shot alike (the caller reads `editor.anySelected`, the set's
-     *  non-empty read, never a hand-enumerated per-kind OR) — it clears first
+     *  strip-keyframe/START/one-shot alike (the caller reads `editor.ts`'s exported
+     *  `anySelected()`, the set's non-empty read, never a hand-enumerated per-kind OR) — it clears
+     *  first
      *  (`controls.ts` / `Timeline.svelte` own that rung). Escape only. */
     selected: boolean;
     /** Solve's own headroom gate — `MIN_FREE` free keys (`optimize.ts`, `App.svelte`'s
