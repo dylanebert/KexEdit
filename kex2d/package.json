@@ -3,10 +3,14 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
+    "bin": {
+        "kex2d": "./src/cli.ts"
+    },
     "scripts": {
         "dev": "vite",
         "build": "vite build",
         "preview": "vite preview",
+        "cli": "bun run src/cli.ts",
         "test": "bun test",
         "capture": "bun run harness/capture.ts",
         "harness:deps": "[ -d harness/node_modules/@playwright/test ] || bun install --cwd harness --frozen-lockfile",
