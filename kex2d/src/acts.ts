@@ -56,6 +56,7 @@ import {
     seedTangent,
     sections,
     setTangent,
+    owningStrips,
     Strip,
     stripAt,
     StripKeyframe,
@@ -195,7 +196,7 @@ export function forceSetEditable(ecs: State): boolean {
  *  twin `mixedSetDelete` reads). resolves station `d` to its section via `toLocal`/`sectionSpans`
  *  and checks `sectionEditable` — the same consent-boundary reading a force keyframe's own
  *  `.section` gives. */
-function stripEditableAtEcs(ecs: State, d: number): boolean {
+export function stripEditableAtEcs(ecs: State, d: number): boolean {
     const trackEid = trackEntity(ecs);
     const spanTable = trackEid !== null ? sectionSpans(ecs, trackEid) : [];
     const loc = toLocal(spanTable, d);
@@ -277,13 +278,11 @@ export function mixedSetDelete(ecs: State): boolean {
     //   band is a sibling, not an ancestor — it deletes. The sweep law's ancestor-keep
     //   applies to Delete the same way it applies to replace-select.
     if (editor.strips.ids.size > 0) {
-        // resolve the set of strip ids that own a selected strip keyframe
-        const owningStrips = new Set<number>();
-        for (const kfId of editor.stripKfs.ids) {
-            const kfEid = stripKeyframeAt(ecs, kfId);
-            if (kfEid !== null) owningStrips.add(StripKeyframe.strip.get(kfEid));
-        }
-        const deletable = [...editor.strips.ids].filter((id) => !owningStrips.has(id));
+        // resolve the set of strip ids that own a selected strip keyframe — the shared
+        // containment read (`owningStrips`/track.ts), the same read the replace-select sweep
+        // answers per member, so Delete and replace-select agree on what an ancestor is
+        const owners = owningStrips(ecs, editor.stripKfs.ids);
+        const deletable = [...editor.strips.ids].filter((id) => !owners.has(id));
         if (deletable.length > 0) {
             let allEditable = true;
             for (const id of deletable) {

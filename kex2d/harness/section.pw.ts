@@ -2999,6 +2999,242 @@ test("strip keyframe arrow-nudge", async ({ page, boot }) => {
     expect(sAfterLeft).toBeLessThan(sAfterRight); // it moved left
 });
 
+// The two-strip arrow-nudge flow — the per-OWNING-strip member resolution. The nudge
+// handler resolves the selected strip-keyframe set through `stripKfMembers` (controls.ts),
+// never through the single active strip: a marquee across two strips selects keyframes of
+// BOTH owners, and each member's clamp bounds come from the strip that owns it. Pre-fix, the
+// handler read `stripKeyframes(ecs, editor.strip).filter(...)` — only the ACTIVE strip's
+// keyframes came back, so a two-strip marquee nudged just the active strip's slice and the
+// other owner's keyframes stayed put (the same defect class the marquee arms above pinned
+// for the candidate pool).
+//
+// RED-FIRST WITNESS: stubbed the site back to the single-active-strip resolution
+// (`stripKeyframes(ecs, editor.strip!).filter(...)`) — the flow red at strip A's keyframe:
+// `sAfterA - sBeforeA` expected 0.1, received 0 (strip A is NOT the marquee's active strip,
+// so its interior keyframe never moved; strip B's did). Restored; green.
+//
+// The marquee leaves a STRIP as the active member (each hit's `ensureStrip` promotes its
+// owner, the last ensured one active) — and the arrow guard needs no activation click on
+// top of it: `editor.stripKf` is `kindActiveId("stripKf")` (editor.ts), whose
+// fallback-to-last-member answers the last-selected strip keyframe whenever the ACTIVE
+// member is of another kind (the per-kind active that accessor's own doc records), so with
+// the marquee'd keyframes in the set the guard already passes with a strip active. The arm
+// is the criterion's literal sequence — marquee across two strips, then the arrow presses.
+// The interior keyframes sit at one shared v well under the strips' values, so the
+// marquee box excludes both strips' seeded boundary keyframes (they sit at the strips' band
+// values, far outside the box's y range) — a caught boundary keyframe at its own strip's
+// bound would clamp the group delta to 0 and mask the resolution entirely.
+test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page, boot }) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+
+    // two strips at non-overlapping positions (avoiding the seed strip at station 0), each
+    // with one INTERIOR keyframe at the SAME v — the marquee box is then one narrow y band
+    // that excludes both strips' boundary keyframes (they sit at the strips' values, 5 and 3)
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripA = (await kexCall(page, "addStripAt", len * 0.3, len * 0.5, 5)) as number;
+    const stripB = (await kexCall(page, "addStripAt", len * 0.6, len * 0.9, 3)) as number;
+    if (stripA === null || stripB === null) throw new Error("strip creation failed (overlap?)");
+    const kfA = (await kexCall(page, "placeStripKf", stripA, len * 0.4, 1)) as number;
+    const kfB = (await kexCall(page, "placeStripKf", stripB, len * 0.75, 1)) as number;
+
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfA) && kfPx.some((k) => k.id === kfB);
+        })
+        .toBe(true);
+    const pxA = kfPx.find((k) => k.id === kfA)!;
+    const pxB = kfPx.find((k) => k.id === kfB)!;
+
+    // marquee across both strips' interior keyframes — the co-selection that spans two
+    // owning strips (the shape the marquee arms above established)
+    const xLo = Math.min(pxA.x, pxB.x) - 8;
+    const xHi = Math.max(pxA.x, pxB.x) + 8;
+    const yLo = Math.min(pxA.y, pxB.y) - 12;
+    const yHi = Math.max(pxA.y, pxB.y) + 12;
+    await marqueeDrag(page, xLo, yLo, xHi, yHi);
+    await expect.poll(async () => (await stripKfSelIds()).length).toBeGreaterThanOrEqual(2);
+    const sel = (await stripKfSelIds()).sort((a, b) => a - b);
+    expect(sel).toContain(kfA);
+    expect(sel).toContain(kfB);
+
+    // the pointer stays over the chart (the marquee's own drag) — `editor.hover` is "timeline"
+    const sBeforeA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sBeforeB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+
+    // ArrowRight → BOTH owners' keyframes move by NUDGE_S (0.1), one shared multi-set delta
+    // (no rounding — the multi-set regime), each clamped by its OWN strip's bounds
+    await page.keyboard.press("ArrowRight");
+    await frames(page, 1);
+    const sAfterA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sAfterB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+    expect(sAfterA - sBeforeA).toBeCloseTo(0.1, 5); // strip A's keyframe moved — not just the active strip's slice
+    expect(sAfterB - sBeforeB).toBeCloseTo(0.1, 5);
+
+    // ArrowLeft back — both move back, the shared delta again
+    await page.keyboard.press("ArrowLeft");
+    await frames(page, 1);
+    const sBackA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sBackB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+    expect(sBackA).toBeCloseTo(sBeforeA, 5);
+    expect(sBackB).toBeCloseTo(sBeforeB, 5);
+});
+
+// The MIXED-DOMAIN lockdown fall-through: a pin session locks every non-pinning section, and
+// the mixed force + strip-keyframe arrow nudge (the force handler's own branch — a shape the
+// two-strip flow above cannot reach, holding no force member) is all-or-nothing on the
+// strip-kf subset PER OWNING STRIP: one locked owner blocks the WHOLE subset from the mixed
+// move while the forces still nudge alone — never a silent moving subset. The shipped
+// `tests/controls.test.ts` `stripKfMembers` arms stop at the read's `anyLocked` flag; both
+// branch outcomes live in the Svelte handler, which `bun test` cannot see — this harness is
+// the arm seam. The lockdown gate is `stripEditableAtEcs` per owner (a strip whose station
+// resolves into a non-pinning section), so the fixture pins section 0 and lays strip A in the
+// APPENDED section 1's span (locked) while strip B sits in section 0 and is ensured the
+// ACTIVE strip — the last strip member — which is exactly the owner the pre-fix gate read:
+// it gated on the ACTIVE strip's editability alone, so a locked non-active owner's
+// keyframes rode the mixed move silently.
+//
+// RED-FIRST WITNESS: stubbed the site back to the pre-fix gate — kept the per-owner
+// `stripKfMembers` resolution, replaced `!anyLocked` with the ACTIVE strip's editability
+// (`stripEditableAt(Strip.start.get(stripAt(ecs, editor.strip)))`, the pre-diff reading).
+// The flow red at the strip-keyframe assertion
+// `expect(kfAfter - kfBefore).toBeCloseTo(0, 5)` — Expected: 0,
+// Received: 0.10000000000000142 (the locked owner's keyframe moved +NUDGE_S under the
+// active-strip gate: strip B, in the editable pinning section, is the active strip the stub
+// reads). Restored; green.
+//
+// FIXTURE LAW (the shipped controls.test.ts lockdown arm records it): any `addStrip`/
+// `addStripKeyframe` write changes `authoredHash`, so the bake must re-run before entering
+// the pin session — in the capture rig that is a real frame (`frames(page, 1)`) after the
+// authoring hooks and before the ctxmenu's Pin row.
+test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the forces still move", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump"); // section 0 → force, 5 authored keyframes
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    // SectionKind.Force — the appended span that LOCKS in the session. Force-kind, not geo:
+    // a force section STORES its extent (`Section.length`), so `sectionLengths` reads it
+    // live, while a geo section's chord is derived from its node chain and the stored field
+    // stays 0 — the fixture needs a live span number to lay stations by.
+    await kexCall(page, "append", 1);
+    await expect.poll(async () => kexCall(page, "sectionCount")).toBe(2);
+
+    const sectionLengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
+    await expect.poll(async () => ((await sectionLengths()) as number[])[1]).toBeGreaterThan(0);
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripSelIds = () => kexCall(page, "stripSelIds") as Promise<number[]>;
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const forceU = () =>
+        kexCall(page, "forceU") as Promise<
+            { id: number; section: number; s: number; g: number; u: number }[]
+        >;
+    const stripKeyframesOf = (id: number) =>
+        kexCall(page, "stripKeyframesOf", id) as Promise<{ id: number; s: number; v: number }[]>;
+
+    // strip A in the APPENDED section's span (locked once the session opens), strip B in
+    // section 0 (the pinning section, editable). One INTERIOR keyframe on A at v 1 — the
+    // marquee's own band, far under A's band value 5 so the boundary keyframes stay out of
+    // the box (a caught boundary keyframe at its own bound would clamp the delta to 0).
+    const [L0, L1] = (await sectionLengths()) as [number, number];
+    const stripA = (await kexCall(page, "addStripAt", L0 + L1 * 0.2, L0 + L1 * 0.8, 5)) as number;
+    const stripB = (await kexCall(page, "addStripAt", L0 * 0.3, L0 * 0.9, 3)) as number;
+    if (stripA === null || stripB === null) throw new Error("strip creation refused (overlap?)");
+    const kfA = (await kexCall(page, "placeStripKf", stripA, L0 + L1 * 0.5, 1)) as number;
+
+    await frameTimeline(page);
+    let kfPx: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            kfPx = await stripKfPx();
+            return kfPx.some((k) => k.id === kfA);
+        })
+        .toBe(true);
+    const pxA = kfPx.find((k) => k.id === kfA)!;
+    await frames(page, 1); // the strip authoring changed the bake — re-run it before the session
+
+    // pin section 0 (the Pin row's own force-section guard: seedForceBump made it one) —
+    // every OTHER section locks for the session
+    await page.locator(".clip").first().click({ button: "right" });
+    await expect(page.locator(".ctxmenu")).toBeVisible();
+    await clickMenuItem(page, ".ctxmenu", "Pin");
+    await expect.poll(async () => kexCall(page, "pinning")).toBe(true);
+
+    // the marquee over strip A's keyframe — a plain drag with ONE hit: A's keyframe selected,
+    // A ensured. The box catches no force keyframe (section 0's five sit far left of it, and
+    // the appended section's two continuation keys sit at its boundary stations, away from
+    // A's interior keyframe) — the force selection must stay all-editable for the
+    // fall-through's own `forceSetEditable` gate.
+    await marqueeDrag(page, pxA.x - 8, pxA.y - 12, pxA.x + 8, pxA.y + 12);
+    await expect.poll(async () => (await stripKfSelIds()).includes(kfA)).toBe(true);
+    await expect.poll(async () => (await stripSelIds()).includes(stripA)).toBe(true);
+
+    // strip B into the set LAST — it becomes the ACTIVE strip (`kindActiveId("strip")`'s
+    // fallback answers the last strip member), the very owner the pre-fix gate read: B sits
+    // in the editable pinning section, so the stub's active-strip gate passes while A is
+    // locked. B carries no authored keyframe; its band shift-click is a pure membership add.
+    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    if (!chartCanvasBb || !bandBb) throw new Error("chart / band not laid out");
+    const spB = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === stripB,
+    );
+    if (!spB) throw new Error("strip B has no band px");
+    await page.keyboard.down("Shift");
+    await page.mouse.click(chartCanvasBb.x + (spB.x0 + spB.x1) / 2, bandBb.y + bandBb.height / 2);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripSelIds()).includes(stripB)).toBe(true);
+
+    // a section-0 force keyframe shift-clicked into the set LAST — the ACTIVE member is the
+    // force keyframe, so the force handler's own branch is the site that fires
+    const forceHit = await page.locator(".fhit").nth(2).boundingBox();
+    if (!forceHit) throw new Error("force diamond 2 not laid out");
+    await page.keyboard.down("Shift");
+    await page.mouse.click(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const activeForce = (await kexCall(page, "forceSelActive")) as number;
+    const forceBefore = (await forceU()).find((p) => p.id === activeForce)?.s;
+    if (forceBefore === undefined) throw new Error("selected force keyframe not readable");
+    const kfBefore = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)!.s;
+
+    // one ArrowRight — the pointer is over the chart (the shift-click), so the force branch
+    // fires: A's owner is locked, the WHOLE strip-kf subset is blocked from the mixed move,
+    // and the forces still nudge alone (the fall-through)
+    await page.keyboard.press("ArrowRight");
+    await frames(page, 1);
+    const forceAfter = (await forceU()).find((p) => p.id === activeForce)?.s;
+    if (forceAfter === undefined) throw new Error("selected force keyframe not readable after");
+    expect(forceAfter - forceBefore).toBeCloseTo(0.1, 5); // the forces nudged ALONE
+    const kfAfter = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)!.s;
+    expect(kfAfter - kfBefore).toBeCloseTo(0, 5); // the locked owner's keyframe never moved
+    expect(await kexCall(page, "pinning")).toBe(true); // the session stood through the nudge
+});
+
 // S1 capture arm (B3): strip-keyframe SNAP. `applyKeyframeDrag`'s s-axis snap resolves through
 // `stripKfSTargets` (Timeline.svelte:1299, called at :1444) and v-axis through `vTargets`
 // (:1291, called at :1460) — both kind-specific target builders feeding the shared `snapAxis`.

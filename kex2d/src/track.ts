@@ -842,6 +842,27 @@ export function stripKeyframeAt(ecs: State, id: number): number | null {
     return null;
 }
 
+/** the stable id of the strip that owns a strip keyframe — the per-member containment read
+ *  ("which strip owns this keyframe"), or null when the keyframe doesn't resolve (a stale id
+ *  across a delete). both the Delete path's ancestor-keep and the replace-select containment
+ *  sweep answer "is this strip the owner" through this ONE read. */
+export function owningStrip(ecs: State, kfId: number): number | null {
+    const kfEid = stripKeyframeAt(ecs, kfId);
+    return kfEid === null ? null : StripKeyframe.strip.get(kfEid);
+}
+
+/** the set of strip ids that own the given keyframes — `owningStrip`'s set form. the Delete
+ *  path's own containment read: a strip that owns a selected keyframe is an ANCESTOR of the
+ *  set, not a sibling, and survives where the co-selected siblings delete. */
+export function owningStrips(ecs: State, kfIds: Iterable<number>): Set<number> {
+    const owners = new Set<number>();
+    for (const kfId of kfIds) {
+        const owner = owningStrip(ecs, kfId);
+        if (owner !== null) owners.add(owner);
+    }
+    return owners;
+}
+
 let nextStripKfId = 0;
 
 /** author a new velocity keyframe on a strip at section-local `s` with velocity `v`.

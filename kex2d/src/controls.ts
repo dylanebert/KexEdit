@@ -7,6 +7,7 @@ import {
     sectionActs,
     sectionEditable,
     sectionOpsAllowed,
+    stripEditableAtEcs,
 } from "./acts";
 import {
     activeKind,
@@ -82,6 +83,10 @@ import {
     sectionSpans,
     seedTangent,
     setTangent,
+    Strip,
+    stripAt,
+    StripKeyframe,
+    stripKeyframeAt,
     Track,
     trackEntity,
 } from "./track";
@@ -673,6 +678,68 @@ export function selectedMetrics(ecs: State, eid: number): NodeMetrics | null {
     const prev = nodeWorld(s, prevEid);
     const node = nodeWorld(s, eid);
     return nodeMetrics(prev, node, exitWorld(eid));
+}
+
+/** one selected strip-keyframe member resolved through its OWNING strip: the nudge/drag clamp
+ *  bounds (`lo`/`len`) are the owning strip's extent, not the active strip's — the per-member
+ *  shape `nudgeKeyframes` takes. */
+export interface StripKfMember {
+    id: number;
+    s: number;
+    v: number;
+    lo: number;
+    len: number;
+}
+
+/** resolve the selected strip-keyframe members per OWNING strip — never through the single
+ *  active strip. a marquee across two strips selects keyframes of both, and each member's
+ *  clamp bounds come from the strip that OWNS it (the ECS read `owningStrip`/track.ts — the
+ *  Delete path's own containment read — never a view of one strip), so the whole selected set
+ *  moves, not just the active strip's slice of it. each member's owning strip is checked once
+ *  against the strip/oneShot edit-lockdown gate (`stripEditableAtEcs`, the same consent
+ *  boundary `mixedSetDelete` reads): any locked owner sets `anyLocked` and the caller's gesture
+ *  is all-or-nothing on the lockdown — never a silent moving subset. ids that no longer
+ *  resolve (stale across a delete) are skipped, and they don't lock — a stale id owns nothing.
+ *  pure ECS read, no editor state: the caller passes the selected kf ids.
+ *
+ * @example
+ * const { members, anyLocked } = stripKfMembers(ecs, editor.stripKfs.ids); */
+export function stripKfMembers(
+    ecs: State,
+    kfIds: Iterable<number>,
+): { members: StripKfMember[]; anyLocked: boolean } {
+    const members: StripKfMember[] = [];
+    // per-strip cache: each owner's bounds + lockdown is read once, not once per keyframe
+    const owners = new Map<number, { lo: number; len: number; locked: boolean } | null>();
+    let anyLocked = false;
+    for (const kfId of kfIds) {
+        const kfEid = stripKeyframeAt(ecs, kfId);
+        if (kfEid === null) continue; // stale across a delete — skipped, never locks
+        const stripId = StripKeyframe.strip.get(kfEid);
+        let strip = owners.get(stripId);
+        if (strip === undefined) {
+            const sEid = stripAt(ecs, stripId);
+            strip =
+                sEid === null
+                    ? null
+                    : {
+                          lo: Strip.start.get(sEid),
+                          len: Strip.end.get(sEid),
+                          locked: !stripEditableAtEcs(ecs, Strip.start.get(sEid)),
+                      };
+            owners.set(stripId, strip);
+        }
+        if (strip === null) continue; // owning strip gone — skipped, never locks
+        if (strip.locked) anyLocked = true;
+        members.push({
+            id: kfId,
+            s: StripKeyframe.s.get(kfEid),
+            v: StripKeyframe.v.get(kfEid),
+            lo: strip.lo,
+            len: strip.len,
+        });
+    }
+    return { members, anyLocked };
 }
 
 /** the distinct sections the selected node set spans — what one group-move undo entry covers, and

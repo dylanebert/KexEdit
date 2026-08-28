@@ -1422,7 +1422,7 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
     test("deselect: `selectStripKf(null)` clears the strip keyframe selection (the `marqueeUp` fix)", () => {
         try {
             // set up a strip keyframe selection directly
-            selectStripKf(7);
+            selectStripKf(7, "replace", 1);
             expect(editor.stripKf).toBe(7);
             // the actual fix: `marqueeUp` calls `selectStripKf(null)` to clear the sub-selection
             selectStripKf(null);

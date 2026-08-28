@@ -36,6 +36,7 @@ import {
     sectionsJoinable,
     selectedMetrics,
     stripEscape,
+    stripKfMembers,
 } from "../src/controls";
 import {
     activeKind,
@@ -53,8 +54,10 @@ import {
     selectSection,
     selectStrip,
     selectStripKf,
+    selectStripKfs,
+    ensureStrip,
 } from "../src/editor";
-import { addStrip, history } from "../src/history";
+import { addStrip, addStripKeyframe, history } from "../src/history";
 import { forceKeyAct, modeKeyAct, nodeKeyAct, sectionKeyAct } from "../src/keys";
 import { editHandleSets } from "../src/tangents";
 import { LENGTH_MIN } from "../src/magnet";
@@ -94,8 +97,10 @@ import {
     seedTangent,
     setTangent,
     stripAt,
+    stripKeyframes,
     Track,
 } from "../src/track";
+import { enterPinMode, exitPinMode } from "../src/pin";
 import { marquee, setCamera } from "../src/view";
 
 // a synthetic view transform (world→screen affine, sy < 0 for the Y-flip) — the drag paths take
@@ -1756,7 +1761,7 @@ describe("S2 — one dismissal reads the member set: one press clears a cross-ki
         // the production plain click on a strip keyframe — `selectStripKf`'s containment sweep
         // keeps the owning strip, so {strip, stripKf} by construction: nesting, not siblings.
         selectStrip(1);
-        selectStripKf(10);
+        selectStripKf(10, "replace", 1);
         expect(editor.strips.ids.size).toBe(1);
         expect(editor.stripKfs.ids.size).toBe(1);
         stripEscape(); // press 1: the keyframe selection peels, the strip stays
@@ -1776,10 +1781,121 @@ describe("S2 — one dismissal reads the member set: one press clears a cross-ki
 
     test("escapeCrossesKinds reads the member set: the velocity pair is nesting, a force beside it a sibling", () => {
         selectStrip(1);
-        selectStripKf(10); // the containment pair — {strip, stripKf} by construction
+        selectStripKf(10, "replace", 1); // the containment pair — {strip, stripKf} by construction
         expect(escapeCrossesKinds(["strip", "stripKf"])).toBe(false); // nesting, not cross-kind
         expect(escapeCrossesKinds(["force"])).toBe(true); // both members sit outside the force domain
         selectForce(3, "toggle"); // a genuine sibling joins
         expect(escapeCrossesKinds(["strip", "stripKf"])).toBe(true);
+    });
+});
+
+// ── the strip-keyframe nudge/drag member read: per OWNING strip, all-or-nothing lockdown ──
+
+/** a baked geo section carrying two NON-OVERLAPPING strips, each with one interior keyframe —
+ *  the two-strip co-selection shape a cross-strip marquee builds (the strip-keyframe ids of
+ *  both owners in one selected set, one owner ACTIVE). */
+function twoStripTrack(): {
+    state: State;
+    stripA: number;
+    stripB: number;
+    kfA: number;
+    kfB: number;
+} {
+    const { state, sec } = geoTrack();
+    addNode(state, sec, 0, 0);
+    addNode(state, sec, EXTEND_DIST, 0);
+    state.step(0);
+    const stripA = addStrip(history, state, 0, 10, 12);
+    const stripB = addStrip(history, state, 14, 23, 8);
+    if (stripA === null || stripB === null) throw new Error("strip refused (overlap or no edge)");
+    const kfA = addStripKeyframe(history, state, stripA, 5, 9);
+    const kfB = addStripKeyframe(history, state, stripB, 18, 6);
+    return { state, stripA, stripB, kfA, kfB };
+}
+
+describe("stripKfMembers — the strip-kf nudge read resolves per OWNING strip", () => {
+    test("a two-strip marquee set: every member carries its OWNING strip's bounds, not the active strip's", () => {
+        // RED-FIRST WITNESS: stubbed the resolution back to the single-active-strip shape
+        // (`stripKeyframes(ecs, editor.strip).filter(...)` + that one strip's lo/len) — the
+        // arm red at `members.length` toBe 6, Received 3 (only strip B's members came back,
+        // wearing B's bounds; strip A's keyframes were silently dropped from the nudge set).
+        // Restored; green.
+        const { state, stripA, stripB, kfA, kfB } = twoStripTrack();
+        // the production marquee co-selection: every selected kf of BOTH strips in one set,
+        // then the per-hit `ensureStrip` the marquee performs — strip B ends up ACTIVE (the
+        // last ensured strip), exactly the state that starved strip A before the fix
+        selectStripKfs(
+            [
+                ...stripKeyframes(state, stripA).map((k) => k.id),
+                ...stripKeyframes(state, stripB).map((k) => k.id),
+            ],
+            kfB,
+        );
+        ensureStrip(stripA);
+        ensureStrip(stripB);
+        expect(editor.strip).toBe(stripB); // the active strip is only ONE of the two owners
+
+        const { members, anyLocked } = stripKfMembers(state, editor.stripKfs.ids);
+        expect(members.length).toBe(6); // both strips' full kf sets — never just the active strip's slice
+        // each member carries its OWNING strip's [lo, len]: strip A's kfs clamp to [0, 10],
+        // strip B's to [14, 23] — no shared bounds off the active strip
+        const expected = [
+            ...stripKeyframes(state, stripA).map((k) => ({
+                id: k.id,
+                s: k.s,
+                v: k.v,
+                lo: 0,
+                len: 10,
+            })),
+            ...stripKeyframes(state, stripB).map((k) => ({
+                id: k.id,
+                s: k.s,
+                v: k.v,
+                lo: 14,
+                len: 23,
+            })),
+        ].sort((a, b) => a.id - b.id);
+        expect([...members].sort((a, b) => a.id - b.id)).toEqual(expected);
+        // the cross-owner member, named: strip B's INTERIOR keyframe resolves through B, not A
+        const interior = members.find((m) => m.id === kfB);
+        expect(interior?.lo).toBe(14);
+        expect(interior?.len).toBe(23);
+        expect(interior?.s).toBe(18);
+        expect(interior?.v).toBe(6);
+        expect(interior?.id).toBe(kfB);
+        void kfA;
+        expect(anyLocked).toBe(false); // no pin session: every owner editable
+    });
+
+    test("the lockdown is all-or-nothing and read per owner: any locked owner sets anyLocked", () => {
+        // a pin session on ANOTHER section puts every strip whose station resolves there under
+        // lockdown (the `stripEditableAtEcs` consent boundary, the same gate Del reads). one
+        // locked owner blocks the WHOLE gesture (anyLocked), never a silent moving subset —
+        // and the lockdown is a FLAG on the read, not a filter: every member still resolves.
+        // exiting the session unlocks it again.
+        const { state, sec } = geoTrack();
+        addNode(state, sec, 0, 0);
+        addNode(state, sec, EXTEND_DIST, 0);
+        state.step(0);
+        const force = appendSection(state, SectionKind.Force);
+        state.step(0);
+        const stripA = addStrip(history, state, 0, 10, 12);
+        const stripB = addStrip(history, state, 14, 23, 8);
+        if (stripA === null || stripB === null) throw new Error("strip refused");
+        addStripKeyframe(history, state, stripA, 5, 9);
+        addStripKeyframe(history, state, stripB, 18, 6);
+        state.step(0); // strips change the bake (they're in `authoredHash`) — re-bake for a live one
+        const ids = [
+            ...stripKeyframes(state, stripA).map((k) => k.id),
+            ...stripKeyframes(state, stripB).map((k) => k.id),
+        ];
+        selectStripKfs(ids, null);
+        expect(stripKfMembers(state, ids).anyLocked).toBe(false); // no session: editable
+        expect(enterPinMode(state, force)).toBe(true); // pin the FORCE section
+        const { members, anyLocked } = stripKfMembers(state, ids);
+        expect(members.length).toBe(6); // the lockdown is a flag, not a filter
+        expect(anyLocked).toBe(true); // both owners' stations resolve to the locked-out geo section
+        exitPinMode(state);
+        expect(stripKfMembers(state, ids).anyLocked).toBe(false); // session gone: unlocked again
     });
 });
