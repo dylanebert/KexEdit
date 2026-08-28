@@ -174,7 +174,6 @@ import {
     setStrip,
     setStripKeyframe,
     keyframeRoom,
-    owningStrip,
     stripBoundsAt,
     stripDefaultExtentAt,
     stripKeyframes,
@@ -1641,7 +1640,10 @@ let lastFdownId = -1;
 interface KfDesc {
     sel: Selection;
     pts: (ForcePt | StripKfPt)[];
-    select: (id: number | null, mode?: SelectMode) => void;
+    // the strip kind's replace form needs the owning strip as its containment input — the
+    // third param carries it (`StripKfPt.strip`, the caller's own hit data, never an ECS
+    // read); the force kind ignores it.
+    select: (id: number | null, mode?: SelectMode, owner?: number) => void;
     selectMany: (ids: number[], active: number | null) => void;
     activate: (id: number) => void;
     val: (p: ForcePt | StripKfPt) => number; // value mapping: which field is "the value" (g or v)
@@ -1674,21 +1676,20 @@ function kfDesc(kind: KfKind): KfDesc {
         // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
         // filter was the siloing — not a visibility gate.
         pts: stripKfPts,
-        // the plain click resolves the OWNER from the ECS per click (`owningStrip`, the same
-        // containment read Delete answers through) — never through the active strip, so the
-        // replace sweep keeps exactly the strip that owns the clicked keyframe: a co-selected
-        // non-owning strip is a sibling and drops.
-        select: (id, mode) => {
+        // the plain click resolves the OWNER from the click's own hit data — the owner param
+        // `keyframeDown` reads off the strip-kf render point (`StripKfPt.strip`), never through
+        // an ECS read and never through the active strip, so the replace sweep keeps exactly
+        // the strip that owns the clicked keyframe: a co-selected non-owning strip is a
+        // sibling and drops. no owner param = an untyped caller, and the fail-closed nothing
+        // is kept (the overloads make it unreachable from the typed calls). a stale id off a
+        // lagging frame still selects here and is peeled by the strip-keyframe dismissal
+        // $effect above (`stripKfPts` no longer contains it) — the same self-healing every
+        // other stale member rides, and the cost of the click no longer depending on a read
+        // completing under load.
+        select: (id, mode, owner) => {
             if (id === null) selectStripKf(null);
             else if (mode === "toggle") selectStripKf(id, "toggle");
-            else {
-                // unresolvable owner = a stale id (the kf is gone) — a click on a phantom
-                // keyframe selects nothing, the same nothing a band click on a strip that is
-                // gone selects: band hits classify through `classifyStripHit` over live
-                // `bandCandidates`, so a strip that no longer exists was never hit-testable
-                const owner = owningStrip(ecs, id);
-                if (owner !== null) selectStripKf(id, "replace", owner);
-            }
+            else if (owner !== undefined) selectStripKf(id, "replace", owner);
         },
         selectMany: selectStripKfs,
         activate: activateStripKf,
@@ -1742,7 +1743,9 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     }
     // clicked-selected-vs-unselected rule — ONE path, both kinds.
     if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);
-    else desc.select(pt.id);
+    // the strip kind's containment input rides the hit data's own render point — the owner
+    // of the clicked keyframe, no ECS read on the path
+    else desc.select(pt.id, "replace", kind === "strip" ? (pt as StripKfPt).strip : undefined);
     // lockdown: another section's force keys SELECT but never drag (strip already returned
     // above when locked).
     if (kind === "force" && !sectionEditable(editor.pinning, pt.section)) return;

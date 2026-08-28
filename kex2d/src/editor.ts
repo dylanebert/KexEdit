@@ -90,6 +90,14 @@ export type SelKind = "node" | "force" | "section" | "strip" | "stripKf" | "star
 export interface Member {
     kind: SelKind;
     id: number;
+    /** the stored containment flag — carried only by `"stripKf"` members: the stable id of
+     *  the strip that owns the keyframe, recorded by the replace-select containment sweep
+     *  (`selectStripKf`'s replace path, the one place containment is decided) from the owner the
+     *  click's own hit data supplies. reading containment off the member (`stripKfOwner`) is
+     *  the no-ECS alternative to the Delete path's `owningStrip`/track.ts read, so a reader
+     *  never waits on a store catch-up; members added by the shift/marquee forms carry no flag
+     *  (those paths resolve no owner), a gap the sibling-counting migration owns. */
+    owner?: number;
 }
 
 const _members = new Map<string, Member>();
@@ -97,8 +105,8 @@ let _active: Member | null = null;
 
 const memberKey = (kind: SelKind, id: number): string => `${kind}:${id}`;
 
-function memberAdd(kind: SelKind, id: number): void {
-    _members.set(memberKey(kind, id), { kind, id });
+function memberAdd(kind: SelKind, id: number, owner?: number): void {
+    _members.set(memberKey(kind, id), { kind, id, owner });
 }
 
 function memberRemove(kind: SelKind, id: number): void {
@@ -262,9 +270,10 @@ interface EditorState {
      *  (shift-click toggles membership); Escape peels the set before clearing the strip selection
      *  (the force keyframe's own Escape ladder). NOT a mutually-exclusive selection kind.
      *  READ-ONLY, unlike its sibling active views: the replace-select sweep is per-member
-     *  containment and needs the owning strip — an ECS read this module deliberately lacks
-     *  (selection lives outside the ECS). the clearing path is `selectStripKf(null)`, and the
-     *  plain-click number path resolves the owner and calls `selectStripKf(id, "replace", owner)`. */
+     *  containment and needs the owning strip — a value this module deliberately lacks (it
+     *  lives in the caller's own hit data, `StripKfPt.strip`, never in an ECS read — selection
+     *  lives outside the ECS). the clearing path is `selectStripKf(null)`, and the
+     *  plain-click number path passes that owner and calls `selectStripKf(id, "replace", owner)`. */
     readonly stripKf: number | null;
     tangentEdit: number | null;
     /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
@@ -1212,8 +1221,9 @@ export function ensureStrip(id: number): void {
  *  kind (S9, F7). "replace" (default) collapses the set to `id` (or clears it when null);
  *  "toggle" adds/removes it (shift-click). the replace form sweeps the other top-level kinds,
  *  then keeps ONLY the strip that owns the clicked keyframe (`owner`, required with a non-null
- *  id, resolved from the ECS by the plain-click caller through `owningStrip`/track.ts — the
- *  Delete path's own ancestor read) — containment is per member, not per kind, so a
+ *  id, supplied by the plain-click caller from the click's own hit data — `StripKfPt.strip`,
+ *  the strip-kf render point `keyframeDown` receives, so the path reads no ECS at all) —
+ *  containment is per member, not per kind, so a
  *  co-selected strip that owns nothing in the new set drops like any other sibling. this is
  *  the plain-click path, and `sweepOtherKinds` survives here alone (S2 deleted it from the
  *  shift/marquee paths). a sub-selection layered on strip selection: the owning strip stays
@@ -1233,15 +1243,18 @@ export function selectStripKf(
             // containment is per member: only the strip that OWNS the clicked keyframe survives
             // the sweep — the strip kind as a whole is not an ancestor. a co-selected strip
             // that owns nothing in the new set is a sibling, and drops exactly like every
-            // other kind. `owner` is the strip the plain-click caller resolves from the ECS
-            // (the SAME read the Delete path answers through, `owningStrip`/track.ts), so
-            // Delete and replace-select agree on what an ancestor is; with no owner resolvable
-            // (an untyped caller — the overloads make this unreachable) NOTHING is kept, the
-            // fail-closed direction for a containment exception
+            // other kind. `owner` is the strip the plain-click caller reads off the click's own
+            // hit data (never the ECS — a read that races the click was the measured defect
+            // here), so this sweep is where containment is decided and where it is STORED:
+            // the new member carries `owner` (the stored containment flag, `Member`'s own
+            // field), the no-ECS answer to the Delete path's `owningStrip`/track.ts read.
+            // with no owner supplied (an untyped caller — the overloads make this
+            // unreachable) NOTHING is kept, the fail-closed direction for a containment
+            // exception
             for (const [key, m] of _members)
                 if (m.kind === "strip" && m.id !== owner) _members.delete(key);
             clearKind("stripKf");
-            memberAdd("stripKf", id);
+            memberAdd("stripKf", id, owner);
             _active = { kind: "stripKf", id };
         } else {
             clearKind("stripKf");
@@ -1249,6 +1262,15 @@ export function selectStripKf(
     } else {
         toggleSingle("stripKf", id);
     }
+}
+
+/** the stored containment flag's read: the owning strip id recorded on a selected strip
+ *  keyframe's member at replace-select time, or null when the keyframe isn't selected or its
+ *  member carries no flag (the shift/marquee add paths resolve no owner). the no-ECS answer to
+ *  the Delete path's `owningStrip`/track.ts read — a reader off the member never waits on a
+ *  store catch-up, which is the defect that repaired the plain-click path here. */
+export function stripKfOwner(id: number): number | null {
+    return _members.get(memberKey("stripKf", id))?.owner ?? null;
 }
 
 /** replace the strip-keyframe selection with a computed set (the marquee's atomic write) —
@@ -1405,6 +1427,9 @@ interface MemberSnap {
     order: number;
     /** non-node kinds — the stable id. 0 for node. */
     id: number;
+    /** stripKf only — the stored containment flag (`Member`'s own `owner`), so an undo/redo
+     *  restore preserves the owning strip exactly as the replace sweep recorded it. */
+    owner?: number;
 }
 
 /** the active member in the restorable snapshot — same shape as {@link MemberSnap} minus the kind
@@ -1441,7 +1466,7 @@ export const selectionHook = {
                     id: 0,
                 });
             } else {
-                members.push({ kind: m.kind, section: 0, order: 0, id: m.id });
+                members.push({ kind: m.kind, section: 0, order: 0, id: m.id, owner: m.owner });
             }
         }
         let active: ActiveSnap | null = null;
@@ -1493,7 +1518,7 @@ export const selectionHook = {
             } else if (m.kind === "strip") {
                 if (stripAt(ecs, m.id) !== null) memberAdd("strip", m.id);
             } else if (m.kind === "stripKf") {
-                if (stripKeyframeAt(ecs, m.id) !== null) memberAdd("stripKf", m.id);
+                if (stripKeyframeAt(ecs, m.id) !== null) memberAdd("stripKf", m.id, m.owner);
             } else if (m.kind === "start") {
                 memberAdd("start", SINGLETON_ID);
             } else if (m.kind === "oneShot") {
