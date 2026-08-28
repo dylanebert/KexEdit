@@ -22,26 +22,34 @@
  *  first; a refused load throws and leaves the live document untouched (Locked decision:
  *  "a refused load leaves the live document untouched"). */
 
-import type { State } from "@dylanebert/shallot";
+import { State } from "@dylanebert/shallot";
+import type { Refusal } from "./commands";
 import { history } from "./history";
 import { Easing, type Offset } from "./profile";
 import { Domain } from "./section";
 import { TangentMode, type Tangent } from "./spline";
 import {
+    allStrips,
     createTrack,
     DS_NOMINAL,
     type ForceTangent,
+    MIN_FORCE_LEN,
+    MIN_V0,
     type NodeState,
     type OneShotSnapshot,
     reserveIds,
     restoreAll,
     type SectionSnapshot,
     SectionKind,
+    stripCoversOneEdge,
+    stripOverlapped,
     type StripSnapshot,
     snapshotAll,
     Track,
     trackEntity,
     type TrackSnapshot,
+    validCoefficient,
+    validStripValue,
 } from "./track";
 
 /** the document format's own version — forward-only migrations (below) bridge an older file up
@@ -403,6 +411,16 @@ function fail(msg: string): never {
     );
 }
 
+/** every semantic-invariant refusal throws through here, one thrown message naming every
+ *  violated guard — `fail`'s own remedy suffix, so a semantic rejection reads exactly like a
+ *  structural one to a caller matching on `/kex2d document:/` or the recovery-remedy text. */
+function failSemantics(refusals: Refusal[]): never {
+    const detail = refusals.map((r) => `${r.guard}: ${r.message}`).join("; ");
+    fail(
+        `document violates ${refusals.length} invariant${refusals.length === 1 ? "" : "s"} — ${detail}`,
+    );
+}
+
 function isFiniteNumber(v: unknown): v is number {
     return typeof v === "number" && Number.isFinite(v);
 }
@@ -585,6 +603,233 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     };
 }
 
+// ── semantic invariant validation (spec `kex2d-cli` S4) ──────────────────────────────────
+//
+// `validateDocument` above is purely structural (types present, enums in range) — it lets
+// through a document that is well-SHAPED but violates an authoring invariant the live setters
+// enforce (`track.ts`'s guard predicates). `restoreAll`'s spawn path bypasses every one of
+// those guards on purpose (an in-session undo snapshot is already-validated state, spec Locked
+// decision), so a hand-authored `.kex` file that breaks one loads silently today. The checks
+// below close that: every one reuses the SAME named predicate a setter or S2's `commands.ts`
+// already reads (`Refusal`'s `{guard, message}` shape imported from there, not reinvented), so
+// a refusal here and a refusal from an edit op key on the same guard vocabulary.
+//
+// Two passes. `checkDocInvariants` is pure — doc-shape only, no ECS — and covers everything
+// that's a plain scalar/count comparison over the parsed document (duplicate ids, section-order
+// collisions, kind-mismatched payloads, node/extent floors, duplicate stations, coefficient/
+// value validity, the start-speed floor). `checkGeometryInvariants` covers the two guards that
+// are irreducibly geometric — `stripOverlapped`/`stripCoversOneEdge` resolve a strip's edge
+// range against a section's OWN chord length (`sectionEdgeDs`/`geoChordDs`), a real spline
+// evaluation, not a doc-level number — so it builds a throwaway `State`, loads the CANDIDATE
+// document into it (no bake tick needed: both predicates are pure derivations off the authored
+// payload), and reads the predicates there. This throwaway state is never the caller's `ecs` —
+// `loadDocument`'s "untouched on refusal" guarantee holds by construction, not by rollback.
+
+function checkDuplicateIds(doc: Kex2dDocument): Refusal[] {
+    const refusals: Refusal[] = [];
+    const check = (category: string, ids: number[]) => {
+        const seen = new Set<number>();
+        for (const id of ids) {
+            if (seen.has(id))
+                refusals.push({
+                    guard: "duplicateId",
+                    message: `two or more ${category} share id ${id} — ids must be unique within their category`,
+                });
+            seen.add(id);
+        }
+    };
+    check(
+        "sections",
+        doc.sections.map((s) => s.id),
+    );
+    check(
+        "force points",
+        doc.sections.flatMap((s) => s.points.map((p) => p.id)),
+    );
+    check(
+        "strips",
+        doc.strips.map((st) => st.id),
+    );
+    check(
+        "strip keyframes",
+        doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
+    );
+    return refusals;
+}
+
+/** the pure, no-ECS half: every invariant checkable from the parsed document's own fields.
+ *  Named per-guard, matching `track.ts`'s predicate names (or `commands.ts`'s `sectionKind`,
+ *  where the guard is an affordance fence rather than a `track.ts` export) so a caller can
+ *  branch on the reason without parsing the message, the same contract `commands.ts` keeps. */
+export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
+    const refusals: Refusal[] = checkDuplicateIds(doc);
+
+    if (doc.sections.length === 0)
+        refusals.push({
+            guard: "emptyTrack",
+            message: "a document must contain at least one section",
+        });
+
+    const orders = new Set<number>();
+    for (const s of doc.sections) {
+        if (orders.has(s.order))
+            refusals.push({
+                guard: "duplicateSectionOrder",
+                message: `two or more sections claim order ${s.order}`,
+            });
+        orders.add(s.order);
+    }
+
+    for (const s of doc.sections) {
+        if (s.kind === SectionKind.Geo) {
+            if (s.points.length > 0)
+                refusals.push({
+                    guard: "sectionKind",
+                    message: `section ${s.id} is a geo section but carries force points`,
+                });
+            if (s.nodes.length < 2)
+                refusals.push({
+                    guard: "minNodeFloor",
+                    message: `section ${s.id} is a geo section with fewer than two nodes (node 0 + one shape node)`,
+                });
+            const node0 = s.nodes.find((n) => n.order === 0);
+            if (node0 && (node0.x !== 0 || node0.y !== 0 || node0.theta !== 0))
+                refusals.push({
+                    guard: "nodeZeroOrigin",
+                    message: `section ${s.id}'s node 0 must sit at the local origin (0, 0) with heading 0 (the rigid-placement law) — found (${node0.x}, ${node0.y}, θ=${node0.theta})`,
+                });
+        } else {
+            if (s.nodes.length > 0)
+                refusals.push({
+                    guard: "sectionKind",
+                    message: `section ${s.id} is a force section but carries geo nodes`,
+                });
+            if (s.length < MIN_FORCE_LEN)
+                refusals.push({
+                    guard: "minForceExtent",
+                    message: `section ${s.id}'s extent ${s.length} is below the minimum force-section extent ${MIN_FORCE_LEN}`,
+                });
+        }
+        const stations = new Set<number>();
+        for (const p of s.points) {
+            const key = Math.fround(p.s);
+            if (stations.has(key))
+                refusals.push({
+                    guard: "stationTaken",
+                    message: `two or more force points on section ${s.id} share station ${p.s}`,
+                });
+            stations.add(key);
+        }
+    }
+
+    for (const st of doc.strips) {
+        if (!validStripValue(st.value))
+            refusals.push({
+                guard: "validStripValue",
+                message: `strip ${st.id}'s value ${st.value} must be finite and strictly positive`,
+            });
+        const stations = new Set<number>();
+        for (const k of st.keyframes) {
+            const key = Math.fround(k.s);
+            if (stations.has(key))
+                refusals.push({
+                    guard: "stripKeyframeTaken",
+                    message: `two or more keyframes on strip ${st.id} share station ${k.s}`,
+                });
+            stations.add(key);
+        }
+    }
+
+    if (!validCoefficient(doc.track.friction))
+        refusals.push({
+            guard: "validCoefficient",
+            message: `track.friction (${doc.track.friction}) must be finite and non-negative`,
+        });
+    if (!validCoefficient(doc.track.resistance))
+        refusals.push({
+            guard: "validCoefficient",
+            message: `track.resistance (${doc.track.resistance}) must be finite and non-negative`,
+        });
+
+    for (const o of doc.oneShot) {
+        if (o.value < MIN_V0)
+            refusals.push({
+                guard: "minStartSpeed",
+                message: `the track-start speed ${o.value} is below the minimum ${MIN_V0}`,
+            });
+    }
+
+    return refusals;
+}
+
+/** the four `Track` scalars `restoreAll` doesn't own, read off a known-live track entity —
+ *  `loadDocument`'s own rollback snapshot for the geometry-refusal path. */
+function readTrackScalars(trackEid: number) {
+    return {
+        ds: Track.ds.get(trackEid),
+        domain: Track.domain.get(trackEid),
+        friction: Track.friction.get(trackEid),
+        resistance: Track.resistance.get(trackEid),
+        count: Track.count.get(trackEid),
+    };
+}
+
+/** a throwaway `State` carrying `doc`'s candidate document — never the caller's live `ecs`,
+ *  never bake-ticked (the two geometry guards below are pure derivations off the authored
+ *  payload, `track.ts`'s own docblocks on `sectionEdgeDs`/`stripCoversOneEdge`).
+ *
+ *  **Isolation contract: call only where no OTHER `State` is concurrently live in the
+ *  process.** `track.ts`'s component storage is module-scoped and eid-indexed with no
+ *  per-State bank (spec Residue) — two `State`s allocating the same eid alias the same
+ *  storage slot, so building this scratch state while another live `ecs` exists can corrupt
+ *  it. `loadDocument` never calls this for exactly that reason (its geometry check runs
+ *  in-place on the caller's own `ecs`, with an in-place rollback); this path is for a caller
+ *  validating a candidate file in isolation — a one-shot CLI `validate` invocation, a bare
+ *  unit test — with no other `State` around to alias. */
+function buildScratchEcs(doc: Kex2dDocument): State {
+    const ecs = new State();
+    const trackEid = createTrack(ecs);
+    restoreAll(ecs, docToTrackSnapshot(doc));
+    Track.ds.set(trackEid, doc.track.ds);
+    Track.domain.set(trackEid, doc.track.domain);
+    Track.friction.set(trackEid, doc.track.friction);
+    Track.resistance.set(trackEid, doc.track.resistance);
+    return ecs;
+}
+
+/** the two guards that need a real (throwaway) ECS: strip overlap and the strip min-extent
+ *  floor, both read off `track.ts`'s own exported predicates — the exact functions `setStrip`/
+ *  `createStrip` check, not a doc-level reimplementation of the edge-range math. */
+function checkGeometryInvariants(ecs: State): Refusal[] {
+    const refusals: Refusal[] = [];
+    for (const st of allStrips(ecs)) {
+        if (stripOverlapped(ecs, st.start, st.end, st.id))
+            refusals.push({
+                guard: "stripOverlapped",
+                message: `strip ${st.id} [${st.start}, ${st.end}) overlaps another velocity strip`,
+            });
+        else if (!stripCoversOneEdge(ecs, st.start, st.end))
+            refusals.push({
+                guard: "minExtentFloor",
+                message: `strip ${st.id} [${st.start}, ${st.end}) covers no edge of the current bake`,
+            });
+    }
+    return refusals;
+}
+
+/** the full document-boundary invariant check — every setter guard `restoreAll`'s spawn path
+ *  bypasses, read against `doc` rather than any live `ecs`. This is the validation entry point
+ *  a CLI `validate` verb calls (spec `kex2d-cli` S4): pass a `parseDocument`-produced document,
+ *  get back every violated guard (empty when the document is fully valid — structurally AND
+ *  semantically). Skips the geometry pass when the doc-level pass already found something: a
+ *  document with duplicate ids or a kind-mismatched section produces a meaningless or unsafe
+ *  scratch ECS to build geometry checks against. */
+export function checkDocumentSemantics(doc: Kex2dDocument): Refusal[] {
+    const refusals = checkDocInvariants(doc);
+    if (refusals.length > 0) return refusals;
+    return checkGeometryInvariants(buildScratchEcs(doc));
+}
+
 /** forward-only migrations, keyed by the version they migrate FROM — `migrations[1]` (once it
  *  exists) takes a v1 raw doc and returns a v2 one. Empty today: `CURRENT_VERSION` is 1, so
  *  there is nothing to migrate from yet (segment-first authoring is the first expected bump,
@@ -644,9 +889,29 @@ export function saveDocument(ecs: State): string {
  *  the file used (`reserveIds`) so a `create*` call right after a load can't collide with one. */
 export function loadDocument(ecs: State, text: string): void {
     const doc = parseDocument(text); // throws first; the live document is untouched until here
+
+    // semantic invariants, doc-shape half (spec `kex2d-cli` S4) — pure, no ECS touched, so this
+    // throws exactly like a structural refusal above: nothing written, nothing to undo.
+    const docRefusals = checkDocInvariants(doc);
+    if (docRefusals.length > 0) failSemantics(docRefusals);
+
     const snap = docToTrackSnapshot(doc);
 
+    // the geometry half (`stripOverlapped`/`stripCoversOneEdge`) needs a REAL ecs to resolve a
+    // section's chord length against — but it must be run in-place on THIS `ecs`, never a
+    // second `State`: `track.ts`'s component storage is module-scoped and eid-indexed with no
+    // per-State bank (spec Residue), so a throwaway scratch state built while `ecs` is live can
+    // silently alias and corrupt it the moment the two allocate an overlapping eid (measured:
+    // building a second `State` here clobbered a live strip's `start`/`end` through exactly
+    // this aliasing). So the candidate loads into `ecs` itself, geometry-checked there, and an
+    // in-place rollback (never a second `State`) undoes it on refusal.
+    const hadTrack = trackEntity(ecs) !== null;
+    const rollbackSnap: TrackSnapshot = hadTrack
+        ? snapshotAll(ecs)
+        : { sections: [], strips: [], oneShot: [] };
     let trackEid = trackEntity(ecs);
+    const rollbackScalars = trackEid === null ? null : readTrackScalars(trackEid);
+
     if (trackEid === null) trackEid = createTrack(ecs);
     // `createTrack`'s fresh entity already zeroes `count`; a REUSED entity carries the previous
     // document's bake-derived sample count until the next tick recomputes it — zero it here too,
@@ -658,6 +923,21 @@ export function loadDocument(ecs: State, text: string): void {
     Track.domain.set(trackEid, doc.track.domain);
     Track.friction.set(trackEid, doc.track.friction);
     Track.resistance.set(trackEid, doc.track.resistance);
+
+    const geomRefusals = checkGeometryInvariants(ecs);
+    if (geomRefusals.length > 0) {
+        restoreAll(ecs, rollbackSnap);
+        if (hadTrack && rollbackScalars) {
+            Track.ds.set(trackEid, rollbackScalars.ds);
+            Track.domain.set(trackEid, rollbackScalars.domain);
+            Track.friction.set(trackEid, rollbackScalars.friction);
+            Track.resistance.set(trackEid, rollbackScalars.resistance);
+            Track.count.set(trackEid, rollbackScalars.count);
+        } else {
+            ecs.destroy(trackEid);
+        }
+        failSemantics(geomRefusals);
+    }
 
     reserveIds({
         section: doc.sections.map((s) => s.id),

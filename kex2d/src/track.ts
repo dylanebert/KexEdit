@@ -1191,8 +1191,11 @@ export const DS_NOMINAL = 0.5;
 export const V0 = 10;
 
 /** the slowest the track-start one-shot's authored speed can be set — a positive floor so
- *  the start is never zero/negative (which would make a level track take infinite time). */
-const MIN_V0 = 0.1;
+ *  the start is never zero/negative (which would make a level track take infinite time).
+ *  exported for `doc.ts`'s document-boundary invariant check (spec `kex2d-cli` S4) — a
+ *  hand-authored one-shot below this floor loads silently otherwise, since {@link
+ *  setStartSpeed}/{@link setOneShotValue} clamp rather than refuse. */
+export const MIN_V0 = 0.1;
 
 /** a fresh track's default Coulomb friction coefficient — ported verbatim from the incumbent
  *  core's `DEFAULT_FRICTION` (`packages/core/src/track/dispatch.rs`), independently grounded:
