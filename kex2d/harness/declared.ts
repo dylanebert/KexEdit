@@ -58,17 +58,13 @@ export interface DeclaredEntry {
  * selection-after-click failures from the band-click defect (`roadmap.md` line 43, "A band click
  * before the RAF flush selects nothing"), which the spec names as their owner. Declaring against
  * an open defect with a named owner is the intended design, not a defect.
+ *
+ * S3 retired the S6c2 entry: the flow's double-click used `Control` to bypass the snap magnet,
+ * but on macOS `Control+Click` is a right-click (context menu), which suppresses `click` and
+ * `dblclick` events — so `chartCreate` never fired. Fixed by using `Meta` instead (both bypass
+ * snap via `snapActive(e.ctrlKey || e.metaKey)`), and the entry was removed from the declared set.
  */
 export const DECLARED: readonly DeclaredEntry[] = [
-    {
-        title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
-        owner: { kind: "spec", ref: "kex2d-capture-roster" },
-        evidence: {
-            at: "2026-08-28T00:39:15.066Z",
-            head: "061fdce",
-            branch: "kex2d-capture-roster/s2",
-        },
-    },
     {
         title: "popup label scrub reaches the strip keyframe and one-shot popovers (S10, F8)",
         owner: {

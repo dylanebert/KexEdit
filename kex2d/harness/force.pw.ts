@@ -2082,9 +2082,12 @@ test("timeline domain flow — Time-view double-click create writes arclength (S
     const cx = ref.x + ref.width / 2 + OffsetPx;
     const cy = ref.y + ref.height / 2;
     const before = await forceU();
-    await page.keyboard.down("Control"); // bypass the grid/landmark magnet, deterministic px
+    await page.keyboard.down("Meta"); // bypass the grid/landmark magnet, deterministic px
+    // Meta (not Control): on macOS, Control+Click is a right-click (context menu), which
+    // suppresses `click` and `dblclick` events — so `chartCreate` never fires. `snapActive`
+    // accepts both `e.ctrlKey || e.metaKey`, so Meta bypasses snap without the macOS side-effect.
     await page.mouse.dblclick(cx, cy);
-    await page.keyboard.up("Control");
+    await page.keyboard.up("Meta");
     await expect.poll(forceCount).toBe(6);
     const after = await forceU();
     const beforeIds = new Set(before.map((p) => p.id));
