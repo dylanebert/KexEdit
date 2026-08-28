@@ -19,6 +19,7 @@ import {
 } from "./controls";
 import {
     activeKind,
+    anySelected,
     beginConvert,
     beginDrag,
     beginLanding,
@@ -200,11 +201,11 @@ onMount(() => {
                 editor.forceMenu !== null ||
                 editor.rulerMenu !== null,
             editing: editor.tangentEdit !== null || editor.forceEdit !== null,
-            selected:
-                editor.selection !== null ||
-                editor.force !== null ||
-                editor.section !== null ||
-                editor.start,
+            // the set-level live-selection read: a hand-enumerated per-kind OR here is only as
+            // complete as its own kind list (it read node/force/section/START and nothing else,
+            // so Escape with a strip or the one-shot selected exited the mode instead of
+            // yielding the selection rung) — the member set is the one authority.
+            selected: anySelected(),
             solvable: computePinSolvable(),
             solving: editor.pinSolving,
         });
