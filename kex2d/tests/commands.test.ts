@@ -31,6 +31,7 @@ import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
 import {
     addNode,
+    allocForceId,
     createForcePoint,
     createOneShot,
     createSection,
@@ -55,6 +56,14 @@ import {
     stripKeyframeAt,
     trackEntity,
 } from "../src/track";
+
+/** the typed s/v field's own clamp (`Timeline.svelte:3303`'s `clamp(s, 0, p.len)`) — the
+ *  boundary a force-move op mirrors (finding 2's own citation fix). Local rather than imported:
+ *  it's a one-line Math op, the same idiom `Timeline.svelte:328` keeps local for the same
+ *  reason. */
+function clamp(x: number, lo: number, hi: number): number {
+    return Math.min(Math.max(x, lo), hi);
+}
 
 // S2's own oracle (spec `kex2d-cli`, Approach S2): for each op family, the command-layer edit
 // and the direct setter edit — the exact call sequence the UI itself performs, cited inline in
@@ -95,6 +104,7 @@ const FORCE_SEC = TEMPLATE.sections.find((s) => s.kind === SectionKind.Force)?.i
 if (GEO === undefined || FORCE_SEC === undefined) throw new Error("template: missing a section");
 const forceSecDoc = TEMPLATE.sections.find((s) => s.id === FORCE_SEC);
 if (!forceSecDoc) throw new Error("template: force section vanished");
+const FORCE_LEN = forceSecDoc.length; // 30 — the clamp domain finding 2's boundary test drives past
 const FP0 = forceSecDoc.points.find((p) => p.s === 0)?.id;
 const FP20 = forceSecDoc.points.find((p) => p.s === 20)?.id;
 if (FP0 === undefined || FP20 === undefined) throw new Error("template: missing a force point");
@@ -113,10 +123,18 @@ function fixture(): State {
     return state;
 }
 
-/** every allocator-generated `"id": N` field, normalized to a placeholder — the id-parity
- *  precedent above. Only reached for the four op families that create a fresh id. */
+/** every allocator-generated `"id"` field, normalized to a placeholder — the id-parity
+ *  precedent above. Only reached for the four op families that create a fresh id.
+ *
+ *  Finding 3 (adversarial round 1): a top-level entity's id is hand-formatted with a space
+ *  (`` `  "id": ${sec.id},` ``, `doc.ts`'s `toDoc*` writers), but a NESTED entity — a section's
+ *  own `points`, a strip's own `keyframes` — serializes through `emitFlat` (`doc.ts`), whose
+ *  `${JSON.stringify(k)}:${emitFlat(val)}` carries no space at all (`"id":0`, not `"id": 0`).
+ *  The space-requiring regex above was a no-op for exactly those two op families
+ *  (`force-create`, `strip-keyframe-create`), silently comparing their two allocated ids
+ *  byte-raw instead of normalizing them — witnessed and fixed below (`\s*` matches both). */
 function normIds(text: string): string {
-    return text.replace(/"id": -?\d+/g, '"id": #');
+    return text.replace(/"id":\s*-?\d+/g, '"id": #');
 }
 
 /** run `direct` (the hand-authored UI-shaped call sequence) against one fixture and
@@ -230,15 +248,49 @@ describe("commands: differential arm — command layer vs. direct setter calls",
     });
 
     test("force-move", () => {
+        // the real UI gesture this op mirrors is `kfFieldEdit` (`Timeline.svelte:3302`-`3304`),
+        // which clamps `s` into `[0, p.len]` — finding 2's fix, the direct side updated to match.
         const { result } = expectSameDoc(
             { type: "force-move", id: FP0, s: 12, g: 4 },
             (state, h) => {
                 beginForceMove(state, FP0);
-                setForcePoint(state, FP0, 12, 4);
+                setForcePoint(state, FP0, clamp(12, 0, FORCE_LEN), 4);
                 commit(h);
             },
         );
         expect(result.applied).toBe(true);
+    });
+
+    // finding 2's own boundary test: `s` past the section's own extent clamps to `len`, exactly
+    // `kfFieldEdit`'s `clamp(s, 0, p.len)` — never the diamond drag's unclamped reach
+    // (`keyframeDown`, `Timeline.svelte:1690`), which this op has no gesture for.
+    test("force-move clamps s past the section's length", () => {
+        const { result, b } = expectSameDoc(
+            { type: "force-move", id: FP0, s: FORCE_LEN + 50, g: 6 },
+            (state, h) => {
+                beginForceMove(state, FP0);
+                setForcePoint(state, FP0, clamp(FORCE_LEN + 50, 0, FORCE_LEN), 6);
+                commit(h);
+            },
+        );
+        expect(result.applied).toBe(true);
+        const rows = sectionForces(b, FORCE_SEC).filter((r) => r.id === FP0);
+        expect(rows[0]?.s).toBe(FORCE_LEN);
+    });
+
+    // the symmetric floor: `s` below 0 clamps to 0, not the (also out-of-range) negative value.
+    test("force-move clamps s below zero", () => {
+        const { result, b } = expectSameDoc(
+            { type: "force-move", id: FP0, s: -20, g: 7 },
+            (state, h) => {
+                beginForceMove(state, FP0);
+                setForcePoint(state, FP0, clamp(-20, 0, FORCE_LEN), 7);
+                commit(h);
+            },
+        );
+        expect(result.applied).toBe(true);
+        const rows = sectionForces(b, FORCE_SEC).filter((r) => r.id === FP0);
+        expect(rows[0]?.s).toBe(0);
     });
 
     test("force-delete", () => {
@@ -551,5 +603,157 @@ describe("commands: refusals surface the violated guard structurally", () => {
         const result = applyOp(state, h, { type: "force-delete", ids: [999999] });
         expect(result.applied).toBe(false);
         expect(result.refusals[0]?.guard).toBe("notFound");
+    });
+});
+
+// finding 1's own sweep (adversarial round 1): the UI never offers a node affordance on a
+// Force section, or a force-point affordance on a Geo one — the reviewer's demonstrated repro,
+// `applyOp(state, h, { type: "node-add", section: <Force-kind section> })`, read `{applied:
+// true}` and planted a `Handle` row on it, a shape nothing else produces. Every op below took
+// only a section's EXISTENCE, never its kind — red/green per op, each asserting the `{guard,
+// message}` shape and that the document is untouched (`saveDocument` equality, the same "guard
+// fired, nothing wrote" contract every other refusal test in this file carries).
+describe("commands: section-kind guard (finding 1)", () => {
+    test("node-add refuses on a Force-kind section", () => {
+        const state = fixture();
+        const h = createHistory();
+        const before = saveDocument(state);
+        const result = applyOp(state, h, { type: "node-add", section: FORCE_SEC });
+        expect(result.applied).toBe(false);
+        expect(result.refusals).toEqual([
+            {
+                guard: "sectionKind",
+                message: `section ${FORCE_SEC} is not a geo section; refusing to add a node`,
+            },
+        ]);
+        expect(saveDocument(state)).toBe(before);
+    });
+
+    test("node-move refuses on a Force-kind section", () => {
+        const state = fixture();
+        const h = createHistory();
+        const before = saveDocument(state);
+        const result = applyOp(state, h, {
+            type: "node-move",
+            section: FORCE_SEC,
+            order: 0,
+            x: 1,
+            y: 1,
+        });
+        expect(result.applied).toBe(false);
+        expect(result.refusals).toEqual([
+            {
+                guard: "sectionKind",
+                message: `section ${FORCE_SEC} is not a geo section; refusing to move a node`,
+            },
+        ]);
+        expect(saveDocument(state)).toBe(before);
+    });
+
+    test("node-delete refuses on a Force-kind section", () => {
+        const state = fixture();
+        const h = createHistory();
+        const before = saveDocument(state);
+        const result = applyOp(state, h, { type: "node-delete", section: FORCE_SEC });
+        expect(result.applied).toBe(false);
+        expect(result.refusals).toEqual([
+            {
+                guard: "sectionKind",
+                message: `section ${FORCE_SEC} is not a geo section; refusing to delete a node`,
+            },
+        ]);
+        expect(saveDocument(state)).toBe(before);
+    });
+
+    test("force-create refuses on a Geo-kind section", () => {
+        const state = fixture();
+        const h = createHistory();
+        const before = saveDocument(state);
+        const result = applyOp(state, h, { type: "force-create", section: GEO, s: 5, g: 2 });
+        expect(result.applied).toBe(false);
+        expect(result.refusals).toEqual([
+            {
+                guard: "sectionKind",
+                message: `section ${GEO} is not a force section; refusing to create a force point`,
+            },
+        ]);
+        expect(saveDocument(state)).toBe(before);
+    });
+
+    // green control: the same three ops, same section, right kind — the guard doesn't fire on
+    // its own legitimate targets.
+    test("node-add still applies on a Geo-kind section", () => {
+        const state = fixture();
+        const h = createHistory();
+        const result = applyOp(state, h, { type: "node-add", section: GEO });
+        expect(result.applied).toBe(true);
+        expect(result.refusals).toEqual([]);
+    });
+
+    test("force-create still applies on a Force-kind section", () => {
+        const state = fixture();
+        const h = createHistory();
+        const result = applyOp(state, h, { type: "force-create", section: FORCE_SEC, s: 5, g: 2 });
+        expect(result.applied).toBe(true);
+        expect(result.refusals).toEqual([]);
+    });
+});
+
+// finding 3's own mutation-style proof (adversarial round 1): `normIds`'s regex required a
+// space after the colon, a no-op against a NESTED entity's `"id":N` (`emitFlat`, `doc.ts`'s own
+// no-space writer) — so `force-create`/`strip-keyframe-create`'s differentials were comparing
+// their allocated ids byte-raw all along, passing only because nothing forced the two sides'
+// ids apart far enough to notice. Each test below burns one extra stable id BETWEEN the direct
+// call and the command-layer call (widening the gap the differential above never exercised),
+// captures `direct`'s own document before the command-layer side exists (so the two never
+// alias through the shared per-process id counters `history.test.ts`'s own precedent warns
+// about), then asserts what `normIds` must paper over.
+//
+// Witnessed (`bun test tests/commands.test.ts -t "mutation-style"`, 2026-08-28): with the
+// pre-fix space-requiring regex, both cases below reproducibly RED — `normIdsOLD(docB) !==
+// normIdsOLD(docA)`, the raw ids sitting exposed at `"id":<N>` and `"id":<N+2>`. With the `\s*`
+// fix, both are green.
+describe("commands: id-normalization mutation-style proof (finding 3)", () => {
+    const normIdsOLD = (text: string) => text.replace(/"id": -?\d+/g, '"id": #');
+    const normIdsNEW = (text: string) => text.replace(/"id":\s*-?\d+/g, '"id": #');
+
+    test("force-create: extra id burned between direct() and applyOp() still normalizes", () => {
+        const a = fixture();
+        const ha = createHistory();
+        createForce(ha, a, FORCE_SEC, 10, 3);
+        const docA = saveDocument(a); // captured before b exists — no cross-fixture aliasing
+
+        allocForceId(); // the extra allocation between direct() and applyOp()
+
+        const b = fixture();
+        const hb = createHistory();
+        applyOp(b, hb, { type: "force-create", section: FORCE_SEC, s: 10, g: 3 });
+        const docB = saveDocument(b);
+
+        expect(docA).not.toBe(docB); // the raw ids genuinely differ — the mutation reached
+        expect(normIdsOLD(docB)).not.toBe(normIdsOLD(docA)); // pre-fix: unspaced nested id, no-op
+        expect(normIdsNEW(docB)).toBe(normIdsNEW(docA)); // post-fix: normalizes through
+    });
+
+    test("strip-keyframe-create: extra id burned between direct() and applyOp() still normalizes", () => {
+        const a = fixture();
+        const ha = createHistory();
+        addStripKeyframe(ha, a, STRIP, 50, 15);
+        const docA = saveDocument(a); // captured before b exists — no cross-fixture aliasing
+
+        // no bare alloc-only export for strip-keyframe ids (unlike `allocForceId`) — burn one
+        // for real, in an isolated scratch fixture so it can't touch `a`'s or `b`'s own document.
+        const scratch = fixture();
+        const scratchH = createHistory();
+        addStripKeyframe(scratchH, scratch, STRIP, 52, 16);
+
+        const b = fixture();
+        const hb = createHistory();
+        applyOp(b, hb, { type: "strip-keyframe-create", strip: STRIP, s: 50, v: 15 });
+        const docB = saveDocument(b);
+
+        expect(docA).not.toBe(docB); // the raw ids genuinely differ — the mutation reached
+        expect(normIdsOLD(docB)).not.toBe(normIdsOLD(docA)); // pre-fix: unspaced nested id, no-op
+        expect(normIdsNEW(docB)).toBe(normIdsNEW(docA)); // post-fix: normalizes through
     });
 });

@@ -53,7 +53,8 @@ import {
     lastHandle,
     nextForce,
     reheadOnDrag,
-    type SectionKind,
+    Section,
+    SectionKind,
     sectionAt,
     sectionHandles,
     sections,
@@ -101,6 +102,26 @@ function ok(id?: number): OpResult {
 
 function refused(guard: string, message: string): OpResult {
     return { applied: false, refusals: [{ guard, message }] };
+}
+
+/** the section-kind guard the UI's own affordances encode implicitly — only a Geo section's
+ *  context menu offers node actions, only a Force section's offers force-point actions — so
+ *  a section id typed straight into an op has no such fence and needs one read explicitly.
+ *  `sectionKind` is the one guard name shared by every op below that needs it, so a caller can
+ *  branch on the reason without parsing the message. Existence is checked separately by each
+ *  call site (`sectionNotFound`) — this only fires once the section is known to exist. Swept
+ *  once across the whole vocabulary (finding 1's own instruction): strips and their keyframes
+ *  are track-global and span-blind by design (`stripEditableAt`'s own docblock, `Timeline.svelte`)
+ *  — no owning section, so no kind to guard — and `force-move`/`force-delete`/`force-ease`
+ *  address an existing force-point id directly, never a section, and `convertSection`/
+ *  `resetSection` (`track.ts`) destroy every force point on a kind flip, so a live force-point id
+ *  can never outlive its section's kind — there's no wrong-kind state for those three to reach. */
+function sectionKindRefusal(id: number, want: SectionKind, verb: string): Refusal {
+    const label = want === SectionKind.Geo ? "a geo section" : "a force section";
+    return {
+        guard: "sectionKind",
+        message: `section ${id} is not ${label}; refusing to ${verb}`,
+    };
 }
 
 // ── sections ───────────────────────────────────────────────────────────────────────────
@@ -287,10 +308,19 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
         }
 
         // `extendTrack` — the append-at-tip gesture (`history.ts`'s own doc: "the new node
-        // takes its heading from the old tip's exit").
+        // takes its heading from the old tip's exit"). `extendTrack` itself has no kind guard
+        // (finding 1, adversarial round 1): the UI never offers a node affordance on a Force
+        // section, so a Force-kind id typed straight into this op reached `extendTrack`
+        // unguarded and planted a `Handle` row on it — a shape nothing else produces.
         case "node-add": {
-            if (sectionAt(ecs, op.section) === null)
+            const secEid = sectionAt(ecs, op.section);
+            if (secEid === null)
                 return refused("sectionNotFound", `no section with id ${op.section}`);
+            if (Section.kind.get(secEid) !== SectionKind.Geo)
+                return {
+                    applied: false,
+                    refusals: [sectionKindRefusal(op.section, SectionKind.Geo, "add a node")],
+                };
             const eid = extendTrack(h, ecs, op.section);
             return ok(eid);
         }
@@ -302,6 +332,14 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
         // origin (`main.ts:209`'s `nudge`'s own no-op comment) — refused here rather than let a
         // silent write through.
         case "node-move": {
+            const secEid = sectionAt(ecs, op.section);
+            if (secEid === null)
+                return refused("sectionNotFound", `no section with id ${op.section}`);
+            if (Section.kind.get(secEid) !== SectionKind.Geo)
+                return {
+                    applied: false,
+                    refusals: [sectionKindRefusal(op.section, SectionKind.Geo, "move a node")],
+                };
             const eid = handleAt(ecs, op.section, op.order);
             if (eid === null)
                 return refused(
@@ -327,8 +365,14 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
         // (`removeTrailingHandle`'s own `lastHandle === null` branch) — read apart the same way
         // `delete-section` reads its two-branch refusal apart.
         case "node-delete": {
-            if (sectionAt(ecs, op.section) === null)
+            const secEid = sectionAt(ecs, op.section);
+            if (secEid === null)
                 return refused("sectionNotFound", `no section with id ${op.section}`);
+            if (Section.kind.get(secEid) !== SectionKind.Geo)
+                return {
+                    applied: false,
+                    refusals: [sectionKindRefusal(op.section, SectionKind.Geo, "delete a node")],
+                };
             if (sectionHandles(ecs, op.section).length <= 2)
                 return refused(
                     "minNodeFloor",
@@ -340,18 +384,37 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
 
         // `Timeline.svelte:1486`: `createForce(history, ecs, c.id, s, sampleForce(...))` — no
         // setter guard of its own (`createForcePoint` writes unconditionally); the command layer
-        // adds the existence check the UI gets for free by only ever offering a live section.
+        // adds the existence check the UI gets for free by only ever offering a live section,
+        // plus the kind check the UI gets for free by only ever offering a Force section
+        // (finding 1's own sweep: `node-add`'s twin gap on the force side).
         case "force-create": {
-            if (sectionAt(ecs, op.section) === null)
+            const secEid = sectionAt(ecs, op.section);
+            if (secEid === null)
                 return refused("sectionNotFound", `no section with id ${op.section}`);
+            if (Section.kind.get(secEid) !== SectionKind.Force)
+                return {
+                    applied: false,
+                    refusals: [
+                        sectionKindRefusal(op.section, SectionKind.Force, "create a force point"),
+                    ],
+                };
             const id = createForce(h, ecs, op.section, op.s, op.g);
             return ok(id);
         }
 
-        // `Timeline.svelte:3302`-`3303`: `beginForceMove(ecs, p.id); setForcePoint(ecs, p.id,
-        // s, v);` then a later `commit(history)`. `setForcePoint` refuses the `s` write alone
-        // when `stationTaken` (`track.ts:2122`), landing `g` regardless — read the guard first
-        // so a refusal is named even though the write still (partially) applies.
+        // `Timeline.svelte:3302`-`3304`: `beginForceMove(ecs, p.id); setForcePoint(ecs, p.id,
+        // clamp(s, 0, p.len), v); commit(history);` — the typed s/v field's own gesture
+        // (`kfFieldEdit`), which clamps `s` into the section's own extent `[0, p.len]`
+        // (`p.len` = `Section.length`, `ForcePt`'s own docblock at `Timeline.svelte:863`). This
+        // is the gesture this op mirrors, not the diamond DRAG (`keyframeDown`,
+        // `Timeline.svelte:1690`'s own "No clamp domain… a grabbed keyframe drags freely past
+        // its strip/segment extent" — a second, deliberately unclamped UI gesture on the same
+        // setter). Finding 2 (adversarial round 1): this branch called `setForcePoint` with
+        // `op.s` unclamped, silently reproducing the drag's reach rather than the field's — out
+        // of UI-reachable space for a "move" op with no drag semantics of its own.
+        // `setForcePoint` refuses the `s` write alone when `stationTaken` (`track.ts:2122`),
+        // landing `g` regardless — read the guard first, against the CLAMPED `s` (the value that
+        // actually lands), so a refusal is named even though the write still (partially) applies.
         case "force-move": {
             const eid = forceAt(ecs, op.id);
             if (eid === null) return refused("forceNotFound", `no force point with id ${op.id}`);
@@ -359,14 +422,21 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             // `setForcePoint` reads it the same way (`Force.section.get(eid)`), mirrored here
             // rather than widening `track.ts`'s export surface for one field read.
             const section = Force.section.get(eid);
+            const secEid = sectionAt(ecs, section);
+            // `secEid` is null only if the force point outlived its own section — an invariant
+            // `convertSection`/`resetSection` (`track.ts`) hold structurally (finding 1's own
+            // sweep) — so this floor never actually engages; kept rather than a non-null
+            // assertion so an invariant break degrades to "unclamped" instead of a thrown error.
+            const len = secEid === null ? Number.POSITIVE_INFINITY : Section.length.get(secEid);
+            const s = Math.min(Math.max(op.s, 0), len);
             const refusals: Refusal[] = [];
-            if (stationTaken(ecs, section, op.s, op.id))
+            if (stationTaken(ecs, section, s, op.id))
                 refusals.push({
                     guard: "stationTaken",
-                    message: `station ${op.s} is already held by another force point on this section; g still lands`,
+                    message: `station ${s} is already held by another force point on this section; g still lands`,
                 });
             beginForceMove(ecs, op.id);
-            setForcePoint(ecs, op.id, op.s, op.g);
+            setForcePoint(ecs, op.id, s, op.g);
             commit(h);
             return { applied: true, refusals };
         }
