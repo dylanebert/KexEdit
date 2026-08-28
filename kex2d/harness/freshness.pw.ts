@@ -353,3 +353,87 @@ test("__kex hook freshness — stripPx position matches render after synchronous
         `stripPx x1 mismatch: before RAF x1=${result.beforeStrip!.x1} vs after RAF x1=${afterStrip!.x1} — the hook read a stale $derived before RAF`,
     ).toBe(afterStrip!.x1);
 });
+
+// ── THE HANDLER ARM ──
+//
+// The same defect class one layer out: a production POINTER HANDLER, not a `__kex` hook, reading
+// the tick-gated `bandStrips` `$derived`. `bandDown` hit-tested through `bandCandidates()` →
+// `bandStrips`, so a strip created (or moved) and pressed in the same frame was absent from the
+// classifier's candidate list: `classifyStripHit` returned `empty`, and the empty-band branch
+// deselects (`kex2d-event-lane` S4's one empty-click grammar). A band click before the RAF flush
+// therefore selected NOTHING — user-visible on its own, and the whole reason every band-click flow
+// in `section.pw.ts` carried a settle or a bounded retry before its press. The fix is this file's
+// own law applied to the gesture path: `freshBandStrips()` computes the layout from the ECS, and
+// the press resolves the hit's id against that same snapshot (never one fresh and one stale).
+//
+// The press is dispatched IN THE PAGE rather than through `page.mouse`, and that is the arm's whole
+// instrument: a real pointer costs a CDP round trip, which lets RAF ticks fire between the create
+// and the press — the exact non-determinism that made this defect intermittent instead of visible.
+// The event still lands on the real hit rect and runs the real `bandDown`, so what is synthetic is
+// the event source, not the handler under test.
+//
+// RED-FIRST WITNESS: with the fix reverse-applied (`bandDown` back on `bandCandidates()` →
+// `bandStrips`) this arm reds, `selectedStrip` reading null against the created strip's own id —
+// the empty-band deselect, which is the user-visible defect itself. Restored, it greens.
+test("__kex hook freshness — a band press in the create's own frame selects the new strip", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    // nothing selected going in, so the assertion below can only be satisfied by the press itself
+    // (a pre-selected strip would make it vacuous — `kex2d-harness.md`'s positive-control law).
+    expect(await kexCall(page, "selectedStrip")).toBe(null);
+
+    const result = await page.evaluate(
+        ({ from, to }) => {
+            const kex = (
+                window as unknown as { __kex: Record<string, (...a: unknown[]) => unknown> }
+            ).__kex;
+            // the strip's window, over the track's own live extent read through the chart's own
+            // axis (`dOf(uTotal)`, the addressable end) — never `sectionLengths`, which is a
+            // force-section field and reads 0 on this geo seed.
+            const len = kex.dOf(kex.uTotal()) as number;
+            const start = len * from;
+            const end = len * to;
+            const zone = document.querySelector(".hbandzone");
+            if (zone === null) return { error: "no .hbandzone" };
+            const band = zone.getBoundingClientRect();
+            const canvas = document.querySelector("canvas.chart");
+            if (canvas === null) return { error: "no canvas.chart" };
+            const chart = canvas.getBoundingClientRect();
+
+            // synchronous create — the ECS now carries a strip the tick-gated `bandStrips`
+            // `$derived` has never seen, and no RAF runs before the press below.
+            const id = kex.addStripAt(start, end, 5) as number | null;
+            if (id === null) return { error: "addStripAt refused (overlap?)" };
+            const px = (kex.stripPx() as { id: number; x0: number; x1: number }[]).find(
+                (p) => p.id === id,
+            );
+            if (px === undefined) return { error: "the new strip has no band px" };
+
+            zone.dispatchEvent(
+                new PointerEvent("pointerdown", {
+                    bubbles: true,
+                    cancelable: true,
+                    button: 0,
+                    clientX: chart.left + (px.x0 + px.x1) / 2,
+                    clientY: band.top + band.height / 2,
+                }),
+            );
+            return { id, selected: kex.selectedStrip() as number | null };
+        },
+        { from: 0.55, to: 0.85 },
+    );
+
+    expect(result.error, `arm setup failed: ${result.error ?? ""}`).toBeUndefined();
+    // THE ASSERTION: the press selected the strip it landed on. On the unfixed handler the
+    // candidate list is the previous frame's, which has no such strip — the press classifies
+    // `empty` and deselects, so this reads null.
+    expect(
+        result.selected,
+        `a band press in the create's own frame selected ${String(result.selected)} instead of the strip ${String(result.id)} under the pointer — the classifier read a stale $derived`,
+    ).toBe(result.id);
+});

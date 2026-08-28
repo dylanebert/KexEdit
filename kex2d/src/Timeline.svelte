@@ -1074,11 +1074,12 @@ function trackLen(spanTable: SectionSpan[]): number {
     const last = spanTable[spanTable.length - 1];
     return last.offset + last.len;
 }
-// One projection for strip bands from the ECS — the shared computation both the `bandStrips`
-// `$derived` (paced by `void tick` for the render) and the `stripKfPx`/`stripPx` `__kex` hooks
-// call. The hooks call it directly for freshness: a capture flow that widens or moves a strip
-// via a synchronous ECS write and then creates a keyframe and reads pixel positions must not
-// read a stale `$derived` that hasn't re-evaluated this frame — the strip layout (`bandStrips`)
+// One projection for strip bands from the ECS — the shared computation the `bandStrips` `$derived`
+// (paced by `void tick` for the render), the hit-testing `freshBandStrips` (the press paths and the
+// band's hover read), and the `stripKfPx` `__kex` hook all call. Everything but the render calls it
+// directly for freshness: a capture flow that widens or moves a strip via a synchronous ECS write
+// and then creates a keyframe and reads pixel positions must not read a stale `$derived` that
+// hasn't re-evaluated this frame — the strip layout (`bandStrips`)
 // and the span table (`spans`) are both `$derived` behind `void tick`, and a strip move/widen
 // changes the bake (which changes `sectionSpans`), so their cached values can be stale. The
 // hook passes a FRESH `sectionSpans` result instead, so strips and keyframes are projected
@@ -2838,8 +2839,23 @@ $effect(() => {
 // routes through it instead of one DOM element per strip per affordance.
 const STRIP_HIT_R = 6; // px — the endpoint-vs-body split radius
 
-function bandCandidates(): StripHitCandidate[] {
-    return bandStrips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
+// the band's strip layout for HIT-TESTING, computed fresh from the ECS — never the `bandStrips`
+// `$derived`, which is paced by `void tick` for the render: a strip created (or moved/widened) and
+// clicked in the SAME frame is absent from that cached list, so `classifyStripHit` classifies
+// `empty` and `bandDown` deselects everything instead of selecting the strip under the pointer.
+// Same freshness law `computeBandStrips`' own docblock states for the `__kex` hooks, and the same
+// shape as `oneShotGlyphX` — a plain function called fresh from event handlers, never a value cached
+// behind the RAF tick. The render still reads the `$derived`: frame pacing is correct
+// THERE, where the projection is drawn, and wrong here, where a gesture is classified.
+function freshBandStrips(): BandStrip[] {
+    return computeBandStrips(eid === null ? [] : sectionSpans(ecs, eid), ecs);
+}
+
+// the pointer-hit candidates over ONE strip snapshot. The caller passes the snapshot it also
+// resolves the hit's `id` against, so the classification and the resolved strip can never come from
+// two different reads of the ECS (`stripKfPx`'s own "never one fresh and one stale" law).
+function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandidate[] {
+    return strips.map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
 }
 
 // S3 (Affordances): the band's own hover read, canvas-local like `bandDown`'s own `px` (the
@@ -2864,6 +2880,11 @@ function bandHoverLeave(): void {
 // live during it (below), and showing the active edge/body read while it's being dragged is
 // the affordance, not staleness.
 const bandHit = $derived.by((): StripHit => {
+    // `bandCandidates` computes fresh from the ECS (which is not reactive), so this carries the
+    // per-frame pacing itself — the dependency it used to inherit from the `bandStrips` `$derived`.
+    // Without it a strip created by the context menu would not read as hovered until the next
+    // pointer move, and the affordance would lag the gesture it must agree with.
+    void tick;
     if (eid === null) return { kind: "empty" };
     if (editor.dragging && stripDrag === null) return { kind: "empty" };
     if (bandHoverX === null) return { kind: "empty" };
@@ -3049,7 +3070,8 @@ function bandContext(e: MouseEvent): void {
         openStripMenu(e.clientX, e.clientY, 0, -2);
         return;
     }
-    const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
+    const strips = freshBandStrips();
+    const hit = classifyStripHit(px, bandCandidates(strips), STRIP_HIT_R);
     if (hit.kind === "empty") {
         // a create has no gesture to freeze a table for -- `dOf` reads the live mapping.
         // strips are track-global (S2): the click's own station IS the storage coordinate,
@@ -3058,7 +3080,7 @@ function bandContext(e: MouseEvent): void {
         if (!stripEditableAt(d)) return;
         openStripMenu(e.clientX, e.clientY, d, -1);
     } else {
-        const s = bandStrips.find((b) => b.id === hit.id);
+        const s = strips.find((b) => b.id === hit.id);
         if (!s) return;
         if (!stripEditableAt(s.start)) return;
         selectStrip(s.id);
@@ -3083,12 +3105,13 @@ function bandDown(e: PointerEvent): void {
         selectOneShot(true);
         return;
     }
-    const hit = classifyStripHit(px, bandCandidates(), STRIP_HIT_R);
+    const strips = freshBandStrips();
+    const hit = classifyStripHit(px, bandCandidates(strips), STRIP_HIT_R);
     if (hit.kind === "empty") {
         if (!e.shiftKey) deselectAll();
         return; // inert — no create-drag, no modifier-drag
     }
-    const s = bandStrips.find((b) => b.id === hit.id);
+    const s = strips.find((b) => b.id === hit.id);
     if (!s) return;
     if (!stripEditableAt(s.start)) return;
     e.preventDefault();
@@ -4498,13 +4521,12 @@ onMount(() => {
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a
             // REAL pointer at a strip's edge/body without re-deriving `uPx`'s projection.
-            // Computes fresh from the ECS (same shared `computeBandStrips` call as `stripKfPx`)
-            // so a capture flow that just moved/widened a strip reads the current layout, not
-            // the stale `$derived`.
-            k.stripPx = (): { id: number; x0: number; x1: number }[] => {
-                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
-                return computeBandStrips(freshSpans, ecs).map((s) => ({ id: s.id, x0: uPx(s.u0), x1: uPx(s.u1) }));
-            };
+            // This IS `bandCandidates()` — the same fresh projection the press paths hit-test
+            // against (`freshBandStrips`), reached by name rather than recomputed here, so a flow's
+            // pixel probe and `bandDown`'s own classifier can never disagree about where a strip
+            // is. A capture flow that just moved/widened a strip reads the current layout, not the
+            // stale `$derived`.
+            k.stripPx = (): StripHitCandidate[] => bandCandidates();
             // the track-start one-shot's own glyph screen x (S3), canvas-local like `stripPx` —
             // the capture flow's pixel probe reads this to drive a REAL pointer at the glyph
             // without re-deriving `uPx(uOf(0))`. Always defined regardless of whether the
