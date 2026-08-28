@@ -60,6 +60,16 @@ wall clock and a measured flake rate (both readings anchored below, trunk `a0a25
 arms that pre-date those measurements. Self-contained — consuming specs inherit it by reference rather than
 restating it, since the spec that carried these numbers is deleted at close.
 
+- **The gate is a boolean against a committed declared set** (`harness/declared.ts`): a full run
+  whose reds are all declared exits 0 and stamps `reference: false`; a full run with any red
+  outside the set exits 1 naming that title. The declared set is the punch list — one entry per
+  tolerated title, each carrying an **owner** (a roadmap item, a spec slug, or a git-history slug)
+  and its first-seen evidence. Declaring an entry with an owner is what clears its alarm; no
+  expiry, no schedule, no clearing ritual — an entry moves only on evidence. The set cannot
+  accumulate: the corpus arm reds an owner naming nothing live and a title matching no test in
+  `stage.files`, and the stale-entry summons fires for an entry absent from the recent
+  unit-keyed population (both below, § Recorded distribution). `reference: true` still requires a
+  fully green run — a declared red stands but is never the reference set.
 - **Ship confirmation is one full run, on the branch tree only.** The base-tree run moves from
   *per-ship* to *on-red, same-pass* (below) — spent once per red rather than once per ship, so
   the spend on a red tree is unchanged and the spend on a clean tree halves. The per-ship base run
@@ -75,11 +85,8 @@ restating it, since the spec that carried these numbers is deleted at close.
   empties" (below) already names this, and this section is that retirement taking effect. And it
   is underpowered at the rate this unit measured: the chance an N-run batch reads all-green on a
   tree flaking at rate r is `(1−r)^N`. Evaluate it with the rate a fresh N-run reading actually
-  produces (`kex2d-iteration-speed` S2b, 2026-08-26: 8 full `bun run capture` runs on trunk
-  `a0a25d4`, per-run exit codes read from the process, rate 1/8) rather than trust a quoted result here,
-  which would itself be a frozen figure that drifts the moment the rate is re-read. At that
-  reading the batch is close enough to a coin flip on whether it even sees the flake that it
-  cannot be trusted to conclude, for the cost of N full runs on both trees to try.
+  produces rather than trust a quoted result here, which would itself be a frozen figure that
+  drifts the moment the rate is re-read.
 - **A confirmation run reddening on several unrelated flows at once is the other measured
   regime, and it runs first.** "A multi-flow red is presumptively host-level" (below) triages
   that shape — re-run once before debugging any flow — and decides whether the ladder is even
@@ -91,22 +98,21 @@ restating it, since the spec that carried these numbers is deleted at close.
      further run spent.
   2. **Same-pass base run** — does not reproduce ⇒ one `bun run capture` on the base tree, spent
      now rather than inherited, to place the red on a side.
-  3. **Record and ship** — still unattributed ⇒ record the failing title to the across-ship
-     roster (`RUN.json`'s `failedTitles`, already the suite-count oracle's field) and ship.
-     Reading the roster is part of this step: run `bun run trend` in the same pass — recording
-     into a roster nobody reads is burial, not escalation. A
-     roster entry is a defect with an owner, never weather (below, "A *single*-flow red…") — this
-     step records it for that ownership to reach, not a verdict that it has none. Escalation is
-     by *accumulation across ships*, never by a batch manufactured inside one pass: the
-     across-ship population grows for free with every ship's confirmation run and is strictly
-     more powerful, run for run, than any within-pass N — the N=8 shape spent N full runs to buy
-     one rate reading, the roster reads the same rate for the cost of confirmation runs already
-     being paid.
+  3. **Declare or fix** — the gate's boolean decides: a red inside the declared set exits 0
+     (the ship is clean — the red is a known defect with an owner); a red outside the set exits 1
+     (a regression or a new entry to declare). Reading the roster is part of this step: run
+     `bun run trend` in the same pass — recording into a roster nobody reads is burial, not
+     escalation. A roster entry is a defect with an owner, never weather (below, "A
+     *single*-flow red…") — the declared set is the committed form of that ownership, and a new
+     red outside it is either fixed (removing it from the run) or declared (adding it to
+     `harness/declared.ts` with an owner and first-seen evidence). Escalation is by *accumulation
+     across ships*, never by a batch manufactured inside one pass: the across-ship population
+     grows for free with every ship's confirmation run and is strictly more powerful, run for run,
+     than any within-pass N.
 - **A green targeted repro is inconclusive, never an acquittal.** `section.pw.ts:2017` read
-  green 8/8 under `-g --repeat-each=8` and 25/25 whole-file, and red at full cross-file,
-  full-worker scale (`kex2d-iteration-speed` S2b, 2026-08-26, trunk `a0a25d4`) — the targeted
-  instrument cannot see whatever surfaces only at that scale. So step 1 not reproducing routes to
-  step 2, never to a clean bill.
+  green under `-g --repeat-each` and whole-file, and red at full cross-file, full-worker scale —
+  the targeted instrument cannot see whatever surfaces only at that scale. So step 1 not
+  reproducing routes to step 2, never to a clean bill.
 
 ## Cost levers
 
@@ -177,11 +183,34 @@ job is to summon a person rather than to fail a run.
   run-to-run spread is the instrument's resolution, so the prior window's max is the bound, with no
   multiplier to tune. One-sided on purpose: this guards against rot, and a suite that got faster is
   the outcome rather than the breach — a speedup that bought its time by dropping work is the
-  suite-count oracle's to catch, not this reader's. Rate: one failing title recorded on two or more *distinct* heads, which is
-  this file's own definition of a roster entry ("A *single*-flow red…", below) rather than a rate
-  cutoff — distinct heads, so N repro runs inside one pass cannot manufacture a recurrence. The
-  window is a sample size (`trend.ts`'s `WINDOW`), not a threshold: a median over it must survive
-  the extreme readings this suite actually produces.
+  suite-count oracle's to catch, not this reader's. Rate: one failing title recorded on two or more
+  *distinct branch-slug units* (the prefix before the first `/` in `branch`), rather than distinct
+  heads — an author who commits between iterations manufactures recurrences with commits attached,
+  so a recurrence must mean the red crossed a unit boundary. Dirty-tree runs and legacy
+  (pre-version) records are excluded from the roster population; legacy records keep feeding the
+  duration windows. The window is a sample size (`trend.ts`'s `WINDOW`), not a threshold: a median
+  over it must survive the extreme readings this suite actually produces.
+- **The declared set is the committed punch list the gate reads.** `harness/declared.ts` carries
+  one entry per tolerated title, each with an owner (a roadmap item, a spec slug, or a
+  git-history slug) and first-seen evidence. `verdict()` in `args.ts` — where every harness
+  predicate lives and is unit-tested — passes a full run whose reds are all declared and refuses
+  any red outside it, naming the title. The declared-set check applies only to full
+  (non-selective) runs: a selective run's red is an iteration signal (`mutate.ts`'s pairings read
+  coupling off exit codes), not a gate decision. `reference: true` still requires a fully green
+  run — a declared red stands but is never the reference set.
+- **The corpus arm reds a dead owner and a stale title.** `declaredCorpusViolations` in
+  `harness/declared.ts`, on `blockedOnCorpusViolations`'s shape, checks each declared entry against
+  the live corpus: an owner naming no live roadmap item, no spec, and no git-history slug reds
+  (a closed spec's slug is cited as `git-history`, never as `spec`, or the arm reds it); a
+  declared title matching no test in `stage.files` reds. The arm is run from `tests/harness.test.ts`
+  against the real repo root, so a dead entry fails the gate rather than accumulating silently.
+- **The stale-entry removal summons fires for an entry absent from the recent unit-keyed
+  population.** `removalSummons` in `trend.ts` prints — not trips, so it does not cause exit 1 —
+  when a declared title has not reddened in the last `WINDOW` versioned, non-dirty runs. The
+  summons is silent until the population can support the judgment: the v2 population is empty or
+  tiny today, so firing for every entry would rebuild the very latch this mechanism exists to
+  remove. "Acknowledging" the summons means removing the entry from the declared set; once
+  removed, reading the same fixture again returns no summons — the reader does not latch.
 - **The history lives outside any checkout, at a machine-stable path** (`KEX2D_TREND_HISTORY`
   wins outright, else `$XDG_STATE_HOME/kex2d/runs.jsonl` — `trend.ts`'s `resolveHistory`). Not
   because it's gitignored: every unit's confirmation capture runs from its own fresh worktree,

@@ -21,6 +21,7 @@ import {
     parseHistory,
     PHASES,
     RECORD_VERSION,
+    removalSummons,
     resolveHistory,
     type RunRecord,
     summarize,
@@ -29,6 +30,12 @@ import {
     VERSIONED_FIELDS,
     WINDOW,
 } from "../harness/trend";
+import {
+    DECLARED,
+    DECLARED_TITLES,
+    declaredCorpusViolations,
+    type DeclaredEntry,
+} from "../harness/declared";
 import { provisioned, provisionKey, stalePrune } from "../harness/wsl";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
@@ -410,6 +417,7 @@ describe("verdict — the reference stamp and the fail-closed exits", () => {
         collected: 24,
         counts: runCounts("  24 passed (17.4s)\n"),
         defaultKnobs: true,
+        failedTitles: [] as string[],
     };
 
     test("a green full run at default knobs is the reference set", () => {
@@ -484,6 +492,303 @@ describe("verdict — the reference stamp and the fail-closed exits", () => {
         ])
             for (const defaultKnobs of [true, false])
                 expect(verdict({ ...full, counts, defaultKnobs }).reference).toBe(false);
+    });
+});
+
+describe("verdict — the boolean gate against the declared set", () => {
+    // S2: the gate becomes a boolean against a committed declared set. A run whose reds are all
+    // declared exits 0 (stands) and stamps `reference: false`; a run with any red outside the set
+    // exits 1 naming that title; a run with both exits 1. `reference: true` still requires a fully
+    // green run — the existing invariant, preserved by checking `exitCode === 0 &&
+    // failedTitles.length === 0` directly rather than inferring from `failure === null`.
+    //
+    // The declared-set check applies only to FULL (non-selective) runs: a selective run's red is
+    // an iteration signal (`mutate.ts`'s 12 pairings read coupling off exit codes), not a gate
+    // decision. Deciding field: `selective` — a selective run never reaches the declared-set check.
+    const full = {
+        selective: false,
+        exitCode: 0,
+        collected: 84,
+        counts: runCounts("  84 passed (30.0s)\n"),
+        defaultKnobs: true,
+        failedTitles: [] as string[],
+    };
+    // the one declared title, as a raw Playwright failed-title line (the format `failedTitles()`
+    // parses from stdout, and the format `verdict()` receives in `RunFacts.failedTitles`)
+    const declaredRed =
+        "[chromium] › force.pw.ts:2047:1 › timeline domain flow — Time-view double-click create writes arclength (S6c2)";
+    // an undeclared title — not in `DECLARED_TITLES`
+    const undeclaredRed =
+        "[chromium] › section.pw.ts:2015:1 › strip keyframe deselect on empty chart click";
+
+    test("a run whose only reds are declared exits 0 and stamps reference: false", () => {
+        const v = verdict({
+            ...full,
+            exitCode: 1,
+            counts: runCounts("  1 failed\n  83 passed\n"),
+            failedTitles: [declaredRed],
+        });
+        expect(v.failure).toBeNull();
+        expect(v.reference).toBe(false);
+    });
+
+    test("a run with one red outside the set exits 1 naming that title", () => {
+        const v = verdict({
+            ...full,
+            exitCode: 1,
+            counts: runCounts("  1 failed\n  83 passed\n"),
+            failedTitles: [undeclaredRed],
+        });
+        expect(v.failure).toContain("red outside the declared set");
+        expect(v.failure).toContain("strip keyframe deselect on empty chart click");
+        expect(v.reference).toBe(false);
+    });
+
+    test("a run with both declared and undeclared reds exits 1 naming the undeclared title", () => {
+        const v = verdict({
+            ...full,
+            exitCode: 1,
+            counts: runCounts("  2 failed\n  82 passed\n"),
+            failedTitles: [declaredRed, undeclaredRed],
+        });
+        expect(v.failure).toContain("red outside the declared set");
+        expect(v.failure).toContain("strip keyframe deselect on empty chart click");
+        // the declared title is NOT named — only the undeclared one is the regression
+        expect(v.failure).not.toContain("S6c2");
+        expect(v.reference).toBe(false);
+    });
+
+    test("a green run at default knobs is still the reference set", () => {
+        expect(verdict(full)).toEqual({ reference: true, failure: null });
+    });
+
+    test("a selective run with a nonzero exit still fails — the declared set does not apply", () => {
+        // `mutate.ts` runs selective captures and reads exit codes for coupling; the declared
+        // set must not mask a selective red. Deciding field: `selective` — a selective run never
+        // reaches the declared-set check, so this is the same behavior `mutate.ts` has always seen.
+        const v = verdict({
+            ...full,
+            selective: true,
+            collected: null,
+            exitCode: 1,
+            failedTitles: [declaredRed],
+        });
+        expect(v.failure).toBe("Playwright exited 1");
+        expect(v.reference).toBe(false);
+    });
+
+    test("a red run with no parseable titles still fails — cannot verify against the declared set", () => {
+        const v = verdict({
+            ...full,
+            exitCode: 1,
+            counts: runCounts("  1 failed\n  83 passed\n"),
+            failedTitles: [],
+        });
+        expect(v.failure).toBe("Playwright exited 1");
+        expect(v.reference).toBe(false);
+    });
+
+    // RED-FIRST WITNESS: before the `failedTitles` field and the declared-set check, every red
+    // run (exitCode !== 0) failed with "Playwright exited N" — a declared red was indistinguishable
+    // from a regression. After the fix, a declared red stands (failure: null) and an undeclared
+    // red names itself. Witnessed by hand: the existing "a nonzero exit fails" test above still
+    // passes (failedTitles: [] → "Playwright exited 1"), and the new tests above would have
+    // failed against the old `failureOf` (which returned "Playwright exited 1" for any nonzero
+    // exit, regardless of the titles).
+});
+
+describe("declared — the committed declaration module", () => {
+    // S2 deliverable 1: a typed declaration module under `harness/`, one entry per tolerated title,
+    // each carrying an owner and its first-seen evidence. The corpus arm reds an entry whose
+    // owner names nothing live and a title matching no test in `stage.files`.
+
+    test("the declared set is non-empty (the gate has at least one tolerated title)", () => {
+        expect(DECLARED.length).toBeGreaterThan(0);
+    });
+
+    test("every declared entry has a title, an owner, and first-seen evidence", () => {
+        for (const entry of DECLARED) {
+            expect(typeof entry.title).toBe("string");
+            expect(entry.title.length).toBeGreaterThan(0);
+            expect(entry.owner.kind).toMatch(/^(roadmap|spec|git-history)$/);
+            expect(typeof entry.owner.ref).toBe("string");
+            expect(entry.owner.ref.length).toBeGreaterThan(0);
+            expect(typeof entry.evidence.at).toBe("string");
+            expect(typeof entry.evidence.head).toBe("string");
+            expect(typeof entry.evidence.branch).toBe("string");
+        }
+    });
+
+    test("DECLARED_TITLES matches DECLARED", () => {
+        expect(DECLARED_TITLES).toEqual(new Set(DECLARED.map((e) => e.title)));
+    });
+});
+
+describe("declaredCorpusViolations — the ownership arm", () => {
+    // S2 corpus arm, on `blockedOnCorpusViolations`'s shape: a function that takes the repo root
+    // and returns an array of violations. Two checks: (1) an entry whose owner names no live
+    // roadmap item, no spec, and no git-history slug reds; (2) a declared title matching no test
+    // in `stage.files` reds.
+    //
+    // The repo root is the kex root (where `specs/` and `roadmap.md` live). The harness dir is
+    // `kexedit/kex2d/harness/` under it.
+    const root = join(import.meta.dir, "..", "..", "..");
+
+    test("the live declared set has no corpus violations", () => {
+        const violations = declaredCorpusViolations(root);
+        expect(
+            violations,
+            violations.map((v) => `${v.title}: ${v.reason}`).join("\n") || "none",
+        ).toEqual([]);
+    });
+
+    test("an entry whose owner names no live spec reds", () => {
+        // RED-FIRST: a declared entry citing a nonexistent spec slug would pass silently without
+        // the corpus arm — the gate would tolerate a red whose owner names nothing. The arm reds
+        // it, naming the dead owner.
+        const bad: DeclaredEntry = {
+            title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
+            owner: { kind: "spec", ref: "nonexistent-spec-slug" },
+            evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
+        };
+        const violations = declaredCorpusViolations(root, [bad]);
+        expect(violations.some((v) => v.reason.includes("names nothing live"))).toBe(true);
+    });
+
+    test("an entry whose owner names a deleted spec as `spec` (not `git-history`) reds", () => {
+        // The hazard the task brief names: `kex2d-selection-substrate` is closed and its spec is
+        // deleted — cite it as a `git-history` slug, never as a live `spec` path, or the corpus
+        // arm reds it. Deciding field: `owner.kind` — `spec` checks `specs/<ref>.md` exists, and
+        // it does not.
+        const bad: DeclaredEntry = {
+            title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
+            owner: { kind: "spec", ref: "kex2d-selection-substrate" },
+            evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
+        };
+        const violations = declaredCorpusViolations(root, [bad]);
+        expect(violations.some((v) => v.reason.includes("names nothing live"))).toBe(true);
+    });
+
+    test("an entry whose owner names a deleted spec as `git-history` does NOT red", () => {
+        // The correct citation: a closed spec's slug survives in git history even after the file
+        // is deleted. Deciding field: `owner.kind: "git-history"` — checks `git log --
+        // specs/<ref>.md` for output, which exists for `kex2d-selection-substrate`.
+        const good: DeclaredEntry = {
+            title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
+            owner: { kind: "git-history", ref: "kex2d-selection-substrate" },
+            evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
+        };
+        const violations = declaredCorpusViolations(root, [good]);
+        // the owner is live (git-history check passes); the title matches a staged test, so no
+        // violation from either check
+        expect(violations.filter((v) => v.reason.includes("names nothing live"))).toEqual([]);
+    });
+
+    test("a declared title matching no test in stage.files reds", () => {
+        // RED-FIRST: a declared entry whose title no staged test carries would pass silently —
+        // the gate would tolerate a red for a test that does not exist, and the declared set
+        // would accumulate dead entries. The arm reds it.
+        const bad: DeclaredEntry = {
+            title: "this test title does not exist in any staged flow file",
+            owner: { kind: "spec", ref: "kex2d-capture-roster" },
+            evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
+        };
+        const violations = declaredCorpusViolations(root, [bad]);
+        expect(violations.some((v) => v.reason.includes("no test in stage.files"))).toBe(true);
+    });
+});
+
+describe("removalSummons — the stale-entry removal summons", () => {
+    // S2 reader arm: a declared entry absent from the recent unit-keyed population prints a
+    // removal summons. The summons is a printed message, NOT a tripwire — it does not cause
+    // exit 1. "Acknowledging" the summons means removing the entry from the declared set; once
+    // removed, reading the same fixture again returns no summons.
+    //
+    // Empty-population latch: the summons is silent until the population can support the
+    // judgment — the v2 population is empty or tiny today, so firing for every entry would
+    // rebuild the very latch this spec exists to remove. The threshold is `WINDOW` recent
+    // versioned, non-dirty runs.
+    const run = (over: Partial<RunRecord> = {}): RunRecord => ({
+        at: "2026-08-28T00:00:00.000Z",
+        head: "aaaaaaa",
+        selective: false,
+        defaultKnobs: true,
+        exitCode: 0,
+        failedTitles: [],
+        durations: { collect: 1_600, server: 500, run: 70_000, total: 74_000 },
+        version: RECORD_VERSION,
+        branch: "kex2d-test/s1",
+        dirty: false,
+        ...over,
+    });
+    const declaredTitle =
+        "timeline domain flow — Time-view double-click create writes arclength (S6c2)";
+    const declaredSet = new Set([declaredTitle]);
+
+    test("silent when the v2 population is too small — the empty-population latch", () => {
+        // One versioned run is not enough to say an entry has stopped recurring. The summons
+        // stays silent, which is exactly today's state (one baseline capture run). Deciding
+        // field: `rosterRecords.length < WINDOW` — the v2 population is tiny, so firing for
+        // every entry would rebuild the latch this spec exists to remove.
+        const records = [run()];
+        expect(removalSummons(records, declaredSet)).toEqual([]);
+        // even with a few runs, still under WINDOW
+        expect(
+            removalSummons(
+                Array.from({ length: WINDOW - 1 }, () => run()),
+                declaredSet,
+            ),
+        ).toEqual([]);
+    });
+
+    test("fires when a declared entry is absent from the recent WINDOW versioned runs", () => {
+        // WINDOW versioned, non-dirty runs, none carrying the declared title — the entry has
+        // stopped recurring, and the summons says so.
+        const records = Array.from({ length: WINDOW }, () =>
+            run({ failedTitles: ["[chromium] › section.pw.ts:2015:1 › some other red"] }),
+        );
+        const summons = removalSummons(records, declaredSet);
+        expect(summons).toHaveLength(1);
+        expect(summons[0]).toContain(declaredTitle);
+        expect(summons[0]).toContain("removal");
+    });
+
+    test("does not fire when the declared title reddened in the recent window", () => {
+        // The title appeared in at least one of the recent WINDOW runs — it is still recurring,
+        // and the summons stays silent.
+        const records = Array.from({ length: WINDOW }, (_, i) =>
+            run({
+                failedTitles: i === 0 ? ["[chromium] › force.pw.ts:2047:1 › " + declaredTitle] : [],
+            }),
+        );
+        expect(removalSummons(records, declaredSet)).toEqual([]);
+    });
+
+    test("the reader does not latch — same fixture read twice with the entry acknowledged returns no breach", () => {
+        // The criterion the absorbed roadmap item existed to buy: the summons fires when the
+        // entry is in the declared set, and reading the SAME fixture with the entry removed
+        // (acknowledged) returns no summons. The reader is stateless — it does not remember the
+        // summons — so acknowledging it (removing the entry) is what clears it, and the same
+        // fixture read twice with the entry gone returns nothing.
+        const records = Array.from({ length: WINDOW }, () =>
+            run({ failedTitles: ["[chromium] › section.pw.ts:2015:1 › some other red"] }),
+        );
+        // first read: entry is in the declared set → summons fires
+        expect(removalSummons(records, declaredSet)).toHaveLength(1);
+        // second read: entry acknowledged (removed from the set) → no summons
+        expect(removalSummons(records, new Set())).toEqual([]);
+    });
+
+    test("dirty-tree and legacy records do not count toward the recent population", () => {
+        // The roster population filter is `version >= RECORD_VERSION && !dirty` — the same filter
+        // `summarize` uses. A dirty-tree run or a legacy record does not count as a recent run,
+        // so a population of only dirty/legacy records is still too small to fire the summons.
+        const dirty = Array.from({ length: WINDOW }, () => run({ dirty: true }));
+        const legacy = Array.from({ length: WINDOW }, () =>
+            run({ version: undefined, branch: undefined, dirty: undefined }),
+        );
+        expect(removalSummons(dirty, declaredSet)).toEqual([]);
+        expect(removalSummons(legacy, declaredSet)).toEqual([]);
     });
 });
 
