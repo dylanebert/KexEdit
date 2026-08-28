@@ -542,8 +542,8 @@ describe("S2: plain click stays replace-select (not widened)", () => {
 
 // ── the plain-click replace form stores containment ──
 // the production replace sequence stores the supplied owner on the strip-keyframe member,
-// so the owning strip survives while a non-owner does not. this arm asserts both sides of
-// that stored-flag property through `stripKfOwner` and the resulting strip selection.
+// so the owning strip survives. this arm asserts that stored-flag property through
+// `stripKfOwner` and the resulting owning-strip selection.
 // RED-FIRST WITNESS: stubbed the sweep's flag write (`memberAdd("stripKf", id)` without
 // the owner) — the whole suite red at this arm alone, `stripKfOwner(21)` read null:
 // 1892 pass / 1 fail. Restored the write; 1893 pass / 0 fail.
