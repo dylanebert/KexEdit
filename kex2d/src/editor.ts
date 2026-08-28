@@ -156,6 +156,32 @@ export function activeKind(): SelKind | null {
     return _active?.kind ?? null;
 }
 
+/** whether the selection is a multi-set — two or more members of any kind, cross-kind included.
+ *  the set-level multi predicate (editor-ui.md Multi context UI): a per-kind `ids.size > 1`
+ *  predicate reads a two-member cross-kind selection as single-select, so the context readers
+ *  (manip ring, force-point popover, readout) read this instead. bulk-op applicability readers
+ *  (Delete set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the law
+ *  governs context, never bulk-op applicability.
+ *
+ *  the one context reader that does *not* read this yet is the strip-keyframe typed-field popover
+ *  (`multiStripKf`, `Timeline.svelte`): a plain click on a strip keyframe keeps the owning strip
+ *  (`sweepOtherKinds(["stripKf", "strip"])`), so a size-only count reads that single-subject click
+ *  as a multi-set and hides the popover. counting co-selected siblings instead of raw members needs
+ *  the per-member ownership read S4 introduces, and that migration is S5.
+ *
+ *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal
+ *  of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the existing
+ *  derived predicates document. every caller is already inside a `void tick` derived, so the
+ *  read is live there.
+ *
+ *  @example
+ *  // hide the viewport ring on a multi-set (App.svelte)
+ *  if (multi()) return null;
+ */
+export function multi(): boolean {
+    return _members.size > 1;
+}
+
 /** a live `Selection` view over the unified set for one kind — `ids` and `active` read the
  *  current state on each access, so a held reference stays current after a write. */
 function kindView(kind: SelKind): Selection {
