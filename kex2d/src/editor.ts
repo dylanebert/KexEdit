@@ -182,6 +182,28 @@ export function multi(): boolean {
     return _members.size > 1;
 }
 
+/** whether any member of any kind is selected — the set's non-empty read, `multi()`'s size-0
+ *  sibling. the live-selection layer of a dismissal ladder reads this, never a hand-enumerated
+ *  OR over the per-kind views: such an OR is only as complete as the kinds its author listed,
+ *  and a kind added later peels a rung the guard never knew about — the pin-mode Escape guard
+ *  read node/force/section/START and nothing else, so Escape with only a strip, strip keyframe,
+ *  or the track-start one-shot selected read `selected: false` and exited the pin session
+ *  instead of yielding the selection rung.
+ *
+ *  a plain function, not a `$derived`, per `multi()`'s note above: `editor` has no invalidation
+ *  signal of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the
+ *  existing derived predicates document. its one caller is the pin-mode rung below, which calls it
+ *  at event time, where the read is fresh by construction — the later clear rungs read
+ *  `controls.ts`'s `escapeCrossesKinds` instead, being the rung after the yield.
+ *
+ *  @example
+ *  // the pin-mode Escape rung's live-selection layer (App.svelte's modeKeyAct call)
+ *  selected: anySelected(),
+ */
+export function anySelected(): boolean {
+    return _members.size > 0;
+}
+
 /** a live `Selection` view over the unified set for one kind — `ids` and `active` read the
  *  current state on each access, so a held reference stays current after a write. */
 function kindView(kind: SelKind): Selection {

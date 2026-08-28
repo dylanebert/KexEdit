@@ -26,6 +26,7 @@ import {
     solveFailed,
     type Selection,
     type SelectMode,
+    anySelected,
     select,
     selectForce,
     selectForces,
@@ -41,6 +42,7 @@ import {
     toggleMember,
     writeHover,
 } from "../src/editor";
+import { modeKeyAct } from "../src/keys";
 import { StaleConvert } from "../src/geoforce";
 
 // the selection substrate: a per-kind set + active member, single-select the size-1 case. these are
@@ -980,5 +982,67 @@ describe("multi — the set-level multi predicate", () => {
         expect(editor.strips.ids.has(1)).toBe(true);
         expect(editor.stripKfs.ids.has(10)).toBe(true);
         expect(multi()).toBe(true);
+    });
+});
+
+// ── the set-level live-selection read (the pin-mode Escape rung's `selected` layer) ──
+// the law: "is something selected" is a property of the whole member set, never a hand-enumerated
+// OR over the per-kind views. the pre-fix guard OR-ed exactly four kinds (node, force, section,
+// START), so a strip-only selection read `selected: false` and the pin-mode Escape rung
+// (`App.svelte` → `modeKeyAct`) exited the pin session instead of yielding the selection rung —
+// the kind list was the defect, and `anySelected` is the extracted read the Svelte site now calls.
+// every arm builds its selection through the production selectors a click calls (`selectStrip`,
+// `selectStripKf`, `selectOneShot`, …), not through `ensureStrip` or toggle helpers, so the arms
+// exercise the same path the guard reads.
+describe("anySelected — the set-level live-selection read", () => {
+    // the exact oracle for the criterion: Escape with ONLY a strip selected must yield
+    // (`null`), never `pinExit` — the selection peels, the pin session stays open.
+    test("Escape with a strip-only selection yields — modeKeyAct reads null, not pinExit", () => {
+        selectStrip(1); // the plain-click production path (replace-select)
+        expect(editor.strip).toBe(1); // the strip really is selected
+        expect(
+            modeKeyAct("Escape", {
+                modeOpen: true,
+                menuOpen: false,
+                editing: false,
+                selected: anySelected(),
+                solvable: true,
+                solving: false,
+            }),
+        ).toBeNull();
+    });
+
+    test("the other omitted kinds are live too: strip keyframe (owning strip kept) and the one-shot", () => {
+        // a plain click on a strip keyframe selects the owning strip first, then the keyframe —
+        // the two-member containment set is still a live selection, not an empty one.
+        selectStrip(1);
+        selectStripKf(10);
+        expect(anySelected()).toBe(true);
+        selectOneShot(true);
+        expect(anySelected()).toBe(true);
+    });
+
+    test("the kinds the old guard already enumerated stay live (no regression)", () => {
+        select(10);
+        expect(anySelected()).toBe(true);
+        selectForce(5);
+        expect(anySelected()).toBe(true);
+        selectSection(3);
+        expect(anySelected()).toBe(true);
+        selectStart(true);
+        expect(anySelected()).toBe(true);
+        // and the empty set reads false — the mode's Exit rung is the only thing left to peel.
+        deselectAll();
+        expect(anySelected()).toBe(false);
+        expect(
+            modeKeyAct("Escape", {
+                modeOpen: true,
+                menuOpen: false,
+                editing: false,
+                selected: anySelected(),
+                solvable: true,
+                solving: false,
+            }),
+        ).toBe("pinExit");
     });
 });
