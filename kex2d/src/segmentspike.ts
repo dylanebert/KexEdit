@@ -13,7 +13,13 @@
  *  alternative was proposed and rejected — Locked decision): editing the duration of the segment
  *  ending at boundary `index` shifts that boundary and every later boundary's `s` by exactly the
  *  edit's delta, and leaves every boundary's `g`/`ease`/handle untouched. The total span (the last
- *  boundary's `s`) moves by the same delta, since it is itself a later boundary (or the edited one). */
+ *  boundary's `s`) moves by the same delta, since it is itself a later boundary (or the edited one).
+ *
+ *  S3 (the gestures) adds one more pure helper, `nearestWithin` — the caller-projected hit test
+ *  every knob/handle pick in `Timeline.svelte` shares, so a knob and a handle-layer control point
+ *  are found the same way a boundary/segment candidate already is above. The gestures themselves
+ *  (drag, double-click, the popup) live entirely in the caller, per the Approach's own division:
+ *  this module owns geometry and law, never pointer state or Svelte. */
 
 import type { ForcePoint } from "./profile";
 
@@ -124,6 +130,36 @@ export function pickHit(
     }
 
     return { hit: { kind: "none" }, state: { x: pointerX, cycle: 0 } };
+}
+
+/** a screen-space point candidate for `nearestWithin` — the caller's projection, exactly the
+ *  `BoundaryCandidate`/`SegmentCandidate` convention above (already-projected, never a coordinate
+ *  system this module touches). `id` is caller-defined (a boundary index, a control-point side
+ *  tag, whatever the candidate set names) so this one helper serves every "which knob did the
+ *  pointer land on" test S3 needs (the value knob, the handle-layer's own two control points) —
+ *  never a second copy of the same nearest-within-radius scan. */
+export interface PointCandidate {
+    id: string;
+    x: number;
+    y: number;
+}
+
+/** the id of the nearest candidate within `radius` of `(pointerX, pointerY)`, or `null` when none
+ *  is in range. Ties (equal distance) resolve to whichever candidate the caller listed first —
+ *  callers here never produce ties (a single active segment's two knobs, or two distinct handle
+ *  sides, never coincide). */
+export function nearestWithin(
+    pointerX: number,
+    pointerY: number,
+    points: readonly PointCandidate[],
+    radius: number,
+): string | null {
+    let best: { id: string; d: number } | null = null;
+    for (const p of points) {
+        const d = Math.hypot(p.x - pointerX, p.y - pointerY);
+        if (d <= radius && (best === null || d < best.d)) best = { id: p.id, d };
+    }
+    return best ? best.id : null;
 }
 
 /** the duration law, and the only one (ripple — Locked decision, no roll/absorb alternative): edit

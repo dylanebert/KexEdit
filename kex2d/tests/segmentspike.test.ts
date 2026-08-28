@@ -3,6 +3,8 @@ import { Easing, type ForcePoint, sampleForce } from "../src/profile";
 import {
     type BoundaryCandidate,
     type HitState,
+    nearestWithin,
+    type PointCandidate,
     type SegmentCandidate,
     pickHit,
     rippleDuration,
@@ -165,6 +167,36 @@ describe("arc-identity — the seeded model agrees with sampleForce before any e
             );
             expect(got).toBe(want);
         }
+    });
+});
+
+describe("nearestWithin — S3's shared knob/handle hit test", () => {
+    const pts: PointCandidate[] = [
+        { id: "left", x: 0, y: 0 },
+        { id: "right", x: 100, y: 0 },
+    ];
+
+    test("the nearer candidate within radius wins", () => {
+        expect(nearestWithin(90, 0, pts, 20)).toBe("right");
+        expect(nearestWithin(10, 0, pts, 20)).toBe("left");
+    });
+
+    test("nothing within radius → null", () => {
+        expect(nearestWithin(50, 0, pts, 20)).toBeNull();
+    });
+
+    test("radius is inclusive at the boundary", () => {
+        expect(nearestWithin(20, 0, pts, 20)).toBe("left");
+    });
+
+    test("a diagonal distance uses euclidean radius, not axis-separate", () => {
+        const diag: PointCandidate[] = [{ id: "d", x: 10, y: 10 }];
+        expect(nearestWithin(0, 0, diag, 14)).toBeNull(); // dist ~14.14 > 14 -- just outside
+        expect(nearestWithin(0, 0, diag, 15)).toBe("d"); // inside
+    });
+
+    test("an empty candidate set is always null", () => {
+        expect(nearestWithin(0, 0, [], 100)).toBeNull();
     });
 });
 
