@@ -1683,8 +1683,9 @@ function kfDesc(kind: KfKind): KfDesc {
             else if (mode === "toggle") selectStripKf(id, "toggle");
             else {
                 // unresolvable owner = a stale id (the kf is gone) — a click on a phantom
-                // keyframe selects nothing, the same nothing `stripAt` returning null always
-                // meant for a strip click
+                // keyframe selects nothing, the same nothing a band click on a strip that is
+                // gone selects: band hits classify through `classifyStripHit` over live
+                // `bandCandidates`, so a strip that no longer exists was never hit-testable
                 const owner = owningStrip(ecs, id);
                 if (owner !== null) selectStripKf(id, "replace", owner);
             }
