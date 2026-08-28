@@ -1627,6 +1627,9 @@ function applyKeyframeDrag(): void {
 const FDBL_MS = 300;
 let lastFdownT = 0;
 let lastFdownId = -1;
+// Escape updates this component-local hit-surface guard synchronously; the selected-point
+// projection follows the editor singleton only on the next RAF.
+let stripTipDismissed = $state(false);
 // the per-kind descriptor keyframeDown (and applyKeyframeDrag's own setter) branch on: the
 // selection container, its select/multi-write/activate triad, the value mapping, grid, floor,
 // and setter (S9, F7 — round 2's own standard). Declared ONCE so the clicked-selected-vs-
@@ -1731,6 +1734,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     e.preventDefault();
     e.stopPropagation();
     if (kind === "strip") {
+        stripTipDismissed = false;
         const k = pt as StripKfPt;
         // lockdown up front for strip keyframes — a locked section's keys don't even select
         // (force's own lockdown, below the shift/double-click grammar, SELECTS but never
@@ -4384,6 +4388,7 @@ onMount(() => {
         if (activeKind() === "strip" || activeKind() === "stripKf") {
             if (e.key === "Escape") {
                 e.preventDefault();
+                stripTipDismissed = true;
                 stripEscape();
             } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
@@ -5278,7 +5283,7 @@ onMount(() => {
              `scrubStart` is parameterized over `scrubSubject()` rather than force-only); `v`
              carries its m/s unit (S5, Locked decision finding 11 near half) the same `.unit` span
              the position field wears, never a second axis (that's the far half, out of scope). -->
-        {:else if selStripKfPt && !multiStripKf}
+        {:else if selStripKfPt && !multiStripKf && !stripTipDismissed}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                 {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}

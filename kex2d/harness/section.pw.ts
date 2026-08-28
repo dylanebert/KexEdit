@@ -2548,6 +2548,14 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
     if (!midKf) throw new Error("mid keyframe not found");
     px = (await stripKfPx()).find((k) => k.id === midKf.id);
     if (!px) throw new Error("mid keyframe not projected");
+    // Escape must retire the old popover as a hit surface before the next pointer input. This
+    // reads the browser's actual click target without waiting for the RAF-paced projection.
+    expect(
+        await page.evaluate(
+            ({ x, y }) => document.elementFromPoint(x, y)?.classList.contains("fhit"),
+            px,
+        ),
+    ).toBe(true);
     await page.mouse.click(px.x, px.y);
     await expect.poll(() => kexCall(page, "stripKfSelIds")).toEqual([midKf.id]);
 
