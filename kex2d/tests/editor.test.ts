@@ -8,6 +8,7 @@ import {
     convertProgress,
     deselectAll,
     dismissNotice,
+    multi,
     ensureStrip,
     editor,
     endConvert,
@@ -917,5 +918,46 @@ describe("writeHover / clearHover — the one seam every hover write and clear g
         expect(editor.hoverNode).toBeNull();
         expect(editor.hoverForce).toBeNull();
         expect(editor.hoverSection).toBeNull();
+    });
+});
+
+// ── the set-level multi predicate (S1, editor-ui.md Multi context UI) ──────────────────
+// the law: under one container, "multi" is a property of the whole member set — any two-member
+// selection, cross-kind included, is a multi-set. a per-kind `ids.size > 1` predicate reads a
+// two-member cross-kind selection as single-select, so the context readers (manip ring, popover,
+// readout) read this exported predicate instead. bulk-op applicability readers (Delete set-lift,
+// Cut single-subject gate, arrow-nudge group move) stay per-kind — the law governs context, never
+// bulk-op applicability.
+describe("multi — the set-level multi predicate", () => {
+    test("empty selection reads false", () => {
+        expect(multi()).toBe(false);
+    });
+
+    test("a single-member selection reads false", () => {
+        selectForce(5);
+        expect(multi()).toBe(false);
+    });
+
+    test("a two-member same-kind selection reads true", () => {
+        selectForce(5);
+        selectForce(6, "toggle");
+        expect(multi()).toBe(true);
+    });
+
+    test("a cross-kind two-member selection (one force + one strip keyframe) reads true", () => {
+        // the defect the law names: a per-kind `ids.size > 1` predicate reads this as single-select
+        // (forces.ids.size === 1, stripKfs.ids.size === 1), but the whole set has ≥2 members
+        selectForce(5);
+        ensureStrip(1);
+        selectStripKf(10, "toggle");
+        expect(multi()).toBe(true);
+    });
+
+    test("deselecting back to one member reads false", () => {
+        selectForce(5);
+        selectForce(6, "toggle");
+        expect(multi()).toBe(true);
+        selectForce(6, "toggle");
+        expect(multi()).toBe(false);
     });
 });

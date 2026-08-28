@@ -156,6 +156,26 @@ export function activeKind(): SelKind | null {
     return _active?.kind ?? null;
 }
 
+/** whether the selection is a multi-set — two or more members of any kind, cross-kind included.
+ *  the set-level multi predicate (editor-ui.md Multi context UI): a per-kind `ids.size > 1`
+ *  predicate reads a two-member cross-kind selection as single-select, so the context readers
+ *  (manip ring, popover, readout) read this instead. bulk-op applicability readers (Delete
+ *  set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the law governs
+ *  context, never bulk-op applicability.
+ *
+ *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal
+ *  of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the existing
+ *  derived predicates document. every caller is already inside a `void tick` derived, so the
+ *  read is live there.
+ *
+ *  @example
+ *  // hide the viewport ring on a multi-set (App.svelte)
+ *  if (multi()) return null;
+ */
+export function multi(): boolean {
+    return _members.size > 1;
+}
+
 /** a live `Selection` view over the unified set for one kind — `ids` and `active` read the
  *  current state on each access, so a held reference stays current after a write. */
 function kindView(kind: SelKind): Selection {

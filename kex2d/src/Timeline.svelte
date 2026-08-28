@@ -33,6 +33,7 @@ import {
     landingG,
     lockLabel,
     modeChromeSection,
+    multi,
     openContext,
     skipLanding,
     notify,
@@ -1002,15 +1003,18 @@ $effect(() => {
     const sp = selPoint;
     if (editor.force !== null && sp === null) selectForce(null);
 });
-// whether the selection is a multi-set — a right-click keeps the set, so Delete + Easing act on it,
-// while the single-subject rows (Custom) gray out. The typed-field popover is single-keyframe
-// context too, and hides on a multi-set exactly as the viewport ring does (editor-ui.md multi law):
-// standard multi-select shows no single-keyframe context. Read `tick` directly (not through
-// `selForceSet`): `editor.forces.ids` is a fresh `Set` per access (a getter over the unified
-// member set), so a derived layered on a held reference never sees a changed value to invalidate
-// on — only a derived reading the mutable size straight off `tick` re-evaluates every frame.
-// `void tick` is what makes this `$derived.by` re-run at all: a plain getter is not reactively
-// tracked either way, so the `void tick` dependency is the re-evaluation trigger.
+// whether the force selection is a multi-set — the per-kind bulk-op applicability read (the menu's
+// `multi` flag: Delete set-lift, Easing bulk targets, Cut single-subject gate). the context read
+// (the typed-field popover hiding) uses the set-level `multi()` export instead (S1, editor-ui.md
+// Multi context UI): a per-kind `ids.size > 1` predicate reads a two-member cross-kind selection as
+// single-select, so the context reader reads the whole member set, not one kind's view. the bulk-op
+// applicability readers stay per-kind — the law governs context, never bulk-op.
+// Read `tick` directly (not through `selForceSet`): `editor.forces.ids` is a fresh `Set` per access
+// (a getter over the unified member set), so a derived layered on a held reference never sees a
+// changed value to invalidate on — only a derived reading the mutable size straight off `tick`
+// re-evaluates every frame. `void tick` is what makes this `$derived.by` re-run at all: a plain
+// getter is not reactively tracked either way, so the `void tick` dependency is the re-evaluation
+// trigger.
 const multiForce = $derived.by((): boolean => {
     void tick;
     return editor.forces.ids.size > 1;
@@ -1273,14 +1277,10 @@ const selStripKfPt = $derived.by((): StripKfPt | null => {
     if (editor.stripKf === null) return null;
     return stripKfPts.find((k) => k.id === editor.stripKf) ?? null;
 });
-// whether the strip-keyframe selection is a multi-set (S4's booked multi-select) — `multiForce`'s
-// twin: the single-keyframe popover hides on a multi-set exactly as the force keyframe's does
-// (editor-ui.md multi law). read `tick` directly, not `editor.stripKfs.ids` (`multiForce`'s own
-// in-place-mutation note applies identically here).
-const multiStripKf = $derived.by((): boolean => {
-    void tick;
-    return editor.stripKfs.ids.size > 1;
-});
+// the strip-keyframe popover hides on a multi-set via the set-level `multi()` export (S1,
+// editor-ui.md Multi context UI), same as the force keyframe's does — the per-kind
+// `editor.stripKfs.ids.size > 1` predicate this replaced read a two-member cross-kind selection
+// as single-select.
 // the whole selected strip-keyframe SET (membership, for the diamond highlight) — `selForceSet`'s
 // twin. read through the tick like the rest of `editor`; the per-frame `stripKfPts` rebuild
 // re-evaluates the `.has` in the render loop.
@@ -5154,7 +5154,7 @@ onMount(() => {
              near the chart top; clamps inside the chart horizontally. On a MULTI set it
              shows NO single-keyframe context, same as the viewport ring (editor-ui.md
              multi law) — standard multi-select carries no single-subject popover. -->
-        {:else if selPoint && !multiForce}
+        {:else if selPoint && !multi()}
             {@const mx = ptX(selPoint)}
             {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =
@@ -5214,7 +5214,7 @@ onMount(() => {
              `scrubStart` is parameterized over `scrubSubject()` rather than force-only); `v`
              carries its m/s unit (S5, Locked decision finding 11 near half) the same `.unit` span
              the position field wears, never a second axis (that's the far half, out of scope). -->
-        {:else if selStripKfPt && !multiStripKf}
+        {:else if selStripKfPt && !multi()}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                 {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}

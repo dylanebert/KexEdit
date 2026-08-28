@@ -35,6 +35,7 @@ import {
     fitDone,
     LANDING_MS,
     modeChromeSection,
+    multi,
     notify,
     pinRefused,
     select,
@@ -530,11 +531,12 @@ const pinReason = $derived.by((): string | null => {
     return null;
 });
 
-// whether the node selection is a multi-set. the CANVAS shows NO contextual controls over one
-// (editor-ui.md multi law, user-locked after three feel rounds): the whole node-action ring — both
-// manipulator knobs and the extend button — and the metrics readout all hide, because every one of
-// them is single-subject and a multi selection has no single subject. The group move survives as the
-// arrow-nudge (controls.ts), capability without chrome. Single-select is the size-1 case, unchanged.
+// whether the node selection is a multi-set — the per-kind bulk-op applicability read (the menu's
+// `multi` flag: Delete set-lift, Cut single-subject gate, Reset set). the context reads (ring,
+// knobs, readout, extend button hiding) use the set-level `multi()` export instead (S1,
+// editor-ui.md Multi context UI): a per-kind `ids.size > 1` predicate reads a two-member cross-kind
+// selection as single-select, so the context readers read the whole member set, not one kind's view.
+// the bulk-op applicability readers stay per-kind — the law governs context, never bulk-op.
 //
 // a plain function, NOT a `$derived`: `editor` is a plain singleton, so a derived over it has no
 // invalidation signal of its own and only re-runs on `tick` — and one tick-driven derived reading
@@ -553,7 +555,7 @@ const nodeMulti = (): boolean => editor.nodes.ids.size > 1;
 // readout is absent then. Rendered centered below the node (below), offset clear of the ring buttons.
 const snapText = $derived.by((): string | null => {
     void tick;
-    if (nodeMulti()) return null; // no contextual chrome on a multi-set (the multi law, above)
+    if (multi()) return null; // no contextual chrome on a multi-set (the multi law, S1)
     let angle: string | null;
     let length: string | null;
     if (dragReadout.node !== null) {
@@ -617,7 +619,7 @@ const manip = $derived.by(
         void tick;
         const eid = editor.selection;
         if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
-        if (nodeMulti()) return null;
+        if (multi()) return null;
         if (editor.pinning !== null) return null; // the lockdown: no geo chrome in-mode
         const s = samples.get(trackEid);
         if (!s) return null;
@@ -648,7 +650,7 @@ const extendBtn = $derived.by((): { x: number; y: number } | null => {
     void tick;
     const eid = editor.selection;
     if (!canvas || eid === null || trackEid === null || editor.tangentEdit === eid) return null;
-    if (nodeMulti()) return null; // the whole ring goes on a multi-set (Add stays, grayed, in the menu)
+    if (multi()) return null; // the whole ring goes on a multi-set (Add stays, grayed, in the menu)
     if (editor.pinning !== null) return null; // the lockdown: no geo chrome in-mode
     if (Handle.order.get(eid) === 0) return null; // the entry anchor never extends
     const section = Handle.section.get(eid);
@@ -750,9 +752,10 @@ const nodeCanTrim = $derived.by((): boolean => {
     const m = editor.nodeMenu;
     return nodeIsEnd && m !== null && sectionHandles(ecs, Handle.section.get(m.eid)).length > 2;
 });
-// `nodeMulti()` (above) is the menu's multi fork too — a right-click keeps the set (openNodeMenu
+// `nodeMulti()` (above) is the menu's multi fork — a right-click keeps the set (openNodeMenu
 // promotes the target to active), so Delete + the Tangents ▸ rows act on the whole set, single-subject
-// rows (Add, Handles) gray out. single-select is the size-1 case (today's menu).
+// rows (Add, Handles) gray out. single-select is the size-1 case (today's menu). this is the per-kind
+// bulk-op applicability read (S1); the context reads (ring, readout, extend) use `multi()` instead.
 // whether the set is a Delete-able suffix run — a contiguous suffix of ONE section, excluding node 0,
 // leaving ≥ 2 (the enablement predicate). the bulk Delete row grays out otherwise (never hidden).
 const nodeSuffixOk = $derived.by((): boolean => {
