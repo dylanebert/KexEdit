@@ -568,6 +568,53 @@ describe("the plain-click replace form reads no ECS", () => {
     });
 });
 
+// ── the shift-click and marquee add paths record the same containment flag ──
+// the replace sweep was the only add path writing `owner` on the member; the shift-click
+// toggle and the marquee multi-write added members with no flag, so `stripKfOwner` read
+// null for a shift-clicked or rubber-banded keyframe — the same no-ECS read the plain
+// click repaired, silently missing on the two other gestures. both paths now take the
+// owner from the caller's own hit data (`StripKfPt.strip`) exactly as the replace sweep
+// does, so the flag is a property of the member, not of the click form that added it.
+// RED-FIRST WITNESS: stubbed each path's flag write alone (the toggle form's owner arg and
+// the marquee loop's `owners?.get(id)`) — the whole suite red at its arm alone each time,
+// `stripKfOwner` reading null: toggle stub 1894 pass / 1 fail, marquee stub 1894 pass /
+// 1 fail. Restored each; 1895 pass / 0 fail across 51 files.
+describe("the shift-click and marquee add paths record the containment flag", () => {
+    test("a shift-click-toggled strip keyframe carries its owning strip", () => {
+        // the production shift-click sequence through the production selectors — the band
+        // `ensureStrip` `keyframeDown` performs on shift, then the toggle select. like the
+        // plain-click arm above, strip 2 and keyframe 31 name nothing in any store: this
+        // file touches no ECS at all.
+        ensureStrip(2);
+        selectStripKf(31, "toggle", 2);
+        expect([...editor.stripKfs.ids]).toEqual([31]);
+        expect(editor.stripKf).toBe(31);
+        expect(stripKfOwner(31)).toBe(2); // the toggle add stored the flag too
+        // toggling out removes the member, flag and all
+        selectStripKf(31, "toggle", 2);
+        expect(stripKfOwner(31)).toBeNull();
+    });
+
+    test("a marquee-selected strip keyframe set carries each member's owning strip", () => {
+        // the production marquee sequence through the production selector — the set write
+        // with the owners map `marqueeUp` builds off its hit points (keyed by keyframe id,
+        // across two strips), then the per-hit `ensureStrip` writes after it
+        const owners = new Map([
+            [31, 2],
+            [32, 2],
+            [41, 4],
+        ]);
+        selectStripKfs([31, 32, 41], 41, owners);
+        expect(editor.stripKf).toBe(41);
+        ensureStrip(2);
+        ensureStrip(4);
+        expect([...editor.stripKfs.ids]).toEqual([31, 32, 41]);
+        expect(stripKfOwner(31)).toBe(2);
+        expect(stripKfOwner(32)).toBe(2);
+        expect(stripKfOwner(41)).toBe(4);
+    });
+});
+
 // ── S2 repair: the three criteria the adversarial pass added ──
 // each a demonstrated instance rather than a class claim. (a) the double-fire observable stays
 // pinned: one Delete on a node+force mixed selection produces exactly one edit. (b) one undo
