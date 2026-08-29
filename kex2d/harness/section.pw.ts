@@ -2543,19 +2543,26 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
     await expect.poll(() => vAtD(readD), { timeout: 1000 }).not.toBeCloseTo(vBefore, 2);
 
     // ── value label: drag the mid keyframe's own v ──
-    await page.keyboard.press("Escape"); // clear the popover before re-selecting
     const midKf = (await stripKeyframesOf()).find((k) => k.s === 6);
     if (!midKf) throw new Error("mid keyframe not found");
     px = (await stripKfPx()).find((k) => k.id === midKf.id);
     if (!px) throw new Error("mid keyframe not projected");
-    // Escape must retire the old popover as a hit surface before the next pointer input. This
-    // reads the browser's actual click target without waiting for the RAF-paced projection.
-    expect(
-        await page.evaluate(
-            ({ x, y }) => document.elementFromPoint(x, y)?.classList.contains("fhit"),
-            px,
-        ),
-    ).toBe(true);
+    // The old popover deliberately covers the next diamond: without that geometry precondition,
+    // elementFromPoint could report the diamond even if dismissal did nothing. In one browser task,
+    // dispatch Escape, permit Svelte's microtask flush, and inspect the hit owner before any RAF.
+    const hitOwners = await page.evaluate(async ({ x, y }) => {
+        const owner = () => document.elementFromPoint(x, y);
+        const before = owner();
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await Promise.resolve();
+        const after = owner();
+        return {
+            coveredByPopover: before?.closest(".ptip") !== null,
+            diamondAfterFlush: after?.classList.contains("fhit") ?? false,
+        };
+    }, px);
+    expect(hitOwners.coveredByPopover).toBe(true);
+    expect(hitOwners.diamondAfterFlush).toBe(true);
     await page.mouse.click(px.x, px.y);
     await expect.poll(() => kexCall(page, "stripKfSelIds")).toEqual([midKf.id]);
 

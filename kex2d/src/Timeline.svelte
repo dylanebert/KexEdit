@@ -1715,7 +1715,12 @@ function kfDesc(kind: KfKind): KfDesc {
         // the force kind, and strictFunctionTypes refuses the required→optional drop — so this
         // wrapper carries the seam instead. an owner-less call through it lands on an EMPTY map,
         // which adds nothing (fail closed per id), so the invariant holds here too.
-        selectMany: (ids, active, owners) => selectStripKfs(ids, active, owners ?? new Map()),
+        selectMany: (ids, active, owners) => {
+            const resolvedOwners = owners ?? new Map<number, number>();
+            selectStripKfs(ids, active, resolvedOwners);
+            // Marquee/set selection is the other production route that establishes a subject.
+            if (active !== null && resolvedOwners.has(active)) stripTipDismissed = false;
+        },
         activate: activateStripKf,
         val: (p) => (p as StripKfPt).v,
         valToY: vOf,
@@ -1734,7 +1739,6 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     e.preventDefault();
     e.stopPropagation();
     if (kind === "strip") {
-        stripTipDismissed = false;
         const k = pt as StripKfPt;
         // lockdown up front for strip keyframes — a locked section's keys don't even select
         // (force's own lockdown, below the shift/double-click grammar, SELECTS but never
@@ -1744,6 +1748,9 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         // shift-click, `ensureStrip` adds the owning strip without clearing other kinds (cross-
         // kind co-selection); on plain click, `selectStrip` replace-selects as before.
         if (!sectionEditable(editor.pinning, k.section)) return;
+        // Any supported pointer route that can establish or promote a strip-keyframe subject
+        // reopens its local popover; locked keys return above without claiming a subject.
+        stripTipDismissed = false;
         if (e.shiftKey) ensureStrip(k.strip);
         else if (editor.strip !== k.strip) selectStrip(k.strip);
     }
