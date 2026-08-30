@@ -2543,11 +2543,41 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
     await expect.poll(() => vAtD(readD), { timeout: 1000 }).not.toBeCloseTo(vBefore, 2);
 
     // ── value label: drag the mid keyframe's own v ──
-    await page.keyboard.press("Escape"); // clear the popover before re-selecting
     const midKf = (await stripKeyframesOf()).find((k) => k.s === 6);
     if (!midKf) throw new Error("mid keyframe not found");
     px = (await stripKfPx()).find((k) => k.id === midKf.id);
     if (!px) throw new Error("mid keyframe not projected");
+    // The old popover deliberately covers the next diamond: without that geometry precondition,
+    // elementFromPoint could report the diamond even if dismissal did nothing. In one browser task,
+    // dispatch Escape, permit Svelte's microtask flush, and inspect the hit owner before any RAF.
+    // `coveredByPopover` is a `!!` coercion, not `!== null`: `before` is nullable, and
+    // `undefined !== null` reads true, which would pass the precondition on a dead hit point.
+    //
+    // This is the S4c dismissal-guard witness, driven through this flow rather than a dedicated
+    // test — a repair-added arm, regression guard status, mutation-tested twice: (a) pre-fix
+    // Timeline.svelte (no `stripTipDismissed` at all) reds this same `diamondAfterFlush`
+    // assertion, exit 1 — the stale `.ptip` still owns the covered point after Escape's
+    // microtask flush. (b) with the fix in place, deleting the `&& !stripTipDismissed` guard
+    // term at the popover's render condition reds the same assertion the same way, exit 1 —
+    // the popover keeps rendering (and hit-testing) after Escape, so nothing moved the hit
+    // owner to the diamond. Both mutations restored byte-identical after; green.
+    // What this arm does NOT discriminate: it dispatches only Escape, so the guard's reset
+    // sites — the undo/redo keydown legs, `selectMany`'s marquee reset, `keyframeDown`'s
+    // pointer reset — are unarmed here; deleting any reset leaves this assertion green. The
+    // resets are enumeration-verified only (every subject-establishing route reviewed twice).
+    const hitOwners = await page.evaluate(async ({ x, y }) => {
+        const owner = () => document.elementFromPoint(x, y);
+        const before = owner();
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await Promise.resolve();
+        const after = owner();
+        return {
+            coveredByPopover: !!before?.closest(".ptip"),
+            diamondAfterFlush: after?.classList.contains("fhit") ?? false,
+        };
+    }, px);
+    expect(hitOwners.coveredByPopover).toBe(true);
+    expect(hitOwners.diamondAfterFlush).toBe(true);
     await page.mouse.click(px.x, px.y);
     await expect.poll(() => kexCall(page, "stripKfSelIds")).toEqual([midKf.id]);
 

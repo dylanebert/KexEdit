@@ -1627,6 +1627,9 @@ function applyKeyframeDrag(): void {
 const FDBL_MS = 300;
 let lastFdownT = 0;
 let lastFdownId = -1;
+// Escape updates this component-local hit-surface guard synchronously; the selected-point
+// projection follows the editor singleton only on the next RAF.
+let stripTipDismissed = $state(false);
 // the per-kind descriptor keyframeDown (and applyKeyframeDrag's own setter) branch on: the
 // selection container, its select/multi-write/activate triad, the value mapping, grid, floor,
 // and setter (S9, F7 — round 2's own standard). Declared ONCE so the clicked-selected-vs-
@@ -1712,7 +1715,16 @@ function kfDesc(kind: KfKind): KfDesc {
         // the force kind, and strictFunctionTypes refuses the required→optional drop — so this
         // wrapper carries the seam instead. an owner-less call through it lands on an EMPTY map,
         // which adds nothing (fail closed per id), so the invariant holds here too.
-        selectMany: (ids, active, owners) => selectStripKfs(ids, active, owners ?? new Map()),
+        selectMany: (ids, active, owners) => {
+            const resolvedOwners = owners ?? new Map<number, number>();
+            selectStripKfs(ids, active, resolvedOwners);
+            // Every production route that can establish or promote a strip-keyframe subject
+            // resets this guard: the plain/shift click below in `keyframeDown`, this
+            // marquee/set write, and undo/redo (`onKey`'s Ctrl+Z/Ctrl+Y, reset ahead of the
+            // routed call since restore re-adds members and `_active` without touching either
+            // pointer path) — three sites, not a pair.
+            if (active !== null && resolvedOwners.has(active)) stripTipDismissed = false;
+        },
         activate: activateStripKf,
         val: (p) => (p as StripKfPt).v,
         valToY: vOf,
@@ -1740,6 +1752,12 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         // shift-click, `ensureStrip` adds the owning strip without clearing other kinds (cross-
         // kind co-selection); on plain click, `selectStrip` replace-selects as before.
         if (!sectionEditable(editor.pinning, k.section)) return;
+        // Every pointer route through this branch that can establish or promote a
+        // strip-keyframe subject reopens its local popover here; locked keys return above
+        // without claiming a subject. Undo/redo reaches the same state through a separate,
+        // non-pointer route and resets the guard at its own call site (`onKey`'s Ctrl+Z/Ctrl+Y),
+        // never here.
+        stripTipDismissed = false;
         if (e.shiftKey) ensureStrip(k.strip);
         else if (editor.strip !== k.strip) selectStrip(k.strip);
     }
@@ -4311,6 +4329,13 @@ onMount(() => {
                 // would otherwise keep easing diamonds toward values the undo just erased
                 // (adversarial finding 2; the same skip pointerdown/Esc and Exit apply).
                 skipLanding();
+                // undo/redo is a production route that can re-establish a strip-keyframe
+                // subject (`editor.ts`'s `selectionHook.restore`, re-adding a member and
+                // `_active` from the snapshot) without ever touching `keyframeDown` or
+                // `selectMany`'s own resets above — so it clears the guard here too, ahead of
+                // the routed call, on both directions. A reset when the restored selection
+                // isn't a strip keyframe is a harmless no-op, same as a fresh selection.
+                stripTipDismissed = false;
                 // routed (stage 7): the SANDBOX while an pin mode is open — in-mode
                 // undo/redo never reach the outer stacks, and undo at the sandbox's start exits.
                 if (e.shiftKey) redoRouted(history, ecs);
@@ -4318,6 +4343,7 @@ onMount(() => {
             } else if (k === "y") {
                 e.preventDefault();
                 skipLanding();
+                stripTipDismissed = false;
                 redoRouted(history, ecs);
             }
             return;
@@ -4384,6 +4410,7 @@ onMount(() => {
         if (activeKind() === "strip" || activeKind() === "stripKf") {
             if (e.key === "Escape") {
                 e.preventDefault();
+                stripTipDismissed = true;
                 stripEscape();
             } else if (bound(BINDINGS.remove, e.key)) {
                 e.preventDefault();
@@ -5278,7 +5305,7 @@ onMount(() => {
              `scrubStart` is parameterized over `scrubSubject()` rather than force-only); `v`
              carries its m/s unit (S5, Locked decision finding 11 near half) the same `.unit` span
              the position field wears, never a second axis (that's the far half, out of scope). -->
-        {:else if selStripKfPt && !multiStripKf}
+        {:else if selStripKfPt && !multiStripKf && !stripTipDismissed}
             {@const mx = uPx(selStripKfPt.u)}
             {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
                 {@const ax = clamp(mx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF))}
