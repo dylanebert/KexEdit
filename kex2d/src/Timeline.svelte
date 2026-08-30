@@ -4332,7 +4332,7 @@ onMount(() => {
                 // undo/redo is a production route that can re-establish a strip-keyframe
                 // subject (`editor.ts`'s `selectionHook.restore`, re-adding a member and
                 // `_active` from the snapshot) without ever touching `keyframeDown` or
-                // `selectMany`'s own resets below — so it clears the guard here too, ahead of
+                // `selectMany`'s own resets above — so it clears the guard here too, ahead of
                 // the routed call, on both directions. A reset when the restored selection
                 // isn't a strip keyframe is a harmless no-op, same as a fresh selection.
                 stripTipDismissed = false;

@@ -2561,6 +2561,10 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
     // term at the popover's render condition reds the same assertion the same way, exit 1 —
     // the popover keeps rendering (and hit-testing) after Escape, so nothing moved the hit
     // owner to the diamond. Both mutations restored byte-identical after; green.
+    // What this arm does NOT discriminate: it dispatches only Escape, so the guard's reset
+    // sites — the undo/redo keydown legs, `selectMany`'s marquee reset, `keyframeDown`'s
+    // pointer reset — are unarmed here; deleting any reset leaves this assertion green. The
+    // resets are enumeration-verified only (every subject-establishing route reviewed twice).
     const hitOwners = await page.evaluate(async ({ x, y }) => {
         const owner = () => document.elementFromPoint(x, y);
         const before = owner();
