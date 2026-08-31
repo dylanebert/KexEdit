@@ -1153,8 +1153,10 @@ describe("multi — the set-level multi predicate", () => {
         // strip are two co-selected siblings under their common ancestor, so the popover hides
         // exactly as it does for any other multi-set. Built through the production click path —
         // the band click's `selectStrip`, the first keyframe's replace, then a shift-click on a
-        // second keyframe of the same already-selected strip (`keyframeDown` skips its own
-        // `selectStrip` and reaches the toggle form), never `ensureStrip` + bare toggles.
+        // second keyframe of the same strip — shift is what sends `keyframeDown` to the toggle
+        // form (`if (e.shiftKey) desc.select(…, "toggle", owner)`), while `ensureStrip` still
+        // runs on the shift path whether or not the strip is already selected. never
+        // `ensureStrip` + bare toggles.
         // RED-FIRST WITNESS: the per-owner family form — counting each owning strip's keyframe
         // set as ONE subject with it (reading "a containment-kept ancestor is not a second
         // subject" as "a containment group is one subject") — reds this arm alone: `multi()`

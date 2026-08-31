@@ -3160,19 +3160,34 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     expect(sel).toContain(kfA);
     expect(sel).toContain(kfB);
 
-    // the marquee box also catches the seeded bump's s = 0.8·len shoulder (g = 1 rides the
-    // same y band as v = 1) — toggle it back OUT through the production shift-click path so
-    // the nudges below reach the pure strip-keyframe branch.
+    // the marquee box also catches one seeded force point — the bump's s = 0.5·len crest
+    // (g = 0), not the s = 0.8·len shoulder: the strip keyframes' v = 1 band renders at the
+    // g = 0 y band (the v-axis and the g-axis scale independently), so the box's y range
+    // spans the crest. Toggle it back OUT through the production shift-click path so the
+    // nudges below reach the pure strip-keyframe branch. The caught point is resolved from
+    // the marquee's own selection (force circles lead the `.fhit` list, s-sorted), not a
+    // hardcoded index.
+    const caughtForce = (await forceSelIds()).sort((a, b) => a - b);
+    expect(caughtForce.length).toBe(1);
     const fhit = page.locator(".fhit");
-    const bump = await fhit.nth(3).boundingBox();
-    if (!bump) throw new Error("force point 3 not laid out");
+    const forceU = (await kexCall(page, "forceU")) as { id: number; s: number }[];
+    const caughtIdx = forceU
+        .slice()
+        .sort((a, b) => a.s - b.s)
+        .map((p) => p.id)
+        .indexOf(caughtForce[0]);
+    if (caughtIdx < 0) throw new Error("caught force point not found");
+    const bump = await fhit.nth(caughtIdx).boundingBox();
+    if (!bump) throw new Error("caught force point not laid out");
     await page.keyboard.down("Shift");
     await page.mouse.click(bump.x + bump.width / 2, bump.y + bump.height / 2);
     await page.keyboard.up("Shift");
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
 
-    // the undo baseline sits AFTER the marquee: whatever the selection gesture itself
-    // recorded is already in the count, so the deltas below attribute to the nudges alone.
+    // the undo baseline sits AFTER the flow's own authoring steps (the strip and keyframe
+    // creation calls above), so whatever those recorded is excluded from the deltas below —
+    // the nudges are what they attribute to. The marquee is a selection gesture and records
+    // no history entry of its own.
     const undoBase = await undoDepth();
 
     // the pointer stays over the chart (the marquee's own drag) — `editor.hover` is "timeline"
@@ -3198,8 +3213,8 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
 
     // the two-strip nudge is ONE undo entry: the history bracket (`beginStripKeyframeMoves`
     // … `commit`) wraps the whole resolved member set, never one entry per owning strip —
-    // the per-member split the S4 adversarial pass named as the silent regression this
-    // assert pins.
+    // witnessed: per-member brackets red this assert (one entry per member, received
+    // undoBase + 3), and a deleted commit reds it with the entry missing.
     expect(await undoDepth()).toBe(undoBase + 1);
 
     // ArrowLeft back — both move back, the shared delta again
@@ -3229,16 +3244,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     expect(sUndoA).toBeCloseTo(sAfterA, 5); // back to the post-first-nudge position
     expect(sUndoB).toBeCloseTo(sAfterB, 5);
 });
-
-// MUTATION-ATTEMPTED, NO RED-FIRST WITNESS RECORDED for the undo-entry asserts above: the
-// per-member bracket split the S4 adversarial pass named (`beginStripKeyframeMoves(ecs,
-// [w.id])` + `commit(history)` inside the `nudgeKeyframes` loop, replacing the single
-// bracket) ran twice against this flow and stayed GREEN both times — the second on an
-// isolated port — while every movement assertion also stayed green. Either the flow's
-// nudge does not reach the mutated branch or the recorded entries collapse at the undo
-// layer; the question is open and belongs to the adversarial pass. The asserts stand
-// green-on-truth (one press moves `undoDepth` by exactly one; one undo restores both
-// owners' keyframes), not mutation-coupled.
 
 // The MIXED-DOMAIN lockdown fall-through: a pin session locks every non-pinning section, and
 // the mixed force + strip-keyframe arrow nudge (the force handler's own branch — a shape the
