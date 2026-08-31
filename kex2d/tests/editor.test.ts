@@ -1118,19 +1118,25 @@ describe("multi — the set-level multi predicate", () => {
         expect(multi()).toBe(false);
     });
 
-    test("the containment pair selectStrip then selectStripKf — driven as a plain click drives it — reads true today (S5 is the flip point)", () => {
+    test("the containment pair selectStrip then selectStripKf reads single", () => {
         // a plain click on a strip keyframe first selects the owning strip (`selectStrip`), then
         // selects the keyframe (`selectStripKf` in replace mode, whose `sweepOtherKinds(["stripKf",
         // "strip"])` keeps the strip). the result is a two-member set by construction: {strip, stripKf}.
-        // `multi()` returns true today — a size-only set-level predicate cannot distinguish the
-        // owning-strip co-selection from a genuine multi-set, so it hides the keyframe's own popover
-        // on every single-subject click. S5 migrates this site to a containment-aware read that
-        // tells the two apart; S5 is gated behind S4, so pin the current behavior here.
         selectStrip(1);
         selectStripKf(10, "replace", 1);
-        // both members are present — the pair is {strip:1, stripKf:10}
         expect(editor.strips.ids.has(1)).toBe(true);
         expect(editor.stripKfs.ids.has(10)).toBe(true);
+        expect(multi()).toBe(false);
+    });
+
+    test("a keyframe with a non-owning strip reads multi", () => {
+        // The same production click sequence followed by a shift-click on another strip leaves
+        // the owning strip as containment and the second strip as a genuine sibling subject.
+        selectStrip(1);
+        selectStripKf(10, "replace", 1);
+        selectStrip(2, "toggle");
+        expect(editor.stripKfs.ids.has(10)).toBe(true);
+        expect(editor.strips.ids.has(2)).toBe(true);
         expect(multi()).toBe(true);
     });
 });

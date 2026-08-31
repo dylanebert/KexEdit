@@ -163,18 +163,9 @@ export function activeKind(): SelKind | null {
     return _active?.kind ?? null;
 }
 
-/** whether the selection is a multi-set — two or more members of any kind, cross-kind included.
- *  the set-level multi predicate (editor-ui.md Multi context UI): a per-kind `ids.size > 1`
- *  predicate reads a two-member cross-kind selection as single-select, so the context readers
- *  (manip ring, force-point popover, readout) read this instead. bulk-op applicability readers
- *  (Delete set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the law
- *  governs context, never bulk-op applicability.
- *
- *  the one context reader that does *not* read this yet is the strip-keyframe typed-field popover
- *  (`multiStripKf`, `Timeline.svelte`): a plain click on a strip keyframe keeps the owning strip
- *  (`sweepOtherKinds(["stripKf", "strip"])`), so a size-only count reads that single-subject click
- *  as a multi-set and hides the popover. counting co-selected siblings instead of raw members needs
- *  the per-member ownership read S4 introduces, and that migration is S5.
+/** whether the selection has more than one subject. A strip selected only because it owns a
+ *  selected strip keyframe is containment, not a second subject; all other members count. Context
+ *  readers use this set-level predicate, while bulk-op applicability readers remain per-kind.
  *
  *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal
  *  of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the existing
@@ -186,7 +177,18 @@ export function activeKind(): SelKind | null {
  *  if (multi()) return null;
  */
 export function multi(): boolean {
-    return _members.size > 1;
+    const containedStrips = new Set<number>();
+    for (const member of _members.values()) {
+        if (member.kind === "stripKf" && member.owner !== undefined)
+            containedStrips.add(member.owner);
+    }
+
+    let subjects = 0;
+    for (const member of _members.values()) {
+        if (member.kind === "strip" && containedStrips.has(member.id)) continue;
+        subjects += 1;
+    }
+    return subjects > 1;
 }
 
 /** whether any member of any kind is selected — the set's non-empty read, `multi()`'s size-0
