@@ -341,7 +341,7 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // After removing only the endpoint stroke guard, the same arm exits 0; deleting that repaired
 // stroke block reds it again. Numeric pixel readings and computed cursor values are recorded in
 // the gate report.
-test("selected strip endpoint paint and cursor agree across the state table (S1)", async ({
+test("selected strip endpoint paint and cursor agree across the state table", async ({
     page,
     boot,
 }) => {
