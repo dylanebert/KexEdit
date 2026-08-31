@@ -366,6 +366,8 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     const emptyX = x1 + 40;
     expect(x1 - x0).toBeGreaterThan(4 * STRIP_HIT_R);
     expect(emptyX - x1).toBeGreaterThan(STRIP_HIT_R);
+    expect(emptyX).toBeGreaterThanOrEqual(0);
+    expect(emptyX).toBeLessThan(chartBox.width);
 
     // SELECTED: rest and body hover retain the selected paint; the selected edge keeps its
     // separate handle paint and its resize cursor. The hit partition is the synchronization
@@ -435,6 +437,11 @@ test("selected strip endpoint paint and cursor agree across the state table", as
             dist(edge, body),
             `edge hover must paint apart from body hover: body ${JSON.stringify(body)}, edge ${JSON.stringify(edge)}`,
         ).toBeGreaterThan(6);
+    if (selectedEdge && edge)
+        expect(
+            dist(selectedEdge, edge),
+            `selected edge must reuse the existing edge-hover paint: selected ${JSON.stringify(selectedEdge)}, unselected ${JSON.stringify(edge)}`,
+        ).toBeLessThanOrEqual(2);
 });
 
 // ── S3 (kex2d-event-substrate, "one-shot events are a structurally distinct kind") ─────────────
