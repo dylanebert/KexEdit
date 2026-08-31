@@ -1110,7 +1110,7 @@ function dragTangentTo(ecs: State, canvas: HTMLCanvasElement, e: PointerEvent): 
 
 /** whether the member set holds any member of a kind outside `domain` — the cross-kind read
  *  behind the S2 dismissal law. answers dismissal-rung kind-domain routing and is NOT the
- *  set-level multi predicate (`multi()`, `editor.ts`), which S5 finishes. `domain` names the
+ *  set-level multi predicate (`multi()`, `editor.ts`). `domain` names the
  *  rung's own kind(s): a strip keyframe under its owning strip is nesting, not a sibling kind,
  *  so the strip rung passes both strip kinds and a plain strip-keyframe click (which keeps the
  *  owning strip, `sweepOtherKinds`) is NOT cross-kind — its peel ladder runs. */

@@ -1675,6 +1675,67 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
     await expect.poll(undoDepth).toBe(before - 1);
 });
 
+// S5: assert the real typed-field popover call site against the containment-aware set-level
+// `multi()` predicate. Setup writes only authored fixtures through the DEV hook; the three selection
+// transitions below are real pointer events on the rendered `.fhit` circles, with a keyboard Escape
+// rung between the second and third. The first `.ptip` assertion expects count 0 for the genuine
+// force-point + strip-keyframe cross-kind set; the final `.ptip` assertion expects visibility after
+// Escape and a plain click replace it with its owning strip + keyframe containment pair. Mutating
+// the guard back to `editor.stripKfs.ids.size > 1` reds that first assertion; the final assertion is
+// the owning-pair positive control. The over-broad containment exclusion in `multi()` is armed by
+// the unit contrast `tests/editor.test.ts` test named `a keyframe with a non-owning strip reads multi`.
+test("strip keyframe popover follows set-level multi context", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await frameTimeline(page);
+
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+    const stripsOf = () => kexCall(page, "stripsOf", 0);
+    const sectionCount = () => kexCall(page, "sectionCount");
+    const tTotal = () => kexCall(page, "tTotal");
+
+    const stripId = (await kexCall(page, "addStripAt", 0, 8, 5)) as number;
+    await kexCall(page, "placeStripKf", stripId, 4, 8);
+    await expect.poll(async () => (await stripKeyframesOf(stripId)).length).toBe(3);
+
+    const beforeTotal = await tTotal();
+    await kexCall(page, "append", 1); // add a force section with its seeded force points
+    await expect.poll(sectionCount).toBe(2);
+    await expect.poll(async () => (await tTotal()) !== beforeTotal).toBe(true);
+    await frameTimeline(page);
+
+    const velocityKeyframes = page.locator('.fhit[aria-label="Velocity keyframe"]');
+    const velocityKeyframe = velocityKeyframes.nth(1);
+    const forcePoint = page.locator('.fhit[aria-label="Force point"]');
+    await expect(velocityKeyframes).toHaveCount(3);
+    await expect(forcePoint).toHaveCount(2);
+
+    // First establish the genuine cross-kind selection through pointer events. Shift-clicking the
+    // velocity keyframe also keeps its owning strip, but that containment member is not a subject.
+    await forcePoint.first().click();
+    await velocityKeyframe.click({ modifiers: ["Shift"] });
+    await expect(page.locator(".nodemenu")).toHaveCount(0);
+    await expect(page.locator(".ptip")).toHaveCount(0);
+    await expect.poll(async () => (await kexCall(page, "stripKfSelIds")).length).toBe(1);
+
+    // Pin both dismissal layers before Escape: no menu may swallow the press, and the cross-kind
+    // selection (whose popover is hidden) must still be present as the rung this press peels.
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await kexCall(page, "stripKfSelIds")).length).toBe(0);
+    await expect.poll(async () => await kexCall(page, "selectedStrip")).toBe(null);
+
+    // The same keyframe is now visible again. A plain pointer click replaces the cleared set with
+    // its owning strip + keyframe containment pair, and the typed-field popover is valid again.
+    await velocityKeyframe.click();
+    await expect(page.locator(".ptip")).toBeVisible();
+
+    // Keep the setup's authored strip observable so a fixture that silently failed to create it
+    // cannot make the pointer population empty and turn both DOM assertions into vacuous passes.
+    await expect
+        .poll(async () => (await stripsOf()).some((s: { id: number }) => s.id === stripId))
+        .toBe(true);
+});
+
 // F1 repair (round 3, `Timeline.svelte`'s `deleteSelectedStripKf`): the RAF-tick race the fix
 // closed, shipped with no arm — `selStrip` is a `$derived.by` gated on `void tick`, so its
 // cached value only catches up to a fresh `editor.strip` write on the NEXT tick; a Delete

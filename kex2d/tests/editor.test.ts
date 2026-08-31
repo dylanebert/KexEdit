@@ -1074,12 +1074,12 @@ describe("writeHover / clearHover — the one seam every hover write and clear g
 });
 
 // ── the set-level multi predicate (S1, editor-ui.md Multi context UI) ──────────────────
-// the law: under one container, "multi" is a property of the whole member set — any two-member
-// selection, cross-kind included, is a multi-set. a per-kind `ids.size > 1` predicate reads a
-// two-member cross-kind selection as single-select, so the context readers (manip ring, popover,
-// readout) read this exported predicate instead. bulk-op applicability readers (Delete set-lift,
-// Cut single-subject gate, arrow-nudge group move) stay per-kind — the law governs context, never
-// bulk-op applicability.
+// the law: under one container, a containment-kept owning strip is not a second subject; all
+// other co-selected members count, including cross-kind siblings. a per-kind `ids.size > 1`
+// predicate reads a two-member cross-kind sibling set as single-select, so the context readers
+// (manip ring, popover, readout) read this exported predicate instead. bulk-op applicability
+// readers (Delete set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the
+// law governs context, never bulk-op applicability.
 describe("multi — the set-level multi predicate", () => {
     // every arm constructs its selection through the production selectors a click calls
     // (`selectStrip`, `selectStripKf`, `selectForce`, `deselectAll`), not through `ensureStrip`
@@ -1118,19 +1118,32 @@ describe("multi — the set-level multi predicate", () => {
         expect(multi()).toBe(false);
     });
 
-    test("the containment pair selectStrip then selectStripKf — driven as a plain click drives it — reads true today (S5 is the flip point)", () => {
+    test("the containment pair selectStrip then selectStripKf reads single", () => {
+        // BEHAVIOR ARM (not a pre-repair control): the production click path keeps the owning
+        // strip with its keyframe. Replacing multi() with raw `_members.size > 1` makes this
+        // assertion fail (received true), proving the arm reaches the new containment exclusion.
         // a plain click on a strip keyframe first selects the owning strip (`selectStrip`), then
         // selects the keyframe (`selectStripKf` in replace mode, whose `sweepOtherKinds(["stripKf",
         // "strip"])` keeps the strip). the result is a two-member set by construction: {strip, stripKf}.
-        // `multi()` returns true today — a size-only set-level predicate cannot distinguish the
-        // owning-strip co-selection from a genuine multi-set, so it hides the keyframe's own popover
-        // on every single-subject click. S5 migrates this site to a containment-aware read that
-        // tells the two apart; S5 is gated behind S4, so pin the current behavior here.
         selectStrip(1);
         selectStripKf(10, "replace", 1);
-        // both members are present — the pair is {strip:1, stripKf:10}
         expect(editor.strips.ids.has(1)).toBe(true);
         expect(editor.stripKfs.ids.has(10)).toBe(true);
+        expect(multi()).toBe(false);
+    });
+
+    test("a keyframe with a non-owning strip reads multi", () => {
+        // CONTRAST ARM: the production click path leaves a non-owning strip as a genuine sibling.
+        // This intentionally stays green under raw size-only multi(); its distinct witness is an
+        // over-broad exclusion that drops every selected strip alongside a strip keyframe, which
+        // makes this assertion fail rather than hiding the two arm roles.
+        // The same production click sequence followed by a shift-click on another strip leaves
+        // the owning strip as containment and the second strip as a genuine sibling subject.
+        selectStrip(1);
+        selectStripKf(10, "replace", 1);
+        selectStrip(2, "toggle");
+        expect(editor.stripKfs.ids.has(10)).toBe(true);
+        expect(editor.strips.ids.has(2)).toBe(true);
         expect(multi()).toBe(true);
     });
 });
