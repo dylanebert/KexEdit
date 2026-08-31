@@ -163,14 +163,15 @@ export function activeKind(): SelKind | null {
     return _active?.kind ?? null;
 }
 
-/** whether the selection has more than one subject. A strip selected only because it owns a
- *  selected strip keyframe is containment, not a second subject; all other members count. Context
- *  readers use this set-level predicate, while bulk-op applicability readers remain per-kind.
+/** whether the selection has more than one subject. A selected strip whose id is the stored
+ *  owner of a selected strip-keyframe member is that keyframe's owning ancestor, not a second
+ *  subject; all other members count. Context readers use this set-level predicate, while bulk-op
+ *  applicability readers remain per-kind.
  *
- *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal
- *  of its own, so a derived over it only re-runs on `tick` — the `void tick` idiom the existing
- *  derived predicates document. every caller is already inside a `void tick` derived, so the
- *  read is live there.
+ *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal.
+ *  App.svelte's derived context readers and Timeline.svelte's `multiForce` reader explicitly touch
+ *  `tick`; the strip-keyframe guard is a markup expression re-evaluated with its component render.
+ *  `multi()` itself provides no invalidation.
  *
  *  @example
  *  // hide the viewport ring on a multi-set (App.svelte)

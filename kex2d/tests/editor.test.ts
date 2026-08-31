@@ -1119,6 +1119,9 @@ describe("multi — the set-level multi predicate", () => {
     });
 
     test("the containment pair selectStrip then selectStripKf reads single", () => {
+        // BEHAVIOR ARM (not a pre-repair control): the production click path keeps the owning
+        // strip with its keyframe. Replacing multi() with raw `_members.size > 1` makes this
+        // assertion fail (received true), proving the arm reaches the new containment exclusion.
         // a plain click on a strip keyframe first selects the owning strip (`selectStrip`), then
         // selects the keyframe (`selectStripKf` in replace mode, whose `sweepOtherKinds(["stripKf",
         // "strip"])` keeps the strip). the result is a two-member set by construction: {strip, stripKf}.
@@ -1130,6 +1133,10 @@ describe("multi — the set-level multi predicate", () => {
     });
 
     test("a keyframe with a non-owning strip reads multi", () => {
+        // CONTRAST ARM: the production click path leaves a non-owning strip as a genuine sibling.
+        // This intentionally stays green under raw size-only multi(); its distinct witness is an
+        // over-broad exclusion that drops every selected strip alongside a strip keyframe, which
+        // makes this assertion fail rather than hiding the two arm roles.
         // The same production click sequence followed by a shift-click on another strip leaves
         // the owning strip as containment and the second strip as a genuine sibling subject.
         selectStrip(1);
