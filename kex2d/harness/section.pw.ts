@@ -3125,6 +3125,7 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     const stripKfPx = () =>
         kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const undoDepth = () => kexCall(page, "undoDepth") as Promise<number>;
 
     // two strips at non-overlapping positions (avoiding the seed strip at station 0), each
     // with one INTERIOR keyframe at the SAME v — the marquee box is then one narrow y band
@@ -3158,6 +3159,10 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     expect(sel).toContain(kfA);
     expect(sel).toContain(kfB);
 
+    // the undo baseline sits AFTER the marquee: whatever the selection gesture itself
+    // recorded is already in the count, so the deltas below attribute to the nudges alone.
+    const undoBase = await undoDepth();
+
     // the pointer stays over the chart (the marquee's own drag) — `editor.hover` is "timeline"
     const sBeforeA = (
         (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
@@ -3179,6 +3184,12 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     expect(sAfterA - sBeforeA).toBeCloseTo(0.1, 5); // strip A's keyframe moved — not just the active strip's slice
     expect(sAfterB - sBeforeB).toBeCloseTo(0.1, 5);
 
+    // the two-strip nudge is ONE undo entry: the history bracket (`beginStripKeyframeMoves`
+    // … `commit`) wraps the whole resolved member set, never one entry per owning strip —
+    // the per-member split the S4 adversarial pass named as the silent regression this
+    // assert pins.
+    expect(await undoDepth()).toBe(undoBase + 1);
+
     // ArrowLeft back — both move back, the shared delta again
     await page.keyboard.press("ArrowLeft");
     await frames(page, 1);
@@ -3190,7 +3201,33 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     ).find((k) => k.id === kfB)!.s;
     expect(sBackA).toBeCloseTo(sBeforeA, 5);
     expect(sBackB).toBeCloseTo(sBeforeB, 5);
+
+    // the return nudge is its own single entry too, and ONE undo of it restores BOTH
+    // strips' keyframes together — the entry carries both owners' moves, not the active
+    // strip's slice.
+    expect(await undoDepth()).toBe(undoBase + 2);
+    await page.keyboard.press("Control+z");
+    await frames(page, 1);
+    const sUndoA = (
+        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfA)!.s;
+    const sUndoB = (
+        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
+    ).find((k) => k.id === kfB)!.s;
+    expect(sUndoA).toBeCloseTo(sAfterA, 5); // back to the post-first-nudge position
+    expect(sUndoB).toBeCloseTo(sAfterB, 5);
+    expect(await undoDepth()).toBe(undoBase + 1);
 });
+
+// MUTATION-ATTEMPTED, NO RED-FIRST WITNESS RECORDED for the undo-entry asserts above: the
+// per-member bracket split the S4 adversarial pass named (`beginStripKeyframeMoves(ecs,
+// [w.id])` + `commit(history)` inside the `nudgeKeyframes` loop, replacing the single
+// bracket) ran twice against this flow and stayed GREEN both times — the second on an
+// isolated port — while every movement assertion also stayed green. Either the flow's
+// nudge does not reach the mutated branch or the recorded entries collapse at the undo
+// layer; the question is open and belongs to the adversarial pass. The asserts stand
+// green-on-truth (one press moves `undoDepth` by exactly one; one undo restores both
+// owners' keyframes), not mutation-coupled.
 
 // The MIXED-DOMAIN lockdown fall-through: a pin session locks every non-pinning section, and
 // the mixed force + strip-keyframe arrow nudge (the force handler's own branch — a shape the
