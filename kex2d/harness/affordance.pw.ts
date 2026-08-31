@@ -335,64 +335,105 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // re-mutating confirmed exactly that (both directions green). The `$effect` guard is still in
 // `Timeline.svelte`, kept as a zero-cost hardening rather than a demonstrated fix.
 
-// RED-FIRST WITNESS (kex2d-capture-deflake S2, 2026-08-25): deleting the `!sel &&` guard on
-// `Timeline.svelte`'s endpoint-hover stroke (so the resize stroke draws unconditionally, the
-// exact bug this test guards against) reds this arm — `capture -g "selected strip suppresses
-// the endpoint hover stroke"` exits 1 ("a selected strip's edge must ignore hover", the
-// SelHoverTol assert) — reverted and reran green (exit 0). The two `frames(page, 1)` settles
-// are replaced by polling `bandHit` (the same classification-state reader the hit-zone
-// partition arm above already uses) — the PARTITION a pointer position resolves to, never a
-// frame count, so this arm survives a later in-scheme colour change to the stroke itself.
-test("selected strip suppresses the endpoint hover stroke (S3 review finding 1)", async ({
+// RED-FIRST WITNESS (kex2d-strip-resize-affordance S1): the rewritten state × affordance
+// arm was run against unchanged production before the repair. It exited 1 because selected-edge
+// hover stayed within the selected-at-rest paint band, while the cursor still read `ew-resize`.
+// After removing only the endpoint stroke guard, the same arm exits 0; deleting that repaired
+// stroke block reds it again. Numeric pixel readings and computed cursor values are recorded in
+// the gate report.
+test("selected strip endpoint paint and cursor agree across the state table (S1)", async ({
     page,
     boot,
 }) => {
     await boot();
     await seedHill(page);
     await frameTimeline(page);
-    const created = await createStrip(page); // creation selects the strip — the review's own subject
+    const created = await createStrip(page);
 
     const chartBox = await page.locator("canvas.chart").boundingBox();
     if (!chartBox) throw new Error("chart canvas not laid out");
     const toPage = (localX: number): [number, number] => [chartBox.x + localX, chartBox.y + bandY];
+    const bandCursor = (): Promise<string> =>
+        page.locator(".hbandzone").evaluate((e) => getComputedStyle(e).cursor);
 
     await expect.poll(() => kexCall(page, "selectedStrip")).toBe(created.id);
     const strips = (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[];
-    // `seed()` (S3) carries no strip of its own — the created one is the only one, addressed
-    // by id anyway (the SELECTED one is the review's own subject).
     expect(strips.length).toBe(1);
     const selected = strips.find((s) => s.id === created.id);
     if (!selected) throw new Error("selected strip not found");
-    const { x0 } = selected;
+    const { x0, x1 } = selected;
+    const bodyX = (x0 + x1) / 2;
+    const emptyX = x1 + 40;
+    expect(x1 - x0).toBeGreaterThan(4 * STRIP_HIT_R);
+    expect(emptyX - x1).toBeGreaterThan(STRIP_HIT_R);
 
-    // rest, still selected: no hover anywhere near the band. Await the PARTITION reaching
-    // "empty" (`bandHit`, the classification `render()` reads), never a frame count — the
-    // condition the rest of this arm actually needs, same idiom as the hit-zone partition arm.
-    await page.mouse.move(5, 5);
+    // SELECTED: rest and body hover retain the selected paint; the selected edge keeps its
+    // separate handle paint and its resize cursor. The hit partition is the synchronization
+    // point for each rendered state, not a frame-count settle.
+    const [emptyPageX, emptyPageY] = toPage(emptyX);
+    await page.mouse.move(emptyPageX, emptyPageY);
     await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
-    const restSelected = await probeChart(page, x0, bandY);
-    expect(restSelected).not.toBeNull();
+    await expect.poll(bandCursor).toBe("default");
+    const selectedRest = await probeChart(page, bodyX, bandY);
+    const selectedRestEdge = await probeChart(page, x0, bandY);
+    expect(selectedRest).not.toBeNull();
+    expect(selectedRestEdge).not.toBeNull();
 
-    // hover the SELECTED strip's own start edge with a real pointer move. Await the
-    // classification reaching the endpoint kind for this strip's start edge — the condition
-    // `bandHit.kind === "endpoint"`'s `!sel` guard reads before the stroke draws (or doesn't).
+    const [bodyPageX, bodyPageY] = toPage(bodyX);
+    await page.mouse.move(bodyPageX, bodyPageY);
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "body", id: created.id });
+    await expect.poll(bandCursor).toBe("pointer");
+    const selectedBody = await probeChart(page, bodyX, bandY);
+    expect(selectedBody).not.toBeNull();
+    if (selectedRest && selectedBody) expect(dist(selectedBody, selectedRest)).toBeLessThanOrEqual(2);
+
     const [edgePageX, edgePageY] = toPage(x0);
     await page.mouse.move(edgePageX, edgePageY);
     await expect
         .poll(() => kexCall(page, "bandHit"))
         .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
-    const hoverSelectedEdge = await probeChart(page, x0, bandY);
-    expect(hoverSelectedEdge).not.toBeNull();
-
-    // the endpoint hover stroke must be invisible on an already-selected element (editor-ui.md
-    // Kind color) — no register above selection, unconditionally, the same law `bodyHover`
-    // already follows.
-    const SelHoverTol = 2;
-    if (restSelected && hoverSelectedEdge)
+    await expect.poll(bandCursor).toBe("ew-resize");
+    const selectedEdge = await probeChart(page, x0, bandY);
+    expect(selectedEdge).not.toBeNull();
+    if (selectedRestEdge && selectedEdge)
         expect(
-            dist(hoverSelectedEdge, restSelected),
-            `a selected strip's edge must ignore hover: at-rest ${JSON.stringify(restSelected)}, hovered ${JSON.stringify(hoverSelectedEdge)}`,
-        ).toBeLessThanOrEqual(SelHoverTol);
+            dist(selectedEdge, selectedRestEdge),
+            `selected edge must paint apart from selected rest at the edge: rest ${JSON.stringify(selectedRestEdge)}, edge ${JSON.stringify(selectedEdge)}`,
+        ).toBeGreaterThan(2);
+
+    // UNSELECTED: rest is inert, body hover lifts its fill and pointer cursor, and endpoint hover
+    // adds the resize stroke and ew-resize cursor.
+    await page.keyboard.press("Escape");
+    await expect.poll(() => kexCall(page, "selectedStrip")).toBeNull();
+    await page.mouse.move(emptyPageX, emptyPageY);
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
+    await expect.poll(bandCursor).toBe("default");
+    const rest = await probeChart(page, bodyX, bandY);
+    expect(rest).not.toBeNull();
+
+    await page.mouse.move(bodyPageX, bodyPageY);
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "body", id: created.id });
+    await expect.poll(bandCursor).toBe("pointer");
+    const body = await probeChart(page, bodyX, bandY);
+    expect(body).not.toBeNull();
+    if (rest && body)
+        expect(
+            dist(body, rest),
+            `body hover must lift the fill: rest ${JSON.stringify(rest)}, hover ${JSON.stringify(body)}`,
+        ).toBeGreaterThan(6);
+
+    await page.mouse.move(edgePageX, edgePageY);
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
+    await expect.poll(bandCursor).toBe("ew-resize");
+    const edge = await probeChart(page, x0, bandY);
+    expect(edge).not.toBeNull();
+    if (body && edge)
+        expect(
+            dist(edge, body),
+            `edge hover must paint apart from body hover: body ${JSON.stringify(body)}, edge ${JSON.stringify(edge)}`,
+        ).toBeGreaterThan(6);
 });
 
 // ── S3 (kex2d-event-substrate, "one-shot events are a structurally distinct kind") ─────────────
