@@ -1676,13 +1676,14 @@ test("velocity strip keyframe editing flow", async ({ page, boot }) => {
 });
 
 // S5: the real typed-field popover call site reads the containment-aware set-level multi predicate.
-// Setup writes only authored fixtures through the DEV hook; both selection transitions below are
-// real pointer events on the rendered `.fhit` circles. A force point plus a strip keyframe is a
-// genuine cross-kind set, so its single strip-keyframe member must hide `.ptip`; a plain click on
-// that same keyframe then replaces the set with its owning strip + keyframe containment pair, so
-// `.ptip` must return. The two DOM assertions are deliberately opposite: mutating the guard back to
-// `editor.stripKfs.ids.size > 1` makes the first assertion red, while an over-broad containment
-// exclusion in `multi()` makes the second red.
+// Setup writes only authored fixtures through the DEV hook; the three selection transitions below
+// are real pointer events on the rendered `.fhit` circles, with a keyboard Escape rung between the
+// second and third. A force point plus a strip keyframe is a genuine cross-kind set, so its single
+// strip-keyframe member must hide `.ptip`; a plain click on that same keyframe then replaces the set
+// with its owning strip + keyframe containment pair, so `.ptip` must return. Mutating the guard back
+// to `editor.stripKfs.ids.size > 1` makes the first assertion red; the second is its owning-pair
+// positive control. The over-broad containment exclusion in `multi()` is armed by the unit contrast
+// `tests/editor.test.ts` test named `a keyframe with a non-owning strip reads multi`.
 test("strip keyframe popover follows set-level multi context", async ({ page, boot }) => {
     await boot();
     await seedHill(page);
