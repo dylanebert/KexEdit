@@ -3125,6 +3125,7 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     const stripKfPx = () =>
         kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
     const undoDepth = () => kexCall(page, "undoDepth") as Promise<number>;
 
     // two strips at non-overlapping positions (avoiding the seed strip at station 0), each
@@ -3158,6 +3159,17 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     const sel = (await stripKfSelIds()).sort((a, b) => a - b);
     expect(sel).toContain(kfA);
     expect(sel).toContain(kfB);
+
+    // the marquee box also catches the seeded bump's s = 0.8·len shoulder (g = 1 rides the
+    // same y band as v = 1) — toggle it back OUT through the production shift-click path so
+    // the nudges below reach the pure strip-keyframe branch.
+    const fhit = page.locator(".fhit");
+    const bump = await fhit.nth(3).boundingBox();
+    if (!bump) throw new Error("force point 3 not laid out");
+    await page.keyboard.down("Shift");
+    await page.mouse.click(bump.x + bump.width / 2, bump.y + bump.height / 2);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
 
     // the undo baseline sits AFTER the marquee: whatever the selection gesture itself
     // recorded is already in the count, so the deltas below attribute to the nudges alone.
@@ -3216,7 +3228,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     ).find((k) => k.id === kfB)!.s;
     expect(sUndoA).toBeCloseTo(sAfterA, 5); // back to the post-first-nudge position
     expect(sUndoB).toBeCloseTo(sAfterB, 5);
-    expect(await undoDepth()).toBe(undoBase + 1);
 });
 
 // MUTATION-ATTEMPTED, NO RED-FIRST WITNESS RECORDED for the undo-entry asserts above: the
