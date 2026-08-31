@@ -385,7 +385,8 @@ test("selected strip endpoint paint and cursor agree across the state table (S1)
     await expect.poll(bandCursor).toBe("pointer");
     const selectedBody = await probeChart(page, bodyX, bandY);
     expect(selectedBody).not.toBeNull();
-    if (selectedRest && selectedBody) expect(dist(selectedBody, selectedRest)).toBeLessThanOrEqual(2);
+    if (selectedRest && selectedBody)
+        expect(dist(selectedBody, selectedRest)).toBeLessThanOrEqual(2);
 
     const [edgePageX, edgePageY] = toPage(x0);
     await page.mouse.move(edgePageX, edgePageY);
