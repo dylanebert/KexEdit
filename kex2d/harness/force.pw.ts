@@ -1221,7 +1221,7 @@ test("timeline multiselect flow", async ({ page, boot }) => {
     expect(await forceSelIds()).toContain(active1); // the active member is always a set member
     // kex2d-time-domain stage 1 (second rescope): the typed-field popover shows NO single-keyframe
     // context on a multi-set, same as the viewport ring — standard multi-select carries no
-    // single-subject popover. Mutation: drop the `!multi()` guard → count 1 → red.
+    // single-subject popover. Mutation: drop the `!multiForce` guard → count 1 → red.
     await expect(page.locator(".ptip")).toHaveCount(0);
     await page.waitForTimeout(SHOT_MS);
     const strip = dockStrip(page);

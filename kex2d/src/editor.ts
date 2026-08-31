@@ -169,9 +169,9 @@ export function activeKind(): SelKind | null {
  *  applicability readers remain per-kind.
  *
  *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal.
- *  App.svelte's derived context readers and Timeline.svelte's `multiForce` reader explicitly touch
- *  `tick`; the strip-keyframe guard is a markup expression re-evaluated with its component render.
- *  `multi()` itself provides no invalidation.
+ *  App.svelte's derived context readers touch `tick`; Timeline.svelte's markup guards re-run when
+ *  their tracked `selPoint`, `selStripKfPt`, or `stripTipDismissed` dependencies invalidate (the
+ *  first two are tick-paced derived reads). `multi()` itself provides no invalidation.
  *
  *  @example
  *  // hide the viewport ring on a multi-set (App.svelte)

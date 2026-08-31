@@ -1074,12 +1074,12 @@ describe("writeHover / clearHover — the one seam every hover write and clear g
 });
 
 // ── the set-level multi predicate (S1, editor-ui.md Multi context UI) ──────────────────
-// the law: under one container, "multi" is a property of the whole member set — any two-member
-// selection, cross-kind included, is a multi-set. a per-kind `ids.size > 1` predicate reads a
-// two-member cross-kind selection as single-select, so the context readers (manip ring, popover,
-// readout) read this exported predicate instead. bulk-op applicability readers (Delete set-lift,
-// Cut single-subject gate, arrow-nudge group move) stay per-kind — the law governs context, never
-// bulk-op applicability.
+// the law: under one container, a containment-kept owning strip is not a second subject; all
+// other co-selected members count, including cross-kind siblings. a per-kind `ids.size > 1`
+// predicate reads a two-member cross-kind sibling set as single-select, so the context readers
+// (manip ring, popover, readout) read this exported predicate instead. bulk-op applicability
+// readers (Delete set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the
+// law governs context, never bulk-op applicability.
 describe("multi — the set-level multi predicate", () => {
     // every arm constructs its selection through the production selectors a click calls
     // (`selectStrip`, `selectStripKf`, `selectForce`, `deselectAll`), not through `ensureStrip`
