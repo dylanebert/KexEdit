@@ -1162,7 +1162,7 @@ describe("multi — the set-level multi predicate", () => {
         // subject" as "a containment group is one subject") — reds this arm alone: `multi()`
         // read false where true was expected, while every earlier arm in this block stayed
         // green under the same mutant (the containment pair has one keyframe; the non-owning
-        // contrast arm's keyframe keeps its own subject). Restored; green.
+        // contrast arm's strip 2 is a subject of its own). Restored; green.
         selectStrip(1);
         selectStripKf(10, "replace", 1);
         selectStripKf(20, "toggle", 1);

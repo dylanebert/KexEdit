@@ -3165,8 +3165,8 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     // g = 0 y band (the v-axis and the g-axis scale independently), so the box's y range
     // spans the crest. Toggle it back OUT through the production shift-click path so the
     // nudges below reach the pure strip-keyframe branch. The caught point is resolved from
-    // the marquee's own selection (force circles lead the `.fhit` list, s-sorted), not a
-    // hardcoded index.
+    // the marquee's own selection — this fixture's one force section has all five seeded
+    // force circles in view after framing — not a hardcoded index.
     const caughtForce = (await forceSelIds()).sort((a, b) => a - b);
     expect(caughtForce.length).toBe(1);
     const fhit = page.locator(".fhit");
@@ -3213,8 +3213,9 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
 
     // the two-strip nudge is ONE undo entry: the history bracket (`beginStripKeyframeMoves`
     // … `commit`) wraps the whole resolved member set, never one entry per owning strip —
-    // witnessed: per-member brackets red this assert (one entry per member, received
-    // undoBase + 3), and a deleted commit reds it with the entry missing.
+    // witnessed: per-member brackets (one begin+commit per member, no retained outer commit)
+    // red this assert at undoBase + 2 for the two-member set, and a deleted commit reds it
+    // with the entry missing.
     expect(await undoDepth()).toBe(undoBase + 1);
 
     // ArrowLeft back — both move back, the shared delta again
