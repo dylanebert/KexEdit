@@ -20,6 +20,7 @@ import {
     frames,
     CHART_TOP,
     CHART_BOT_PAD,
+    type Kex,
 } from "./flow";
 
 // Drive the MULTI-SECTION chain shape: a geo track → append a section → convert it to
@@ -2024,6 +2025,107 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     // never lands on `end` — the buggy clamp's own tell, independent of the tolerance above.
     expect(kf1.s).toBeLessThan(strip.end - tol);
     expect(kf1.s).toBeGreaterThan(strip.start + tol);
+});
+
+// S1 attribution matrix: the same legal grab is crossed with the two value-axis modes. Every
+// sample reads the authored value, projected diamond, and displayed velocity range together so a
+// green horizontal arm cannot hide a view/range change. The +10px arms also perform the vertical
+// control: the expected value comes from the same pointer delta and the diamond keeps its grab
+// offset, rather than a horizontal-only special case.
+test("velocity strip keyframe drag attribution matrix", async ({ page, boot }) => {
+    const arms = [
+        { name: "center Ctrl", yOffset: 0, ctrl: true },
+        { name: "center snap", yOffset: 0, ctrl: false },
+        { name: "+10px-y Ctrl", yOffset: 10, ctrl: true },
+        { name: "+10px-y snap", yOffset: 10, ctrl: false },
+    ];
+    const failures: string[] = [];
+    for (const arm of arms) {
+        await boot();
+        await seedHill(page);
+        const stripId = await kexCall(page, "addStripAt", 2, 22, 8);
+        if (stripId === null) throw new Error(`${arm.name}: strip setup failed`);
+        const kfId = await kexCall(page, "placeStripKf", stripId, 12, 8);
+        await frameTimeline(page);
+        const read = () =>
+            page.evaluate(
+                ({ stripId, kfId }) => {
+                    const k = (window as unknown as { __kex: Kex }).__kex;
+                    const row = k.stripKeyframesOf(stripId).find((x) => x.id === kfId);
+                    const point = k.stripKfPx().find((x) => x.id === kfId);
+                    return { row, point, range: k.vRange() };
+                },
+                { stripId, kfId },
+            );
+        const before = await read();
+        if (!before.row || !before.point) throw new Error(`${arm.name}: keyframe not laid out`);
+        const beforeRow = before.row;
+        const beforePoint = before.point;
+        const v0 = beforeRow.v;
+        const range0 = before.range;
+        const pressX = beforePoint.x;
+        const pressY = beforePoint.y + arm.yOffset;
+        const dx = 20;
+        const samples: Awaited<ReturnType<typeof read>>[] = [];
+        if (arm.ctrl) await page.keyboard.down("Control");
+        await page.mouse.move(pressX, pressY);
+        await page.mouse.down();
+        for (let i = 1; i <= 5; i++) {
+            await page.mouse.move(pressX + (dx * i) / 5, pressY);
+            samples.push(await read());
+        }
+        await page.mouse.up();
+        if (arm.ctrl) await page.keyboard.up("Control");
+        const horizontalValueStable = samples.every((sample) => sample.row?.v === v0);
+        const horizontalRangeStable = samples.every(
+            (sample) => JSON.stringify(sample.range) === JSON.stringify(range0),
+        );
+        const horizontalProjectionStable = samples.every(
+            (sample) =>
+                sample.point !== undefined && Math.abs(sample.point.y - beforePoint.y) <= 0.5,
+        );
+        const stationMoved = samples.at(-1)?.row?.s !== beforeRow.s;
+        console.log(
+            `matrix arm ${arm.name}: value=${horizontalValueStable ? "green" : "red"} range=${horizontalRangeStable ? "green" : "red"} projection=${horizontalProjectionStable ? "green" : "red"} station=${stationMoved ? "green" : "red"}`,
+        );
+        if (!horizontalValueStable) failures.push(`${arm.name}: horizontal authored value moved`);
+        if (!horizontalRangeStable) failures.push(`${arm.name}: velocity range moved`);
+        if (!horizontalProjectionStable) failures.push(`${arm.name}: horizontal projected y moved`);
+        if (!stationMoved) failures.push(`${arm.name}: horizontal station did not move`);
+
+        if (arm.yOffset !== 0) {
+            const range = before.range;
+            const dock = await page.locator(".dock .body").boundingBox();
+            if (!dock) throw new Error(`${arm.name}: dock not laid out`);
+            const chartHeight = dock.height - CHART_TOP - CHART_BOT_PAD;
+            const verticalDelta = 20;
+            const rawExpectedV = v0 - (verticalDelta / chartHeight) * (range[1] - range[0]);
+            const expectedV = arm.ctrl ? rawExpectedV : Math.round(rawExpectedV * 10) / 10;
+            const afterHorizontal = samples.at(-1);
+            if (!afterHorizontal?.point) throw new Error(`${arm.name}: horizontal sample missing`);
+            if (arm.ctrl) await page.keyboard.down("Control");
+            await page.mouse.move(afterHorizontal.point.x, afterHorizontal.point.y + arm.yOffset);
+            await page.mouse.down();
+            await page.mouse.move(
+                afterHorizontal.point.x,
+                afterHorizontal.point.y + arm.yOffset + verticalDelta,
+                { steps: 5 },
+            );
+            await page.mouse.up();
+            if (arm.ctrl) await page.keyboard.up("Control");
+            const vertical = await read();
+            if (!vertical.row || !vertical.point)
+                throw new Error(`${arm.name}: vertical sample missing`);
+            const verticalValueStable = Math.abs(vertical.row.v - expectedV) < 1e-5;
+            const offsetStable = Math.abs(vertical.point.y - (beforePoint.y + verticalDelta)) < 1;
+            console.log(
+                `matrix arm ${arm.name}: vertical value=${verticalValueStable ? "green" : "red"} offset=${offsetStable ? "green" : "red"} expected=${expectedV} actual=${vertical.row.v}`,
+            );
+            if (!verticalValueStable) failures.push(`${arm.name}: vertical delta incorrect`);
+            if (!offsetStable) failures.push(`${arm.name}: vertical grab offset changed`);
+        }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
 });
 
 // S4 capture arm: the chart-body empty-click deselect grammar — one `deselectAll()` call

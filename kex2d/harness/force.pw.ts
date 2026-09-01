@@ -26,6 +26,7 @@ import {
     SNAP_DEG_MAX,
     SAMPLE_BUDGET_M,
     frames,
+    type Kex,
     type Page,
 } from "./flow";
 
@@ -929,6 +930,47 @@ test("force easing menu flow", async ({ page, boot }) => {
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickMenuItem(page, ".fmenu", "Delete");
     await expect.poll(forceCount).toBe(beforeDelete - 1);
+});
+
+// S1 shared-path control: force diamonds use the same press-relative value anchor as strip
+// diamonds. The legal +10px-y grab is deliberately off-center; a horizontal move must preserve
+// authored g and its displayed projection while the live station changes.
+test("force keyframe off-center drag preserves value", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => await kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const read = () =>
+        page.evaluate(() => {
+            const k = (window as unknown as { __kex: Kex }).__kex;
+            const row = k.forceU()[2];
+            return { row, range: k.gRange() };
+        });
+    const before = await read();
+    const hit = await page.locator(".fhit").nth(2).boundingBox();
+    if (!before.row || !hit) throw new Error("force keyframe is not laid out");
+    const pressX = hit.x + hit.width / 2;
+    const pressY = hit.y + hit.height / 2 + 10;
+    const range = before.range;
+    const g0 = before.row.g;
+    await page.keyboard.down("Control");
+    await page.mouse.move(pressX, pressY);
+    await page.mouse.down();
+    const samples: Awaited<ReturnType<typeof read>>[] = [];
+    for (let i = 1; i <= 5; i++) {
+        await page.mouse.move(pressX + i * 4, pressY);
+        samples.push(await read());
+    }
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    for (const sample of samples) {
+        if (!sample.row) throw new Error("force sample lost keyframe");
+        expect(sample.row.g).toBe(g0);
+        expect(sample.range).toEqual(range);
+    }
+    expect(samples.at(-1)?.row?.s).not.toBe(before.row.s);
 });
 
 // G2: the Tangents ▸ mode submenu (Mirror | Aligned | Free — the geo node menu's convention on a
