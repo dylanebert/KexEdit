@@ -658,7 +658,7 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
 
     // Bulk easing is retained even though station dragging is not: all selected non-terminal
     // force keys change, while the two unselected continuation seeds remain Cubic (1).
-    await page.mouse.click(boxes[2].x, boxes[2].y, { button: "right" });
+    await page.locator(".fpt").nth(2).click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickFlyout(page, ".fmenu", "Easing", "Quintic");
     const eased = await forceEases();
