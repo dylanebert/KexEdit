@@ -275,6 +275,9 @@ const V_BASE = 0; // the velocity axis's always-shown baseline (0 m/s), not `Y_B
 // extreme g almost instantly). Derived from BAND, so the band stays the one authored constant.
 const GROW_HEADROOM = 1;
 const GROW_CAP: [number, number] = [BAND[0] - GROW_HEADROOM, BAND[1] + GROW_HEADROOM];
+// the velocity axis has its own cap: preserve its authored resting band and pin its lower
+// edge to V_BASE, since no authorable velocity lives below that floor.
+const V_GROW_CAP: [number, number] = [V_BASE, V_BAND[1] + GROW_HEADROOM];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 const FMARKER_R = 5; // px; the force-point diamond's half-diagonal (visual)
@@ -538,18 +541,15 @@ $effect(() => {
             yInit = true;
             return;
         }
-        // drag mode: the axis HOLDS during a keyframe or handle drag — the live re-bake must
-        // never re-fit the view under the held cursor — until the cursor is dragged PAST the
-        // chart edge, where the shared edge-grow (growValueAxis) scrolls the value axis to
-        // follow. auto-fit resumes on release and eases to the new curve's range.
-        if (dragKf !== null || draggingLen || dragTan !== null) {
+        // drag mode: the active descriptor's axis HOLDS during every keyframe or handle drag —
+        // the live re-bake must never re-fit the view under the held cursor. Edge growth is still
+        // owned by the active anchor's descriptor, so a strip-keyframe drag grows only velocity,
+        // while the force view remains held. Auto-fit resumes on release and eases to its target.
+        const forceView = kfDesc("force").view;
+        if (forceView.active()) {
             yHeld = true;
-            if (dragKf !== null) growValueAxis(dragKfCy, applyKeyframeDrag);
-            // a handle drag edge-pans through the SAME mechanism (F3d) — only once it's a real
-            // drag (tanMoved), so a mere handle click, whose tanCx/tanCy are unset, never pans.
-            else if (dragTan !== null && tanMoved)
-                growValueAxis(tanCy, () => applyTan(tanCx, tanCy));
-            // (a length resize holds the y-axis with no edge-grow — it authors no g value)
+            const edge = forceView.edge();
+            if (edge) growValueAxis(forceView, edge.cy, edge.reapply);
             return;
         }
         if (yHeld) {
@@ -563,8 +563,8 @@ $effect(() => {
 });
 
 // the velocity channel's own auto-fit target — `yTarget`'s twin, scanning `vCurve` instead
-// of `curve`, resting on `V_BAND`/`V_BASE`. Display-only (no keyframes, no drag), so unlike
-// `yTarget` it has no handle-endpoint accommodation to fold in.
+// of `curve`, resting on `V_BAND`/`V_BASE`. It is fitted independently of the displayed view:
+// keyframe/handle gestures hold the latter while the recovered curve keeps updating the former.
 const vTarget = $derived.by((): YFit => {
     void tick;
     let lo = V_BASE;
@@ -576,24 +576,42 @@ const vTarget = $derived.by((): YFit => {
             if (c.v[i] > hi) hi = c.v[i];
         }
     }
-    return yFit(lo, hi, V_BASE, V_BAND);
+    const fitted = yFit(lo, hi, V_BASE, V_BAND);
+    // The recovered speed is non-negative and no velocity authoring surface can express a value
+    // below V_BASE, so fitted breathing room may not lower the displayed floor past that base.
+    return { ...fitted, lo: Math.max(V_BASE, fitted.lo) };
 });
-// the *displayed* velocity range — `yView`'s twin. No drag ever holds it (the channel is
-// display-only, never authored), so it always eases straight toward `vTarget`, at the same
-// asymmetric grow-fast/shrink-lazy rates as the g-axis.
+// the *displayed* velocity range — `yView`'s twin. It is display-only (the recovered curve is
+// not authored), but it HOLDS during every keyframe or handle drag so a live bake cannot move a
+// held diamond. On release it returns to the independently fitted `vTarget` through the same
+// eased settle idiom as the force view.
 let vView: YFit = $state({ lo: V_BAND[0], hi: V_BAND[1], step: 1 });
 let vInit = false;
+let vHeld = false;
+let vReturn = false;
 $effect(() => {
     void tick;
     untrack(() => {
-        const t = vTarget;
+        const velocityView = kfDesc("strip").view;
         if (!vInit) {
-            vView = t;
+            vView = velocityView.fitted();
             vInit = true;
             return;
         }
-        const eased = yEase(vView, t, Y_OUT, Y_IN);
-        if (eased !== vView) vView = eased;
+        if (velocityView.active()) {
+            vHeld = true;
+            const edge = velocityView.edge();
+            if (edge) growValueAxis(velocityView, edge.cy, edge.reapply);
+            return;
+        }
+        if (vHeld) {
+            vHeld = false;
+            vReturn = true;
+        }
+        const eased = yEase(vView, velocityView.fitted(), Y_OUT, vReturn ? Y_OUT : Y_IN);
+        if (eased.lo === velocityView.fitted().lo && eased.hi === velocityView.fitted().hi)
+            vReturn = false;
+        if (eased !== vView) velocityView.write(eased);
     });
 });
 
@@ -679,14 +697,24 @@ $effect(() => {
 
 // edge-scroll grow-to-follow, shared by keyframe and handle drags (the standard drag
 // auto-scroll rule): while the dragged cursor `cy` is held past the top/bottom chart edge,
-// grow the value axis toward it (yGrow, timeline.ts) and re-map the held drag through the
-// grown axis via `reapply` so the dragged element follows. the document (x) axis never pans
-// under a content edit (editor-ui.md), so this is value-axis only. runs per frame from the
-// yView effect; a within-chart cursor leaves the axis unchanged (yGrow returns it by identity).
-function growValueAxis(cy: number, reapply: () => void): void {
-    const grown = yGrow(yView, cy, TOP, h - BOT_PAD, EDGE_RATE, GROW_CAP);
-    if (grown === yView) return;
-    yView = grown;
+// grow the active descriptor's value axis toward it (yGrow, timeline.ts) and re-map the held
+// drag through the grown axis via `reapply` so the dragged element follows. The document (x)
+// axis never pans under a content edit (editor-ui.md), so this is value-axis only. The descriptor
+// supplies the read/write pair and channel-specific cap; a within-chart cursor leaves the axis
+// unchanged (yGrow returns it by identity).
+interface KfView {
+    active: () => boolean;
+    read: () => YFit;
+    write: (next: YFit) => void;
+    fitted: () => YFit;
+    cap: [number, number];
+    edge: () => { cy: number; reapply: () => void } | null;
+}
+function growValueAxis(axis: KfView, cy: number, reapply: () => void): void {
+    const current = axis.read();
+    const grown = yGrow(current, cy, TOP, h - BOT_PAD, EDGE_RATE, axis.cap);
+    if (grown === current) return;
+    axis.write(grown);
     reapply();
 }
 
@@ -1659,6 +1687,10 @@ interface KfDesc {
     grid: number;
     floor: number | null;
     setter: (ecs: State, id: number, s: number, v: number) => void;
+    // The active channel owns its displayed view, fitted target, and edge-growth cap. Keeping
+    // these facets on the descriptor prevents the shared drag path from choosing a strip/force
+    // view at the write site.
+    view: KfView;
 }
 function kfDesc(kind: KfKind): KfDesc {
     if (kind === "force")
@@ -1674,6 +1706,22 @@ function kfDesc(kind: KfKind): KfDesc {
             grid: G_GRID,
             floor: null,
             setter: setForcePoint,
+            view: {
+                active: () => dragKf !== null || draggingLen || dragTan !== null,
+                read: () => yView,
+                write: (next) => {
+                    yView = next;
+                },
+                fitted: () => yTarget,
+                cap: GROW_CAP,
+                edge: () => {
+                    if (dragKf?.kind === "force")
+                        return { cy: dragKfCy, reapply: applyKeyframeDrag };
+                    if (dragTan !== null && tanMoved)
+                        return { cy: tanCy, reapply: () => applyTan(tanCx, tanCy) };
+                    return null;
+                },
+            },
         };
     return {
         sel: editor.stripKfs,
@@ -1726,6 +1774,19 @@ function kfDesc(kind: KfKind): KfDesc {
         grid: V_GRID,
         floor: V_FLOOR,
         setter: setStripKeyframe,
+        view: {
+            active: () => dragKf !== null || dragTan !== null,
+            read: () => vView,
+            write: (next) => {
+                vView = next;
+            },
+            fitted: () => vTarget,
+            cap: V_GROW_CAP,
+            edge: () =>
+                dragKf?.kind === "strip"
+                    ? { cy: dragKfCy, reapply: applyKeyframeDrag }
+                    : null,
+        },
     };
 }
 // the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1;
@@ -4623,6 +4684,10 @@ onMount(() => {
         if (k) {
             k.gRange = (): [number, number] => [yView.lo, yView.hi];
             k.vRange = (): [number, number] => [vView.lo, vView.hi];
+            // The fitted velocity target is intentionally a separate DEV read from vRange: a
+            // projection-hold capture must observe the recovered curve moving while the displayed
+            // axis remains held, then observe that held axis settle back to this target on release.
+            k.vFit = (): [number, number] => [vTarget.lo, vTarget.hi];
             k.xView = (): [number, number] => [view.pan, view.pxPerU];
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
             // every keyframe's coordinate on that axis — paired with the stored `s` (S6: the
