@@ -275,8 +275,8 @@ const V_BASE = 0; // the velocity axis's always-shown baseline (0 m/s), not `Y_B
 // extreme g almost instantly). Derived from BAND, so the band stays the one authored constant.
 const GROW_HEADROOM = 1;
 const GROW_CAP: [number, number] = [BAND[0] - GROW_HEADROOM, BAND[1] + GROW_HEADROOM];
-// the velocity axis has its own growth cap: preserve its authored resting ceiling and stop
-// lower-edge growth at V_BASE, the displayed baseline (stored velocity values remain floored).
+// the velocity axis has its own growth cap: its lower bound is V_BASE, while the upper bound
+// adds the same headroom as the force cap; that upper bound is not an authored resting ceiling.
 const V_GROW_CAP: [number, number] = [V_BASE, V_BAND[1] + GROW_HEADROOM];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
@@ -653,7 +653,14 @@ function growValueAxis(axis: KfView, cy: number, reapply: () => void): void {
     const current = axis.read();
     const grown = yGrow(current, cy, TOP, h - BOT_PAD, EDGE_RATE, axis.cap);
     if (grown === current) return;
+    // Growing a range changes the screen projection of the authored anchor. Rebase the stored
+    // press ordinate from its original cursor-to-anchor offset before reapplying the
+    // press-relative candidate; this keeps that offset through edge growth without deriving the
+    // authored value from a pixel offset.
+    const valueAxis = dragKf !== null ? kfDesc(dragKf.kind).axis : null;
+    const isKeyframeAxis = valueAxis !== null && axis === valueAxis.view;
     axis.write(grown);
+    if (isKeyframeAxis) dragKfCy0 = valueAxis.valToY(dragKfV0) + dragKfGrabOffset;
     reapply();
 }
 
@@ -1469,6 +1476,7 @@ let dragKfCy = 0;
 // the press ordinate is separate from the live cursor ordinate: both are clamped through the
 // same chart bounds before the locked press-relative value delta is evaluated.
 let dragKfCy0 = 0;
+let dragKfGrabOffset = 0; // cursor ordinate − authored diamond ordinate at press, in screen px
 let dragKfMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
 let dragKfS0 = 0; // the grab s / v — each axis's gesture-start landmark (always-on magnet)
 let dragKfV0 = 0;
@@ -1669,65 +1677,68 @@ const velocityValueAxis: ValueAxis = {
     },
 };
 
+// Descriptors are stable component state, not per-pointer/frame objects. Kind-specific
+// selection and station routing stays here; the shared drag path consumes the active descriptor's
+// value axis without allocating a closure on every hit or RAF.
+const forceKfDesc: KfDesc = {
+    sel: editor.forces,
+    pts: forcePts,
+    select: selectForce,
+    selectMany: selectForces,
+    activate: activateForce,
+    setter: setForcePoint,
+    axis: forceValueAxis,
+};
+const stripKfDesc: KfDesc = {
+    sel: editor.stripKfs,
+    // every strip's keyframes on the chart — S2 deletes the owning-strip filter
+    // (`k.strip === editor.strip`) that scoped the candidate pool to the currently selected
+    // strip, so a marquee can now take keyframes across two different strips at once. the
+    // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
+    // filter was the siloing — not a visibility gate.
+    pts: stripKfPts,
+    // both click forms resolve the OWNER from the click's own hit data — the owner param
+    // `keyframeDown` reads off the strip-kf render point (`StripKfPt.strip`), never through
+    // an ECS read and never through the active strip. the replace sweep keeps exactly
+    // the strip that owns the clicked keyframe: a co-selected non-owning strip is a
+    // sibling and drops. the toggle form records the same owner as the added member's
+    // containment flag, so `stripKfOwner` reads true for a shift-clicked keyframe too.
+    // `selectStripKf`'s overloads now require that owner on BOTH non-null forms (the
+    // stripKf-never-without-owner state invariant); the descriptor's shared field type
+    // still leaves it optional (the force kind has none to carry), so an owner-less strip
+    // call type-checks HERE — this closure is the fail-closed seam, refusing it rather
+    // than forwarding it. a stale id off a lagging frame still selects here and is peeled
+    // by the strip-keyframe dismissal $effect above (`stripKfPts` no longer contains it)
+    // — the same self-healing every other stale member rides, and the cost of the click
+    // no longer depending on a read completing under load.
+    select: (id, mode, owner) => {
+        if (id === null) selectStripKf(null);
+        else if (owner !== undefined) {
+            if (mode === "toggle") selectStripKf(id, "toggle", owner);
+            else selectStripKf(id, "replace", owner); // mode's default is "replace"
+        }
+    },
+    // the set write's owner map is now REQUIRED on `selectStripKfs` (the same invariant:
+    // no stripKf member without its owner), but the shared field type keeps it optional for
+    // the force kind, and strictFunctionTypes refuses the required→optional drop — so this
+    // wrapper carries the seam instead. an owner-less call through it lands on an EMPTY map,
+    // which adds nothing (fail closed per id), so the invariant holds here too.
+    selectMany: (ids, active, owners) => {
+        const resolvedOwners = owners ?? new Map<number, number>();
+        selectStripKfs(ids, active, resolvedOwners);
+        // Every production route that can establish or promote a strip-keyframe subject
+        // resets this guard: the plain/shift click below in `keyframeDown`, this
+        // marquee/set write, and undo/redo (`onKey`'s Ctrl+Z/Ctrl+Y, reset ahead of the
+        // routed call since restore re-adds members and `_active` without touching either
+        // pointer path) — three sites, not a pair.
+        if (active !== null && resolvedOwners.has(active)) stripTipDismissed = false;
+    },
+    activate: activateStripKf,
+    setter: setStripKeyframe,
+    axis: velocityValueAxis,
+};
 function kfDesc(kind: KfKind): KfDesc {
-    if (kind === "force")
-        return {
-            sel: editor.forces,
-            pts: forcePts,
-            select: selectForce,
-            selectMany: selectForces,
-            activate: activateForce,
-            setter: setForcePoint,
-            axis: forceValueAxis,
-        };
-    return {
-        sel: editor.stripKfs,
-        // every strip's keyframes on the chart — S2 deletes the owning-strip filter
-        // (`k.strip === editor.strip`) that scoped the candidate pool to the currently selected
-        // strip, so a marquee can now take keyframes across two different strips at once. the
-        // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
-        // filter was the siloing — not a visibility gate.
-        pts: stripKfPts,
-        // both click forms resolve the OWNER from the click's own hit data — the owner param
-        // `keyframeDown` reads off the strip-kf render point (`StripKfPt.strip`), never through
-        // an ECS read and never through the active strip. the replace sweep keeps exactly
-        // the strip that owns the clicked keyframe: a co-selected non-owning strip is a
-        // sibling and drops. the toggle form records the same owner as the added member's
-        // containment flag, so `stripKfOwner` reads true for a shift-clicked keyframe too.
-        // `selectStripKf`'s overloads now require that owner on BOTH non-null forms (the
-        // stripKf-never-without-owner state invariant); the descriptor's shared field type
-        // still leaves it optional (the force kind has none to carry), so an owner-less strip
-        // call type-checks HERE — this closure is the fail-closed seam, refusing it rather
-        // than forwarding it. a stale id off a lagging frame still selects here and is peeled
-        // by the strip-keyframe dismissal $effect above (`stripKfPts` no longer contains it)
-        // — the same self-healing every other stale member rides, and the cost of the click
-        // no longer depending on a read completing under load.
-        select: (id, mode, owner) => {
-            if (id === null) selectStripKf(null);
-            else if (owner !== undefined) {
-                if (mode === "toggle") selectStripKf(id, "toggle", owner);
-                else selectStripKf(id, "replace", owner); // mode's default is "replace"
-            }
-        },
-        // the set write's owner map is now REQUIRED on `selectStripKfs` (the same invariant:
-        // no stripKf member without its owner), but the shared field type keeps it optional for
-        // the force kind, and strictFunctionTypes refuses the required→optional drop — so this
-        // wrapper carries the seam instead. an owner-less call through it lands on an EMPTY map,
-        // which adds nothing (fail closed per id), so the invariant holds here too.
-        selectMany: (ids, active, owners) => {
-            const resolvedOwners = owners ?? new Map<number, number>();
-            selectStripKfs(ids, active, resolvedOwners);
-            // Every production route that can establish or promote a strip-keyframe subject
-            // resets this guard: the plain/shift click below in `keyframeDown`, this
-            // marquee/set write, and undo/redo (`onKey`'s Ctrl+Z/Ctrl+Y, reset ahead of the
-            // routed call since restore re-adds members and `_active` without touching either
-            // pointer path) — three sites, not a pair.
-            if (active !== null && resolvedOwners.has(active)) stripTipDismissed = false;
-        },
-        activate: activateStripKf,
-        setter: setStripKeyframe,
-        axis: velocityValueAxis,
-    };
+    return kind === "force" ? forceKfDesc : stripKfDesc;
 }
 
 // One predicate governs every value-axis gesture; each channel then owns only its projection,
@@ -1897,6 +1908,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     // the grab origin
     dragKfU0 = uAtPx(clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
     dragKfCy0 = clamp(dragKfCy, TOP, Math.max(TOP, h - BOT_PAD));
+    dragKfGrabOffset = dragKfCy0 - desc.axis.valToY(dragKfV0);
     // begin the history gesture (S2: one gesture for both kinds — mixed-set drag)
     beginKeyframeMoves(
         ecs,
@@ -2008,6 +2020,23 @@ function freshKfSnapshot(): {
         }
     }
     return { cand, at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id) };
+}
+
+// The harness probe follows the same fresh production projection as the press path and render.
+// During an active edge-growth drag, retain the active strip diamond even while its projected
+// point is outside the clip: the pointer is intentionally beyond the chart edge, and this is the
+// only live sample that can prove its press-relative offset through that clipped interval.
+function stripKfProbe(): StripKfPt[] {
+    const points = freshKfPts("strip") as StripKfPt[];
+    const activeId = dragKf?.kind === "strip" ? dragKf.id : null;
+    const yLo = TOP;
+    const yHi = Math.max(TOP, h - BOT_PAD);
+    return points.filter((p) => {
+        if (p.id === activeId) return true;
+        const x = ptX(p);
+        const y = velocityValueAxis.valToY(velocityValueAxis.val(p));
+        return x >= LEFT_GUT && x <= w && y >= yLo && y <= yHi;
+    });
 }
 
 // every left-button press on the chart — from a diamond's own hit circle OR from the chart-wide
@@ -4661,7 +4690,6 @@ onMount(() => {
         if (k) {
             k.gRange = (): [number, number] => [yView.lo, yView.hi];
             k.vRange = (): [number, number] => [vView.lo, vView.hi];
-            k.gFit = (): [number, number] => [yTarget.lo, yTarget.hi];
             k.vFit = (): [number, number] => [vTarget.lo, vTarget.hi];
             // One read gives the edge-growth witness both displayed projections and their live
             // fitted targets; the held range must move only for the active anchor's channel.
@@ -4721,18 +4749,7 @@ onMount(() => {
             // move/widen changed the bake.
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
-                // This IS `chartDown`'s own candidate list (`freshKfSnapshot`), reached by name
-                // rather than recomputed here — the `stripPx`/`bandCandidates` precedent, and for
-                // the same reason: a flow's pixel probe and the press path's classifier can never
-                // disagree about where a diamond is. Clipped keyframes are absent from both.
-                return freshKfSnapshot()
-                    .cand.filter((c) => c.kind === "strip")
-                    .map((c) => ({ id: c.id, x: rect.left + c.x, y: rect.top + c.y }));
-            };
-            k.stripKfAllPx = (): { id: number; x: number; y: number }[] => {
-                const rect = canvas.getBoundingClientRect();
-                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
-                return computeStripKfPts(computeBandStrips(freshSpans, ecs), freshSpans, ecs).map((p) => ({
+                return stripKfProbe().map((p) => ({
                     id: p.id,
                     x: rect.left + ptX(p),
                     y: rect.top + velocityValueAxis.valToY(velocityValueAxis.val(p)),
@@ -4785,6 +4802,8 @@ onMount(() => {
             if (k) {
                 delete k.gRange;
                 delete k.vRange;
+                delete k.vFit;
+                delete k.valueAxes;
                 delete k.xView;
                 delete k.domain;
                 delete k.forceU;

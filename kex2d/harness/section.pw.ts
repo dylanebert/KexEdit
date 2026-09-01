@@ -2187,7 +2187,7 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
             id === undefined
                 ? null
                 : ((
-                      (await kexCall(page, "stripKfAllPx")) as {
+                      (await kexCall(page, "stripKfPx")) as {
                           id: number;
                           x: number;
                           y: number;
@@ -2223,12 +2223,23 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
     await expect
         .poll(async () => (await readAxes()).vRange[1])
         .toBeGreaterThan(stripBefore.vRange[1] + 0.01);
-    const stripDuring = await readAxes();
-    // A +10px legal off-center press is the non-vacuous grab-offset control; the same gesture
-    // then crosses the edge, exercising growth without recentering at pointerdown.
+    // A +10px legal off-center press is the non-vacuous grab-offset control; after the cursor
+    // crosses the edge and the axis grows, sample the LIVE dragged diamond and compare its current
+    // cursor offset. This is deliberately after the growth poll, not a pre-move identity check.
     if (!stripGrab.grabbed) throw new Error("off-center strip keyframe grab was not resolved");
     const grabOffset = stripGrab.press.y - stripGrab.grabbed.y;
     expect(Math.abs(grabOffset - 10)).toBeLessThan(1);
+    await expect
+        .poll(async () => {
+            const live = (await kexCall(page, "stripKfPx")).find(
+                (candidate) => candidate.id === stripKfId,
+            );
+            return live === undefined
+                ? Number.POSITIVE_INFINITY
+                : Math.abs(Math.abs(stripGrab.cursorY - live.y) - Math.abs(grabOffset));
+        })
+        .toBeLessThan(1);
+    const stripDuring = await readAxes();
     expect(stripDuring.vRange[0]).toBe(stripBefore.vRange[0]);
     expect(stripDuring.gRange).toEqual(stripBefore.gRange);
     await finish();

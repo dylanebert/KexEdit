@@ -176,7 +176,6 @@ export interface Kex {
         vFit: [number, number];
     };
     stripKfPx(): { id: number; x: number; y: number }[];
-    stripKfAllPx(): { id: number; x: number; y: number }[];
     stripPx(): { id: number; x0: number; x1: number }[];
     hoverForceId(): number | null;
     guides(): { ray: boolean; angle: string | null; length: string | null };
