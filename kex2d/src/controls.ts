@@ -1,9 +1,7 @@
 import type { State } from "@dylanebert/shallot";
 import {
-    type CutPosition,
     mixedSetDelete,
     nodeActs,
-    nodeCuttable,
     sectionActs,
     sectionEditable,
     sectionOpsAllowed,
@@ -56,7 +54,6 @@ import {
     slideToPoint,
     type Frame,
 } from "./manipulator";
-import { playheadPosition } from "./cart";
 import { nodeKeyAct, sectionKeyAct } from "./keys";
 import { LENGTH_MIN } from "./magnet";
 import { BINDINGS, bound } from "./menu";
@@ -75,12 +72,10 @@ import {
     reheadOnDrag,
     samples,
     SectionKind,
-    sectionCutAt,
     sectionHandles,
     sectionInfo,
     sectionResettable,
     sections,
-    sectionSpans,
     seedTangent,
     setTangent,
     Strip,
@@ -88,7 +83,6 @@ import {
     StripKeyframe,
     stripKeyframeAt,
     Track,
-    trackEntity,
 } from "./track";
 import { fmt } from "./timeline";
 import {
@@ -1170,11 +1164,7 @@ export function attachControls(
                 return;
             }
         }
-        // right-click a section span → the menu (Convert/Pin/Reset/Delete), Cut OMITTED: the
-        // canvas is a spatial view, and a position-along-arclength op has no honest home there
-        // (`editor-ui.md` Menus, the surface axis — the viewport picking lens that used to resolve a
-        // cut point here, `pickSectionArc`/`pickCut`, is gone). `cutSurface` defaults to `false`,
-        // so `openContext` needs no third/fourth argument here.
+        // right-click a section span → the menu (Convert/Pin/Reset/Delete).
         const sec = pickSection(ecs, tx, cx, cy);
         if (sec !== null) openContext(e.clientX, e.clientY, sec);
     };
@@ -1658,26 +1648,12 @@ export function attachControls(
         // section under a live session would strand `editor.pinning` on a dead id (the mode's own
         // Exit lives only on that section's own context menu, so nothing could ever reach it again).
         // routed through `keys.ts`'s `sectionKeyAct` (the keyboard twin of `menus.sectionMenu`'s
-        // `remove`/`removeSet`/`Cut` rows) — the guards stay here, the decider only reads their
-        // results. `position` is `C`'s own resolution: the playhead's own stored position
-        // (`cart.playheadPosition`, never a cursor reading — the locked decision's "the keyboard
-        // cuts at the playhead... with no threshold") run through the SAME `sectionCutAt` seam
-        // the clip-strip menu row resolves a cursor through, scoped to THIS section — null off
-        // the track (no bake) or off the section (the playhead sits outside it), either of which
-        // makes `C` a no-op here exactly like a non-interior click would.
+        // `remove`/`removeSet` rows) — the guards stay here, the decider only reads their results.
         if (activeKind() === "section") {
             const section = editor.section!;
-            const trackEid = trackEntity(ecs);
-            let position: CutPosition | null = null;
-            if (trackEid !== null) {
-                const ph = playheadPosition(trackEid);
-                if (ph !== null)
-                    position = sectionCutAt(ecs, section, sectionSpans(ecs, trackEid), ph.d, ph.u);
-            }
             const act = sectionKeyAct(e.key, {
                 opsAllowed: sectionOpsAllowed(editor.pinning),
                 multi: editor.sections.ids.size > 1,
-                cuttable: position !== null,
                 // Reset (`R`) is a plain document act (`acts.sectionActs` already returns it), so
                 // — unlike Convert/Pin — it's computed fresh HERE, off the keydown's own subject
                 // (`editor.section`), never off a menu's tick-derived reading: the exact shape
@@ -1702,7 +1678,7 @@ export function attachControls(
                 if (act === "remove" || act === "removeSet") {
                     mixedSetDelete(ecs);
                 } else {
-                    const acts = sectionActs(ecs, section, position);
+                    const acts = sectionActs(ecs, section);
                     acts[act]();
                 }
             }
@@ -1742,7 +1718,6 @@ export function attachControls(
             editable: sectionEditable(editor.pinning, section),
             multi: false,
             endSelected: endSelected(ecs),
-            cuttable: nodeCuttable(Handle.order.get(sel), sectionHandles(ecs, section).length),
         });
         if (act !== null) {
             e.preventDefault();

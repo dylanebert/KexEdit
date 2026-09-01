@@ -1,6 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import type { State } from "@dylanebert/shallot";
-import { sectionActs } from "../src/acts";
 import {
     cartArc,
     cartPose,
@@ -9,7 +8,6 @@ import {
     forceCurve,
     loopTime,
     parkAtArc,
-    playheadPosition,
     trackMapping,
     velocityCurve,
 } from "../src/cart";
@@ -17,11 +15,9 @@ import {
     bakeOut,
     samples,
     SectionKind,
-    sectionCutAt,
     sectionForces,
     sectionInfo,
     sections,
-    sectionSpans,
     setBakeFreeze,
     Track,
 } from "../src/track";
@@ -300,93 +296,4 @@ test("trackMapping arclength follows the bake's ds convention across a frozen ga
         expect(Math.abs(m.arc[i] - acc)).toBeLessThan(1e-9);
     }
     setBakeFreeze(null);
-});
-
-describe("playheadPosition — the keyboard Cut's playhead resolution (kex2d-structural-editing stage 8)", () => {
-    // a fresh geo track with room for an INTERIOR cut point (node 0 at the origin, node 1 at
-    // (32,0) — the single segment's whole open interval is a valid `geoCutAt` landing).
-    function geoTrack(): { state: State; eid: number; sec: number } {
-        const bd = build();
-        bd.ecs.addSystem(CartSystem);
-        const sec = bd.appendSection(SectionKind.Geo);
-        bd.moveNode(sec, 1, 32, 0);
-        bd.bake();
-        return { state: bd.ecs, eid: bd.trackEid, sec };
-    }
-
-    // `controls.ts`'s own keyboard-cut resolution, replicated inline (the production seam:
-    // `cart.playheadPosition` → `track.sectionCutAt`, scoped to the selected section) — proves
-    // the seam itself, not a restatement of `controls.ts`'s dispatch.
-    function keyboardCutPosition(state: State, eid: number, sec: number) {
-        const ph = playheadPosition(eid);
-        if (ph === null) return null;
-        return sectionCutAt(state, sec, sectionSpans(state, eid), ph.d, ph.u);
-    }
-
-    test("resolves bit-exactly to the playhead's own cartArc reading — no rounding, no threshold", () => {
-        const { state, eid } = geoTrack();
-        const st = cartState.get(eid);
-        if (!st) throw new Error("cartState missing");
-        st.held = true;
-        parkAtArc(state, eid, 12.3456789); // an arbitrary interior arclength, not a round number
-        const d0 = cartArc(eid);
-        if (d0 === null) throw new Error("cartArc null after park");
-        const ph = playheadPosition(eid);
-        // Object.is-exact: the resolution carries no pixel/table round trip at all — it's the
-        // SAME number `cartArc` itself holds, whatever that number is.
-        expect(ph?.d).toBe(d0);
-    });
-
-    test("resolves an interior point arbitrarily close to a section boundary — no proximity gate", () => {
-        // unlike the menu's `snapCutToPlayhead` (SNAP_PX-gated), the keyboard path never calls a
-        // threshold resolver at all — a park a fraction of a millimetre off either end still
-        // resolves to a genuine interior cut point.
-        const { state, eid, sec } = geoTrack();
-        const st = cartState.get(eid);
-        if (!st) throw new Error("cartState missing");
-        st.held = true;
-        parkAtArc(state, eid, 0.001);
-        expect(keyboardCutPosition(state, eid, sec)).not.toBeNull();
-        parkAtArc(state, eid, 31.999);
-        expect(keyboardCutPosition(state, eid, sec)).not.toBeNull();
-    });
-
-    test("cutting at the playhead never moves it — a parked cart re-bakes to the same arclength", () => {
-        const { state, eid, sec } = geoTrack();
-        const st = cartState.get(eid);
-        if (!st) throw new Error("cartState missing");
-        st.held = true;
-        parkAtArc(state, eid, 12.3456789);
-        const before = cartArc(eid);
-        if (before === null) throw new Error("cartArc null after park");
-
-        const position = keyboardCutPosition(state, eid, sec);
-        expect(position).not.toBeNull();
-        sectionActs(state, sec, position).cutAt();
-        state.step(0); // re-bake across the new section boundary
-
-        expect(cartArc(eid)).toBeCloseTo(before, 9); // read-only: the cut never wrote `cartState`
-        expect(sections(state).length).toBe(2); // sanity: the cut actually landed
-    });
-
-    // the mutant `editor-ui.md`'s transport-read clause names: a resolver that ASSIGNS the
-    // playhead instead of merely reading it. Simulated here (never landed in production) to
-    // prove the test above is discriminating, not vacuous.
-    test("mutant check: a resolver that re-parks the playhead after a cut fails the read-only assert", () => {
-        const { state, eid, sec } = geoTrack();
-        const st = cartState.get(eid);
-        if (!st) throw new Error("cartState missing");
-        st.held = true;
-        parkAtArc(state, eid, 12.3456789);
-        const before = cartArc(eid);
-        if (before === null) throw new Error("cartArc null after park");
-
-        const position = keyboardCutPosition(state, eid, sec);
-        sectionActs(state, sec, position).cutAt();
-        state.step(0);
-        // the mutant: an authoring op driving the transport, exactly what the isolation forbids.
-        parkAtArc(state, eid, before + 5);
-
-        expect(cartArc(eid)).not.toBeCloseTo(before, 9);
-    });
 });

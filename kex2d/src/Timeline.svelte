@@ -7,7 +7,6 @@ import {
     forceCurve,
     parkAtArc,
     parkFromTime,
-    playheadPosition,
     trackMapping,
     velocityCurve,
 } from "./cart";
@@ -101,7 +100,6 @@ import {
     S_GRID,
     snap,
     snapAxis,
-    snapCutToPlayhead,
     stallClampU,
     uToPx,
     T_GRID,
@@ -122,7 +120,6 @@ import {
 import {
     forceSetEditable,
     keyframeActs,
-    keyframeCuttable,
     lockCandidates,
     mixedSetDelete,
     sectionEditable,
@@ -160,7 +157,6 @@ import {
     minForceExtent,
     SectionKind,
     type SectionSpan,
-    sectionCutAt,
     sectionForces,
     sectionHandles,
     sectionInfo,
@@ -976,7 +972,7 @@ $effect(() => {
     if (editor.force !== null && sp === null) selectForce(null);
 });
 // whether the force selection is a multi-set — the per-kind bulk-op applicability read (the menu's
-// `multi` flag: Delete set-lift, Easing bulk targets, Cut single-subject gate). the context read
+// `multi` flag: Delete set-lift, Easing bulk targets). the context read
 // (the typed-field popover hiding) uses the set-level `multi()` export instead (S1, editor-ui.md
 // Multi context UI): a per-kind `ids.size > 1` predicate reads a two-member cross-kind selection as
 // single-select, so the context reader reads the whole member set, not one kind's view. the bulk-op
@@ -1291,22 +1287,6 @@ const ptX = (p: ForcePt | StripKfPt): number => uPx(p.u);
 // chart-local px (past the g-gutter subtracted); LEFT_GUT is re-added when rendered.
 let snapX: number | null = $state(null); // an active s-axis snap: vertical guide px
 let snapY: number | null = $state(null); // an active g-axis snap: horizontal guide py
-
-// the clip-strip Cut's snap tell has no drag to clear it FROM (`clipMenu`, above) — the summoned
-// context menu's own lifetime stands in for the gesture: the guide clears the moment the menu
-// that snapped it closes, by whatever means (an action, click-away, Esc). `editor` is a plain
-// singleton, not a `$state` rune, so an `$effect` reading `editor.context` directly has ZERO
-// tracked dependencies — it fires once at mount and never again, the exact defect this codebase
-// already routes around everywhere else (App.svelte's `ctx`/its own effect: every reactive read
-// of `editor.*` goes through a tick-gated `$derived.by` first, and the effect depends on THAT).
-// Same shape here: derive the live boolean off the per-RAF `tick`, then the effect tracks it.
-const ctxOpen = $derived.by((): boolean => {
-    void tick;
-    return editor.context !== null;
-});
-$effect(() => {
-    if (!ctxOpen) snapX = null;
-});
 
 // the s-axis snap targets in chart-local px (the horizontal magnet): content landmarks
 // only (editor-ui.md) — section boundaries (0, interior boundaries, optionally the track
@@ -2452,9 +2432,6 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     const setOk = forceSetEditable(ecs);
     const pt = forcePts.find((p) => p.id === id);
     const activeOk = pt !== undefined && sectionEditable(editor.pinning, pt.section);
-    // Cut's OWN consent-boundary gate — stricter than `activeOk` above (which is `true` inside a
-    // pin session on the active keyframe's OWN section, exactly the case Cut must still bar).
-    const opsAllowed = sectionOpsAllowed(editor.pinning);
     // the Lock/Unlock row's member set — resolved by `acts.lockCandidates`, the same read the
     // toggle itself acts on: the label and the act are one row wearing two names (`editor-ui.md`'s
     // toggle-labeling law), so they must not derive the set twice.
@@ -2469,7 +2446,6 @@ const fmenuItems = $derived.by((): MenuItem[] => {
         {
             setOk,
             activeOk,
-            opsAllowed,
             lock,
             multi: multiForce,
             terminal: fmenuTerminal,
@@ -2490,11 +2466,6 @@ const fmenuItems = $derived.by((): MenuItem[] => {
             get customGlyph() {
                 return customGlyph(id);
             },
-            // the landmark Cut's own interior bound (`acts.keyframeCuttable`) — no cursor lens
-            // needed, unlike the section menu's free-position `canCut` (the keyframe under the
-            // menu already names the exact cut point). `keyframeMenu`'s own `opsAllowed` folds in
-            // the lockdown separately, so this stays the bare interior predicate.
-            canCut: pt !== undefined && keyframeCuttable(pt.s, pt.len),
         },
         {
             // the chrome keys first, the factory spread LAST (`editor-ui.md` Menus): a re-forked
@@ -2707,50 +2678,11 @@ function selectClip(e: PointerEvent, c: Clip): void {
     e.stopPropagation(); // don't also scrub via the ruler zone beneath
     selectSection(c.id, e.shiftKey ? "toggle" : "replace");
 }
-// right-click a clip → the section context menu (Convert / Delete) at the cursor.
-// Cut's free-position resolution off a clip right-click — the chart's own x-axis IS the
-// native domain coordinate by construction (`Timeline`'s whole point, `editor-ui.md`), so `u`
-// is a direct pixel read; `d` (the geo-side arc reading `track.sectionCutAt` wants) projects
-// through the SAME `dOf`/`uOf` seam the curve and every arclength-authored subject on this
-// chart already go through — `track.geoCutAt` never sees a raw pixel. `cutSurface: true` — the
-// clip strip is Cut's SOLE surface (`editor-ui.md` Menus, the surface axis).
-//
-// within `SNAP_PX` of the parked playhead the cursor reading SNAPS to it — the reused landmark
-// resolver (`timeline.snapCutToPlayhead`, `editor-ui.md` Snapping's playhead landmark, already
-// named there), never a second snap vocabulary. "exact, not near": the resolver lands on the
-// playhead's OWN stored `(d, u)`, read through `cart.playheadPosition` — the SAME resolution
-// `controls.ts`'s keyboard Cut reads (`kex2d-map.md`'s "the ONE resolution" claim, true by
-// construction: one call site, not two paths that happen to agree today) — never a pixel read
-// back through `dOf`/`uOf`, so a snapped cut carries no px-quantization error at all. "read-only":
-// `playheadPosition` only READS `cartState` — the resolver itself takes plain numbers, so neither
-// can move the playhead (`editor-ui.md`'s transport-read clause). Only while PARKED (`paused`) is
-// the playhead a snap target — `sTargets`' own precedent, a live-playing playhead isn't a stable
-// magnet — and the toggle/bypass read the SAME `snapActive` every other magnet reads. The visible
-// tell (round 8's own ask): a landmark hit flashes the shared guide channel (`snapX`, Snapping's
-// "only a landmark flashes a guide"), cleared when the menu closes (below) — there's no drag to
-// clear it FROM, so the menu's own lifetime is the tell's.
+// right-click a clip → the section context menu (Convert / Pin / Reset / Delete) at the cursor.
 function clipMenu(e: MouseEvent, c: Clip): void {
     e.preventDefault();
     e.stopPropagation();
-    const rect = canvas.getBoundingClientRect();
-    const rawU = uAtPx(e.clientX - rect.left);
-    const rawD = dOf(rawU);
-    const rawPx = uToPx(clamped, rawU);
-    let resolved: { d: number; u: number; guide: number | null } = {
-        d: rawD,
-        u: rawU,
-        guide: null,
-    };
-    if (snapActive(e.ctrlKey || e.metaKey) && paused && eid !== null) {
-        const ph = playheadPosition(eid);
-        if (ph !== null) {
-            const playheadPx = uToPx(clamped, ph.u);
-            resolved = snapCutToPlayhead(rawPx, rawD, rawU, ph.d, ph.u, playheadPx);
-        }
-    }
-    snapX = resolved.guide;
-    const cut = sectionCutAt(ecs, c.id, spans, resolved.d, resolved.u);
-    openContext(e.clientX, e.clientY, c.id, cut, true);
+    openContext(e.clientX, e.clientY, c.id);
 }
 
 // ── the append tail: a `+` after the last clip opens a two-choice geo/force flyout —
@@ -4545,16 +4477,9 @@ onMount(() => {
                 e.preventDefault();
                 forceEscape();
             } else {
-                // Cut's own landmark guard — the interior bound (`keyframeCuttable`, no cursor
-                // lens needed); the consent-boundary check is `pinning` itself (`!s.pinning` inside
-                // `forceKeyAct`, `acts.sectionOpsAllowed`'s own shape) — the same field the lock
-                // toggle already reads, not a second `sectionEditable` reading (the stage-6 review's
-                // finding: that field reads true on the pinning session's own keyframe).
-                const activePt = forcePts.find((p) => p.id === editor.force);
                 const act = forceKeyAct(e.key, {
                     pinning: editor.pinning !== null,
                     size: editor.forces.ids.size,
-                    cuttable: activePt !== undefined && keyframeCuttable(activePt.s, activePt.len),
                 });
                 if (act !== null) {
                     e.preventDefault();

@@ -295,7 +295,7 @@ test("geo authoring flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Cut C", "Reset R", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law), `R` (kex2d-shortcuts stage 4)
+        .toEqual(["Add Enter", "Handles", "Tangents ▸", "Reset R", "Delete Del"]); // ▸ = the submenu affix; Reset top-level (the Reset idiom law), `R` (kex2d-shortcuts stage 4)
     // …and the RENDERED rows are the real `nodeMenu` builder's rows for THIS node's live state,
     // taxonomy and derived dividers included, checked at the root and inside `Tangents ▸`. The
     // expectation is computed from `src/menus.ts` in the page, so a builder reorder can't be
@@ -303,8 +303,7 @@ test("geo authoring flow", async ({ page, boot }) => {
     await menuGrammar(page, ".nodemenu", {
         builder: "nodeMenu",
         // the chain-end node of the only section: a single selection, not the entry anchor, not in
-        // tangent edit, appendable and trimmable, no pin session open. The chain end is never a
-        // Cut landmark (`nodeCuttable`'s own interior bound), so its Cut row grays.
+        // tangent edit, appendable and trimmable, no pin session open.
         state: {
             multi: false,
             isEntry: false,
@@ -313,7 +312,6 @@ test("geo authoring flow", async ({ page, boot }) => {
             isEnd: true,
             canTrim: true,
             suffixOk: false,
-            canCut: false,
         },
         enums: { mode: "spline.TangentMode.Aligned" },
     });
@@ -1672,9 +1670,8 @@ test("node menu grays under the pin-mode lockdown (kex2d-menu-grammar)", async (
     if (!cb) throw new Error("viewport canvas not laid out");
     const n = await nodePoint(page, 3); // an interior hill node — not the entry, not the chain end
 
-    // node 3 is interior (`nodeCuttable`'s own bound), so `canCut` is true regardless of `ok` —
-    // the lockdown grays the row through `ok` alone, the same fork `Handles`/`Tangents`/`Reset`
-    // gray through (kex2d-structural-editing stage 6).
+    // node 3 is interior, not the chain end — the lockdown grays `Handles`/`Tangents`/`Reset`
+    // through `ok` alone (kex2d-structural-editing stage 6).
     const nodeState = (ok: boolean) => ({
         multi: false,
         isEntry: false,
@@ -1683,7 +1680,6 @@ test("node menu grays under the pin-mode lockdown (kex2d-menu-grammar)", async (
         isEnd: false,
         canTrim: false,
         suffixOk: false,
-        canCut: true,
     });
 
     // ── baseline, no pin session anywhere: the edit rows are live. ──

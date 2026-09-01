@@ -4,7 +4,7 @@ import { convertForce, MAX_LANDED_NODES, StaleConvert } from "../src/forcegeo";
 import { convertGeo } from "../src/geoforce";
 import { FORCE_BUDGET } from "../src/geofit";
 import { liveFitWorkers } from "../src/geofit-async";
-import { createHistory, type History, splitSection, undo } from "../src/history";
+import { createHistory, type History, undo } from "../src/history";
 import { Domain } from "../src/section";
 import { TangentMode } from "../src/spline";
 import {
@@ -462,34 +462,6 @@ describe("provenance short-circuit", () => {
 
         const secondResult = await convertForce(h, state, second);
         expect(secondResult.outcome).not.toBe("restored");
-    }, 60_000);
-
-    test("splitSection's residue resolves correctly with zero invalidation code — both halves fall through to the fit", async () => {
-        // the spec's claim: a split's residue resolves correctly with zero invalidation
-        // code. The head keeps its stamped id but its own content shrinks (fewer rows, a shorter
-        // length) — a token miss; the tail is a freshly minted section id that was never stamped
-        // — no provenance to consult at all. Both land on the fit, not because anything reached in
-        // to invalidate the stamp, but because the certification the consult already runs (token +
-        // entry) can't help failing on its own.
-        const { state, sec } = hillTrack();
-        const h = createHistory();
-
-        await convertGeo(h, state, sec);
-        state.step(0);
-        const secEid = sectionAt(state, sec);
-        if (secEid === null) throw new Error("section missing");
-        const mid = Section.length.get(secEid) / 2;
-
-        const tail = splitSection(h, state, sec, mid);
-        if (tail === null) throw new Error("split produced nothing");
-        state.step(0);
-
-        const headResult = await convertForce(h, state, sec);
-        expect(headResult.outcome).not.toBe("restored");
-        state.step(0);
-
-        const tailResult = await convertForce(h, state, tail);
-        expect(tailResult.outcome).not.toBe("restored");
     }, 60_000);
 
     test("undo after a restore returns the force section byte-identically", async () => {

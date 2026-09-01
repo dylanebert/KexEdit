@@ -1,13 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import {
-    keyframeCuttable,
-    mixedSetDelete,
-    nodeCuttable,
-    sectionEditable,
-    sectionOpsAllowed,
-    suffixRun,
-} from "../src/acts";
+import { mixedSetDelete, sectionEditable, sectionOpsAllowed, suffixRun } from "../src/acts";
 import {
     applyMultiDelta,
     armDrag,
@@ -740,40 +733,6 @@ describe("sectionEditable — the in-mode editing lockdown", () => {
     });
 });
 
-// Cut's two landmark enablement predicates (kex2d-structural-editing stage 4) — previously
-// exercised only as raw booleans fed straight into the grammar oracle's own state generator
-// (`menu.test.ts`'s `canCut`/`cuttable` matrices), never through the real function. Boundary
-// coverage here closes that: each predicate's exact `>`/`<` (never `>=`/`<=`) is pinned at
-// BOTH ends, not just proven true somewhere in the interior.
-describe("nodeCuttable — the node landmark Cut point (`splitGeo`'s own interior bound)", () => {
-    test("node 0 (the entry) is never cuttable, regardless of chain length", () => {
-        expect(nodeCuttable(0, 4)).toBe(false);
-        expect(nodeCuttable(0, 2)).toBe(false);
-    });
-    test("the chain end (order === count − 1) is never cuttable", () => {
-        expect(nodeCuttable(3, 4)).toBe(false);
-        expect(nodeCuttable(1, 2)).toBe(false); // the minimal two-node section: no interior exists
-    });
-    test("an interior order is cuttable", () => {
-        expect(nodeCuttable(1, 4)).toBe(true);
-        expect(nodeCuttable(2, 4)).toBe(true);
-    });
-});
-
-describe("keyframeCuttable — the keyframe landmark Cut point (`splitForce`'s own interior bound)", () => {
-    test("the section entry (s === 0) is never cuttable", () => {
-        expect(keyframeCuttable(0, 40)).toBe(false);
-    });
-    test("the section exit (s === length) is never cuttable", () => {
-        expect(keyframeCuttable(40, 40)).toBe(false);
-    });
-    test("an interior s is cuttable", () => {
-        expect(keyframeCuttable(20, 40)).toBe(true);
-        expect(keyframeCuttable(0.001, 40)).toBe(true); // just past the entry
-        expect(keyframeCuttable(39.999, 40)).toBe(true); // just short of the exit
-    });
-});
-
 // the key-act seam (kex2d-test-mechanism stage 2): the keyboard twin of `menus.ts`'s builders,
 // one pure decider per `BINDINGS` home. Each guard's yield and each act's firing condition, over
 // the vocabulary `tests/menu.test.ts` drives the same deciders against (the reverse-direction
@@ -875,7 +834,7 @@ describe("nodeKeyAct — the node Enter/Delete rungs (chain-end trim + multi nod
             nodeKeyAct("Delete", { editable: true, multi: false, endSelected: false }),
         ).toBeNull();
     });
-    // unlike Add/Remove/Cut, Reset applies to EVERY node — node 0, interior, and chain end alike
+    // unlike Add/Remove, Reset applies to EVERY node — node 0, interior, and chain end alike
     // — so it's checked BEFORE the chain-end guard (`!s.endSelected`) rather than gated by it.
     test("Reset fires on an interior (non-chain-end) node — checked before the chain-end guard", () => {
         expect(nodeKeyAct("r", { editable: true, multi: false, endSelected: false })).toBe("reset");
@@ -905,18 +864,6 @@ describe("forceKeyAct — the force-keyframe Delete/Lock rungs", () => {
     });
     test("off both bindings: null", () => {
         expect(forceKeyAct("Escape", { pinning: true, size: 3 })).toBeNull();
-    });
-    // adversarial-pass finding (kex2d-structural-editing stage 4, re-broken and closed again at
-    // stage 6): C must not fire "cut" while ANY pin session is open — even on the pinning
-    // session's OWN keyframe, where a looser per-section `editable` reading used to read true.
-    // `cuttable` is purely the interior-point predicate and says nothing about the consent
-    // boundary, mirroring `nodeKeyAct`'s top-level `editable` gate — `pinning` (the SAME field
-    // the lock toggle reads) is Cut's own gate now, not a second hand-kept-in-sync field.
-    test("C refuses under the lockdown even on a cuttable, single-select keyframe", () => {
-        expect(forceKeyAct("c", { pinning: true, size: 1, cuttable: true })).toBeNull();
-    });
-    test("C cuts a cuttable, single-select keyframe when no pin session is open", () => {
-        expect(forceKeyAct("C", { pinning: false, size: 1, cuttable: true })).toBe("cut");
     });
 });
 

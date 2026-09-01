@@ -27,7 +27,6 @@ import {
     S_GRID,
     snap,
     snapAxis,
-    snapCutToPlayhead,
     SNAP_PX,
     stallClampU,
     uToPx,
@@ -706,71 +705,6 @@ describe("snapAxis — landmark magnet over a domain grid", () => {
         const r = snapAxis(true, baseline + 2, baseline + 2, [baseline], G_GRID, id, null);
         expect(r.value).toBe(baseline); // the landmark wins over the G_GRID round
         expect(r.guide).toBe(baseline);
-    });
-});
-
-describe("snapCutToPlayhead — the clip-strip Cut's cursor→playhead snap (kex2d-structural-editing stage 8)", () => {
-    // the resolver reuses `snap` with a target set of exactly one (the playhead), so its
-    // threshold is the SAME `SNAP_PX` screen-px pull every other landmark magnet uses — never a
-    // second, tuned vocabulary (the locked decision's derived-`N` pin).
-
-    test("within the threshold, lands EXACTLY on the playhead's own stored values — not a pixel reading", () => {
-        // the raw cursor reads a plausible-but-off value; the resolver must return the PLAYHEAD's
-        // own (d, u), never rawD/rawU nor a value re-derived from the snapped px.
-        const r = snapCutToPlayhead(100, 41.7000001, 41.7000001, 42, 42, 104);
-        expect(r.d).toBe(42); // Object.is-exact: the playhead's own d, not a close reading
-        expect(r.u).toBe(42);
-        expect(r.guide).toBe(104); // the landmark's own px — the visible tell's anchor
-    });
-
-    test("outside the threshold, the raw cursor reading passes through unchanged, no guide", () => {
-        const r = snapCutToPlayhead(100, 41.7, 41.7, 42, 42, 100 + SNAP_PX + 0.001);
-        expect(r.d).toBe(41.7);
-        expect(r.u).toBe(41.7);
-        expect(r.guide).toBeNull();
-    });
-
-    test("the threshold is inclusive at exactly SNAP_PX, exclusive just past it", () => {
-        const at = snapCutToPlayhead(100, 41.7, 41.7, 42, 42, 100 + SNAP_PX);
-        expect(at.guide).toBe(100 + SNAP_PX);
-        const past = snapCutToPlayhead(100, 41.7, 41.7, 42, 42, 100 + SNAP_PX + 0.001);
-        expect(past.guide).toBeNull();
-    });
-
-    test("no playhead to snap to (unparked) is a plain pass-through — sTargets' own precedent", () => {
-        const r = snapCutToPlayhead(100, 41.7, 41.7, null, null, null);
-        expect(r).toEqual({ d: 41.7, u: 41.7, guide: null });
-    });
-
-    // the derived-`N` pin itself: `N` is a fixed SCREEN-PX pull, computed from the surface's own
-    // pxPerU mapping (`uToPx`) at the call site — never a domain-unit literal. The same domain
-    // separation between cursor and playhead (4 units) snaps at one zoom and does NOT at another,
-    // because the PIXEL gap crosses SNAP_PX only at the tighter zoom — proof the threshold lives
-    // in px, not in the arclength/time domain `snapCutToPlayhead`'s callers resolve `d`/`u` in.
-    test("the threshold is derived from the surface's own px-per-unit mapping, not a domain literal", () => {
-        const rawD = 100;
-        const playheadD = 104; // 4 domain units away, either zoom
-        const near: View = { pan: 0, pxPerU: 2 }; // 4 units → 8px == SNAP_PX: snaps
-        const far: View = { pan: 0, pxPerU: 10 }; // 4 units → 40px: doesn't
-        const zoomedIn = snapCutToPlayhead(
-            uToPx(near, rawD),
-            rawD,
-            rawD,
-            playheadD,
-            playheadD,
-            uToPx(near, playheadD),
-        );
-        expect(zoomedIn.d).toBe(playheadD); // 8px, at the inclusive edge
-        const zoomedOut = snapCutToPlayhead(
-            uToPx(far, rawD),
-            rawD,
-            rawD,
-            playheadD,
-            playheadD,
-            uToPx(far, playheadD),
-        );
-        expect(zoomedOut.d).toBe(rawD); // 40px, well outside — the raw reading survives
-        expect(zoomedOut.guide).toBeNull();
     });
 });
 

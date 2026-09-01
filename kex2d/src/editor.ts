@@ -297,25 +297,15 @@ interface EditorState {
      *  point kind, never a degenerate `Strip`) is selected — a derived read: true iff the unified
      *  set contains an `"oneShot"` member. */
     oneShot: boolean;
-    /** the section right-click menu (Convert / Delete): screen position + target
+    /** the section right-click menu (Convert / Pin / Reset / Delete): screen position + target
      *  section id, or null when closed. shared so the clip strip and the viewport span both
      *  open the same menu, rendered once at the app root — the graph never opens it at all (the
      *  chart's only right-click subject is a keyframe diamond, `Timeline.svelte forceCtx`,
-     *  through the separate `fmenu`). `cut` is the free-position Cut's own resolved landing
-     *  point (`track.sectionCutAt`, run once at open time off the click that summoned this menu
-     *  — the cursor doesn't move while the menu is open, so there's nothing to re-resolve): a
-     *  geo section's segment + parameter, or a force section's native local `s`, or null when
-     *  the click didn't resolve one (no live bake, a stale span). `cutSurface` is the
-     *  absent-not-grayed surface law (`editor-ui.md` Menus): `true` ONLY from the timeline clip
-     *  strip, its sole surface; `false` from the viewport span — `menus.sectionMenu` omits the
-     *  Cut row entirely when it's `false`, rather than rendering it grayed, since the canvas has
-     *  no honest cursor position for a structural op to land at. */
+     *  through the separate `fmenu`). */
     context: {
         x: number;
         y: number;
         section: number;
-        cut: { at: number; t?: number } | null;
-        cutSurface: boolean;
     } | null;
     /** the node context menu (`Handles` toggle + a `Tangents ▸` submenu): screen position +
      *  the target node eid, or null when closed. opened by right-click on any pickable node
@@ -1374,21 +1364,11 @@ export function selectOneShot(on: boolean): void {
  *  member of a multi-set keeps the set and promotes the target to active (the bulk rows — Delete,
  *  Convert — act on the whole set; single-subject rows, like Convert's named destination, read the
  *  active); a right-click outside the set replace-selects just it (today's single-select behavior).
- *  mirrors `openNodeMenu`/`openForceMenu`. `cut` is the free-position Cut's own resolved landing
- *  point (`track.sectionCutAt`) — optional, defaulting to null (no resolvable position) so a
- *  caller that never resolves one still compiles. `cutSurface` defaults to `false` (the
- *  conservative default — Cut absent, `editor-ui.md` Menus): only the timeline clip strip,
- *  Cut's sole surface, passes `true` explicitly. */
-export function openContext(
-    x: number,
-    y: number,
-    section: number,
-    cut: { at: number; t?: number } | null = null,
-    cutSurface = false,
-): void {
+ *  mirrors `openNodeMenu`/`openForceMenu`. */
+export function openContext(x: number, y: number, section: number): void {
     if (memberHas("section", section)) activateMember("section", section);
     else selectSection(section);
-    editor.context = { x, y, section, cut, cutSurface };
+    editor.context = { x, y, section };
 }
 
 /** close the section context menu. */

@@ -2,9 +2,7 @@
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import {
-    keyframeCuttable,
     nodeActs,
-    nodeCuttable,
     nodeMembers,
     sectionActs,
     sectionOpsAllowed,
@@ -65,7 +63,6 @@ import {
     handleTangent,
     lastHandle,
     samples,
-    Section,
     SectionKind,
     sectionAt,
     sectionForces,
@@ -228,12 +225,12 @@ onMount(() => {
 
 // Convert (`D`) and Pin (`P`) — the section context menu's own remaining shortcuts
 // (`kex2d-shortcuts` stage 3): routed through `keys.ts`'s `sectionKeyAct`, the same decider
-// `controls.ts` drives for remove/cutAt, but dispatched through the MERGED chrome + document
+// `controls.ts` drives for remove, but dispatched through the MERGED chrome + document
 // acts record (`chromeActs` + `sectionActs`, Locked decision 2): `solve`/`solveShape`/`pinEnter`
 // are chrome (`editor-ui.md` Menus, the act-BODY seam's residual clause 2), so `controls.ts` —
 // which only reaches `acts.ts` — can't be their home; this permanent listener is, since the
 // chrome bodies live in this component. Filtered to the two OWN keys FIRST (`bound`, not a raw
-// compare) so this listener never re-handles remove/cut — those stay `controls.ts`'s alone.
+// compare) so this listener never re-handles remove — that stays `controls.ts`'s alone.
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
         if (activeKind() !== "section") return;
@@ -531,7 +528,7 @@ const pinReason = $derived.by((): string | null => {
 });
 
 // whether the node selection is a multi-set — the per-kind bulk-op applicability read (the menu's
-// `multi` flag: Delete set-lift, Cut single-subject gate, Reset set). the context reads (ring,
+// `multi` flag: Delete set-lift, Reset set). the context reads (ring,
 // knobs, readout, extend button hiding) use the set-level `multi()` export instead (S1,
 // editor-ui.md Multi context UI): a per-kind `ids.size > 1` predicate reads a two-member cross-kind
 // selection as single-select, so the context readers read the whole member set, not one kind's view.
@@ -791,11 +788,6 @@ const nodeItems = $derived.by((): MenuItem[] => {
             get suffixOk() {
                 return nodeSuffixOk;
             },
-            // the landmark Cut's own interior bound (`acts.nodeCuttable`) — no cursor lens
-            // needed, unlike the section menu's free-position `canCut` (the object under the
-            // menu already names the exact cut point). `nodeMenu`'s own `s.ok` folds in
-            // `sectionOpsAllowed`, so this stays the bare interior predicate.
-            canCut: nodeCuttable(Handle.order.get(eid), sectionHandles(ecs, Handle.section.get(eid)).length),
         },
         nodeActs(ecs, eid),
     );
@@ -839,8 +831,6 @@ const ctx = $derived.by((): {
     x: number;
     y: number;
     section: number;
-    cut: { at: number; t?: number } | null;
-    cutSurface: boolean;
 } | null => {
     void tick;
     const c = editor.context;
@@ -866,29 +856,6 @@ function computeSectionKind(secId: number | null): SectionKind | null {
 const ctxKind = $derived.by((): SectionKind | null => {
     void tick;
     return computeSectionKind(ctx?.section ?? null);
-});
-// Cut's own enablement — the resolved cursor position (`ctx.cut`, resolved by `Timeline.svelte`'s
-// `clipMenu` — Cut's sole surface; the canvas span and the graph never resolve one at all,
-// `cutSurface` gates presence instead — landing through `track.sectionCutAt`) is an interior point AND
-// `sectionOpsAllowed`. A geo position's interior-ness is already fully decided by
-// `track.geoCutAt`'s own null-ness (it refuses node 0 / the chain end); a force position still
-// needs the landmark's own interior bound (`acts.keyframeCuttable`) since `sectionCutAt` hands
-// back the raw `toLocal` reading, entry/exit included, same shape as the node/keyframe menus'
-// own `canCut` fields reusing the identical predicate.
-const canCut = $derived.by((): boolean => {
-    void tick;
-    if (ctx === null || ctx.cut === null) return false;
-    if (!sectionOpsAllowed(editor.pinning)) return false;
-    if (ctxKind === SectionKind.Force) {
-        const secEid = sectionAt(ecs, ctx.section);
-        if (secEid === null) return false;
-        if (!keyframeCuttable(ctx.cut.at, Section.length.get(secEid))) return false;
-        return true;
-    }
-    // geo: `ctx.cut` already came back null for a non-interior point (`geoCutAt`'s own
-    // null-ness) — no further strip pre-check (S2, Locked decision: strips are
-    // track-global and span-blind, so a split never refuses on their account).
-    return true;
 });
 // whether the section selection is a multi-set — a right-click keeps the set (`openContext`
 // promotes the target to active), so Delete acts on the whole set. single-select is the
@@ -1022,17 +989,13 @@ const ctxItems = $derived.by((): MenuItem[] => {
             get canDelete() {
                 return canDelete;
             },
-            get canCut() {
-                return canCut;
-            },
-            cutSurface: ctx.cutSurface,
         },
         {
             // the chrome keys first, the factory spread LAST: a sibling key re-forked here is then
             // overridden by the hoisted body instead of shadowing it, so the drift this seam
             // deletes can't be re-created by an ordinary-looking edit (`editor-ui.md` Menus).
             ...chromeActs(ctx.section),
-            ...sectionActs(ecs, ctx.section, ctx.cut),
+            ...sectionActs(ecs, ctx.section),
         },
     );
 });

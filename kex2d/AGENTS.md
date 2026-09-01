@@ -20,13 +20,12 @@ foundation everything builds on. A section's geo↔force flip is a **destructive
 resets to that kind's default (force → two seed keyframes continuing the entry force, at the
 default extent; geo
 → the flat two-node seed), made safe by byte-identical undo — no confirm dialog. **Structural ops**
-build the chain: append (geo/force at the end), split (a geo section at an interior node, a force
-section at an arclength s), delete (downstream closes the gap + rebases
+build the chain: append (geo/force at the end), delete (downstream closes the gap + rebases
 rigidly). One open chain — no branching, circuit closure, or mid-chain insertion.
 
 **The track start is a fixed-position anchor**, not a node (`START = {0,0,0,v0}`): what's really
 there is an initial-velocity anchor. Its position is fixed (the origin), and the **initial speed
-is derived, not a separate field**: `seed()` authors a real, section-0 minimum-extent velocity
+is derived, not a separate field**: `seed()` authors a real, TRACK-GLOBAL station 0 minimum-extent velocity
 strip, and `entrySpeed` reads the value of whichever strip covers station 0 (or `V0` when none
 does) — authored through the ordinary strip/keyframe gestures, not a popover on the anchor. The
 START diamond is selectable and still carries the dissipation-coefficient (μ/c) popover. Not
@@ -170,7 +169,7 @@ UI uses, so an agent edits a document exactly the way a person dragging a keyfra
 capture harness's own `__kex` hook (below) is a narrower, DEV-only surface for driving the live UI
 under test, not the authoring surface itself.
 
-**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
 (`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two
@@ -288,7 +287,7 @@ layer's idiom).
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's
 value (insertion never jumps the VALUE there — the new keyframe's own default-eased tangents
-still reshape the curve locally, unlike a Cut's exact de Casteljau-subdivided tangent; the section
+still reshape the curve locally; the section
 resolves from the cursor arclength, no selection needed); drag a diamond in both axes (horizontal =
 s, vertical = g); `Del` removes,
 `Esc` deselects; the popover at the selected diamond types or scrubs its s/g. Points are authored
@@ -306,12 +305,10 @@ direction — menus law), its action fitted to the kind: `geoforce.ts` on geo, `
 force. It grays (never hides) where the kind fits but the invoke
 can't run (no live bake, a multi-set), behind one **modal** (title + an indeterminate spinner —
 in-flight narration was feel-cut; Cancel or Esc, every other input blocked, then a transient
-outcome readout), and Delete (`Del`). **Cut** (`C`) is an editor op on the timeline
-clip strip's context menu: Cut's sole surface is the clip strip (no viewport equivalent), and its
-menu invocation snaps to a parked playhead within `SNAP_PX` (screen space), landing exactly on it
-without moving it. Boundary anchors draw as
+outcome readout), and Delete (`Del`). Boundary anchors draw as
 viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain
-insertion. All ops undo via a byte-identical whole-track snapshot pair.
+insertion; no split or join op (`kex2d-segment-removal`) — the chain only grows or shrinks at its
+end, or shrinks by whole-section delete. All ops undo via a byte-identical whole-track snapshot pair.
 
 **Pin mode** (endpoint-preserving force edits) — entered from a force section's context menu
 (`Pin`): the section's current exit `(x, y, θ)` is **stamped** as the pin, the author retunes

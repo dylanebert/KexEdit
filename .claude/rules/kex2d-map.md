@@ -271,20 +271,17 @@ Since S2 (`kex2d-event-substrate`) a strip is track-global, so this checks again
 TRACK's own edge structure (`stripCoversOneEdge`, off `trackEdgeArray` — every section's own pure
 `sectionEdgeDs` concatenated in chain order, itself never a bake read), not one section's grid.
 That writer set is now just: `createStrip`, `setStrip` — the two guarded writers `stripOverlapped`/
-`stripCoversOneEdge` sit inside. **Split, delete, and convert are no writers of this
-floor at all**: a strip is span-blind to structural ops (Locked decision) — `splitForce`/`splitGeo`
-carry no strip pre-check (there is nothing left for a split to displace: the strip's own stored
-`[start, end)` never moves), and `deleteSection`/`convertSection` destroy or reset
-no strip. A domain flip carries no strip clamp either, unchanged — it is a pure `Track.domain`
-column write (`domain.convertDomain`/`history.landDomain`) and never touches a strip's stored
-span. `setStrip`/`createStrip` refuse the write outright when either guard fails (no repair, no
-displaced retry) — the old **"overlap loses"** self-correcting repair (`refloorStrips` growing a
-strip's `end` to clear the floor, then clamping it back against the neighbour's `start`) had no
-structural op left to run after: a section's own resolved grid no longer changes what a strip's
-*stored* span means, so there is nothing to re-floor. Cut no longer refuses on a strip's account
-(the old split-refusal pre-checks retired with the writer set above); a Cut lands wherever its own
-geometric interior bound allows, regardless of what strip, if any, currently windows over the cut
-station.
+`stripCoversOneEdge` sit inside. **Delete and convert are no writers of this floor at all**: a
+strip is span-blind to structural ops (Locked decision) — `deleteSection`/`convertSection` destroy
+or reset no strip, and `kex2d` carries no split or join op at all (`kex2d-segment-removal` S1/S2 —
+chained-duration segments have no split or join op), so the writer set carries no pre-check for
+either. A domain flip carries no strip clamp either, unchanged — it is a pure `Track.domain` column
+write (`domain.convertDomain`/`history.landDomain`) and never touches a strip's stored span.
+`setStrip`/`createStrip` refuse the write outright when either guard fails (no repair, no displaced
+retry) — the old **"overlap loses"** self-correcting repair (`refloorStrips` growing a strip's
+`end` to clear the floor, then clamping it back against the neighbour's `start`) had no structural
+op left to run after: a section's own resolved grid no longer changes what a strip's *stored* span
+means, so there is nothing to re-floor.
 
 **Guards live inside the writer, not at the call site.** The overlap guard (`stripOverlapped`)
 and the min-extent guard (`stripCoversOneEdge`/`spanCoversOneEdge`) are called from inside
@@ -658,18 +655,14 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
   reads it — `evalForce` at the track-nominal step, clipped to the sample budget `chain` leaves it,
   so the fit's input is the displayed prefix),
-  `appendSection`/`splitGeo`/`splitForce`/`deleteSection` — none of the four touch a
-  strip row since S2 (§ Velocity strips): a strip's own `[start, end)` never moves, splits, merges,
+  `appendSection`/`deleteSection` — neither touches a
+  strip row since S2 (§ Velocity strips): a strip's own `[start, end)` never moves, merges,
   or gets destroyed on a structural op, so `snapshotSection`/`restoreSection`'s `SectionSnapshot`
   carries no `strips` field at all (a section's own convert/reset payload is strip-free by
   construction). Whole-track `snapshotAll`/`restoreAll` take the strip layer separately: their
   `TrackSnapshot` is `{sections: SectionSnapshot[], strips: StripSnapshot[]}`, captured/restored
   once, track-wide, alongside the per-section sweep — the structural-op undo unit for the ONE
-  authored layer sections don't own. **Cut's position resolvers** sit one layer above the
-  splits: `splitGeoAt` (de Casteljau-subdivide segment `j` at bezier `t`, so the authored curve
-  survives exactly — the stated cost is that subdivision produces explicit tangents, so both new
-  boundary keys read `Custom` instead of their named easing), `geoCutAt` (a node order, or a
-  `(j, t)` landing, → `splitGeo`) and `sectionCutAt` (a native-axis `s` → `splitForce`).
+  authored layer sections don't own.
   Initial speed
   (derived, no stored field): `entrySpeed`/`setStartSpeed` (§ Velocity strips).
   `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`. Bake liveness: `authoredHash`
@@ -773,12 +766,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   already per-sample unlike `fN`), `loopTime`, and **`trackMapping`**
   (the per-sample arclength↔time table over the display bake — the cart's `t`↔chart-`s` projection;
   the cart rides in time, the chart is distance). `cartArc` reads the playhead's own arclength off
-  the current bake; `playheadPosition` wraps it with the SAME axis pair (`d` and the track's
-  native `u`, `dToU`-projected) — the ONE resolution every playhead-anchored Cut reads, never a
-  pixel- or table-derived reading (`editor-ui.md`'s transport-read clause, `kex2d-structural-
-  editing` stage 8): `controls.ts`'s keyboard path (`keys.ts sectionKeyAct`'s playhead-exact
-  `cutAt`) AND `Timeline.svelte`'s `clipMenu` (the menu's cursor→playhead snap, `timeline.ts
-  snapCutToPlayhead`) both call it directly — one call site, not two paths that happen to agree.
+  the current bake — the CLI's/capture harness's read of it (`main.ts`), read-only.
 - `editor.ts` — **`_members` + `_active` here are the only selection storage in kex2d, and a
   per-kind selection *field* is the regression this substrate exists to prevent — no type blocks
   it** (`tsc` compiles a reintroduced `nodes: Selection` data property clean, measured), so
@@ -859,7 +847,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   payload); `restoreProvenance` is `landSolve`'s twin without a solve — lands a stamped payload
   verbatim (current `order` kept, no re-stamp) as one undoable entry, the `"restored"` outcome's
   write path for both directions' `tryRestore`.
-  Structural: `appendSection`/`splitSection`/`removeSection` — each a whole-track
+  Structural: `appendSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). Pin-mode
   seams: `redirectHistory` (while set, EVERY `record` lands in the sandbox — structural
   containment, and the redirect target is exempt from `MAX_UNDO` eviction: Exit replays and the
@@ -1166,12 +1154,9 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   `sectionOpsAllowed`/`sectionEditable`/`suffixRun`/`nodeMembers` moved off `controls.ts` (which
   imports `sectionOpsAllowed`/`sectionEditable` back for its own drag guards), while
   `forceSetEditable`/`lockCandidates` are new — lifted off `Timeline.svelte`'s local
-  re-derivations. Structural ops enter through `cutSection(ecs, section, position)`, with
-  `CutPosition = { at, t? }` resolved by the CALLER (a menu's cursor read, a key's playhead read)
-  and the consent guard living **inside** the op, so every surface inherits it by construction;
-  `nodeCuttable`/`keyframeCuttable` are the row-enablement predicates that must agree with that
-  guard (`editor-ui.md` Menus, the consent-boundary law). The edge is one-way, `acts.ts` never
-  imports `controls.ts`. Tests:
+  re-derivations. `sectionOpsAllowed` is the consent-boundary guard every remove/reset/convert/
+  domain-switch surface checks before running. The edge is one-way,
+  `acts.ts` never imports `controls.ts`. Tests:
   `tests/acts.test.ts` (every act driven on a real ECS track), plus `tests/menu.test.ts`'s
   naming→behavior bridge and the homes census.
 - `App.svelte` / `render.ts` / `view.ts` — Svelte shell + canvas2D render: grid, the **track**
@@ -1379,7 +1364,7 @@ branch, never the helper it calls.
 **A test touching a structural op re-resolves its sections by stable `order`/`id`, never by a
 held eid.** A domain flip no longer churns eids at all — `convertDomain`'s forward land
 (`history.landDomain`) writes `Track.domain` alone, and there is no keyframe to plant, destroy,
-or respawn. Split/delete still do: they renumber the chain and `restoreAll` (their undo/
+or respawn. Delete still does: it renumbers the chain and `restoreAll` (its undo/
 redo path) destroys and respawns a section's whole payload, so an eid captured before the op
 addresses nothing after; a test that held one read `Section.length` as 0 and looked like a
 physics bug.
@@ -1393,16 +1378,11 @@ draw systems export from `render.ts` so the harness can reach them (`AnchorDrawS
 `TangentDrawSystem` today). `tests/render.test.ts` is its first consumer.
 
 **A structural op's exactness pin samples the pre-op observable across the whole extent**, never
-the op's own helper at one boundary. Two mutants proved the boundary-only form vacuous on Cut: the
-op's inverse-facing half is the untested half, and the pre-op bake is the only independent truth.
-Same family as `coding.md`'s "a check that re-derives the rule it checks." The shape that holds:
-sample both halves' authored profile across the ORIGINAL extent and assert f32-identity to the
-pre-cut sample. On baked geometry the bound is the two discretizations' own disagreement, derived
-from `ds` and the extent (each half resolves its own `(edges, ds)` from its own length through
-`profile.resolveStep`, so the halves' σ grids restart at the cut on a step of their own), never an
-absolute number. The vacuity has a second face: a test that
-asserts the authored `{s, g}` list and never the sampled profile misses everything the payload
-doesn't carry.
+the op's own helper at one boundary: a boundary-only form leaves the op's inverse-facing half
+untested, and the pre-op bake is the only independent truth against which to catch a regression
+there. Same family as `coding.md`'s "a check that re-derives the rule it checks." The vacuity has
+a second face: a test that asserts the authored `{s, g}` list and never the sampled profile misses
+everything the payload doesn't carry.
 
 **Two suites split by what they import, not by feature.** `tests/optimize.test.ts` is the KERNEL
 suite — it reaches `optimize.ts`/`profile`/`section` only. `tests/pin.test.ts` is the mode's

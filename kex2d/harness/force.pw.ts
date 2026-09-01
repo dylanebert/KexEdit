@@ -538,7 +538,7 @@ test("force easing menu flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Cut C", "Delete Del"]);
+        .toEqual(["Easing ▸", "Delete Del"]);
     // the rendered rows are the real `keyframeMenu` builder's, run in the page against this
     // keyframe's live state — the keyframe menu's half of the DOM cross-check. It reaches INSIDE
     // `Easing ▸` by real hover, which is where the app's ONE authored within-group separator lives
@@ -548,9 +548,7 @@ test("force easing menu flow", async ({ page, boot }) => {
         builder: "keyframeMenu",
         // the leading keyframe of a bumped force section: single selection, non-terminal (it
         // governs the following segment), no explicit handles, no pin session (so no
-        // Lock/Unlock row), nothing under lockdown. It's the section ENTRY (s = 0), so Cut's own
-        // landmark bound (`keyframeCuttable`) grays its row — present, never omitted, since a
-        // non-terminal keyframe always carries a Cut row (kex2d-structural-editing stage 6).
+        // Lock/Unlock row), nothing under lockdown.
         state: {
             setOk: true,
             activeOk: true,
@@ -561,7 +559,6 @@ test("force easing menu flow", async ({ page, boot }) => {
             custom: false,
             hasHandles: false,
             customGlyph: "",
-            canCut: false,
         },
         enums: { ease: "profile.Easing.Cubic", mode: "spline.TangentMode.Aligned" },
         fns: ["presetGlyph"],
@@ -1079,7 +1076,7 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Tangents ▸", "Cut C", "Delete Del"]);
+        .toEqual(["Easing ▸", "Tangents ▸", "Delete Del"]);
     // the two-flyout shape, cross-checked against the real builder: `hasHandles` adds Tangents ▸
     // inside `modify`, so the ONE derived divider still lands before Delete.
     await menuGrammar(page, ".fmenu", {
@@ -1094,7 +1091,6 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
             custom: true, // an explicit handle bounds the addressed segment
             hasHandles: true,
             customGlyph: "",
-            canCut: true, // kf1 is interior (kex2d-structural-editing stage 6)
         },
         enums: { ease: "profile.Easing.Cubic", mode: "spline.TangentMode.Aligned" },
         fns: ["presetGlyph"],
@@ -1145,7 +1141,7 @@ test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Cut C", "Delete Del"]); // no Tangents ▸ on a derived keyframe; kf3 is interior too
+        .toEqual(["Easing ▸", "Delete Del"]); // no Tangents ▸ on a derived keyframe
     await page.keyboard.press("Escape");
     await expect(page.locator(".fmenu")).toHaveCount(0);
 });
