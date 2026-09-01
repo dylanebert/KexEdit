@@ -564,7 +564,7 @@ $effect(() => {
 
 // the velocity channel's own auto-fit target — `yTarget`'s twin, scanning `vCurve` instead
 // of `curve`, resting on `V_BAND`/`V_BASE`. It is fitted independently of the displayed view:
-// keyframe/handle gestures hold the latter while the recovered curve keeps updating the former.
+// keyframe, handle, or length gestures hold the latter while the recovered curve keeps updating the former.
 const vTarget = $derived.by((): YFit => {
     void tick;
     let lo = V_BASE;
