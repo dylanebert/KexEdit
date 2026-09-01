@@ -11,9 +11,9 @@ within a section:
 - **geo** — author node positions in the viewport (per-node 1D manipulators: polar at the tip,
   chord slide/offset interior) →
   stored-heading cubic Hermite → physical F_n force curve, shown live in the timeline.
-- **force** — place force points on the timeline curve (filled-diamond keyframes, easing-tagged,
-  optional explicit handles) → per-segment cubic-bezier dense F_n(s) → integrate the swept
-  geometry → the *recovered* force curve, shown live.
+- **force** — place force points on the timeline curve (filled-diamond keyframes, easing-tagged) →
+  per-segment cubic-bezier dense F_n(s) → integrate the swept geometry → the *recovered* force
+  curve, shown live.
 
 The bidirectional shape↔force integration is validated exact and oracle-gated (RK4) — the
 foundation everything builds on. A section's geo↔force flip is a **destructive convert**: it
@@ -130,17 +130,19 @@ in the dense baked form.
 
 ## Model (force authoring)
 
-The mirror idiom: author the force, integrate the geometry. `Force` points (`{id, s, g}` + easing
-tag + optional explicit per-side tangents, ECS entities, stable-id addressed for undo like
-`Handle.order`) are placed, dragged, and deleted on the timeline curve. Every segment between
-adjacent keyframes is a **cubic bezier in (s, g)** resolved at one seam (`profile.segment`): each
-side derives flat tangents from the *leading* keyframe's easing tag (influence Linear 0 |
-Cubic 1/3 | Quintic 7/15 — Cubic is exact smoothstep) unless an explicit stored tangent overrides
-it; Custom is derived provenance (explicit tangents bound the segment), never a stored flag.
-Append/convert **seed two keyframes continuing the recovered entry force**; deleted down to empty
-falls back to constant `DEFAULT_G`, and the first/last value holds flat beyond (`profile.ts
-sampleForce`). The bake samples this into a dense per-edge F_n(σ) (`forceProfile`, σ =
-i·ds source convention) and integrates it (`section.evalForce`) from the section entry.
+The mirror idiom: author the force, integrate the geometry. `Force` points (`{section, id, s, g,
+ease}`, ECS entities, stable-id addressed for undo like `Handle.order`) are placed, dragged, and
+deleted on the timeline curve. Every segment between adjacent keyframes is a **cubic bezier in
+(s, g)** resolved at one seam (`profile.segment`): each side derives flat tangents from the
+*leading* keyframe's easing tag (influence Linear 0 | Cubic 1/3 | Quintic 7/15 — Cubic is exact
+smoothstep). No authoring path produces an explicit per-side handle (`kex2d-segment-removal`
+retired `ForceTangent` and the Custom provenance it implied); `profile.ts`'s sampling kernel still
+honors a stored `Offset` on a literal test/lab `ForcePoint`, so every live document's segments are
+named by construction. Append/convert **seed two keyframes continuing the recovered entry force**;
+deleted down to empty falls back to constant `DEFAULT_G`, and the first/last value holds flat
+beyond (`profile.ts sampleForce`). The bake samples this into a dense per-edge F_n(σ)
+(`forceProfile`, σ = i·ds source convention) and integrates it (`section.evalForce`) from the
+section entry.
 
 - **Points are keyframes, not constraints**. Filled diamonds, no drop-line, no driving/driven —
   they're authored *input*, not optimization targets (`editor-ui.md`'s constraints-not-keyframes
@@ -169,7 +171,7 @@ UI uses, so an agent edits a document exactly the way a person dragging a keyfra
 capture harness's own `__kex` hook (below) is a narrower, DEV-only surface for driving the live UI
 under test, not the authoring surface itself.
 
-**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `ease`), `Strip` (velocity span: `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
 (`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two

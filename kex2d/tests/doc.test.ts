@@ -3,7 +3,10 @@ import { State } from "@dylanebert/shallot";
 import {
     CURRENT_VERSION,
     docFromEcs,
+    type DocGeoTangent,
     loadDocument,
+    migrate,
+    type MigrationStep,
     numLit,
     parseDocument,
     saveDocument,
@@ -112,7 +115,7 @@ describe("round-trip over the scenarios.ts corpus", () => {
     }
 });
 
-describe("a document with strips, a force section, and explicit tangents round-trips", () => {
+describe("a document with strips, a force section, and an explicit geo tangent round-trips", () => {
     function widerTrack(): { state: State; eid: number } {
         const state = new State();
         state.addSystem(BakeSystem);
@@ -131,10 +134,7 @@ describe("a document with strips, a force section, and explicit tangents round-t
         addNode(state, geo, 80, 0);
         const force = createSection(state, 1, SectionKind.Force, 30);
         createForcePoint(state, force, 0, 1.5, Easing.Cubic);
-        createForcePoint(state, force, 15, 2.5, Easing.Quintic, {
-            mode: TangentMode.Mirror,
-            in: { ds: 2, dg: 0.3 },
-        });
+        createForcePoint(state, force, 15, 2.5, Easing.Quintic);
         createStrip(state, 5, 25, 24);
         createOneShot(state, 22);
         return { state, eid };
@@ -292,6 +292,21 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         expect(snapshotAll(state)).toEqual(before);
     });
 
+    // the migration seam's monotonicity guard: a step that runs but does not strictly advance
+    // the version must refuse rather than spin — an unguarded `while (v < CURRENT_VERSION)` loop
+    // keyed only on `isInt(doc.version)` would hang forever on a step that forgets to bump (the
+    // natural copy-paste mistake, since `dropForceTangent` stamps the literal `version: 2`), and
+    // a hang on load is the worst failure shape a data boundary has. `migrate`'s injectable
+    // `steps` table lets this test register a deliberately non-bumping fake step against the
+    // real guard without mutating the production migration table. The timeout is a real guard,
+    // not decoration: with the monotonicity check removed, this test would hang rather than fail.
+    test("a migration step that does not advance the version refuses instead of hanging", () => {
+        const fakeSteps: Record<number, MigrationStep> = {
+            1: (doc) => ({ ...doc, version: 1 }), // stamps its OWN starting version — the bug
+        };
+        expect(() => migrate({ version: 1 }, fakeSteps)).toThrow(/did not advance the version/);
+    }, 1000);
+
     test("truncated JSON refuses and leaves the document untouched", () => {
         const { state } = flatTrack();
         state.step(0);
@@ -402,6 +417,89 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         state.addSystem(BakeSystem);
         expect(() => loadDocument(state, "not json")).toThrow();
         expect(trackEntity(state)).toBeNull();
+    });
+});
+
+// v1 → v2 (`kex2d-segment-removal` S3): the migration seam drops a force keyframe's `tangent`
+// key (the explicit-handle `ForceTangent`/`Offset` shape the ECS can no longer author) while
+// leaving a geo node's own `tangent` key — a structurally distinct field on a distinct entity —
+// untouched. The ECS itself can never construct a force `tangent` key anymore, so these cases
+// hand-author the v1 shape a pre-S3 producer (the GUI handle drag, or Cut's subdivide) used to
+// write, the way `tests/invariants.test.ts`'s red fixtures hand-author other malformed shapes.
+describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents", () => {
+    /** a v1-shaped document text: one geo node carrying an explicit tangent (the structurally
+     *  distinct field this migration must NOT touch) and one force keyframe carrying a
+     *  hand-authored `tangent` key (the pre-S3 explicit-handle shape no live ECS can produce
+     *  anymore) — built from a real v2 document (`docFromEcs`) so every other field is
+     *  authentically canonical, then downgraded to v1 by hand. */
+    function v1TextWithForceTangent(): { text: string; geoTangent: DocGeoTangent } {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        createTrack(state);
+        const geo = createSection(state, 0, SectionKind.Geo, 0);
+        addNode(state, geo, 0, 0);
+        const geoTangent = { mode: TangentMode.Free, inX: 5, inY: 0, outX: 5, outY: 0 };
+        spawnNode(state, geo, 1, 20, 4, 0, geoTangent);
+        const force = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, force, 0, 1.5, Easing.Cubic);
+        createForcePoint(state, force, 15, 2.5, Easing.Quintic);
+        createOneShot(state, 22);
+
+        const doc = JSON.parse(saveDocument(state));
+        doc.version = 1;
+        // the pre-S3 explicit-handle shape: a mode + one stored (Δs, Δg) offset.
+        doc.sections[1].points[1].tangent = { mode: TangentMode.Free, out: { ds: 3, dg: -0.5 } };
+        return { text: JSON.stringify(doc), geoTangent };
+    }
+
+    test("a v1 file's force-tangent key disappears on migration; its geo tangent survives", () => {
+        const { text, geoTangent } = v1TextWithForceTangent();
+        const doc = parseDocument(text);
+
+        const forcePoint = doc.sections[1].points[1] as unknown as Record<string, unknown>;
+        expect("tangent" in forcePoint).toBe(false);
+        expect(doc.sections[0].nodes[1].tangent).toEqual(geoTangent);
+    });
+
+    test("loading a v1 file with a force-tangent key stamps v2 and stabilizes on re-save", () => {
+        const { text } = v1TextWithForceTangent();
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, text);
+        const v2Text = saveDocument(state);
+        expect(JSON.parse(v2Text).version).toBe(2);
+
+        // load→save stabilizes: the migrated form is a fixed point, not a one-time transform.
+        const state2 = new State();
+        state2.addSystem(BakeSystem);
+        loadDocument(state2, v2Text);
+        expect(saveDocument(state2)).toBe(v2Text);
+    });
+
+    test("a v2 write never carries a points[].tangent key, on any section", () => {
+        const { text } = v1TextWithForceTangent();
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, text);
+        const doc = JSON.parse(saveDocument(state));
+        for (const section of doc.sections) {
+            for (const point of section.points) expect("tangent" in point).toBe(false);
+        }
+    });
+
+    test("a v2 document carrying a stray points[].tangent key is malformed, refused by name", () => {
+        const { state } = flatTrack();
+        const sec = createSection(state, 1, SectionKind.Force, 30);
+        createForcePoint(state, sec, 5, 1);
+        state.step(0);
+        const before = snapshotAll(state);
+        const doc = JSON.parse(saveDocument(state));
+        expect(doc.version).toBe(CURRENT_VERSION);
+        doc.sections[1].points[0].tangent = { mode: TangentMode.Free };
+        const bad = JSON.stringify(doc);
+
+        expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.tangent/);
+        expect(snapshotAll(state)).toEqual(before);
     });
 });
 

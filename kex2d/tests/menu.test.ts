@@ -522,27 +522,23 @@ describe("nodeMenu — the node context menu's rows", () => {
 });
 
 describe("keyframeMenu — the force-keyframe context menu's rows", () => {
+    // explicit per-keyframe force handles (Custom provenance, the Tangents ▸ mode submenu) left
+    // with `kex2d-segment-removal` S3 — every segment is now named, so `KeyframeMenuState` carries
+    // no `custom`/`hasHandles`/`mode`/`customGlyph` fields and the menu never grows a Tangents ▸
+    // row. The retired cases' heir is the surviving Easing ▸ shape below: a preset row's `checked`
+    // now reads the tag alone (never anded with "not custom"), and the lockdown/action-log tests
+    // cover exactly the rows that remain.
     const base: KeyframeMenuState = {
         setOk: true,
-        activeOk: true,
         lock: null,
         multi: false,
         terminal: false,
         easeTargets: 1,
-        custom: false,
         ease: Easing.Cubic,
-        hasHandles: false,
-        mode: TangentMode.Aligned,
         presetGlyph: (e) => `preset:${e}`,
-        customGlyph: "custom:glyph",
     };
-    const acts = () => recorder("remove", "toggleLock", "setEase", "chooseCustom", "pickMode");
-    const easing = (
-        enabled: boolean,
-        checked: Easing | null,
-        customEnabled: boolean,
-        custom = false,
-    ): Row => ({
+    const acts = () => recorder("remove", "toggleLock", "setEase");
+    const easing = (enabled: boolean, checked: Easing | null): Row => ({
         label: "Easing",
         group: "modify",
         enabled,
@@ -565,16 +561,6 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
                 glyph: "preset:2",
                 checked: checked === Easing.Quintic,
             },
-            // the ONE authored separator left in the app: a WITHIN-group divider (the preset picks
-            // from Custom), a position no derived group boundary can occupy.
-            { separator: true },
-            {
-                label: "Custom",
-                group: "modify",
-                enabled: customEnabled,
-                glyph: "custom:glyph",
-                checked: custom,
-            },
         ],
     });
     const del = (enabled: boolean): Row => ({
@@ -586,26 +572,20 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
     });
 
     test("a single NON-TERMINAL keyframe: Easing ▸ (the tag checked), then Delete", () => {
-        expect(shape(keyframeMenu(base, acts()))).toEqual([
-            easing(true, Easing.Cubic, true),
-            del(true),
-        ]);
+        expect(shape(keyframeMenu(base, acts()))).toEqual([easing(true, Easing.Cubic), del(true)]);
     });
     test("a single TERMINAL keyframe shows Delete alone", () => {
         expect(shape(keyframeMenu({ ...base, terminal: true, easeTargets: 0 }, acts()))).toEqual([
             del(true),
         ]);
     });
-    test("a MULTI set keeps Easing ▸ even on a terminal active, graying Custom", () => {
+    test("a MULTI set keeps Easing ▸ even on a terminal active", () => {
         const s = { ...base, multi: true, terminal: true, easeTargets: 2 };
-        expect(shape(keyframeMenu(s, acts()))).toEqual([
-            easing(true, Easing.Cubic, false),
-            del(true),
-        ]);
+        expect(shape(keyframeMenu(s, acts()))).toEqual([easing(true, Easing.Cubic), del(true)]);
     });
-    test("no applicable easing target grays the row; an explicit handle unchecks the preset", () => {
-        const s = { ...base, easeTargets: 0, custom: true };
-        expect(shape(keyframeMenu(s, acts()))[0]).toEqual(easing(false, null, true, true));
+    test("no applicable easing target grays the row", () => {
+        const s = { ...base, easeTargets: 0 };
+        expect(shape(keyframeMenu(s, acts()))[0]).toEqual(easing(false, Easing.Cubic));
     });
     test("in-mode: the Lock row leads, and Delete still lands last", () => {
         const locked = shape(keyframeMenu({ ...base, lock: "Lock" }, acts()));
@@ -618,46 +598,24 @@ describe("keyframeMenu — the force-keyframe context menu's rows", () => {
             shortcut: "Q",
         });
     });
-    test("explicit handles add the Tangents ▸ submenu, checked by the stored mode, above Delete", () => {
-        const s = { ...base, hasHandles: true, mode: TangentMode.Mirror };
-        expect(shape(keyframeMenu(s, acts())).at(-2)).toEqual({
-            label: "Tangents",
-            group: "modify",
-            enabled: true,
-            children: [
-                { label: "Mirror", group: "modify", checked: true },
-                { label: "Aligned", group: "modify", checked: false },
-                { label: "Free", group: "modify", checked: false },
-            ],
-        });
-    });
-    test("the lockdown: the set gates Delete + Easing, the active member gates Custom/Tangents", () => {
-        const rows = shape(
-            keyframeMenu({ ...base, setOk: false, activeOk: false, hasHandles: true }, acts()),
-        );
+    test("the lockdown: the set gates Delete + Easing", () => {
+        const rows = shape(keyframeMenu({ ...base, setOk: false }, acts()));
         expect(rows[0].enabled).toBe(false); // Easing ▸
-        expect(rows[0].children?.[4].enabled).toBe(false); // …its Custom row
-        expect(rows[1].enabled).toBe(false); // Tangents ▸
-        expect(rows[2].enabled).toBe(false); // Delete
+        expect(rows[1].enabled).toBe(false); // Delete
     });
     test("the rows act on their subjects", () => {
-        // every submenu row is invoked, in order — three near-identical preset rows and three mode
-        // rows are where a mis-paste lands, and the separator (no action) must stay inert.
+        // every submenu row is invoked, in order — three near-identical preset rows are where a
+        // mis-paste lands.
         const rec = acts();
-        const rows = keyframeMenu({ ...base, lock: "Lock", hasHandles: true }, rec);
+        const rows = keyframeMenu({ ...base, lock: "Lock" }, rec);
         rows[0].action?.(); // Lock
-        for (const c of rows[1].children ?? []) c.action?.(); // Easing ▸ (separator inert)
-        for (const c of rows[2].children ?? []) c.action?.(); // Tangents ▸
-        rows[3].action?.(); // Delete
+        for (const c of rows[1].children ?? []) c.action?.(); // Easing ▸
+        rows[2].action?.(); // Delete
         expect(rec.log).toEqual([
             "toggleLock()",
             `setEase(${Easing.Linear})`,
             `setEase(${Easing.Cubic})`,
             `setEase(${Easing.Quintic})`,
-            "chooseCustom()",
-            `pickMode(${TangentMode.Mirror})`,
-            `pickMode(${TangentMode.Aligned})`,
-            `pickMode(${TangentMode.Free})`,
             "remove()",
         ]);
     });
@@ -814,17 +772,12 @@ describe("the menu grammar — every builder, every state", () => {
     });
     const keyframeStates = states<KeyframeMenuState>({
         setOk: bool,
-        activeOk: bool,
         lock: ["Lock", "Unlock", null],
         multi: bool,
         terminal: bool,
         easeTargets: [0, 1, 2],
-        custom: bool,
         ease: [Easing.Linear, Easing.Cubic, Easing.Quintic],
-        hasHandles: bool,
-        mode: modes,
         presetGlyph: [(e: Easing) => `preset:${e}`],
-        customGlyph: ["custom:glyph"],
     });
     const rulerStates = states<RulerMenuState>({
         domain: [Domain.Distance, Domain.Time],
@@ -858,7 +811,6 @@ describe("the menu grammar — every builder, every state", () => {
                 "resetSet",
                 "toggleLock",
                 "setEase",
-                "chooseCustom",
                 "pick",
                 "append",
                 "addStrip",
@@ -1015,9 +967,10 @@ describe("the menu grammar — every builder, every state", () => {
     // position IS the only handle a label-less row has. That makes a legitimate reorder of the
     // submenu's rows a DELIBERATE registry edit (the index moves, so the old key goes stale and
     // the completeness assert below catches it) rather than silent breakage.
-    const Separators: Record<string, string> = {
-        "keyframeMenu ▸ Easing #3": "divides the Linear/Cubic/Quintic presets from Custom",
-    };
+    // empty since `kex2d-segment-removal` S3: `keyframeMenu`'s Easing ▸ carried the app's one
+    // authored separator (dividing the presets from Custom); Custom left with the explicit
+    // per-keyframe force handles it materialized, so no builder authors a separator today.
+    const Separators: Record<string, string> = {};
 
     test("an authored separator's divide is DECLARED, both directions", () => {
         // both directions: an authored separator with no registry entry fails, and a registry
@@ -1044,17 +997,12 @@ describe("the menu grammar — every builder, every state", () => {
         "nodeMenu ▸ Tangents ▸ Mirror": "this node's tangents are mirrored",
         "nodeMenu ▸ Tangents ▸ Aligned": "this node's tangents are aligned",
         "nodeMenu ▸ Tangents ▸ Free": "this node's tangents are free",
-        // the easing tag governing the addressed segment right now — cleared while explicit
-        // handles bound it, so exactly one of the four Easing rows is ever lit.
+        // the easing tag governing the addressed segment right now — exactly one of the three
+        // Easing rows is ever lit (explicit per-keyframe force handles, and the Custom row that
+        // used to clear this checkmark, left with `kex2d-segment-removal` S3).
         "keyframeMenu ▸ Easing ▸ Linear": "this segment is driven by the Linear tag",
         "keyframeMenu ▸ Easing ▸ Cubic": "this segment is driven by the Cubic tag",
         "keyframeMenu ▸ Easing ▸ Quintic": "this segment is driven by the Quintic tag",
-        "keyframeMenu ▸ Easing ▸ Custom":
-            "an explicit handle bounds this segment (derived provenance)",
-        // the keyframe's stored tangent mode, governing its handles right now.
-        "keyframeMenu ▸ Tangents ▸ Mirror": "this keyframe's handles are mirrored",
-        "keyframeMenu ▸ Tangents ▸ Aligned": "this keyframe's handles are aligned",
-        "keyframeMenu ▸ Tangents ▸ Free": "this keyframe's handles are free",
         // the store's own unit (`Track.domain`) — what the chart reads right now.
         "rulerMenu ▸ Meters": "the track domain is meters of arclength",
         "rulerMenu ▸ Seconds": "the track domain is seconds of march time",
@@ -1213,7 +1161,6 @@ describe("the menu grammar — every builder, every state", () => {
         resetSet: "reset",
         toggleLock: "lock",
         setEase: null,
-        chooseCustom: null,
         pick: null,
         append: null,
         addStrip: null,

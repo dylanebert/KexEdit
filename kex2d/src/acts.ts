@@ -376,8 +376,8 @@ export function nodeActs(ecs: State, eid: number): NodeMenuActions {
 }
 
 /** the force-keyframe context menu's document acts (`remove`/`toggleLock`) — the chrome-free
- *  half of `KeyframeMenuActions`. `setEase`/`chooseCustom`/`pickMode` stay in `Timeline.svelte`
- *  (chart-pixel couplings and the bulk-easing member set are its own deriveds). `remove` is the
+ *  half of `KeyframeMenuActions`. `setEase` stays in `Timeline.svelte` (the bulk-easing member
+ *  set is its own derived). `remove` is the
  *  GUARDED body (`deleteSelectedForce`'s): a keyboard mutation skips a live landing first (deleting
  *  a moved key mid-window would leave the override easing a dead id) and refuses on a mixed-
  *  editability set (all-or-nothing, like every bulk row) — the menu row used to run the unguarded

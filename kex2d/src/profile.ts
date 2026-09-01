@@ -116,9 +116,11 @@ export function collinear(a?: Offset, b?: Offset): boolean {
  *  explicit handle (`a.out` or `b.in`), since either one substitutes for the tag at the
  *  seam. Its complement is a NAMED segment, shaped by `a.ease`'s derived flat tangents
  *  alone. The flat conversion family reads this directly when asserting that every emitted
- *  segment is named; its g-only keys carry no explicit sides.
- *  The editor menu answers it separately over the ECS `ForceTangent` components, a different
- *  representation of the same law rather than a call into this.
+ *  segment is named; its g-only keys carry no explicit sides. The ECS could once author an
+ *  explicit per-keyframe force handle (`ForceTangent`, the editor's own Custom provenance),
+ *  answering this same law over its stored `Force.tin`/`tout` columns — retired with
+ *  `kex2d-segment-removal` S3, so every live document's segments are named by construction and
+ *  this predicate now only ever sees literal test/lab points.
  *
  * @example
  * const named = points.slice(0, -1).filter((p, k) => !custom(p, points[k + 1])).length;
@@ -129,9 +131,11 @@ export function custom(a: ForcePoint, b: ForcePoint): boolean {
 
 /** a force keyframe: a demanded normal force `g` at arclength `s` (m). `ease`
  *  governs the *following* segment's derived flat tangents (default `Easing.Cubic`
- *  when absent — the "no stored state" convention). `in`/`out` are the summoned
- *  explicit handles; a present side substitutes its stored offset for the derived
- *  tangent at the seam, per-keyframe and per-side. */
+ *  when absent — the "no stored state" convention). `in`/`out` are the explicit
+ *  per-side handle offsets this sampling kernel still honors when present; a present
+ *  side substitutes its stored offset for the derived tangent at the seam. No live ECS
+ *  produces one anymore (the editor's own summon left with `kex2d-segment-removal` S3),
+ *  so `in`/`out` reach only through literal test/lab points now. */
 export interface ForcePoint {
     s: number;
     g: number;

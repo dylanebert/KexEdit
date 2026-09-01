@@ -15,11 +15,8 @@ import {
     menuGrammar,
     marqueeDrag,
     dockStrip,
-    overlaps,
     CHART_TOP,
     CHART_BOT_PAD,
-    TIP_REACH,
-    GROW_LO,
     SNAP_DEG,
     SNAP_LEN,
     SNAP_DEG_MIN,
@@ -144,8 +141,6 @@ test("force authoring flow", async ({ page, boot }) => {
     const forceCount = () => kexCall(page, "forceCount");
     const forces = () => kexCall(page, "forces");
     const forceEases = () => kexCall(page, "forceEases");
-    const forceTangents = () => kexCall(page, "forceTangents");
-    const undoDepth = () => kexCall(page, "undoDepth");
     const tTotal = () => kexCall(page, "tTotal");
 
     // seed a shaped geo track so the convert inherits a real arclength.
@@ -274,9 +269,10 @@ test("force authoring flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // deselect: clear the crest's .ptip before 2c right-clicks
 
     // ── 2c. Seeded-keys extension (stage E): set the leading seed's easing via the real,
-    // pointer-true keyframe menu, then drag its out-handle to author an explicit tangent
-    // (the segment reads Custom), then undo both. exercises the __kex ease/tangent hooks
-    // stage C landed against a keyframe that only exists because of stage B's seeding. ──
+    // pointer-true keyframe menu, then undo it. exercises the __kex ease hook stage C landed
+    // against a keyframe that only exists because of stage B's seeding. Explicit per-keyframe
+    // force handles (the Tangents ▸ submenu, the handle-drag gesture this step used to also
+    // exercise) left with `kex2d-segment-removal` S3. ──
     await frameTimeline(page); // bring the whole section into view for the diamond DOM boxes
     expect((await forceEases())[0]).toBe(1); // Easing.Cubic — the fresh-seed default
     await page.locator(".fpt").first().click({ button: "right" }); // the leading seed (s=0)
@@ -285,50 +281,8 @@ test("force authoring flow", async ({ page, boot }) => {
     await expect(page.locator(".fmenu")).toHaveCount(0);
     await expect.poll(async () => (await forceEases())[0]).toBe(2); // Easing.Quintic
 
-    await page.locator(".fpt").first().dblclick(); // handle-edit sub-mode on the same seed
-    await expect.poll(() => kexCall(page, "forceEditing")).toBe(true);
-    const seedKnob = await page.locator(".thit").first().boundingBox(); // its one out-handle
-    if (!seedKnob) throw new Error("seed handle knob not laid out");
-    await page.mouse.move(seedKnob.x + seedKnob.width / 2, seedKnob.y + seedKnob.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(
-        seedKnob.x + seedKnob.width / 2 + 24,
-        seedKnob.y + seedKnob.height / 2 - 40,
-        { steps: 6 },
-    );
-    await page.mouse.up();
-    await expect.poll(async () => (await forceTangents())[0] !== null).toBe(true);
-    expect(await undoDepth()).toBeGreaterThan(0);
-
-    // undo the handle drag, then the easing set — both revert cleanly.
-    await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await forceTangents())[0] === null).toBe(true);
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await forceEases())[0]).toBe(1); // back to Cubic
-
-    // ── 2d. Handle-drag gesture-start axis magnet (F1, the geo `latchAngle` mechanism):
-    // the seed derives from Cubic, so its out-handle ghost is FLAT (dg=0) → a horizontal
-    // grab ray. dragging it far along x with a small vertical wander (|dy| < LATCH_PX = 8)
-    // stays latched to the ray, so the authored out-handle keeps dg≈0 — the "keep it flat"
-    // affordance. the big diagonal in 2c above left the corridor and freed dg, so this is
-    // the positive proof that the magnet fires (red without the latch: dy maps to ~0.08 g). ──
-    await page.keyboard.press("Escape"); // exit any lingering handle-edit, then re-enter clean
-    await page.locator(".fpt").first().dblclick();
-    await expect.poll(() => kexCall(page, "forceEditing")).toBe(true);
-    const flatKnob = await page.locator(".thit").first().boundingBox();
-    if (!flatKnob) throw new Error("seed handle knob not laid out for the magnet drag");
-    const fkx = flatKnob.x + flatKnob.width / 2;
-    const fky = flatKnob.y + flatKnob.height / 2;
-    await page.mouse.move(fkx, fky);
-    await page.mouse.down();
-    await page.mouse.move(fkx + 40, fky - 5, { steps: 6 }); // dx large, |dy| < LATCH_PX
-    await page.mouse.up();
-    const magnetTan = (await forceTangents())[0] as { outDs: number; outDg: number } | null;
-    if (!magnetTan) throw new Error("magnet drag authored no handle");
-    expect(Math.abs(magnetTan.outDg)).toBeLessThan(1e-4); // g pinned flat by the axis magnet
-    expect(magnetTan.outDs).toBeGreaterThan(0); // s grew — it moved, not a no-op
-    await page.keyboard.press("Control+z"); // revert so the flow resumes from the derived seed
-    await expect.poll(async () => (await forceTangents())[0] === null).toBe(true);
 
     // ── 3. Convert back to geo via the __kex hook (setup, per step 1) → destructive reset to
     // the flat two-node seed. ──
@@ -339,8 +293,8 @@ test("force authoring flow", async ({ page, boot }) => {
     await page.screenshot({ path: join(OUT, "force-3-geo.png") });
 
     // ── 4. Undo the convert → the force track + its points restored byte-identical (the
-    // two seeds + the three bump points — the easing/handle edits above were already undone,
-    // so this is exactly the pre-convert-to-geo state). ──
+    // two seeds + the three bump points — the easing edit above was already undone, so this
+    // is exactly the pre-convert-to-geo state). ──
     await page.keyboard.press("Control+z");
     await expect.poll(kind).toBe(1);
     await expect.poll(forceCount).toBe(5);
@@ -494,25 +448,23 @@ test("force keyframe grab drags freely past its section's window after a resize 
     expect(after.s).toBeGreaterThan(shrunk); // still outside — never snapped back in
 });
 
-// Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C, extended at stage
-// E): seed a force section with keyframes → RIGHT-CLICK a diamond for the keyframe menu →
+// Drive the FORCE EASING MENU flow (kex2d-force-ux stage C, extended at stage E): seed a force
+// section with keyframes → RIGHT-CLICK a diamond for the keyframe menu (Easing ▸ · Delete) →
 // open the Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for
-// the context-submenu clip class) → assert the leading keyframe's tag flipped → RIGHT-CLICK
-// the CURVE SPAN between two keyframes (not a diamond) → the same leading-keyframe menu (the
-// segment-span hit-target, a C-review coverage hole) → DOUBLE-CLICK a diamond to summon its
-// handles (the diamond hit beats insertion) → drag a handle to author an explicit tangent (the
-// segment reads Custom) → reopen the menu and assert the Custom row reads checked (another
-// C-review hole) → Reset via the menu, pointer-true (`clickMenuItem`), clears it back to the
-// derived easing → Delete, also pointer-true, removes the keyframe. Every menu interaction is
-// a real pointer event; __kex is read only for assertions.
+// the context-submenu clip class) → assert the leading keyframe's tag flipped → RIGHT-CLICK the
+// CURVE SPAN between two keyframes (not a diamond), and a right-click in empty chart space, both
+// open NO menu and change nothing (the retired leading-keyframe curve-span convention,
+// `editor-ui.md` Keyframe/curve-editor conventions) → the TERMINAL keyframe's menu drops
+// Easing ▸ entirely (Delete alone) → Delete, pointer-true (`clickMenuItem`), removes an interior
+// keyframe. Every menu interaction is a real pointer event; __kex is read only for assertions.
+// The double-click handle-edit summon, the handle drag, and the Custom/Reset rows this flow
+// used to also exercise left with the explicit per-keyframe force handles they edited,
+// `kex2d-segment-removal` S3 — every segment is now named.
 test("force easing menu flow", async ({ page, boot }) => {
     await boot();
 
     const forceCount = () => kexCall(page, "forceCount");
     const forceEases = () => kexCall(page, "forceEases");
-    const forceEditing = () => kexCall(page, "forceEditing");
-    const forceHandleSel = () => kexCall(page, "forceHandleSel");
-    const forceTangents = () => kexCall(page, "forceTangents");
 
     // seed a force section with an airtime bump (the two continuation seed keyframes stage B
     // stamps on convert, plus three bump points) → a chain with interior keyframes to edit.
@@ -528,8 +480,8 @@ test("force easing menu flow", async ({ page, boot }) => {
 
     // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in the grammar's
     // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
-    // terminal (kex2d-menu-grammar stage 2). (The Handles + Reset rows are gone — both subsumed
-    // into the Easing list: Custom steps in, a preset steps back out.) ──
+    // terminal (kex2d-menu-grammar stage 2). (The Handles + Reset rows, and the Custom preset
+    // Easing ▸ used to also carry, are gone — the submenu is Linear | Cubic | Quintic only.) ──
     await page.locator(".fpt").first().click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await expect
@@ -541,26 +493,22 @@ test("force easing menu flow", async ({ page, boot }) => {
         .toEqual(["Easing ▸", "Delete Del"]);
     // the rendered rows are the real `keyframeMenu` builder's, run in the page against this
     // keyframe's live state — the keyframe menu's half of the DOM cross-check. It reaches INSIDE
-    // `Easing ▸` by real hover, which is where the app's ONE authored within-group separator lives
-    // (the preset picks divided from Custom): the whole escape hatch rests on that row, and this is
-    // the only place it's verified as rendered DOM.
+    // `Easing ▸` by real hover to assert the preset rows (Linear | Cubic | Quintic) render — the
+    // app authors no separator anywhere now (`tests/menu.test.ts`'s `Separators` registry is
+    // empty; the one row it used to carry divided the presets from Custom, and left with it).
     await menuGrammar(page, ".fmenu", {
         builder: "keyframeMenu",
         // the leading keyframe of a bumped force section: single selection, non-terminal (it
-        // governs the following segment), no explicit handles, no pin session (so no
-        // Lock/Unlock row), nothing under lockdown.
+        // governs the following segment), no pin session (so no Lock/Unlock row), nothing
+        // under lockdown.
         state: {
             setOk: true,
-            activeOk: true,
             lock: null,
             multi: false,
             terminal: false,
             easeTargets: 1,
-            custom: false,
-            hasHandles: false,
-            customGlyph: "",
         },
-        enums: { ease: "profile.Easing.Cubic", mode: "spline.TangentMode.Aligned" },
+        enums: { ease: "profile.Easing.Cubic" },
         fns: ["presetGlyph"],
     });
     await page.waitForTimeout(SHOT_MS);
@@ -620,285 +568,6 @@ test("force easing menu flow", async ({ page, boot }) => {
     await expect(page.locator(".fmenu")).toHaveCount(0);
     expect((await forceEases())[0]).toBe(0); // unchanged — the empty-space click was inert
     expect(await kexCall(page, "forceSelActive")).toBe(null);
-
-    // ── 3. Double-click an interior keyframe → handle-edit sub-mode summons its two handles
-    // (the direct gesture into handle edit; a diamond hit beats the chart's insertion double-
-    // click, and it does NOT insert a point). ──
-    await page.locator(".fpt").nth(1).dblclick();
-    await expect.poll(forceEditing).toBe(true);
-    await expect(page.locator(".thit")).toHaveCount(2); // in + out handles (an interior keyframe)
-    await expect.poll(forceCount).toBe(nPts); // the double-click summoned, it did NOT insert
-
-    // ── 3b. Dead-zone: a CLICK on a handle knob with a sub-threshold jitter (2-3 px, under
-    // DRAG_PX) selects the handle but writes NO tangent and records NO history — it must not
-    // materialize a ghost to explicit on a jittery click (the F2 review finding: the write was
-    // gated only on the release verdict, not the dead zone). the IN handle (reaches backward,
-    // away from step 4's out-drag). ──
-    const undoDepth = () => kexCall(page, "undoDepth");
-    const beforeJitter = await undoDepth();
-    const inKnob = await page.locator(".thit").first().boundingBox();
-    if (!inKnob) throw new Error("in-handle knob not laid out");
-    await page.mouse.move(inKnob.x + inKnob.width / 2, inKnob.y + inKnob.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(inKnob.x + inKnob.width / 2 + 2, inKnob.y + inKnob.height / 2 - 2, {
-        steps: 2,
-    });
-    await page.mouse.up();
-    await expect.poll(forceHandleSel).toBe("in"); // the jittery click SELECTED the handle
-    expect((await forceTangents())[1]).toBeNull(); // …but wrote NO explicit tangent
-    expect(await undoDepth()).toBe(beforeJitter); // …and recorded NO history entry
-    await page.keyboard.press("Escape"); // peel: deselect the handle, stay in handle edit
-    await expect.poll(forceHandleSel).toBeNull();
-
-    // ── 4. Drag the OUT handle → the keyframe's OUT side gains an explicit tangent, so its
-    // FOLLOWING segment (the one its menu addresses) reads Custom. a real canvas pointer drag,
-    // located by the .thit grab circle. the out handle reaches into the larger next span, clear
-    // of the diamond. ──
-    const knob = await page.locator(".thit").last().boundingBox();
-    if (!knob) throw new Error("handle knob not laid out");
-    await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(knob.x + knob.width / 2 + 24, knob.y + knob.height / 2 - 40, {
-        steps: 6,
-    });
-    await page.mouse.up();
-    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
-
-    // per-side materialization: dragging keyframe 1's OUT handle customizes only that side. Its
-    // IN side — the trailing bound of the PRECEDING segment (kf0→kf1) — stays derived, so an
-    // out-drag never spuriously customizes the segment behind the keyframe (composeTangent's
-    // segment-scoped Custom model). A both-sides materialize would flip inOn true → red.
-    expect((await forceTangents())[1]?.inOn).toBe(false);
-
-    // (a) the DRAG selected the dragged side (the Blender rule — any interaction addresses the
-    // handle). On pre-F3 code a drag left selection untouched, so this is the red-first pin.
-    await expect.poll(forceHandleSel).toBe("out");
-    // (b) the offset grid snapped Δg to a 0.1-g multiple (a real, nonzero offset). Remove the
-    // grid quantize and the ~40-px drag's continuous Δg is essentially never a 0.1 multiple → red.
-    const outDgSnap = (await forceTangents())[1]?.outDg ?? 0;
-    expect(Math.abs(outDgSnap)).toBeGreaterThan(0.05);
-    expect(Math.abs(outDgSnap * 10 - Math.round(outDgSnap * 10))).toBeLessThan(1e-6);
-    // (b2) Δs, by contrast, is CONTINUOUS (F3d): a handle's horizontal offset is curvature
-    // shaping, not a placement on the arclength, so it is NOT grid-quantized. The ~24-px drag's
-    // Δs lands off the 1-m grid; re-enable the Δs quantize and it snaps to an integer → red.
-    const outDsCont = (await forceTangents())[1]?.outDs ?? 0;
-    expect(Math.abs(outDsCont)).toBeGreaterThan(0.05); // a real, nonzero reach
-    expect(Math.abs(outDsCont - Math.round(outDsCont))).toBeGreaterThan(1e-3); // off the 1-m grid
-    // …and the readout swapped to the handle, printing that snapped value in vocabulary form
-    // (trailing zeros trimmed) — the popover shows the handle's own (Δs, Δg), not the keyframe's.
-    const hgReadout = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
-    await expect(hgReadout).toBeVisible();
-    expect(Number(await hgReadout.inputValue())).toBeCloseTo(outDgSnap, 6);
-    // (d) the popover re-anchored at the SELECTED KNOB (attention lives where the drag just
-    // ended). Its above/below-vs-dodge placement is pinned in the dedicated 4d scenarios below,
-    // on the crest — two constructed cases where the vertical fit is deterministic.
-
-    await page.waitForTimeout(SHOT_MS);
-    const editStrip = dockStrip(page);
-    if (editStrip)
-        await page.screenshot({ path: join(OUT, "force-handle-edit.png"), clip: editStrip });
-
-    // ── 4c. The handle (Δs, Δg) fields carry the slider/scrub affordance, the same drag-to-slide
-    // as the keyframe d/F fields. Grab the Δg key label and slide it right: the OUT tangent's Δg
-    // revises through the shared write path (composeTangent), one undo entry. On the old type-only
-    // fields (no onpointerdown handler) the drag over the label writes nothing → outDg unchanged →
-    // red. ──
-    const dgKey = page
-        .locator(".ptip .fld")
-        .filter({ has: page.locator('input[aria-label="Handle g offset (g)"]') })
-        .locator(".key");
-    const dgKeyBox = await dgKey.boundingBox();
-    if (!dgKeyBox) throw new Error("Δg scrub handle not laid out");
-    const beforeScrubDg = (await forceTangents())[1]?.outDg ?? 0;
-    const beforeScrubUndo = await undoDepth();
-    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2, dgKeyBox.y + dgKeyBox.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2 + 40, dgKeyBox.y + dgKeyBox.height / 2, {
-        steps: 10,
-    });
-    await page.mouse.up();
-    await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).not.toBe(beforeScrubDg);
-    expect(await undoDepth()).toBe(beforeScrubUndo + 1); // the whole scrub → one entry
-
-    // ── 4c′. The label-scrub button guard (kex2d-gesture-residue stage 5, the shared
-    // `labelScrub` helper): only `snapScrub` carried an `e.button !== 0` check before this
-    // stage — `scrubStart`/`handleScrub` had none, so a right-press on this exact label opened
-    // a drag (writing Δg) underneath the browser's native context menu. RED-RIG TRAP: the
-    // left-press-drag just above is the positive control — it already proved this rig can
-    // detect both a real Δg write and a real gesture opening (`#app[data-dragging]`), so this
-    // negative check can't pass vacuously. A right-press-drag on the SAME label must write
-    // nothing (Δg unchanged, no undo entry) and open no gesture at all — checked mid-drag, not
-    // only after release, so a guard that merely un-did the write couldn't sneak by. ──
-    const beforeGuardDg = (await forceTangents())[1]?.outDg ?? 0;
-    const beforeGuardUndo = await undoDepth();
-    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2, dgKeyBox.y + dgKeyBox.height / 2);
-    await page.mouse.down({ button: "right" });
-    await frames(page, 2);
-    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // no gesture opened
-    await page.mouse.move(dgKeyBox.x + dgKeyBox.width / 2 + 40, dgKeyBox.y + dgKeyBox.height / 2, {
-        steps: 10,
-    });
-    await frames(page, 2);
-    await expect(page.locator("#app[data-dragging]")).toHaveCount(0); // still none, under movement
-    await page.mouse.up({ button: "right" });
-    expect((await forceTangents())[1]?.outDg ?? 0).toBe(beforeGuardDg); // no write
-    expect(await undoDepth()).toBe(beforeGuardUndo); // no commit
-
-    // ── 4b. Ctrl/Cmd frees the Δg grid (Δs is already continuous by default, F3d — the modifier's
-    // remaining job is the Δg quantum). Reset step 4's handle to derived, re-enter, and drag the OUT
-    // knob with the modifier held to an off-round pixel target: the bypass keeps Δg continuous, so it
-    // lands off the 0.1-g grid (a continuous real hits the grid with vanishing probability); a broken
-    // bypass snaps Δg → the assert goes red. Fresh-from-flat so the grab-ray latch releases on the
-    // large move. ──
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await clickFlyout(page, ".fmenu", "Easing", "Cubic");
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(async () => (await forceTangents())[1] === null).toBe(true);
-    await page.locator(".fpt").nth(1).dblclick();
-    await expect.poll(forceEditing).toBe(true);
-    const gk = await page.locator(".thit").last().boundingBox();
-    if (!gk) throw new Error("out handle knob not laid out for the bypass drag");
-    await page.mouse.move(gk.x + gk.width / 2, gk.y + gk.height / 2);
-    await page.mouse.down({ button: "left" });
-    await page.keyboard.down("Control");
-    await page.mouse.move(gk.x + gk.width / 2 + 13, gk.y + gk.height / 2 - 37, { steps: 6 });
-    await page.mouse.up();
-    await page.keyboard.up("Control");
-    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
-    const free = (await forceTangents())[1];
-    expect(Math.abs(free?.outDg ?? 0)).toBeGreaterThan(0.05); // a real, nonzero vertical reach
-    const dgOnGrid = Math.abs((free?.outDg ?? 0) * 10 - Math.round((free?.outDg ?? 0) * 10)) < 1e-6; // G_GRID = 0.1 g
-    expect(dgOnGrid).toBe(false); // the bypass freed Δg off its 0.1-g grid
-
-    // ── 4d. Handle popover placement (F3c): vertical-primary, matching the keyframe popover's
-    // above/below reading. The box sits above/below the knob, horizontally centred on it, on the
-    // side AWAY from the diamond; only an edge that would flip it back over the workspace dodges it
-    // horizontally outward (the collision fallback, never the default). Two constructed cases on the
-    // CREST (nth 2, an interior keyframe near the chart BOTTOM): an up-handle with room = the
-    // default above; a down-handle pinned to the bottom edge = the dodge. ──
-    await page.keyboard.press("Escape"); // leave keyframe 1's handle edit clean before the crest
-    await page.keyboard.press("Escape");
-    const body = await page.locator(".dock .body").boundingBox();
-    if (!body) throw new Error("timeline body not laid out");
-    const chartTopY = body.y + CHART_TOP;
-    const chartBotY = body.y + body.height - CHART_BOT_PAD;
-
-    await page.locator(".fpt").nth(2).dblclick(); // enter handle edit on the crest
-    await expect.poll(forceEditing).toBe(true);
-    await expect(page.locator(".thit")).toHaveCount(2);
-    const crestDia = await page.locator(".fpt").nth(2).locator(".fhit").boundingBox();
-    if (!crestDia) throw new Error("crest diamond not laid out");
-    const crestX = crestDia.x + crestDia.width / 2;
-    const crestY = crestDia.y + crestDia.height / 2;
-
-    // (i) DEFAULT above: drag the OUT knob straight UP to the midpoint between the top fit-line and
-    // the crest — the box has clear room above, so it reads like the keyframe popover: above the
-    // knob, centred, on the side away from the (below) diamond. NOT dodged to a side.
-    const upY = (chartTopY + TIP_REACH + crestY) / 2;
-    const uk = await page.locator(".thit").last().boundingBox();
-    if (!uk) throw new Error("crest out knob not laid out for the up drag");
-    await page.mouse.move(uk.x + uk.width / 2, uk.y + uk.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(crestX + 2, upY, { steps: 8 }); // straight up (the grab-ray latch keeps s≈0)
-    await page.mouse.up();
-    await expect.poll(async () => ((await forceTangents())[2]?.outDg ?? 0) > 0.05).toBe(true); // points UP
-    {
-        const tipBox = await page.locator(".ptip").boundingBox();
-        const knobBox = await page.locator(".thit").last().boundingBox();
-        const inKnob = await page.locator(".thit").first().boundingBox();
-        const dia = await page.locator(".fpt").nth(2).locator(".fhit").boundingBox();
-        if (!tipBox || !knobBox || !inKnob || !dia)
-            throw new Error("default-placement boxes not laid out");
-        const knobCx = knobBox.x + knobBox.width / 2;
-        const knobCy = knobBox.y + knobBox.height / 2;
-        expect(dia.y + dia.height / 2).toBeGreaterThan(knobCy); // handle up → the diamond is BELOW the knob
-        expect(tipBox.y + tipBox.height).toBeLessThanOrEqual(knobCy + 1); // …so the box is ABOVE the knob
-        expect(knobCx).toBeGreaterThanOrEqual(tipBox.x); // horizontally centred on the knob (not dodged)
-        expect(knobCx).toBeLessThanOrEqual(tipBox.x + tipBox.width);
-        expect(overlaps(tipBox, knobBox)).toBe(false); // clears every workspace element it hangs off
-        expect(overlaps(tipBox, inKnob)).toBe(false);
-        expect(overlaps(tipBox, dia)).toBe(false);
-    }
-
-    // (ii) DODGE (the F3b refutation, now pinned): drag the OUT knob DOWN past the chart bottom so
-    // it clamps to the edge, just below the near-bottom crest diamond. The preferred vertical side
-    // (below, away from the diamond) no longer fits, and flipping back ABOVE would land the box over
-    // the diamond — so it dodges horizontally OUTWARD (out → right) instead. Red-first: a naive
-    // always-vertical placement flips above and OVERLAPS the crest diamond, so the no-overlap assert
-    // goes red without the dodge (verified against a no-dodge mutation on the bridge).
-    const dk = await page.locator(".thit").last().boundingBox();
-    if (!dk) throw new Error("crest out knob not laid out for the dodge");
-    await page.mouse.move(dk.x + dk.width / 2, dk.y + dk.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(crestX + 14, chartBotY + 60, { steps: 8 }); // past the bottom → clamps to the edge
-    await page.mouse.up();
-    await expect.poll(async () => ((await forceTangents())[2]?.outDg ?? 0) < -0.05).toBe(true); // points DOWN
-    {
-        const tipBox = await page.locator(".ptip").boundingBox();
-        const knobBox = await page.locator(".thit").last().boundingBox();
-        const inKnob = await page.locator(".thit").first().boundingBox();
-        const dia = await page.locator(".fpt").nth(2).locator(".fhit").boundingBox();
-        if (!tipBox || !knobBox || !inKnob || !dia)
-            throw new Error("dodge-placement boxes not laid out");
-        const knobCy = knobBox.y + knobBox.height / 2;
-        expect(tipBox.x).toBeGreaterThan(knobBox.x + knobBox.width); // dodged to the OUTWARD side (right)
-        expect(tipBox.x - (knobBox.x + knobBox.width)).toBeLessThan(24); // …adjacent, not floating away
-        // the box rides at the knob's vertical level (a side dodge, not above/below) — the in-view
-        // clamp may push it up to a half-height when the knob is pinned to the very chart edge.
-        expect(Math.abs(knobCy - (tipBox.y + tipBox.height / 2))).toBeLessThanOrEqual(32);
-        // the load-bearing pin (the F3b scenario): the dodge clears the diamond fat-pick box and the
-        // arm's knobs. A naive vertical flip would land over the diamond just above → this goes red.
-        expect(overlaps(tipBox, dia)).toBe(false);
-        expect(overlaps(tipBox, knobBox)).toBe(false);
-        expect(overlaps(tipBox, inKnob)).toBe(false);
-    }
-
-    await page.keyboard.press("Escape"); // deselect the handle
-    await page.keyboard.press("Escape"); // exit crest handle edit → clean for step 5
-    await expect.poll(forceEditing).toBe(false);
-
-    // ── 5. Reopen the menu on the now-Custom keyframe → its Easing ▸ submenu's Custom row reads
-    // checked (derived provenance — the segment is bounded by an explicit handle). ──
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await page.locator(".fmenu").getByRole("menuitem", { name: "Easing", exact: true }).hover();
-    const customRow = page.locator(".fmenu").getByRole("menuitem", { name: "Custom", exact: true });
-    await expect(customRow).toBeVisible();
-    await expect(customRow).toHaveClass(/checked/);
-
-    // ── 6. Pick a PRESET row (Cubic) through the menu → it clears the explicit handles back to
-    // the derived preset (what Reset did, now folded into choosing a named row — the way back up
-    // the layers is the list). pointer-true through clickFlyout. ──
-    await clickFlyout(page, ".fmenu", "Easing", "Cubic");
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(async () => (await forceTangents())[1] === null).toBe(true); // handles cleared
-
-    // ── 7. Pick CUSTOM through the menu → it materializes explicit handles from the current
-    // derived ones (no drag) and steps into handle edit. the segment reads Custom again, from
-    // the list this time. ──
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await clickFlyout(page, ".fmenu", "Easing", "Custom");
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(forceEditing).toBe(true); // Custom entered handle edit
-    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true); // handles materialized
-    await expect(page.locator(".thit")).toHaveCount(2);
-
-    // ── 8. Select a handle (click its knob) → the contextual readout swaps from the keyframe
-    // to the handle, and its typed (Δs, Δg) fields appear. type a Δg → the tangent write path
-    // applies it (history-bracketed); undo restores. the OUT handle (reaches into the larger
-    // next span) is well clear of the diamond. ──
-    await page.locator(".thit").last().click(); // no-move click selects, does not drag
-    await expect.poll(forceHandleSel).toBe("out");
-    const dgField = page.locator('.ptip input[aria-label="Handle g offset (g)"]');
-    await expect(dgField).toBeVisible(); // the readout swapped to the handle
-    await dgField.fill("0.6");
-    await dgField.press("Enter"); // Enter blurs → onchange commits through the tangent path
-    await expect.poll(async () => (await forceTangents())[1]?.outDg ?? 0).toBeCloseTo(0.6, 2);
-    await page.keyboard.press("Control+z"); // undo the typed entry
-    await expect
-        .poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 1))
-        .toBeLessThan(0.01);
 
     // ── 9. The TERMINAL keyframe (the last one, governing no following segment) drops the
     // Easing ▸ entry entirely — its menu is Delete alone (there is no transition to ease).
@@ -995,229 +664,16 @@ test("force keyframe off-center drag preserves value", async ({ page, boot }) =>
     expect(samples.at(-1)?.row?.s).not.toBe(beforeRow.s);
 });
 
-// G2: the Tangents ▸ mode submenu (Mirror | Aligned | Free — the geo node menu's convention on a
-// force keyframe) and the chord-aligned derived-Linear ghost display. Both are handle-layer feel
-// features rendered on the real timeline, so both are driven pointer-true and asserted against the
-// drawn DOM + __kex state.
-test("force tangent mode + linear ghost flow", async ({ page, boot }) => {
-    await boot();
-
-    const forceCount = () => kexCall(page, "forceCount");
-    const forceEases = () => kexCall(page, "forceEases");
-    const forceEditing = () => kexCall(page, "forceEditing");
-    const forceTangents = () => kexCall(page, "forceTangents");
-
-    // seed an airtime bump on a force section: two continuation seeds + three bump points = five
-    // keyframes, kf1..kf3 interior (each governs a following segment).
-    await kexCall(page, "seedForceBump");
-    await expect.poll(forceCount).toBeGreaterThanOrEqual(5);
-    const nPts = await forceCount();
-    await frameTimeline(page);
-    // `.fpt` is shared with velocity-strip keyframes; `seed()` (S3) carries no strip of its own
-    // (`force easing menu flow`'s own note), so `.fpt` is force points only.
-    await expect(page.locator(".fpt")).toHaveCount(nPts);
-
-    // ── A. Chord-aligned derived-Linear ghost (feature 2). Set kf1's following segment to Linear,
-    // enter handle edit (no drag → both sides stay derived ghosts), and assert the OUT ghost knob
-    // is DRAWN forward of the diamond (chord-aligned at influence 1/3), not collapsed to a dot on
-    // it. Red-first: revert `derivedOut` to the flat `autoTangent` and a Linear ghost's Δs → 0, so
-    // the knob lands on the diamond → `ghostCx − diaCx ≈ 0` → red. ──
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await clickFlyout(page, ".fmenu", "Easing", "Linear");
-    await expect.poll(async () => (await forceEases())[1]).toBe(0); // Easing.Linear
-    await page.keyboard.press("Escape"); // deselect (clear the keyframe .ptip floating over the chart)
-    await expect(page.locator(".ptip")).toHaveCount(0);
-    await page.locator(".fpt").nth(1).dblclick(); // handle-edit sub-mode
-    await expect.poll(forceEditing).toBe(true);
-    await expect(page.locator(".tknob.ghost")).toHaveCount(2); // both sides derived (hollow ghosts)
-    const dia1 = await page.locator(".fpt").nth(1).locator(".fhit").boundingBox();
-    const outGhost = await page.locator(".tknob.ghost").last().boundingBox(); // handles render in, then OUT
-    if (!dia1 || !outGhost) throw new Error("kf1 diamond / out ghost not laid out");
-    const diaCx = dia1.x + dia1.width / 2;
-    const ghostCx = outGhost.x + outGhost.width / 2;
-    expect(ghostCx - diaCx).toBeGreaterThan(12); // chord-aligned reach forward, not a dot on the diamond
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
-    await expect.poll(forceEditing).toBe(false);
-
-    // ── B. Tangents ▸ mode submenu (feature 1). Give kf1 BOTH explicit handles so the coupling is
-    // observable: Custom on kf1 materializes its OUT, Custom on kf0 materializes kf1's IN. First
-    // reset kf1 back to a preset (Cubic) so the seeds are flat. ──
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await clickFlyout(page, ".fmenu", "Easing", "Cubic");
-    await expect.poll(async () => (await forceEases())[1]).toBe(1); // back to Cubic
-    await page.keyboard.press("Escape");
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await clickFlyout(page, ".fmenu", "Easing", "Custom"); // materializes kf1.out, enters handle edit
-    await expect.poll(async () => (await forceTangents())[1]?.outOn === true).toBe(true);
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
-    await expect.poll(forceEditing).toBe(false);
-    await page.locator(".fpt").nth(0).click({ button: "right" });
-    await clickFlyout(page, ".fmenu", "Easing", "Custom"); // materializes kf1.in (the kf0→kf1 trailing side)
-    await expect
-        .poll(async () => {
-            const t = (await forceTangents())[1];
-            return t?.inOn === true && t?.outOn === true;
-        })
-        .toBe(true);
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
-    await expect.poll(forceEditing).toBe(false);
-
-    // ── B1. kf1 now holds both sides, default mode Aligned (a flat pair materializes Aligned). Its
-    // menu carries a Tangents ▸ row, and Aligned is the checked mode inside the submenu. ──
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await expect
-        .poll(async () =>
-            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
-                t.replace(/\s+/g, " ").trim(),
-            ),
-        )
-        .toEqual(["Easing ▸", "Tangents ▸", "Delete Del"]);
-    // the two-flyout shape, cross-checked against the real builder: `hasHandles` adds Tangents ▸
-    // inside `modify`, so the ONE derived divider still lands before Delete.
-    await menuGrammar(page, ".fmenu", {
-        builder: "keyframeMenu",
-        state: {
-            setOk: true,
-            activeOk: true,
-            lock: null,
-            multi: false,
-            terminal: false,
-            easeTargets: 1,
-            custom: true, // an explicit handle bounds the addressed segment
-            hasHandles: true,
-            customGlyph: "",
-        },
-        enums: { ease: "profile.Easing.Cubic", mode: "spline.TangentMode.Aligned" },
-        fns: ["presetGlyph"],
-    });
-    await page.locator(".fmenu").getByRole("menuitem", { name: "Tangents", exact: true }).hover();
-    await expect(
-        page.locator(".fmenu").getByRole("menuitem", { name: "Aligned", exact: true }),
-    ).toHaveClass(/checked/);
-
-    // ── B2. Pick Free through the Tangents ▸ flyout → the stored mode flips to Free (2). ──
-    await clickFlyout(page, ".fmenu", "Tangents", "Free");
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-    await expect.poll(async () => (await forceTangents())[1]?.mode).toBe(2); // TangentMode.Free
-
-    // ── B3. Under Free, dragging the OUT handle no longer couples the IN side (Aligned would swing
-    // it collinear). Enter handle edit, record kf1's IN offset, drag OUT far off-axis, assert IN is
-    // unchanged. Red-first: fold Free into composeTangent's coupling branch and IN moves → red. ──
-    await page.locator(".fpt").nth(1).dblclick();
-    await expect.poll(forceEditing).toBe(true);
-    const inBefore = (await forceTangents())[1];
-    if (!inBefore) throw new Error("kf1 must hold explicit handles for the decouple check");
-    const outKnob = await page.locator(".thit").last().boundingBox(); // in, then OUT
-    if (!outKnob) throw new Error("kf1 out knob not laid out");
-    await page.mouse.move(outKnob.x + outKnob.width / 2, outKnob.y + outKnob.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(outKnob.x + outKnob.width / 2 + 10, outKnob.y + outKnob.height / 2 - 44, {
-        steps: 6,
-    });
-    await page.mouse.up();
-    await expect
-        .poll(async () => Math.abs((await forceTangents())[1]?.outDg ?? 0))
-        .toBeGreaterThan(0.05); // OUT moved
-    const inAfter = (await forceTangents())[1];
-    expect(inAfter?.inDs).toBeCloseTo(inBefore.inDs, 6); // IN untouched — Free does not couple
-    expect(inAfter?.inDg).toBeCloseTo(inBefore.inDg, 6);
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
-    await expect.poll(forceEditing).toBe(false);
-
-    // ── C. A DERIVED-only keyframe (no explicit handles) shows NO Tangents ▸ row — there is no
-    // stored mode to edit. kf3 (interior, untouched by A/B) is fully derived. ──
-    await page.locator(".fpt").nth(3).click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    expect((await forceTangents())[3]).toBeNull(); // kf3 is derived (no explicit handles)
-    await expect
-        .poll(async () =>
-            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
-                t.replace(/\s+/g, " ").trim(),
-            ),
-        )
-        .toEqual(["Easing ▸", "Delete Del"]); // no Tangents ▸ on a derived keyframe
-    await page.keyboard.press("Escape");
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-});
-
-// Handle drags must behave like keyframe/node drags at the view edges, through the SAME mechanisms:
-// (1) a handle HELD past the chart edge EDGE-PANS the value axis (the shared growValueAxis path,
-// factored from the keyframe drag), and (2) on RELEASE the range ACCOMMODATES the handle endpoint so
-// a knob never sits outside the visible range (yTarget's content extent, extended to explicit handle
-// endpoints — the same accommodate keyframes get through the curve scan). The gRange hook reads the
-// displayed g-range (yView); a real canvas pointer drives the drag past the edge. Each half carries
-// its own mutation: unwire the handle branch → no pan; drop the handle-endpoint inclusion → no fit.
-test("handle drag edge-pans the value axis and a released handle stays in range", async ({
-    page,
-    boot,
-}) => {
-    await boot();
-
-    const forceCount = () => kexCall(page, "forceCount");
-    const forceEditing = () => kexCall(page, "forceEditing");
-    const tTotal = () => kexCall(page, "tTotal");
-    const forces = () => kexCall(page, "forces");
-    const forceTangents = () => kexCall(page, "forceTangents");
-    const gRange = () => kexCall(page, "gRange");
-
-    // seed a force bump → an interior shoulder keyframe (nth 1) whose OUT handle has room downward.
-    // the flat seed already bakes `tTotal > 0` on load, so wait it out and then for the bump's own
-    // bake to CHANGE it — the diamonds below are read off that bake.
-    await expect.poll(tTotal).toBeGreaterThan(0);
-    const tFlat = await tTotal();
-    await kexCall(page, "seedForceBump");
-    await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
-    await expect.poll(tTotal).not.toBe(tFlat);
-    await frameTimeline(page);
-
-    const body = await page.locator(".dock .body").boundingBox();
-    if (!body) throw new Error("timeline body not laid out");
-    const chartBotY = body.y + body.height - CHART_BOT_PAD;
-
-    await page.locator(".fpt").nth(1).dblclick(); // enter handle edit → its two handles summon
-    await expect.poll(forceEditing).toBe(true);
-    await expect(page.locator(".thit")).toHaveCount(2);
-
-    // ── 1. Edge-pan: grab the OUT knob, drag it straight DOWN well past the chart bottom, and HOLD.
-    // The shared edge-grow fires per frame while the cursor is held beyond the edge, so the displayed
-    // range's floor keeps dropping (the held handle rides the growing axis) — until it lands on the
-    // growth CAP and stops. Growth is span-proportional, so it compounds per frame; uncapped, a held
-    // drag runs to absurd g in well under a second (the hand check that sent stage 8 back), which is
-    // what the cap bounds. Mutation: revert the handle branch in the yView effect to `return` (unwire
-    // the path) → the axis holds → the floor never drops → this times out red. Mutation: drop the cap
-    // from `yGrow` → the floor keeps falling past it → the hold-still assert goes red. ──
-    const [lo0] = await gRange();
-    expect(lo0).toBeGreaterThan(GROW_LO); // the resting frame sits inside the cap — there IS room to grow
-    const knob = await page.locator(".thit").last().boundingBox();
-    if (!knob) throw new Error("out handle knob not laid out");
-    const knobX = knob.x + knob.width / 2;
-    await page.mouse.move(knobX, knob.y + knob.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(knobX, chartBotY + 140, { steps: 8 }); // straight down, past the bottom, HELD
-    await expect.poll(async () => (await gRange())[0]).toBeCloseTo(GROW_LO, 3); // grew down to the cap
-    await frames(page, 24); // …held past the edge for 48 more real frames (`frames` awaits 2n rAF
-    // callbacks). Growth compounds per FRAME, so frames — not milliseconds — are this hold's unit,
-    // and the count is the detection power: a ~1e-4/frame leak past the cap hides inside 24.
-    expect((await gRange())[0]).toBeCloseTo(GROW_LO, 3); // …and stopped there, never past it
-    await page.mouse.up();
-    await expect.poll(async () => (await forceTangents())[1] !== null).toBe(true);
-
-    // ── 2. Release accommodate: the OUT handle now overshoots far below the drawn curve (its knob
-    // sat at the panned floor). The range must include its ENDPOINT (keyframe g + Δg) — yFit pads
-    // FIT_PAD (0.4 g) past the content extent, so the settled floor lands strictly BELOW the
-    // endpoint. Mutation: drop the handle-endpoint inclusion in yTarget → the view fits the curve
-    // only (its dip sits well above the overshoot knob), so the floor never reaches the endpoint and
-    // instead lazily contracts back up → this times out red. ──
-    const g1 = (await forces())[1].g;
-    const endpointG = g1 + ((await forceTangents())[1]?.outDg ?? 0);
-    await expect.poll(async () => (await gRange())[0]).toBeLessThan(endpointG - 0.2);
-});
+// "force tangent mode + linear ghost flow" (the Tangents ▸ mode submenu, the chord-aligned
+// derived-Linear ghost) and "handle drag edge-pans the value axis and a released handle stays
+// in range" left with `kex2d-segment-removal` S3 -- explicit per-keyframe force handles, the
+// summon that rendered them, and the mode/ghost/edge-pan/release-accommodate behavior driven
+// only through a handle drag. The shared `growValueAxis`/`yGrow` edge-pan-and-cap mechanism
+// the second test also exercised stays covered: its pure math in
+// `tests/timeline.test.ts` ("yGrow -- edge-triggered grow-to-follow"), and the SURVIVING
+// force-keyframe-value-drag path (Keep the force glyph and force value drag, this spec's
+// Locked decision) end-to-end in `harness/section.pw.ts`'s "channel-specific keyframe edge
+// growth".
 
 // Drive the TIMELINE MULTISELECT flow (kex2d-multiselect stage 6): seed an airtime force bump →
 // CHART-MARQUEE selects its three interior keyframes (a real rect drag on the chartzone, excluding

@@ -275,18 +275,6 @@ interface EditorState {
      *  plain-click number path passes that owner and calls `selectStripKf(id, "replace", owner)`. */
     readonly stripKf: number | null;
     tangentEdit: number | null;
-    /** stable id of the force keyframe in handle-edit sub-mode (its in/out handles are
-     *  summoned), or null — the force analogue of `tangentEdit`, layered on force selection:
-     *  `forceEdit !== null` implies the force set is exactly `{forceEdit}` with it active. entered by
-     *  double-clicking a keyframe (the diamond hit beats insertion); a different selection, Esc, or
-     *  click-away exits it. NOT a fifth mutually-exclusive selection. */
-    forceEdit: number | null;
-    /** which handle of the keyframe in handle-edit sub-mode is selected — `"in"`, `"out"`, or
-     *  null when the keyframe itself holds the readout. a refinement layered on `forceEdit`
-     *  (`forceHandle !== null` implies `forceEdit === force`): clicking a handle knob selects
-     *  it, swapping the contextual readout from the keyframe to the handle's (Δs, Δg) offset;
-     *  re-selecting the keyframe (or Esc) clears it back. NOT a mutually-exclusive selection. */
-    forceHandle: "in" | "out" | null;
     /** whether the track START anchor is selected — a derived read: true iff the unified set
      *  contains a `"start"` member. there's one START per track; selecting it summons the field
      *  popover for the friction/drag coefficients (`Track.friction`/`.resistance`'s own authoring
@@ -581,8 +569,6 @@ export const editor: EditorState = {
         return kindActiveId("stripKf");
     },
     tangentEdit: null,
-    forceEdit: null,
-    forceHandle: null,
     get start(): boolean {
         return memberHas("start", SINGLETON_ID);
     },
@@ -1076,8 +1062,6 @@ function activateMember(kind: SelKind, id: number): void {
 export function deselectAll(): void {
     clearAllMembers();
     editor.tangentEdit = null;
-    editor.forceEdit = null;
-    editor.forceHandle = null;
 }
 
 /** drop tangent edit unless the node selection is exactly its subject (a set that grew past one, or
@@ -1088,15 +1072,6 @@ function reconcileTangent(): void {
         (kindIds("node").size !== 1 || kindActiveId("node") !== editor.tangentEdit)
     )
         editor.tangentEdit = null;
-}
-
-/** drop force handle-edit unless the force selection is exactly its subject. */
-function reconcileForceEdit(): void {
-    if (
-        editor.forceEdit !== null &&
-        (kindIds("force").size !== 1 || kindActiveId("force") !== editor.forceEdit)
-    )
-        editor.forceEdit = null;
 }
 
 /** select a geo node. "replace" (default) collapses the node set to `eid` (or clears it when null) —
@@ -1122,8 +1097,6 @@ export function selectNodes(ids: number[], active: number | null): void {
  *  analog of `selectNodes`. */
 export function selectForces(ids: number[], active: number | null): void {
     selectSet("force", ids, active);
-    editor.forceHandle = null;
-    reconcileForceEdit();
 }
 
 /** enter tangent-edit mode on a node — the summon (double-click). collapses the node selection to
@@ -1142,35 +1115,11 @@ export function exitTangentEdit(): void {
 }
 
 /** select a force keyframe by stable id. "replace" (default) collapses the force set to `id` (or
- *  clears it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps the
- *  other kinds and resets the handle sub-selection (the keyframe itself holds the readout). a select
- *  to a different subject exits handle edit; re-selecting the edited point (sole member) keeps it. */
+ *  clears it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps
+ *  the other kinds. */
 export function selectForce(id: number | null, mode: SelectMode = "replace"): void {
     if (id === null || mode === "replace") selectSingle("force", id);
     else toggleSingle("force", id);
-    editor.forceHandle = null;
-    reconcileForceEdit();
-}
-
-/** enter handle-edit mode on a force keyframe — the summon (double-click). collapses the force
- *  selection to this one subject (clearing the other kinds) and layers the edit sub-mode on it, so
- *  its in/out handles render and grab. mirrors geo's `enterTangentEdit`. */
-export function enterForceEdit(id: number): void {
-    selectForce(id);
-    editor.forceEdit = id;
-}
-
-/** select a summoned handle of the edited keyframe (`"in"`/`"out"`, or null to clear back to
- *  the keyframe readout) — the click-select that swaps the contextual popover to the handle's
- *  (Δs, Δg). only meaningful inside handle-edit (`forceEdit` set). */
-export function selectForceHandle(side: "in" | "out" | null): void {
-    editor.forceHandle = side;
-}
-
-/** exit force handle-edit mode, keeping the point selected (Esc's first peel). */
-export function exitForceEdit(): void {
-    editor.forceEdit = null;
-    editor.forceHandle = null;
 }
 
 /** promote an already-selected force keyframe to the ACTIVE member without disturbing set
@@ -1337,8 +1286,6 @@ export function selectStart(on: boolean): void {
         memberAdd("start", SINGLETON_ID);
         _active = { kind: "start", id: SINGLETON_ID };
         editor.tangentEdit = null;
-        editor.forceEdit = null;
-        editor.forceHandle = null;
     } else {
         clearKind("start");
     }
@@ -1353,8 +1300,6 @@ export function selectOneShot(on: boolean): void {
         memberAdd("oneShot", SINGLETON_ID);
         _active = { kind: "oneShot", id: SINGLETON_ID };
         editor.tangentEdit = null;
-        editor.forceEdit = null;
-        editor.forceHandle = null;
     } else {
         clearKind("oneShot");
     }
@@ -1436,7 +1381,7 @@ export function closeStripMenu(): void {
 // not just the active one. a NODE is recorded by its stable (section, order), not its eid
 // (`restoreSection`/`restoreAll` recycle the allocator LIFO, so a raw eid would remap to a DIFFERENT
 // node after an undo); force, section, strip, stripKf by stable id; start/oneShot by their singleton
-// id. the active member and the sub-modes (tangentEdit, forceEdit, forceHandle) ride along. undo
+// id. the active member and the tangentEdit sub-mode ride along. undo
 // restores each command's pre-selection, redo its post; a selection change alone is never a command.
 
 /** a single member in the restorable snapshot — kind-tagged so restore does not switch on the
@@ -1467,8 +1412,6 @@ interface SelSnapshotData {
     members: MemberSnap[];
     active: ActiveSnap | null;
     tangentEdit: { section: number; order: number } | null;
-    forceEdit: number | null;
-    forceHandle: "in" | "out" | null;
 }
 type SelSnapshot = SelSnapshotData | null;
 
@@ -1515,8 +1458,6 @@ export const selectionHook = {
             members,
             active,
             tangentEdit,
-            forceEdit: editor.forceEdit,
-            forceHandle: editor.forceHandle,
         };
     },
     restore(ecs: State, snap: unknown): void {
@@ -1572,14 +1513,6 @@ export const selectionHook = {
                 eid !== null && nv.ids.size === 1 && nv.active === eid ? eid : null;
         } else {
             editor.tangentEdit = null;
-        }
-        if (s.forceEdit !== null) {
-            const fv = kindView("force");
-            editor.forceEdit = fv.ids.size === 1 && fv.active === s.forceEdit ? s.forceEdit : null;
-            editor.forceHandle = editor.forceEdit !== null ? s.forceHandle : null;
-        } else {
-            editor.forceEdit = null;
-            editor.forceHandle = null;
         }
     },
 };

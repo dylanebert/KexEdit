@@ -11,22 +11,19 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
-import { collinear, type Easing, segmentSeed } from "./profile";
+import type { Easing } from "./profile";
 import type { Domain, Entry as TrackEntry } from "./section";
 import {
     applyConvert,
     applyConvertGeo,
     appendSection as appendSectionTrack,
-    clearForceTangentSide,
     convertSection as flipSectionKind,
     createForcePoint,
     deleteSection as deleteSectionTrack,
     destroyForce,
     extend,
-    forceEase,
     type ForcePointState,
     forcePointState,
-    forceTangent,
     Handle,
     handleAt,
     handleTangent,
@@ -40,7 +37,6 @@ import {
     restoreForcePoint,
     restoreNodes,
     restoreSection,
-    sameForceTangent,
     sameForcePoint,
     sameNodes,
     SectionKind,
@@ -52,7 +48,6 @@ import {
     sectionLengthState,
     setForceEase as writeForceEase,
     setForcePoint,
-    setForceTangent,
     setSectionLength,
     setStickyLen,
     snapshotAll,
@@ -88,7 +83,6 @@ import {
     setTrackResistance,
 } from "./track";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
-import { retargetMode } from "./timeline";
 
 /** a do/undo pair. `apply` is the do / redo direction, `reverse` is undo. both
  *  mutate the canonical data directly (there's no runtime mirror to sync). */
@@ -476,8 +470,7 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
         {
             apply: drop,
             reverse: () => {
-                for (const st of sts)
-                    spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease, st.tangent);
+                for (const st of sts) spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease);
             },
         },
         pre,
@@ -499,8 +492,8 @@ export function beginForceMove(ecs: State, id: number): void {
 /** open a gesture on a MULTI force-point move (the shared-delta bulk drag / arrow-nudge),
  *  snapshotting every member's full state in `ids` order. commit coalesces the live writes into
  *  one entry; the no-op test is {@link sameForcePoint} per member (see `beginForceMove` for why it
- *  is the whole snapshot and not `s`/`g`), so a click or a nudge back to start records nothing while
- *  a drag that cleared a provenance bit does. the size-1 case is `beginForceMove`. */
+ *  is the whole snapshot and not `s`/`g`), so a click or a nudge back to start records nothing for
+ *  every member. the size-1 case is `beginForceMove`. */
 export function beginForceMoves(ecs: State, ids: readonly number[]): void {
     begin(
         () => {
@@ -831,56 +824,18 @@ export function beginKeyframeMoves(
     );
 }
 
-/** record one undoable entry over the addressed segment's two bounding keyframes — the
- *  leading keyframe `id` and its successor `next` (if any) — after `mutate` has already
- *  run on the live data. the command restores both keyframes, so a single undo reverts
- *  the whole segment-scoped gesture; nothing records when neither keyframe changed. */
-function recordSegment(h: History, ecs: State, id: number, mutate: () => void): void {
-    const pre = selHook?.snapshot(ecs);
-    const next = nextForce(ecs, id);
-    const beforeA = forcePointState(ecs, id);
-    if (!beforeA) return;
-    const beforeB = next !== null ? forcePointState(ecs, next) : undefined;
-    mutate();
-    const afterA = forcePointState(ecs, id);
-    const afterB = next !== null ? forcePointState(ecs, next) : undefined;
-    if (afterA === undefined) return;
-    const sameA = beforeA.ease === afterA.ease && sameForceTangent(beforeA.tangent, afterA.tangent);
-    const sameB =
-        beforeB === undefined ||
-        afterB === undefined ||
-        (beforeB.ease === afterB.ease && sameForceTangent(beforeB.tangent, afterB.tangent));
-    if (sameA && sameB) return;
-    const restore = (a: ForcePointState, b?: ForcePointState): void => {
-        restoreForcePoint(ecs, a);
-        if (b) restoreForcePoint(ecs, b);
-    };
-    record(
-        h,
-        { apply: () => restore(afterA, afterB), reverse: () => restore(beforeA, beforeB) },
-        pre,
-    );
-}
-
 /** apply a preset easing to every APPLICABLE (non-terminal) keyframe in `ids` as ONE undoable
  *  entry (the menu one-shot, the bulk Easing ▸ — AE/Unity bulk interpolation): each such
- *  keyframe's tag is set and its addressed segment's two bounding sides (its own out + the next
- *  keyframe's in) cleared back to the preset — this keyframe's out and the next keyframe's in,
- *  never this keyframe's in (which belongs to the preceding segment). choosing a named row is the
- *  way back up the layers, subsuming the old Reset. a terminal keyframe (governs no following
- *  segment) is skipped — the enablement grays those rows at the UI. records nothing when no
- *  applicable keyframe changed. a single-id array (`[id]`) is the size-1 case — one gesture over
- *  the addressed keyframe and its successor, exactly the menu's single-select pick. */
+ *  keyframe's tag is set. a terminal keyframe (governs no following segment) is skipped — the
+ *  enablement grays those rows at the UI. records nothing when no applicable keyframe changed.
+ *  a single-id array (`[id]`) is the size-1 case — one gesture over the addressed keyframe. */
 export function setForcesEase(h: History, ecs: State, ids: readonly number[], ease: Easing): void {
     const pre = selHook?.snapshot(ecs);
-    // the affected keyframes: each applicable leading keyframe + the successor it re-eases (deduped),
-    // so one command restores every touched keyframe.
+    // the affected keyframes: each applicable leading keyframe (terminal ones re-ease nothing).
     const affected = new Set<number>();
     for (const id of ids) {
-        const next = nextForce(ecs, id);
-        if (next === null) continue; // terminal — no segment to ease
+        if (nextForce(ecs, id) === null) continue; // terminal — no segment to ease
         affected.add(id);
-        affected.add(next);
     }
     if (affected.size === 0) return;
     const before: ForcePointState[] = [];
@@ -888,98 +843,13 @@ export function setForcesEase(h: History, ecs: State, ids: readonly number[], ea
         const st = forcePointState(ecs, id);
         if (st) before.push(st);
     }
-    for (const id of ids) {
-        const next = nextForce(ecs, id);
-        if (next === null) continue;
-        writeForceEase(ecs, id, ease);
-        clearForceTangentSide(ecs, id, "out"); // the segment's leading (out) side
-        clearForceTangentSide(ecs, next, "in"); // its trailing (in) side
-    }
+    for (const id of affected) writeForceEase(ecs, id, ease);
     const after = before.map((b) => forcePointState(ecs, b.id));
-    if (
-        before.every((b, i) => {
-            const a = after[i];
-            return a !== undefined && b.ease === a.ease && sameForceTangent(b.tangent, a.tangent);
-        })
-    )
-        return; // nothing changed
+    if (before.every((b, i) => after[i] !== undefined && sameForcePoint(b, after[i]))) return; // nothing changed
     const restore = (states: (ForcePointState | undefined)[]): void => {
         for (const st of states) if (st) restoreForcePoint(ecs, st);
     };
     record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
-}
-
-/** materialize the addressed segment's explicit handles from its current derived shape —
- *  this keyframe's out + the next keyframe's in, seeded so the curve never jumps (a Linear
- *  segment seeds chord-aligned; see `profile.segmentSeed`) — as one undoable entry. the
- *  UI (`chooseCustom`) pairs this with entering handle edit. a bounding side that is
- *  already explicit is left as-is; records nothing at a terminal keyframe (no segment). */
-export function materializeCustom(h: History, ecs: State, id: number): void {
-    recordSegment(h, ecs, id, () => {
-        const next = nextForce(ecs, id);
-        if (next === null) return;
-        const a = forcePointState(ecs, id);
-        const b = forcePointState(ecs, next);
-        if (!a || !b) return;
-        const pa = { s: a.s, g: a.g, ease: forceEase(ecs, id) };
-        const pb = { s: b.s, g: b.g };
-        // when a bounding side is already explicit, materializing the other must not claim a
-        // collinearity the two sides don't have: store Aligned only when the resulting in/out
-        // pair is collinear (a single-sided keyframe or a derived-flat pair qualifies), else
-        // Free. never re-align the preserved side to force collinearity — that would jump a
-        // handle (the Aligned ⟹ collinear invariant).
-        const exA = forceTangent(ecs, id);
-        if (exA?.out === undefined) {
-            const out = segmentSeed(pa, pb, "out");
-            setForceTangent(ecs, id, {
-                mode: collinear(exA?.in, out) ? TangentMode.Aligned : TangentMode.Free,
-                in: exA?.in,
-                out,
-            });
-        }
-        const exB = forceTangent(ecs, next);
-        if (exB?.in === undefined) {
-            const inn = segmentSeed(pa, pb, "in");
-            setForceTangent(ecs, next, {
-                mode: collinear(inn, exB?.out) ? TangentMode.Aligned : TangentMode.Free,
-                in: inn,
-                out: exB?.out,
-            });
-        }
-    });
-}
-
-/** set a force keyframe's tangent MODE as one undoable entry (the Tangents ▸ menu one-shot,
- *  the geo `pickMode` analogue): reconcile the existing handle pair to the new mode retroactively
- *  (`retargetMode` — `Aligned`/`Mirror` re-collinearize in chart pixels, `Free` relabels), keeping
- *  the pair jump-consistent with `composeTangent`'s per-drag coupling. keyframe-scoped (the mode is
- *  a per-keyframe property); records nothing when the tangent is unchanged (picking the current
- *  mode). the menu only offers this on a keyframe that already holds explicit handles, so a derived
- *  keyframe (no mode to edit) never reaches it. `pxPerU`/`pyPerG` are the live chart axis scales. */
-export function setForceTangentMode(
-    h: History,
-    ecs: State,
-    id: number,
-    mode: TangentMode,
-    pxPerU: number,
-    pyPerG: number,
-): void {
-    beginForceTangent(ecs, id);
-    const cur = forceTangent(ecs, id);
-    if (cur) setForceTangent(ecs, id, retargetMode(cur, mode, pxPerU, pyPerG));
-    commit(h);
-}
-
-/** open a gesture on a force-keyframe handle drag, snapshotting the keyframe's easing
- *  state (tag + explicit handles). commit coalesces the live handle writes into one
- *  entry; a no-move release records nothing. the UI writes through `setForceTangent`. */
-export function beginForceTangent(ecs: State, id: number): void {
-    begin(
-        () => forcePointState(ecs, id),
-        (st: ForcePointState) => restoreForcePoint(ecs, st),
-        (a: ForcePointState, b: ForcePointState) =>
-            a.ease === b.ease && sameForceTangent(a.tangent, b.tangent),
-    );
 }
 
 /** open a gesture on a force-section end-handle drag, snapshotting its extent. commit

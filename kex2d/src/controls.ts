@@ -15,7 +15,6 @@ import {
     editor,
     endDrag as endDragGesture,
     enterTangentEdit,
-    exitForceEdit,
     exitTangentEdit,
     type Hover,
     openContext,
@@ -23,7 +22,6 @@ import {
     openNodeMenu,
     select,
     selectForce,
-    selectForceHandle,
     selectNodes,
     selectOneShot,
     selectSection,
@@ -1105,13 +1103,9 @@ export function stripEscape(): void {
     else selectStrip(null);
 }
 
-/** the timeline's force Escape rung: a cross-kind set clears whole; within the force kind the
- *  peel ladder is unchanged — deselect the handle first (back to the keyframe readout), then
- *  exit handle edit (keep the point selected), then clear the selection. */
+/** the timeline's force Escape rung: a cross-kind set clears whole; else clear the selection. */
 export function forceEscape(): void {
     if (escapeCrossesKinds(["force"])) deselectAll();
-    else if (editor.forceHandle !== null) selectForceHandle(null);
-    else if (editor.forceEdit !== null) exitForceEdit();
     else selectForce(null);
 }
 

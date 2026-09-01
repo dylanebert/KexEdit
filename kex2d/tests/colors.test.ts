@@ -195,13 +195,12 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
         // two registers stay distinguishable by weight and fill, never by a size change.
         const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         // per-glyph presence, not a rule count. The `.fmarker` lift is behavior-pinned by the
-        // harness computed-style probe (`harness/force.pw.ts` step 4c); `.tknob`'s has no probe
-        // yet, so this is the only thing holding it — one assert each, so a missing rule names
-        // its own glyph instead of reading as "1 ≠ 2".
+        // harness computed-style probe (`harness/force.pw.ts` step 4c). Its `.tknob` twin (the
+        // summoned force-handle knob) left with the explicit per-keyframe force handles it
+        // rendered, `kex2d-segment-removal` S3.
         const lifted = (sel: RegExp): boolean =>
             new RegExp(`${sel.source}\\s*\\{[^}]*stroke: var\\(--fg\\)`, "s").test(tl);
         expect(lifted(/\.fpt:hover[^{]*\.fmarker/)).toBe(true);
-        expect(lifted(/\.thit:hover \+ \.tknob/)).toBe(true);
         // no geometry channel remains: no grow var, no hover scale transform.
         expect(tl.includes("--hover-grow")).toBe(false);
         expect(tl.includes("scale(var(--hover-grow))")).toBe(false);
@@ -299,7 +298,7 @@ describe("Timeline.svelte carries no false cursor-handler claim (S3)", () => {
 
 // ── cursor allowlist (kex2d-followups follow-up 6): `cursor: grab | grabbing | pointer` is a
 // real affordance channel (editor-ui.md Affordance typing — grab hands mean a pannable surface
-// and nothing else; a direct-manipulation glyph keeps the arrow, `.rbtn`/`.thit` shed theirs
+// and nothing else; a direct-manipulation glyph keeps the arrow, `.rbtn` sheds it
 // already), so a new occurrence anywhere in the tree is either a genuine pannable/clickable
 // chrome affordance or a regression sneaking the cursor channel onto a glyph it doesn't belong
 // on. CSS `cursor` has no cheap behavioral read, so this stays a SOURCE pin by design (the

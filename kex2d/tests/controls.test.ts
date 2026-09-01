@@ -36,12 +36,10 @@ import {
     deselectAll,
     editor,
     endDrag as endDragGesture,
-    enterForceEdit,
     enterTangentEdit,
     exitTangentEdit,
     select,
     selectForce,
-    selectForceHandle,
     selectOneShot,
     selectSection,
     selectStrip,
@@ -1345,7 +1343,8 @@ describe("attachControls's pointerleave and remount teardown both clear the hove
 // own keydown handler calls (`forceEscape`/`stripEscape`/`oneShotEscape`, `controls.ts` — the
 // production dismissal paths, not restatements). every selection is built through the production
 // selectors (`selectForce` + `"toggle"` = the shift-click pair, `selectStrip`/`selectStripKf` =
-// the band click / plain keyframe click, `enterTangentEdit`/`enterForceEdit` = the summons).
+// the band click / plain keyframe click, `enterTangentEdit` = the geo tangent-edit summon —
+// its force-handle-edit twin left with `kex2d-segment-removal` S3).
 describe("S2 — one dismissal reads the member set: one press clears a cross-kind selection", () => {
     afterEach(() => {
         deselectAll();
@@ -1579,18 +1578,10 @@ describe("S2 — one dismissal reads the member set: one press clears a cross-ki
 
     // ── the within-kind peel ladders survive ──
 
-    test("within the force kind the ladder is unchanged: handle peels, then handle edit, then the set", () => {
+    test("within the force kind, one Escape clears the selection (the handle/handle-edit rungs left with `kex2d-segment-removal` S3)", () => {
         selectForce(5);
-        enterForceEdit(5); // the production double-click summon
-        selectForceHandle("in"); // grabbing a summoned handle
-        forceEscape(); // press 1: back to the keyframe readout
-        expect(editor.forceHandle).toBeNull();
-        expect(editor.forceEdit).toBe(5);
         expect(editor.forces.ids.size).toBe(1);
-        forceEscape(); // press 2: handle edit exits, the point stays selected
-        expect(editor.forceEdit).toBeNull();
-        expect(editor.forces.ids.size).toBe(1);
-        forceEscape(); // press 3: the selection clears
+        forceEscape();
         expectNothingSelected();
     });
 

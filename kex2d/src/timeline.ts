@@ -16,10 +16,8 @@
  *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
  *  findGoodStep). */
 
-import type { Offset } from "./profile";
 import { Domain } from "./section";
-import { TangentMode } from "./spline";
-import { type ForceTangent, V0 } from "./track";
+import { V0 } from "./track";
 
 const clampN = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
@@ -427,98 +425,6 @@ export function nudgeKeyframes(
         const lo = m.lo ?? 0;
         return { id: m.id, s: clampN(m.s + d, lo, m.len), v: m.v + dv };
     });
-}
-
-/** resolve a force keyframe's explicit tangent after setting one `side` to the (Δs, Δg) offset —
- *  the pure core of the handle write both a drag and the typed field go through. applies, in order:
- *  (1) the x-monotonicity clamp (`out` reaches into `[0, nextS − s]`, `in` into `[−(s − prevS), 0]`,
- *  so g(s) stays a function; an absent neighbour clamps that reach to 0); (2) per-side
- *  materialization — only the dragged `side` becomes explicit, the un-edited side left exactly as
- *  `existing` had it, so customizing one segment never spuriously customizes the neighbour (the
- *  segment-scoped Custom model); (3) mode coupling — when BOTH sides are now present, an Aligned
- *  keyframe holds the un-dragged side collinear with the dragged one in CHART PIXELS (screen px
- *  because the chart's s and g axes have different scales), keeping its own length; a Mirror keyframe
- *  additionally matches the dragged side's length (Blender aligned/mirrored handles). a `Free`
- *  keyframe never couples, and a materialization that would customize the absent neighbour is not one
- *  the coupling reaches (it fires only when both sides are already explicit). `pxPerU` is the
- *  chart's own axis scale (px per axis unit), `pyPerG` the force-axis scale (px per g). */
-export function composeTangent(
-    side: "in" | "out",
-    ds: number,
-    dg: number,
-    prevS: number | null,
-    s: number,
-    nextS: number | null,
-    existing: ForceTangent | undefined,
-    pxPerU: number,
-    pyPerG: number,
-): ForceTangent {
-    if (side === "out") ds = clampN(ds, 0, nextS !== null ? nextS - s : 0);
-    else ds = clampN(ds, prevS !== null ? -(s - prevS) : 0, 0);
-    const mode = existing?.mode ?? TangentMode.Aligned;
-    let inn: Offset | undefined = existing?.in;
-    let out: Offset | undefined = existing?.out;
-    if (side === "out") out = { ds, dg };
-    else inn = { ds, dg };
-    if ((mode === TangentMode.Aligned || mode === TangentMode.Mirror) && inn && out) {
-        const drag = side === "out" ? out : inn;
-        const px = drag.ds * pxPerU;
-        const py = -drag.dg * pyPerG;
-        const len = Math.hypot(px, py);
-        if (len > 1e-6) {
-            const other = side === "out" ? inn : out;
-            // Aligned keeps the coupled side's own length; Mirror equalizes it to the dragged side's.
-            const olen =
-                mode === TangentMode.Mirror
-                    ? len
-                    : Math.hypot(other.ds * pxPerU, other.dg * pyPerG);
-            const nx = (-px / len) * olen;
-            const ny = (-py / len) * olen;
-            const noff: Offset = { ds: nx / pxPerU, dg: -ny / pyPerG };
-            if (side === "out") inn = noff;
-            else out = noff;
-        }
-    }
-    return { mode, in: inn, out };
-}
-
-/** re-collinearize a force keyframe's two explicit handle offsets onto one line through the
- *  keyframe, in CHART PIXELS (the space `composeTangent`'s coupling maintains, so the reconciled
- *  pair and the next drag agree — no jump) — what switching the Tangents ▸ mode does (the geo
- *  `alignTangent`/`mirrorTangent` analogue for the anisotropic force chart). `Aligned` keeps each
- *  side's own pixel length; `Mirror` equalizes both to the survivor's; `Free` just relabels. the
- *  survivor direction is the OUT (departure) handle when it has pixel length, else IN. a single-sided
- *  or fully-degenerate tangent relabels the mode without moving a handle. */
-export function retargetMode(
-    tan: ForceTangent,
-    mode: TangentMode,
-    pxPerU: number,
-    pyPerG: number,
-): ForceTangent {
-    if (mode === TangentMode.Free || !tan.in || !tan.out) return { ...tan, mode };
-    const inPx = { x: tan.in.ds * pxPerU, y: -tan.in.dg * pyPerG };
-    const outPx = { x: tan.out.ds * pxPerU, y: -tan.out.dg * pyPerG };
-    const outLen = Math.hypot(outPx.x, outPx.y);
-    const inLen = Math.hypot(inPx.x, inPx.y);
-    // the forward (departure) direction: the OUT handle when it has length, else IN back-projected.
-    let fx: number;
-    let fy: number;
-    if (outLen > 1e-6) {
-        fx = outPx.x / outLen;
-        fy = outPx.y / outLen;
-    } else if (inLen > 1e-6) {
-        fx = -inPx.x / inLen;
-        fy = -inPx.y / inLen;
-    } else {
-        return { ...tan, mode }; // no direction to align to
-    }
-    const survivorLen = outLen > 1e-6 ? outLen : inLen;
-    const outLenNew = mode === TangentMode.Mirror ? survivorLen : outLen;
-    const inLenNew = mode === TangentMode.Mirror ? survivorLen : inLen;
-    // out reaches forward, in reaches backward (anti-parallel through the keyframe).
-    const out: Offset = { ds: (fx * outLenNew) / pxPerU, dg: (fy * outLenNew) / -pyPerG };
-    const inn: Offset = { ds: (-fx * inLenNew) / pxPerU, dg: (-fy * inLenNew) / -pyPerG };
-    return { mode, in: inn, out };
 }
 
 /** the extent-trim magnet targets in chart-local px: content landmarks that are stable
