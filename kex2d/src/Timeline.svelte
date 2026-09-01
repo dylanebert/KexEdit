@@ -3014,16 +3014,13 @@ function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandid
 // element per strip for CSS `:hover` to land on, so it needs its own read, the same way
 // `stripDrag` below is this band's own gesture state rather than a viewport one.
 let bandHoverX: number | null = $state(null);
-// A band's own pointerup is the one release where the stationary handle remains the active
-// affordance; foreign gestures still clear their stale hover when the shared drag flag falls.
-let preserveBandHover = false;
+// The band owns this coordinate: pointer movement follows the hit rectangle, and bandUp records
+// the final in-band release so the stationary handle remains the active affordance.
 function bandHoverMove(e: PointerEvent): void {
-    preserveBandHover = false;
     const rect = canvas.getBoundingClientRect();
     bandHoverX = e.clientX - rect.left;
 }
 function bandHoverLeave(): void {
-    preserveBandHover = false;
     bandHoverX = null;
 }
 // suppressed for the whole of any OTHER gesture (editor-ui.md Kind color: "Hover's boundaries
@@ -3084,12 +3081,7 @@ const oneShotHover = $derived.by((): boolean => {
 // Selection suppresses hover on the selected span body, while its distinct resize handle keeps
 // the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
 // only a real pointerup inside the horizontal band preserves the stationary read. An off-band
-// pointerup or pointercancel clears it before the shared drag flag falls, so neither can leave a
-// phantom body/edge hover.
-$effect(() => {
-    if (editor.dragging) preserveBandHover = false;
-    else if (!preserveBandHover) bandHoverX = null;
-});
+// pointerup or pointercancel clears it before the shared drag teardown.
 
 interface StripDrag {
     id: number;
@@ -3192,7 +3184,6 @@ function bandUp(e: Event): void {
         px <= w &&
         py >= RULER_H + GAP_H &&
         py <= RULER_H + GAP_H + STRIP_H;
-    preserveBandHover = inBand;
     bandHoverX = inBand ? px : null;
     stripDrag = null;
     snapX = null;
@@ -4700,6 +4691,9 @@ onMount(() => {
             // right-click "Add initial velocity" at the same screen point a later "Delete"
             // right-click lands on.
             k.oneShotPx = (): number => oneShotGlyphX();
+            // the one-shot's hover classification, including the stationary pointerup state. The
+            // renderer still gives selection priority through `glyphHover`'s `!selOs` guard.
+            k.oneShotHover = (): boolean => oneShotHover;
             k.oneShotSelected = (): boolean => editor.oneShot;
             // the header band's own hit-classification reads (S3 on-surface naming's own hover
             // partition), exposed so a capture flow can await the geometric PARTITION a pointer
@@ -4738,6 +4732,7 @@ onMount(() => {
                 delete k.stripKfPx;
                 delete k.stripPx;
                 delete k.oneShotPx;
+                delete k.oneShotHover;
                 delete k.oneShotSelected;
                 delete k.bandHit;
                 delete k.uTotal;
