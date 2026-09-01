@@ -7,7 +7,6 @@ import {
     Easing,
     type ForcePoint,
     forceProfile,
-    type Offset,
     resolveStep,
     sampleForce,
     type Step,
@@ -151,96 +150,21 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
  *  the bake gathers each section's points (sorted by s) into a dense profile
  *  (`profile.forceProfile`). `ease` is the keyframe's `Easing` tag (the convenient
  *  middle layer) — it governs the *following* segment's derived flat tangents
- *  (default `Easing.Cubic`, the "no stored state" convention). `tmode` mirrors geo's
- *  `Handle.tmode`: 0 = no explicit handles (derive from `ease`), else a `TangentMode`
- *  for the summoned inner layer, in which case `tin`/`tout` hold the explicit in/out
- *  handle **offsets** ((Δs, Δg) as x/y) the bake substitutes for the derived
- *  tangents. */
+ *  (default `Easing.Cubic`, the "no stored state" convention). Every segment is
+ *  NAMED (`profile.ts`'s derived-flat-tangent shape); explicit per-keyframe force
+ *  handles left with `kex2d-segment-removal` S3 (`ForceTangent`, the stored
+ *  `Force.tin`/`tout` offsets, and the Custom provenance they implied). */
 export const Force = {
     section: sparse(u32),
     id: sparse(u32),
     s: sparse(f32),
     g: sparse(f32),
     ease: sparse(u32),
-    tmode: sparse(u32),
-    tin: sparse(vec2),
-    tout: sparse(vec2),
 };
 
 /** the easing tag a fresh force keyframe gets — the FVD++/Planet-Coaster S-transition
  *  feel, and the "no stored state" default (`profile.ts` reads an absent tag as this). */
 const FORCE_EASE_DEFAULT = Easing.Cubic;
-
-/** `Force.tmode` bits. the low two bits hold the `TangentMode` (1/2/3); the two flag
- *  bits mark which sides carry an explicit handle. a keyframe's two sides are
- *  **independently optional** (per-side, per the segment-scoped Custom model): the
- *  segment X→X+1 is Custom iff X's OUT or X+1's IN holds an explicit handle, so a
- *  preset/Custom on one segment must clear/materialize one side without touching the
- *  keyframe's far side (which belongs to the neighbouring segment). 0 (no flags) = the
- *  derived-from-`ease` default. */
-const TIN_PRESENT = 1 << 2;
-const TOUT_PRESENT = 1 << 3;
-
-/** a force keyframe's explicit handles — the summoned inner layer, mirroring geo's
- *  `Tangent`. `mode` is the `TangentMode` (which handle drag rotates/mirrors the other);
- *  `in`/`out` are the stored (Δs, Δg) handle offsets `profile.segment` consumes. each
- *  side is **independently optional**: an absent side derives from `ease`, a present one
- *  overrides it verbatim. the whole record is undefined only when both sides derive. */
-export interface ForceTangent {
-    mode: TangentMode;
-    in?: Offset;
-    out?: Offset;
-}
-
-/** read a force keyframe's explicit handles, or undefined when both sides derive from
- *  `ease` — the projection onto `profile.ForcePoint`'s `in`/`out`. mirrors geo's
- *  `readTangent`; each side is present only when its flag bit is set. */
-function readForceTangent(eid: number): ForceTangent | undefined {
-    const raw = Force.tmode.get(eid);
-    const inOn = (raw & TIN_PRESENT) !== 0;
-    const outOn = (raw & TOUT_PRESENT) !== 0;
-    if (!inOn && !outOn) return undefined;
-    const tan: ForceTangent = { mode: (raw & 0b11) as TangentMode };
-    if (inOn) tan.in = { ds: Force.tin.x.get(eid), dg: Force.tin.y.get(eid) };
-    if (outOn) tan.out = { ds: Force.tout.x.get(eid), dg: Force.tout.y.get(eid) };
-    return tan;
-}
-
-/** write a force keyframe's explicit handles onto its columns; undefined (or a record
- *  with neither side) clears them back to the derived-from-`ease` default (zeroed). the
- *  one place `Force.tmode`/`tin`/`tout` are written together. mirrors geo's `writeTangent`.
- *  the absent side stores zeroes so an undo round-trip is byte-identical. */
-function writeForceTangent(eid: number, tan: ForceTangent | undefined): void {
-    if (tan && (tan.in || tan.out)) {
-        let raw = tan.mode & 0b11;
-        if (tan.in) {
-            raw |= TIN_PRESENT;
-            Force.tin.set(eid, tan.in.ds, tan.in.dg);
-        } else Force.tin.set(eid, 0, 0);
-        if (tan.out) {
-            raw |= TOUT_PRESENT;
-            Force.tout.set(eid, tan.out.ds, tan.out.dg);
-        } else Force.tout.set(eid, 0, 0);
-        Force.tmode.set(eid, raw);
-    } else {
-        Force.tmode.set(eid, 0);
-        Force.tin.set(eid, 0, 0);
-        Force.tout.set(eid, 0, 0);
-    }
-}
-
-/** whether two (Δs, Δg) offsets are equal (both absent = equal). */
-function sameOffset(a?: Offset, b?: Offset): boolean {
-    if (!a || !b) return !a && !b;
-    return a.ds === b.ds && a.dg === b.dg;
-}
-
-/** whether two explicit force handles are equal (both absent = equal, per-side) — the
- *  gesture no-op test the handle-drag/reset history wrappers use. */
-export function sameForceTangent(a?: ForceTangent, b?: ForceTangent): boolean {
-    if (!a || !b) return !a && !b;
-    return a.mode === b.mode && sameOffset(a.in, b.in) && sameOffset(a.out, b.out);
-}
 
 /** an authored velocity strip — track-global, span-blind to sections (person's verdict,
  *  2026-08-25): a velocity span controls the velocity over its own extent regardless of
@@ -1979,16 +1903,14 @@ export function allocForceId(): number {
 }
 
 /** author a new force point on a section at `(s, g)` with a fresh stable id — the
- *  create path. returns the id (undo/redo addresses points by id, not eid). `ease`/
- *  `tan` default to the "no stored state" convention (a fresh keyframe); a caller
- *  seeding a boundary keyframe with explicit provenance passes them explicit. */
+ *  create path. returns the id (undo/redo addresses points by id, not eid). `ease`
+ *  defaults to the "no stored state" convention (a fresh keyframe). */
 export function createForcePoint(
     ecs: State,
     sectionId: number,
     s: number,
     g: number,
     ease: Easing = FORCE_EASE_DEFAULT,
-    tan?: ForceTangent,
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Force);
@@ -1998,14 +1920,12 @@ export function createForcePoint(
     Force.s.set(eid, s);
     Force.g.set(eid, g);
     Force.ease.set(eid, ease);
-    writeForceTangent(eid, tan);
     return id;
 }
 
-/** re-create a force point at an *exact* section / id / s / g (+ easing tag and
- *  optional explicit handles) — undo of a delete, redo of a create, or a snapshot
- *  restore. no id allocation, so it round-trips byte-identical. an absent `tan`
- *  derives from `ease`. */
+/** re-create a force point at an *exact* section / id / s / g / easing tag — undo of
+ *  a delete, redo of a create, or a snapshot restore. no id allocation, so it
+ *  round-trips byte-identical. */
 export function spawnForce(
     ecs: State,
     sectionId: number,
@@ -2013,7 +1933,6 @@ export function spawnForce(
     s: number,
     g: number,
     ease: Easing = FORCE_EASE_DEFAULT,
-    tan?: ForceTangent,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Force);
@@ -2022,7 +1941,6 @@ export function spawnForce(
     Force.s.set(eid, s);
     Force.g.set(eid, g);
     Force.ease.set(eid, ease);
-    writeForceTangent(eid, tan);
 }
 
 /** destroy a force point by stable id (no-op if already gone). */
@@ -2031,8 +1949,8 @@ export function destroyForce(ecs: State, id: number): void {
     if (eid !== null) ecs.destroy(eid);
 }
 
-/** a force point's undoable state, keyed by stable id: its position (`s`/`g`), its easing
- *  tag, and its explicit handles. `section` records which section owns the point;
+/** a force point's undoable state, keyed by stable id: its position (`s`/`g`) and its easing
+ *  tag. `section` records which section owns the point;
  *  `restoreForcePoint` addresses the existing point by id and does NOT rewrite `Force.section`
  *  — a point changes section only inside a structural op, which snapshots the whole track. the
  *  drag/field/easing gestures snapshot this. */
@@ -2042,7 +1960,6 @@ export interface ForcePointState {
     s: number;
     g: number;
     ease: Easing;
-    tangent?: ForceTangent;
 }
 
 /** snapshot one force point by id, or undefined if it's gone (the gesture opens
@@ -2056,7 +1973,6 @@ export function forcePointState(ecs: State, id: number): ForcePointState | undef
         s: Force.s.get(eid),
         g: Force.g.get(eid),
         ease: Force.ease.get(eid) as Easing,
-        tangent: readForceTangent(eid),
     };
 }
 
@@ -2087,7 +2003,6 @@ const FORCE_POINT_EQ: {
     s: (a, b) => a.s === b.s,
     g: (a, b) => a.g === b.g,
     ease: (a, b) => a.ease === b.ease,
-    tangent: (a, b) => sameForceTangent(a.tangent, b.tangent),
 };
 
 /** whether another keyframe in `sectionId` already occupies the station `s` — `exceptId` being
@@ -2144,22 +2059,14 @@ export function setForcePoint(ecs: State, id: number, s: number, g: number): voi
     Force.g.set(eid, g);
 }
 
-/** write a force point's full state back — position, easing tag, and explicit handles
- *  (the gesture restore / undo path, symmetric with `forcePointState`). */
+/** write a force point's full state back — position and easing tag (the gesture
+ *  restore / undo path, symmetric with `forcePointState`). */
 export function restoreForcePoint(ecs: State, st: ForcePointState): void {
     const eid = forceAt(ecs, st.id);
     if (eid === null) return;
     Force.s.set(eid, st.s);
     Force.g.set(eid, st.g);
     Force.ease.set(eid, st.ease);
-    writeForceTangent(eid, st.tangent);
-}
-
-/** a force keyframe's explicit handles by stable id, or undefined when it derives
- *  from `ease` — the read for the handle UI and tests (mirrors geo's `handleTangent`). */
-export function forceTangent(ecs: State, id: number): ForceTangent | undefined {
-    const eid = forceAt(ecs, id);
-    return eid === null ? undefined : readForceTangent(eid);
 }
 
 /** a force keyframe's easing tag by stable id (default `Easing.Cubic`). */
@@ -2177,34 +2084,8 @@ export function setForceEase(ecs: State, id: number, ease: Easing): void {
     Force.ease.set(eid, ease);
 }
 
-/** set (or clear, with null) a force keyframe's explicit handles — the summon / handle-
- *  drag writer. `null` reverts to the `ease`-derived tangents. does not itself record
- *  history (a gesture wraps it; `forcePointState` captures the handles for undo). */
-export function setForceTangent(ecs: State, id: number, tan: ForceTangent | null): void {
-    const eid = forceAt(ecs, id);
-    if (eid === null) return;
-    writeForceTangent(eid, tan ?? undefined);
-}
-
-/** clear ONE side (in/out) of a force keyframe's explicit handles back to derived,
- *  keeping the other side. the segment-scoped Reset: choosing a preset on the leading
- *  keyframe clears the addressed segment's two bounding sides — this keyframe's out and
- *  the next keyframe's in — never the far sides, which belong to the neighbouring
- *  segments. no-op when the side is already derived — which now includes a keyframe holding the
- *  OTHER side only, so clearing an already-derived side writes no shape. */
-export function clearForceTangentSide(ecs: State, id: number, side: "in" | "out"): void {
-    const eid = forceAt(ecs, id);
-    if (eid === null) return;
-    const tan = readForceTangent(eid);
-    if (!tan) return;
-    if (tan[side] === undefined) return; // already derived: nothing written
-    if (side === "in") tan.in = undefined;
-    else tan.out = undefined;
-    writeForceTangent(eid, tan);
-}
-
 /** the next force keyframe after `id` in its own section (ascending s), or null when
- *  `id` is the section's last — the trailing bound of the segment a preset/Custom on
+ *  `id` is the section's last — the trailing bound of the segment a bulk Easing pick on
  *  `id` addresses. */
 export function nextForce(ecs: State, id: number): number | null {
     const eid = forceAt(ecs, id);
@@ -2393,12 +2274,11 @@ export interface SectionSnapshot {
         s: number;
         g: number;
         ease: Easing;
-        tangent?: ForceTangent;
     }[];
 }
 
 /** capture a section (both kinds' payloads — one is empty). a force point carries its
- *  easing tag + explicit handles, so a convert/structural-op undo restores them. */
+ *  easing tag, so a convert/structural-op undo restores it. */
 export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`snapshotSection: no section ${sectionId}`);
@@ -2413,7 +2293,6 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
             s: p.s,
             g: p.g,
             ease: Force.ease.get(p.eid) as Easing,
-            tangent: readForceTangent(p.eid),
         })),
     };
 }
@@ -2432,7 +2311,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-    for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease, p.tangent);
+    for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
 }
 
 // ── provenance sidecar (kex2d-provenance) ──────────────────────────────────────
@@ -2880,7 +2759,7 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
     for (const s of snap.sections) {
         spawnSection(ecs, s.id, s.order, s.kind, s.length);
         for (const n of s.nodes) spawnNode(ecs, s.id, n.order, n.x, n.y, n.theta, n.tangent);
-        for (const p of s.points) spawnForce(ecs, s.id, p.id, p.s, p.g, p.ease, p.tangent);
+        for (const p of s.points) spawnForce(ecs, s.id, p.id, p.s, p.g, p.ease);
     }
     for (const st of snap.strips) {
         spawnStrip(ecs, st.id, st.start, st.end, st.value);
@@ -3022,16 +2901,11 @@ function forceDense(ecs: State, sectionId: number, step: Step): Float32Array {
     // covered keyframe reads the landing's interpolated g instead of its authored one — the
     // whole display (curve, geometry, markers, cart) rides the same substitution.
     const land = bakeLanding !== null && bakeLanding.section === sectionId ? bakeLanding.g : null;
-    const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => {
-        const tan = readForceTangent(p.eid);
-        return {
-            s: p.s,
-            g: land?.(p.id) ?? p.g,
-            ease: Force.ease.get(p.eid) as Easing,
-            in: tan?.in,
-            out: tan?.out,
-        };
-    });
+    const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => ({
+        s: p.s,
+        g: land?.(p.id) ?? p.g,
+        ease: Force.ease.get(p.eid) as Easing,
+    }));
     return forceProfile(points, step);
 }
 
@@ -3146,10 +3020,6 @@ function sectionContentHash(ecs: State, sec: SectionRow): string {
         h += `:L${sec.length}`;
         for (const p of sectionForces(ecs, sec.id)) {
             h += `,${p.id}=${p.s}:${p.g}:${Force.ease.get(p.eid)}`;
-            const mode = Force.tmode.get(p.eid);
-            if (mode !== 0) {
-                h += `~${mode}:${Force.tin.x.get(p.eid)}:${Force.tin.y.get(p.eid)}:${Force.tout.x.get(p.eid)}:${Force.tout.y.get(p.eid)}`;
-            }
         }
     } else {
         for (const eid of sectionHandles(ecs, sec.id)) {

@@ -147,20 +147,9 @@ export interface Kex {
     editing(): boolean;
     forceCount(): number;
     forceEases(): number[];
-    forceEditing(): boolean;
-    forceHandleSel(): string | null;
     forceSelActive(): number | null;
     forceSelIds(): number[];
     forceU(): { id: number; section: number; s: number; g: number; u: number }[];
-    forceTangents(): (null | {
-        mode: number;
-        inOn: boolean;
-        inDs: number;
-        inDg: number;
-        outOn: boolean;
-        outDs: number;
-        outDg: number;
-    })[];
     forceMarkerAt(i: number): { x: number; y: number } | null;
     forces(): { id: number; s: number; g: number }[];
     friction(): number;

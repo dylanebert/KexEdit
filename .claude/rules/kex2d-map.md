@@ -557,9 +557,12 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   twin: `runOptimize(opts, {signal})` spawns a dedicated worker, posts once, resolves once;
   cancellation is `Worker.terminate()`, the façade writes nothing, `liveOptimizeWorkers()` makes
   teardown observable.
-- `census.ts` — the **vocabulary census**: which tangent-mode shape (`mirror`/`aligned`/`broken`/
-  `single`) a force keyframe's two handles form. The editor's handle vocabulary is discrete, so
-  authorability is a COUNT over it, not a score — and the judgment is screen-space (the `(s, g)`
+- `census.ts` — the **vocabulary census**, read by the fit lab's overlay and the conversion
+  tier's oracle over a conversion's own solved handle pairs (explicit per-keyframe force handles
+  in the live editor left with `kex2d-segment-removal` S3): which tangent-mode shape
+  (`mirror`/`aligned`/`broken`/`single`) a keyframe's two handles form. The vocabulary is
+  discrete, so authorability is a COUNT over it, not a score — and the judgment is screen-space
+  (the `(s, g)`
   axes carry different units, so a data-space angle would be a made-up number), which makes the
   surface's `Scale` part of it. The CLASSIFIER is shared by the fit lab's overlay and the
   conversion tier's oracle asserts; the `Scale` is each caller's own, so a census is a reading of
@@ -806,9 +809,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   `hoverForce` is the force-marker twin, written by the same sweep and mutually exclusive with both.
   `hoverKnob` (`{eid, side}` or null) is the tangent-knob twin, live only in tangent edit and
   written FIRST in the sweep — a summoned knob over its own node reads as the knob, the priority a
-  click takes. A summoned tangent handle wins over a keyframe diamond beneath it by declared priority,
-  not by SVG group order; a reorder of the paint groups (`fmarkers` before `thandles`) must not
-  change that. All four land through one seam, `editor.writeHover`/`clearHover` — a caller can't
+  click takes. All four land through one seam, `editor.writeHover`/`clearHover` — a caller can't
   write three of the four fields and miss the fourth — and clear together at three sites: pointer
   leave, remount teardown, and `beginDrag` for the whole of any gesture.
   The invoked-solve gate lives here too: `converting` (`{phase, keys, probes}` or

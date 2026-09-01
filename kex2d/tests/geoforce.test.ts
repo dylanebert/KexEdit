@@ -6,10 +6,8 @@ import { convertGeo, StaleConvert } from "../src/geoforce";
 import { createHistory, type History, undo } from "../src/history";
 import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
-import { TangentMode } from "../src/spline";
 import {
     bakeOut,
-    forceTangent,
     Handle,
     handleAt,
     Section,
@@ -19,7 +17,6 @@ import {
     sectionInfo,
     SectionKind,
     type TrackSnapshot,
-    setForceTangent,
     setTrackDomain,
     setTrackFriction,
     setTrackResistance,
@@ -48,8 +45,8 @@ function humpTrack(): { state: State; eid: number; sec: number; bd: Build } {
     return { state: bd.ecs, eid: bd.trackEid, sec, bd };
 }
 
-/** a track carrying one hand-authored force hill — an easing tag AND an explicit handle, so a
- *  restore that dropped either would be caught — baked. kex2d-provenance stage 3's own oracle
+/** a track carrying one hand-authored force hill — a non-default easing tag on one keyframe, so
+ *  a restore that dropped it would be caught — baked. kex2d-provenance stage 3's own oracle
  *  for the reverse trip (force→geo→force), the twin of `forcegeo.test.ts`'s `hillTrack`. This
  *  shape genuinely needs its 18 m/s (a shallower launch diverges the force→geo fit outright) —
  *  `setStartSpeed` authors the track-start one-shot (S3, its own point kind) once, here; a
@@ -59,18 +56,18 @@ function humpTrack(): { state: State; eid: number; sec: number; bd: Build } {
  *  continuation keyframes on a Force section, cleared before the three exact ones
  *  (`acts.test.ts`'s `fiveKeyframeForceSection` gotcha). The easing tag has a command-layer
  *  op (`force-ease`, reached through `Build`'s generic `.op()` escape hatch — no dedicated
- *  convenience method exists for it); the explicit tangent has no op in `commands.ts`'s
- *  vocabulary at all, so `setForceTangent` stays a direct `track.ts` call on `bd.ecs`. */
+ *  convenience method exists for it). Explicit per-keyframe force handles left with
+ *  `kex2d-segment-removal` S3; this fixture used to also author one to prove a restore couldn't
+ *  drop it either. */
 function hillForceTrack(): { state: State; eid: number; sec: number } {
     const bd = build();
     const sec = bd.appendSection(SectionKind.Force);
     bd.deleteForces(sectionForces(bd.ecs, sec).map((r) => r.id));
     bd.sectionLength(sec, 40);
-    const a = bd.addForce(sec, 0, 1);
+    bd.addForce(sec, 0, 1);
     const b = bd.addForce(sec, 20, 1.4);
     bd.addForce(sec, 40, 1);
     bd.op({ type: "force-ease", ids: [b], ease: Easing.Linear });
-    setForceTangent(bd.ecs, a, { mode: TangentMode.Free, out: { ds: 5, dg: 0.1 } });
     bd.startSpeed(18);
     bd.bake();
     return { state: bd.ecs, eid: bd.trackEid, sec };
@@ -287,7 +284,7 @@ describe("convertGeo", () => {
 // other direction.
 
 describe("provenance short-circuit (reverse)", () => {
-    test("an untouched trip restores the force section content-hash-identical, easing + explicit handle + extent included", async () => {
+    test("an untouched trip restores the force section content-hash-identical, easing + extent included", async () => {
         const { state, eid, sec } = hillForceTrack();
         const h = createHistory();
         const before = docState(state, eid);
@@ -400,21 +397,5 @@ describe("provenance short-circuit (reverse)", () => {
         const result = await first;
         expect(result.outcome).not.toBe("restored");
         state.step(0);
-    }, 60_000);
-
-    test("the restored force keyframe's explicit handle survives — the solve path emits derived-only", async () => {
-        const { state, sec } = hillForceTrack();
-        const pts = sectionForces(state, sec);
-        const authoredTangent = forceTangent(state, pts[0].id);
-        const h = createHistory();
-
-        await convertForce(h, state, sec);
-        state.step(0);
-        const result = await convertGeo(h, state, sec);
-        expect(result.outcome).toBe("restored");
-        state.step(0);
-
-        const restoredPts = sectionForces(state, sec);
-        expect(forceTangent(state, restoredPts[0].id)).toEqual(authoredTangent);
     }, 60_000);
 });

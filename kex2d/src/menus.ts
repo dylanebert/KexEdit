@@ -315,8 +315,6 @@ export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
 export type KeyframeMenuState = {
     /** every selected keyframe's section is editable under the live lockdown. */
     setOk: boolean;
-    /** the active keyframe's section is editable under the live lockdown. */
-    activeOk: boolean;
     /** the mode-scoped Lock/Unlock row's label, or null when the row does not EXIST. */
     lock: "Lock" | "Unlock" | null;
     /** a multi-set keyframe selection. */
@@ -325,40 +323,27 @@ export type KeyframeMenuState = {
     terminal: boolean;
     /** how many selected keyframes govern a following segment (the bulk Easing targets). */
     easeTargets: number;
-    /** the addressed segment is bounded by an explicit handle (derived provenance). */
-    custom: boolean;
     /** the active keyframe's easing tag. */
     ease: Easing;
-    /** the active keyframe holds explicit handles (either side). */
-    hasHandles: boolean;
-    /** the active keyframe's stored tangent mode. */
-    mode: TangentMode;
     /** the row glyph for an easing preset (the real curve, drawn by the surface). */
     presetGlyph: (ease: Easing) => string;
-    /** the Custom row's glyph (the addressed segment's actual curve). */
-    customGlyph: string;
 };
 
 export type KeyframeMenuActions = {
     remove: () => void;
     toggleLock: () => void;
     setEase: (ease: Easing) => void;
-    chooseCustom: () => void;
-    pickMode: (mode: TangentMode) => void;
 };
 
 /** the menu as data, in the grammar's canonical order: the mode-scoped Lock/Unlock, an Easing ▸
- *  submenu, a Tangents ▸ submenu (all `modify`), then Delete last — the
- *  whole SET in one entry, force multi-delete being unconditional. Easing ▸ is Linear | Cubic | Quintic (checked by the
- *  ACTIVE keyframe's tag), the one sanctioned WITHIN-group separator, then Custom — Custom
- *  materializes handles and steps into handle edit, a different kind of row but the same group, so
- *  the divider is authored rather than derived. the preset rows apply to ALL selected non-terminal keyframes — the caller resolves
- *  that member set and reports only its size (`easeTargets`), so the row grays when none is
- *  applicable. each row carries its real curve glyph (drawn from the same
- *  influence the segment uses, so the icon can't drift). Custom is single-subject (the active): both
- *  the derived-provenance indicator (checked when an explicit handle bounds its segment) AND a choice
- *  — picking it materializes the segment's handles and steps into handle edit; picking a preset
- *  clears them back. a single terminal keyframe governs no segment, so it shows Delete alone. */
+ *  submenu (`modify`), then Delete last — the whole SET in one entry, force multi-delete being
+ *  unconditional. Easing ▸ is Linear | Cubic | Quintic, checked by the ACTIVE keyframe's tag. the
+ *  preset rows apply to ALL selected non-terminal keyframes — the caller resolves that member set
+ *  and reports only its size (`easeTargets`), so the row grays when none is applicable. each row
+ *  carries its real curve glyph (drawn from the same influence the segment uses, so the icon can't
+ *  drift). explicit per-keyframe force handles (Custom provenance, the Tangents ▸ mode submenu)
+ *  left with `kex2d-segment-removal` S3 — every segment is now named. a single terminal keyframe
+ *  governs no segment, so it shows Delete alone. */
 export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): MenuItem[] {
     const items: MenuItem[] = [];
     // the Lock/Unlock row (kex2d stage 6): SHOWN only in pin mode on the pinning
@@ -378,7 +363,7 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
             label,
             group: "modify",
             glyph: s.presetGlyph(e),
-            checked: !s.custom && s.ease === e,
+            checked: s.ease === e,
             action: () => a.setEase(e),
         });
         items.push({
@@ -389,41 +374,6 @@ export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): Menu
                 easeRow("Linear", Easing.Linear),
                 easeRow("Cubic", Easing.Cubic),
                 easeRow("Quintic", Easing.Quintic),
-                { separator: true },
-                // Custom is single-subject (the active) and steps into handle edit on it — a terminal
-                // keyframe governs no segment, a state single-select can't reach (its whole Easing ▸ is
-                // hidden), so gray Custom when the active is terminal even while non-terminal siblings
-                // keep the preset rows live.
-                {
-                    label: "Custom",
-                    group: "modify",
-                    enabled: !s.terminal && s.activeOk,
-                    glyph: s.customGlyph,
-                    checked: s.custom,
-                    action: a.chooseCustom,
-                },
-            ],
-        });
-    }
-    // a keyframe with explicit handles (either side) carries a Tangents ▸ mode submenu (Mirror |
-    // Aligned | Free, checked by the stored mode) — the geo node menu's convention. shown even at a
-    // terminal keyframe (whose only handle is the incoming in-side). no Reset row: the way back to
-    // derived is picking a preset in Easing ▸ (which clears the segment's handles).
-    if (s.hasHandles) {
-        const modeRow = (label: string, mode: TangentMode): MenuItem => ({
-            label,
-            group: "modify",
-            checked: s.mode === mode,
-            action: () => a.pickMode(mode),
-        });
-        items.push({
-            label: "Tangents",
-            group: "modify",
-            enabled: s.activeOk,
-            children: [
-                modeRow("Mirror", TangentMode.Mirror),
-                modeRow("Aligned", TangentMode.Aligned),
-                modeRow("Free", TangentMode.Free),
             ],
         });
     }

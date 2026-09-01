@@ -12,7 +12,6 @@ import {
     ensureStrip,
     editor,
     endConvert,
-    enterForceEdit,
     enterTangentEdit,
     fitDone,
     landingG,
@@ -181,12 +180,6 @@ test("a set applier that grows past a sub-mode's subject drops the sub-mode", ()
     enterTangentEdit(10);
     selectNodes([10, 20], 20);
     expect(editor.tangentEdit).toBeNull();
-
-    selectForce(5);
-    enterForceEdit(5);
-    selectForces([5, 6], 6);
-    expect(editor.forceEdit).toBeNull();
-    expect(editor.forceHandle).toBeNull();
 });
 
 test("selectForces writes the force set without sweeping other kinds (S2: marquee extends)", () => {
@@ -305,11 +298,8 @@ describe("one selection model — empty-ruler / empty-lane deselect", () => {
         expect(editor.nodes.ids.size).toBe(0);
         expect(editor.tangentEdit).toBeNull();
         selectForce(3);
-        enterForceEdit(3);
         deselectAll();
         expect(editor.forces.ids.size).toBe(0);
-        expect(editor.forceEdit).toBeNull();
-        expect(editor.forceHandle).toBeNull();
         selectSection(4);
         selectStrip(5);
         selectStripKf(6, "replace", 5);
@@ -746,20 +736,12 @@ test("re-selecting the tangent-edit subject alone keeps the sub-mode", () => {
     expect(editor.tangentEdit).toBe(10);
 });
 
-test("entering force handle-edit collapses a multi-point set to its subject", () => {
-    selectForce(5);
-    selectForce(6, "toggle");
-    enterForceEdit(6);
-    expect([...editor.forces.ids]).toEqual([6]);
-    expect(editor.force).toBe(6);
-    expect(editor.forceEdit).toBe(6);
-});
-
-// BLOCKER 2: selectNodes([])/selectForces([]) must exit tangent-edit / force-edit — the
-// shrink-to-zero case (a shift+marquee that toggles the last member off). the length guards
-// on the reconcile calls skipped the exit when `ids` was empty, leaving a sub-mode live on a
-// deselected subject. these arms red at 47f456d (tangentEdit/forceEdit stays set) and green
-// after the guards are dropped.
+// BLOCKER 2: selectNodes([]) must exit tangent-edit — the shrink-to-zero case (a shift+marquee
+// that toggles the last member off). the length guard on the reconcile call skipped the exit
+// when `ids` was empty, leaving the sub-mode live on a deselected subject. this arm red at
+// 47f456d (tangentEdit stays set) and green after the guard is dropped. Its force-edit twin
+// (`selectForces([])` exiting force handle-edit) left with the sub-mode itself,
+// `kex2d-segment-removal` S3.
 test("selectNodes([]) exits tangent-edit (shrink-to-zero)", () => {
     select(10);
     enterTangentEdit(10);
@@ -767,15 +749,6 @@ test("selectNodes([]) exits tangent-edit (shrink-to-zero)", () => {
     selectNodes([], null);
     expect(editor.nodes.ids.size).toBe(0);
     expect(editor.tangentEdit).toBeNull();
-});
-
-test("selectForces([]) exits force-edit (shrink-to-zero)", () => {
-    selectForce(5);
-    enterForceEdit(5);
-    expect(editor.forceEdit).toBe(5);
-    selectForces([], null);
-    expect(editor.forces.ids.size).toBe(0);
-    expect(editor.forceEdit).toBeNull();
 });
 
 // ── section context menu: promote-vs-replace on right-click (mirrors openNodeMenu/openForceMenu) ──

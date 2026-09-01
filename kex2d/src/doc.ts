@@ -25,14 +25,13 @@
 import { State } from "@dylanebert/shallot";
 import type { Refusal } from "./commands";
 import { history } from "./history";
-import { Easing, type Offset } from "./profile";
+import { Easing } from "./profile";
 import { Domain } from "./section";
 import { TangentMode, type Tangent } from "./spline";
 import {
     allStrips,
     createTrack,
     DS_NOMINAL,
-    type ForceTangent,
     MIN_FORCE_LEN,
     MIN_V0,
     type NodeState,
@@ -53,10 +52,13 @@ import {
 } from "./track";
 
 /** the document format's own version — forward-only migrations (below) bridge an older file up
- *  to this. Bumped when the authored shape changes (segment-first authoring, spec Locked
- *  decision, is the first expected bump); migrations stay cheap by design (one function per
- *  version step, applied in sequence). */
-export const CURRENT_VERSION = 1;
+ *  to this. Bumped when the authored shape changes. v1 → v2 (`kex2d-segment-removal` S3) drops
+ *  explicit per-keyframe force handles (`DocPoint.tangent`, the `ForceTangent`/`Offset` shape) —
+ *  the ECS can no longer author one, so a v1 file carrying that key has it silently dropped on
+ *  load; a v1 file's geo tangents (`DocNode.tangent`) are untouched, a structurally distinct key
+ *  on a distinct entity. migrations stay cheap by design (one function per version step, applied
+ *  in sequence). */
+export const CURRENT_VERSION = 2;
 
 // ── wire types (post-parse, post-migration — always shaped exactly like this) ────────────────
 
@@ -83,23 +85,11 @@ export interface DocNode {
     tangent?: DocGeoTangent;
 }
 
-export interface DocOffset {
-    ds: number;
-    dg: number;
-}
-
-export interface DocForceTangent {
-    mode: number;
-    in?: DocOffset;
-    out?: DocOffset;
-}
-
 export interface DocPoint {
     id: number;
     s: number;
     g: number;
     ease: number;
-    tangent?: DocForceTangent;
 }
 
 export interface DocSection {
@@ -144,14 +134,6 @@ function toDocTangent(t: Tangent | undefined): DocGeoTangent | undefined {
     return t ? { mode: t.mode, inX: t.inX, inY: t.inY, outX: t.outX, outY: t.outY } : undefined;
 }
 
-function toDocForceTangent(t: ForceTangent | undefined): DocForceTangent | undefined {
-    if (!t) return undefined;
-    const out: DocForceTangent = { mode: t.mode };
-    if (t.in) out.in = { ds: t.in.ds, dg: t.in.dg };
-    if (t.out) out.out = { ds: t.out.ds, dg: t.out.dg };
-    return out;
-}
-
 function toDocSection(s: SectionSnapshot): DocSection {
     return {
         id: s.id,
@@ -176,7 +158,6 @@ function toDocSection(s: SectionSnapshot): DocSection {
                 s: p.s,
                 g: p.g,
                 ease: p.ease,
-                tangent: toDocForceTangent(p.tangent),
             })),
     };
 }
@@ -238,20 +219,6 @@ function fromDocTangent(t: DocGeoTangent | undefined): Tangent | undefined {
         : undefined;
 }
 
-function fromDocOffset(o: DocOffset | undefined): Offset | undefined {
-    return o ? { ds: o.ds, dg: o.dg } : undefined;
-}
-
-function fromDocForceTangent(t: DocForceTangent | undefined): ForceTangent | undefined {
-    if (!t) return undefined;
-    const out: ForceTangent = { mode: t.mode as TangentMode };
-    const inOff = fromDocOffset(t.in);
-    if (inOff) out.in = inOff;
-    const outOff = fromDocOffset(t.out);
-    if (outOff) out.out = outOff;
-    return out;
-}
-
 function fromDocSection(s: DocSection): SectionSnapshot {
     return {
         id: s.id,
@@ -272,7 +239,6 @@ function fromDocSection(s: DocSection): SectionSnapshot {
             s: p.s,
             g: p.g,
             ease: p.ease as Easing,
-            tangent: fromDocForceTangent(p.tangent),
         })),
     };
 }
@@ -450,13 +416,14 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
     return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** the document's `tangent` key is only ever present for an EXPLICIT tangent (`TangentMode`'s
- *  1|2|3 — Aligned/Free/Mirror); the "no explicit tangent" sentinel (`Auto`, `TANGENT_AUTO` =
- *  0, `track.ts`) is encoded as the key's ABSENCE, never as `{"mode":0,...}` — `toDocTangent`/
- *  `toDocForceTangent` only ever call through with a defined `Tangent`/`ForceTangent`, which
- *  `readTangent`/`readForceTangent` only return for a non-Auto mode. So a document carrying
- *  `mode: 0` (or anything outside 1|2|3) inside a `tangent` object is malformed, not a valid
- *  Auto encoding. */
+/** the document's `tangent` key on a NODE is only ever present for an EXPLICIT geo tangent
+ *  (`TangentMode`'s 1|2|3 — Aligned/Free/Mirror); the "no explicit tangent" sentinel (`Auto`,
+ *  `TANGENT_AUTO` = 0, `track.ts`) is encoded as the key's ABSENCE, never as `{"mode":0,...}` —
+ *  `toDocTangent` only ever calls through with a defined `Tangent`, which `readTangent` only
+ *  returns for a non-Auto mode. So a document carrying `mode: 0` (or anything outside 1|2|3)
+ *  inside a node's `tangent` object is malformed, not a valid Auto encoding. A force keyframe
+ *  (`DocPoint`) carries no `tangent` key at all as of v2 (`kex2d-segment-removal` S3) — explicit
+ *  per-keyframe force handles left with the ECS that authored them. */
 function isExplicitTangentMode(v: unknown): v is TangentMode {
     return v === TangentMode.Aligned || v === TangentMode.Free || v === TangentMode.Mirror;
 }
@@ -475,26 +442,6 @@ function validateGeoTangent(v: unknown, path: string): DocGeoTangent | undefined
         inY: v.inY as number,
         outX: v.outX as number,
         outY: v.outY as number,
-    };
-}
-
-function validateOffset(v: unknown, path: string): DocOffset | undefined {
-    if (v === undefined) return undefined;
-    if (!isPlainObject(v)) fail(`${path} is not an object`);
-    if (!isFiniteNumber(v.ds)) fail(`${path}.ds is missing or not a finite number`);
-    if (!isFiniteNumber(v.dg)) fail(`${path}.dg is missing or not a finite number`);
-    return { ds: v.ds as number, dg: v.dg as number };
-}
-
-function validateForceTangent(v: unknown, path: string): DocForceTangent | undefined {
-    if (v === undefined) return undefined;
-    if (!isPlainObject(v)) fail(`${path} is not an object`);
-    if (!isExplicitTangentMode(v.mode))
-        fail(`${path}.mode is missing or not a valid TangentMode (1, 2, or 3)`);
-    return {
-        mode: v.mode as number,
-        in: validateOffset(v.in, `${path}.in`),
-        out: validateOffset(v.out, `${path}.out`),
     };
 }
 
@@ -524,12 +471,17 @@ function validatePoint(v: unknown, path: string): DocPoint {
         (v.ease !== Easing.Linear && v.ease !== Easing.Cubic && v.ease !== Easing.Quintic)
     )
         fail(`${path}.ease is missing or not a valid Easing (0, 1, or 2)`);
+    // a v2 force keyframe carries no `tangent` key at all (`kex2d-segment-removal` S3) — the
+    // migration seam strips a v1 file's own before this validator ever sees it, so a `tangent`
+    // key surviving to here is malformed (hand-edited, or a mis-stamped version), not a
+    // structural variant to tolerate.
+    if (v.tangent !== undefined)
+        fail(`${path}.tangent is not a valid field on a v${CURRENT_VERSION} force keyframe`);
     return {
         id: v.id as number,
         s: v.s as number,
         g: v.g as number,
         ease: v.ease as number,
-        tangent: validateForceTangent(v.tangent, `${path}.tangent`),
     };
 }
 
@@ -853,11 +805,38 @@ export function checkDocumentSemantics(doc: Kex2dDocument): Refusal[] {
     return checkGeometryInvariants(buildScratchEcs(doc));
 }
 
-/** forward-only migrations, keyed by the version they migrate FROM — `migrations[1]` (once it
- *  exists) takes a v1 raw doc and returns a v2 one. Empty today: `CURRENT_VERSION` is 1, so
- *  there is nothing to migrate from yet (segment-first authoring is the first expected bump,
- *  spec Locked decision) — the seam exists so that bump costs one function, not a rewrite. */
-const migrations: Record<number, (doc: Record<string, unknown>) => Record<string, unknown>> = {};
+/** v1 → v2 (`kex2d-segment-removal` S3): drop every force keyframe's `tangent` key
+ *  (the explicit-handle `ForceTangent`/`Offset` shape the ECS can no longer author) while
+ *  leaving every other key on a v1 file untouched — a section's geo `nodes[].tangent` is a
+ *  structurally distinct key on a distinct entity and is never read or written here. Tolerant
+ *  of a malformed shape (a non-array `sections`/`points`, a non-object entry): it passes the
+ *  offending value through unchanged rather than throwing, so `validateDocument` (run AFTER
+ *  migration, on the CURRENT_VERSION shape) is the one place that reports the malformed field —
+ *  a migration step's job is reshaping a KNOWN-good older shape, not structural validation. */
+function dropForceTangent(doc: Record<string, unknown>): Record<string, unknown> {
+    const rawSections = doc.sections;
+    if (!Array.isArray(rawSections)) return { ...doc, version: 2 };
+    const sections = rawSections.map((s) => {
+        if (!isPlainObject(s) || !Array.isArray(s.points)) return s;
+        const points = s.points.map((p) => {
+            if (!isPlainObject(p) || !("tangent" in p)) return p;
+            const rest: Record<string, unknown> = {};
+            for (const [k, val] of Object.entries(p)) {
+                if (k !== "tangent") rest[k] = val;
+            }
+            return rest;
+        });
+        return { ...s, points };
+    });
+    return { ...doc, version: 2, sections };
+}
+
+/** forward-only migrations, keyed by the version they migrate FROM — `migrations[1]` takes a v1
+ *  raw doc and returns a v2 one. The seam exists so a version bump costs one function, not a
+ *  rewrite. */
+const migrations: Record<number, (doc: Record<string, unknown>) => Record<string, unknown>> = {
+    1: dropForceTangent,
+};
 
 /** walk a raw parsed object forward from its declared `version` to `CURRENT_VERSION`, one
  *  registered migration step at a time. Refuses (never guesses) a version this build doesn't

@@ -276,10 +276,7 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   Mere selection shows nothing.
 - **Reset returns the node to creation state** — tangents re-infer *and* the position returns to
   the default-chord continuation past the predecessor (the full law: Menus). The way back up the
-  layers is one click, from anywhere. On the
-  force chart that click is picking an easing preset (Easing ▸ subsumes Reset — choosing the
-  layer is the reset; no separate Reset row, and the Tangents ▸ mode submenu appears only while
-  explicit handles exist).
+  layers is one click, from anywhere.
 - **Handle drags are free gestures** — no raster, no guides. The one landmark is the grab ray: the
   angle latches to the grab direction while the tip stays within a perpendicular screen-px corridor
   (the angular window derived from it, never authored in degrees), so pulling out lengthens without
@@ -288,10 +285,6 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   gesture too (unsnapped, no guides) — the whole summoned layer expresses. And that body drag is
   **authoring**: it concretizes the subject's tangents (lazy-stamped at drag start, seeded
   jump-free from the live arc rule, riding the move's one undo entry) and never re-heads.
-- **The force chart bends free-gesture on the value axis only.** A handle's Δg snaps the g-grid in
-  offset space (the space the readout prints — a snapped transition reads "+0.5 g"); Δs stays
-  continuous: a keyframe's s is *placement* (authoring vocabulary, snapped), a handle's Δs is
-  *curvature shaping* (inherently continuous). Ctrl frees Δg; the grab-ray latch is unchanged.
 - **A section boundary is one node, stitched at the UI.** A geo→geo boundary is two coincident
   entities (upstream tip + downstream node 0, the rigid-placement invariant). Tangent-editing the
   tip additionally summons the downstream node-0 out-handle — a single free entry handle (no mode
@@ -306,11 +299,9 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   move + append only; only a user Reset clears authored state. **A demotion preserves** (undo
   restores the authored interior state). A split's boundary tip keeps its tangent, since it
   still shapes the downstream first segment under the one-node view.
-- **The explicit/inferred fork is a glyph channel only where it names a layer.** In the viewport a
-  node's tangent being stored or still inferred is not a state the author picks (inferred is simply
-  pre-first-drag, and it already displays `Aligned` checked), so every knob draws identically. On
-  the force chart the same fork DOES name a layer — an explicit handle is what makes the segment
-  Custom instead of its named easing — so the ghost knob stays hollow there. Don't harmonize them.
+- **The explicit/inferred fork is not a glyph channel in the viewport.** A node's tangent being
+  stored or still inferred is not a state the author picks (inferred is simply pre-first-drag,
+  and it already displays `Aligned` checked), so every knob draws identically.
 
 ## Affordance typing
 
@@ -457,27 +448,24 @@ a declared list of the walking fields, and an assert that the fork not needing t
   `GROUPS` in kex2d `src/menu.ts` is the source of truth for the group set and its canonical order;
   the table above is its prose mirror.
 - **Separators derive from group boundaries.** The renderer emits a divider wherever the group
-  changes (kex2d `menuRows`); builders author none. One escape hatch survives — an explicit
-  `separator` is legal as a WITHIN-group divider, and the oracle constrains it to positions no
-  derived boundary can occupy (never first or last, never straddling a group change). Its one
-  sanctioned use is `Easing ▸`, dividing the preset picks from `Custom` (which materializes handles
-  and steps into handle edit: a different kind of row, the same group). An authored divider landing
-  at a boundary collapses with the derived one rather than doubling.
+  changes (kex2d `menuRows`); builders author none by default. One escape hatch exists for a
+  WITHIN-group divider, position-constrained by the oracle to where no derived boundary can land
+  (never first or last, never straddling a group change) — no kex2d builder currently authors
+  one, the hatch dormant rather than deleted from the design. An authored divider landing at a
+  boundary collapses with the derived one rather than doubling.
 
   Position-legal is only a floor — the oracle can say where a divider may sit, never what it
-  divides — so every authored `separator` is backed by the declared-registry law above, naming
-  what it separates. A label-less row has only its position as a handle, so the key is the
-  containing menu's `▸` path plus the row's index in the AUTHORED array (kex2d's one member:
-  `keyframeMenu ▸ Easing #3`). Reordering a submenu is then a deliberate registry edit, not silent
-  breakage.
+  divides — so an authored `separator` must be backed by the declared-registry law above, naming
+  what it separates. A label-less row has only its position as a handle, so its key is the
+  containing menu's `▸` path plus the row's index in the AUTHORED array. Reordering a submenu
+  that carries one is then a deliberate registry edit, not silent breakage.
 - **Rows are terse.** A context menu is summoned *on* its subject, so the row names the verb alone
   — `Delete`, not `Delete node` (the noun restates what the invoker already said, the naming rule's
   module-scope-is-context).
 - **`checked` means exactly one thing: this row's state is in effect now.** Never "recently used",
   never "this is the default". Backed by the declared-registry law above — a row may light up iff
-  its path is listed with the state it reports. kex2d declares 13 row paths in six families:
-  `Handles`, the node `Tangents ▸` modes, the keyframe `Tangents ▸` modes, the `Easing ▸` presets,
-  `Easing ▸ Custom`, and the ruler's Meters/Seconds.
+  its path is listed with the state it reports. kex2d declares 9 row paths in four families:
+  `Handles`, the node `Tangents ▸` modes, the `Easing ▸` presets, and the ruler's Meters/Seconds.
 - **Toggle labeling follows set-valuedness.** A toggle over a **single subject** keeps a stable
   label and carries `checked` (`Handles`). A toggle over a **set whose members can disagree** flips
   its label to name the act the press performs, and carries no check (`Lock`/`Unlock`) — a
@@ -724,16 +712,10 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   *drag*, where a grab radius is what makes a small target usable — a menu names a subject, and
   naming one the cursor isn't on is a wrong answer, not a forgiving one. The terminal keyframe
   carries no Easing submenu.
-- **The easing middle layer is a small named menu, never a scalar.** The layers trade one decision
-  degree per step for strictly more expressiveness: default (zero decisions) → named eases (one
-  categorical pick — Linear | Cubic | Quintic, the FVD++ ladder vocabulary) → handles (the full
-  manifold). A continuous knob between menu and handles inverts the trade (AE's keyframe-velocity
-  influence dialog is the cautionary case); asymmetry and overshoot live in the handle layer.
-- **Custom is derived provenance — and a choice.** The Easing menu's Custom row is checked iff
-  explicit tangents bound the addressed segment (this keyframe's out + the next one's in), never a
-  stored flag. Choosing Custom materializes the current derived tangents in place (no curve jump);
-  choosing a preset clears those two sides back to it. Presets and handles are one bezier family
-  resolved at one seam — there is no second evaluator.
+- **The easing layer is a small named menu, never a scalar.** Expressiveness trades in discrete
+  decision steps: default (zero decisions) → named eases (one categorical pick — Linear | Cubic |
+  Quintic, the FVD++ ladder vocabulary). A continuous knob in place of the menu inverts the trade
+  (AE's keyframe-velocity influence dialog is the cautionary case).
 - **Scaffolding controls float as satellite surfaces.** A control a staged design will remove
   (the whole-track geo/force toggle before per-section kinds) floats as its own small opaque
   surface OUTSIDE the content it governs; overlapping it reads as a bug, and a docked row would

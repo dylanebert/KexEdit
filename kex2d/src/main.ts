@@ -27,7 +27,6 @@ import {
     destroyForce,
     forceEase,
     forceMarkers,
-    forceTangent,
     Handle,
     handleAt,
     handleTangent,
@@ -299,9 +298,6 @@ if (import.meta.env.DEV) {
         // the easing tag per point (sorted by s) — the menu flow asserts an Easing ▸ pick
         // flips the leading keyframe's tag.
         forceEases: (): number[] => sectionForces(ecs, sec()).map((p) => forceEase(ecs, p.id)),
-        // whether a force keyframe is in handle-edit sub-mode — the flow asserts a
-        // double-click summoned the handles.
-        forceEditing: (): boolean => editor.forceEdit !== null,
         // whether an pin-mode session is open, and how many keys it holds locked — the
         // pin flow asserts the transactional exits (mode open/closed) and the lock
         // gesture's effect; the popup's badge/buttons are driven and read pointer-true by DOM.
@@ -322,45 +318,13 @@ if (import.meta.env.DEV) {
         // whether the paced landing animation is running — the pin flow asserts a landed
         // Solve raises it (the feedback) and that it settles closed.
         landing: (): boolean => editor.landing !== null,
-        // which handle is selected within handle-edit ("in"/"out"/null) — the flow asserts a
-        // click on a knob selects it (swapping the readout to the handle).
-        forceHandleSel: (): string | null => editor.forceHandle,
         // the whole selected force keyframe SET, by stable id (kex2d-multiselect stage 6) —
         // `editor.forces.ids` already stores stable ids (not eids), so no re-resolution is
-        // needed; sorted for a stable read, the set analog of `forceHandleSel`'s single subject.
+        // needed; sorted for a stable read.
         forceSelIds: (): number[] => [...editor.forces.ids].sort((a, b) => a - b),
         // the active force keyframe's stable id, or null — the set's single-subject accessor
         // (`editor.force`), added alongside `forceSelIds` since no scalar accessor read it before.
         forceSelActive: (): number | null => editor.force,
-        // the explicit handle offsets per point (sorted by s), or null when derived from the
-        // easing tag — the flow asserts a handle drag authored explicit handles and Reset
-        // clears them.
-        forceTangents: (): (null | {
-            mode: number;
-            inOn: boolean;
-            inDs: number;
-            inDg: number;
-            outOn: boolean;
-            outDs: number;
-            outDg: number;
-        })[] =>
-            sectionForces(ecs, sec()).map((p) => {
-                const t = forceTangent(ecs, p.id);
-                // each side is independently optional (the segment-scoped Custom model): an
-                // absent side reads 0 and its `*On` flag is false, so the flow can assert which
-                // side actually carries an explicit handle.
-                return t
-                    ? {
-                          mode: t.mode,
-                          inOn: t.in !== undefined,
-                          inDs: t.in?.ds ?? 0,
-                          inDg: t.in?.dg ?? 0,
-                          outOn: t.out !== undefined,
-                          outDs: t.out?.ds ?? 0,
-                          outDg: t.out?.dg ?? 0,
-                      }
-                    : null;
-            }),
         // flip geo↔force on the section (destructive convert, one undo entry).
         convert: (): void => convertSection(history, ecs, sec()),
         // author a force point at (s, g) — the "place a point on the curve" step.

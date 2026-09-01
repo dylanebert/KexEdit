@@ -203,7 +203,7 @@ export function editTangent(tan: Tangent, side: "in" | "out", offX: number, offY
 
 /** collinearity tolerance shared by every direction-agnostic caller below, under TWO readings.
  *  As an angular bound (`collinearVec`, below): relative to the vector magnitudes, f32 handle
- *  storage (`Handle.tin`/`tout`, `Force.tin`/`tout` alike; 2^-24 unit roundoff) perturbs a
+ *  storage (`Handle.tin`/`tout`; 2^-24 unit roundoff) perturbs a
  *  genuinely collinear pair's angle by ≤ ~2·2^-24 ≈ 1.2e-7. As a relative DISTANCE bound
  *  (`track.vecEqual`, `Mirror`'s equal-vector constraint): the same f32 storage perturbs a
  *  genuinely equal pair's component-wise gap by ≤ ~√2·2^-24 ≈ 8.4e-8. 1e-6 clears both readings

@@ -27,7 +27,6 @@ import {
     editor,
     endDrag as endDragGesture,
     ensureStrip,
-    enterForceEdit,
     landingG,
     lockLabel,
     modeChromeSection,
@@ -39,7 +38,6 @@ import {
     openRulerMenu,
     openStripMenu,
     selectForce,
-    selectForceHandle,
     selectForces,
     selectOneShot,
     selectSection,
@@ -56,7 +54,6 @@ import {
     addStripKeyframe,
     beginForceMove,
     beginForceMoves,
-    beginForceTangent,
     beginKeyframeMoves,
     beginLength,
     beginOneShotMove,
@@ -70,9 +67,7 @@ import {
     deleteOneShot,
     deleteStrips,
     history,
-    materializeCustom,
     setForcesEase,
-    setForceTangentMode,
 } from "./history";
 import { forceKeyAct } from "./keys";
 import { classifyKfHit, type KfHitCandidate, type KfKind } from "./kf-hit";
@@ -83,7 +78,6 @@ import { convertDomain, convertFailed, pickable } from "./domain";
 import { Domain } from "./section";
 import {
     clampView,
-    composeTangent,
     creationTargets,
     dToU,
     fmt,
@@ -145,14 +139,11 @@ import {
 } from "./settings";
 import { hits, merge, normRect, type Rect } from "./marquee";
 import { infeasibleSpans } from "./render";
-import { autoTangent, Easing, type ForcePoint, type Offset, sampleForce, segmentControls, segmentSeed } from "./profile";
-import { TangentMode } from "./spline";
+import { autoTangent, Easing, sampleForce } from "./profile";
 import {
     bakeOut,
     entryOneShot,
     forceEase,
-    type ForceTangent,
-    forceTangent,
     Handle,
     minForceExtent,
     SectionKind,
@@ -164,7 +155,6 @@ import {
     sectionSpans,
     allStrips,
     setForcePoint,
-    setForceTangent,
     setOneShotValue,
     setSectionLength,
     setStrip,
@@ -285,10 +275,6 @@ const NODE_TICK_R = 3; // px; a geo section's read-only node-tick circle radius 
 const FHIT_R = 12; // px; the invisible grab/hover radius around a force point (fat pick zone)
 const TIP_HALF = 52; // px; half the popover's width — clamps a knob/point-centred popover inside the chart
 const TIP_FLIP = 64; // px; a point nearer than this to the chart top flips the popover below
-const TIP_W = 108; // px; the popover's full width — the handle popover's horizontal dodge flips outward side when it would clip
-const TIP_GAP = 12; // px; the popover's offset from its anchor (the same gap the point popover uses vertically)
-const TIP_VHALF = 28; // px; half the popover height — the vertical clamp for a side-dodged handle popover
-const TIP_H = 2 * TIP_VHALF; // px; the popover's full height — the vertical fit test for the above/below default
 // arrow-nudge steps for the selected force point (AE): position in ARCLENGTH ALWAYS (S6 --
 // `Force.s`'s own unit, regardless of what the ruler is showing), g in g, Shift coarse. Unlike
 // the chart-axis gestures (drag/scrub/field), a nudge never touches `uOf`/`dOf`: it's a pure
@@ -324,48 +310,6 @@ let framed = false;
 let uFrozen: number | null = $state(null);
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
-
-type TipMode = "above" | "below" | "left" | "right";
-// place the handle popover: vertical-primary, matching the keyframe popover's above/below
-// reading. the box sits above or below the knob, horizontally centred on it, the vertical side
-// chosen AWAY from the diamond (an up-pointing handle → above the knob). only when the chart edge
-// forces the flip toward the diamond (the workspace) does it dodge horizontally OUTWARD instead
-// (out → right, in → left — the F3b direction): the box then clears the knob, arm, diamond, and
-// other knob, all of which sit on the diamond side. the side position is that collision fallback,
-// never the default. the returned (x, y) is the knob-anchor; the CSS transform offsets the box by
-// mode. `dy` is the diamond (keyframe) screen-centre y.
-function handleTip(
-    kx: number,
-    ky: number,
-    dy: number,
-    side: "in" | "out",
-    w: number,
-    h: number,
-): { x: number; y: number; mode: TipMode } {
-    const bot = h - BOT_PAD;
-    // the vertical side away from the diamond: knob at or above the diamond → the popover goes
-    // above the knob (a flat handle defaults above, its diamond is off to the side either way).
-    const preferAbove = dy >= ky;
-    const aboveFits = ky - TIP_GAP - TIP_H >= TOP;
-    const belowFits = ky + TIP_GAP + TIP_H <= bot;
-    if (preferAbove ? aboveFits : belowFits) {
-        return {
-            x: clamp(kx, LEFT_GUT + TIP_HALF, Math.max(LEFT_GUT + TIP_HALF, w - TIP_HALF)),
-            y: clamp(ky, TOP, bot),
-            mode: preferAbove ? "above" : "below",
-        };
-    }
-    // collision fallback: the edge would flip the box back over the workspace, so dodge the knob
-    // horizontally outward; flip inward only if the outward side would itself clip (the deep edge).
-    const rightFits = kx + TIP_GAP + TIP_W <= w;
-    const leftFits = kx - TIP_GAP - TIP_W >= LEFT_GUT;
-    const goRight = side === "out" ? rightFits || !leftFits : !leftFits && rightFits;
-    return {
-        x: clamp(kx, LEFT_GUT, Math.max(LEFT_GUT, w)),
-        y: clamp(ky, TOP + TIP_VHALF, Math.max(TOP + TIP_VHALF, bot - TIP_VHALF)),
-        mode: goRight ? "right" : "left",
-    };
-}
 
 // the baked F_n force curve as per-sample (arclength, force) points — the chart data
 // and the source of the distance domain. no time resample: the x-axis is distance.
@@ -491,20 +435,6 @@ const yTarget = $derived.by((): YFit => {
         for (let i = 0; i < c.n; i++) {
             if (c.f[i] < lo) lo = c.f[i];
             if (c.f[i] > hi) hi = c.f[i];
-        }
-    }
-    // include the edited keyframe's EXPLICIT handle endpoints in the content extent, through the
-    // one place handle endpoints are computed (`editHandles`), so a released handle drag never
-    // leaves a knob outside the visible range — the accommodate keyframes get through the curve
-    // scan, extended to the drawn control points. a derived (ghost) handle stays within the curve
-    // hull, so only a stored offset can overshoot it; only those count.
-    const eh = editHandles;
-    if (eh) {
-        for (const hnd of eh.handles) {
-            if (hnd.ghost) continue;
-            const g = eh.pt.g + hnd.dg;
-            if (g < lo) lo = g;
-            if (g > hi) hi = g;
         }
     }
     return yFit(lo, hi, Y_BASE, BAND);
@@ -1559,13 +1489,6 @@ function applyKeyframeDrag(): void {
         m.setter(ecs, m.id, s, m.floor !== null ? Math.max(m.floor, v) : v);
     }
 }
-// double-press detection for the diamond summon: a keyframe drag captures the pointer on
-// pointerdown, which retargets the compatibility `dblclick` off the diamond (onto the canvas),
-// so the summon is detected here by timing on the second press — the diamond hit beats the
-// chart's insertion double-click. mirrors geo's double-click tangent-edit summon.
-const FDBL_MS = 300;
-let lastFdownT = 0;
-let lastFdownId = -1;
 // Escape updates this component-local hit-surface guard synchronously; the selected-point
 // projection follows the editor singleton only on the next RAF.
 let stripTipDismissed = $state(false);
@@ -1622,8 +1545,6 @@ const forceValueAxis: ValueAxis = {
         edge: () => {
             if (dragKf?.kind === "force")
                 return { cy: dragKfCy, reapply: applyKeyframeDrag };
-            if (dragTan !== null && tanMoved)
-                return { cy: tanCy, reapply: () => applyTan(tanCx, tanCy) };
             return null;
         },
     },
@@ -1715,7 +1636,7 @@ function kfDesc(kind: KfKind): KfDesc {
 
 // One predicate governs every value-axis gesture; each channel then owns only its projection,
 // target, and edge-growth route. This keeps later segment gestures from becoming keyframe kinds.
-const valueGestureActive = (): boolean => dragKf !== null || draggingLen || dragTan !== null;
+const valueGestureActive = (): boolean => dragKf !== null || draggingLen;
 interface SettledValueAxis {
     axis: ValueAxis;
     initialized: boolean;
@@ -1792,18 +1713,6 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     if (e.shiftKey) {
         desc.select(pt.id, "toggle", owner);
         return;
-    }
-    if (kind === "force") {
-        const p = pt as ForcePt;
-        // double-click → summon handles (force-only; strip keyframes have no tangent handles).
-        if (lastFdownId === p.id && e.timeStamp - lastFdownT < FDBL_MS) {
-            lastFdownT = 0;
-            lastFdownId = -1;
-            if (sectionEditable(editor.pinning, p.section)) enterForceEdit(p.id);
-            return;
-        }
-        lastFdownT = e.timeStamp;
-        lastFdownId = p.id;
     }
     // clicked-selected-vs-unselected rule — ONE path, both kinds.
     if (desc.sel.ids.has(pt.id)) desc.activate(pt.id);
@@ -2123,208 +2032,6 @@ function marqueeEsc(e: KeyboardEvent): void {
     marqueeCancel();
 }
 
-// ── force keyframe handle edit: the summoned inner layer (the force analogue of geo's
-// tangent edit). double-clicking a diamond enters handle-edit sub-mode (editor.forceEdit),
-// rendering the keyframe's in/out handles; a derived keyframe shows the FLAT ghost tangents
-// (Linear 0 · Cubic 1/3 · Quintic 7/15 of the segment span), an explicit one its stored
-// offsets. a handle drag is a free gesture constrained only by the x-monotonicity clamp
-// (Blender's rule: handle Δs stays within the segment span so g(s) is a function); dragging
-// the first side of a derived keyframe seeds both from the flat tangents (no jump), Aligned
-// keeping the other side collinear on the chart. easing lives on the LEADING keyframe.
-interface FHandle {
-    side: "in" | "out";
-    x: number; // knob screen point (canvas-local px)
-    y: number;
-    ds: number; // the handle's (Δs, Δg) offset from the keyframe — the selected-handle readout
-    dg: number;
-    ghost: boolean; // a derived (flat) tangent shown as a hollow affordance, vs an explicit solid one
-}
-// the keyframe currently in handle edit + its rendered handles (in needs a previous
-// keyframe, out a following one — a chain-end keyframe shows one, mirroring geo).
-const editHandles = $derived.by((): { pt: ForcePt; handles: FHandle[] } | null => {
-    void tick;
-    const id = editor.forceEdit;
-    if (id === null) return null;
-    const pt = forcePts.find((p) => p.id === id);
-    if (!pt) return null;
-    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
-    const idx = pts.findIndex((p) => p.id === id);
-    const prev = idx > 0 ? pts[idx - 1] : null;
-    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    const tan = forceTangent(ecs, id);
-    const handles: FHandle[] = [];
-    if (prev) {
-        // each side is independently explicit-or-derived: a stored offset shows solid, an
-        // absent one shows the derived flat ghost (the segment-scoped Custom model).
-        const off = tan?.in ?? derivedIn(pt, prev);
-        handles.push({ side: "in", x: uPx(pt.u + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.in === undefined });
-    }
-    if (next) {
-        const off = tan?.out ?? derivedOut(pt, next);
-        handles.push({ side: "out", x: uPx(pt.u + off.ds), y: yOf(pt.g + off.dg), ds: off.ds, dg: off.dg, ghost: tan?.out === undefined });
-    }
-    return { pt, handles };
-});
-// the selected handle (within handle-edit): its live (Δs, Δg) offset + screen anchor — the
-// contextual readout swaps to it (from the keyframe) while it's picked. derives null when no
-// handle is selected or the edited keyframe is gone (the popover dismisses by subject).
-const selHandle = $derived.by((): { pt: ForcePt; side: "in" | "out"; ds: number; dg: number; x: number; y: number } | null => {
-    void tick;
-    const side = editor.forceHandle;
-    const eh = editHandles;
-    if (side === null || !eh) return null;
-    const hnd = eh.handles.find((hh) => hh.side === side);
-    if (!hnd) return null;
-    return { pt: eh.pt, side, ds: hnd.ds, dg: hnd.dg, x: hnd.x, y: hnd.y };
-});
-// the derived ghost tangent offsets shown for an un-customized handle side — the SAME shape a
-// Custom-materialize would seed (`segmentSeed`), so grabbing a ghost never jumps. a preset-eased
-// segment's ghost is the flat tangent (dg = 0) at the tag's influence; a **Linear** segment's
-// ghost is chord-aligned at influence 1/3 (its flat tangent is zero-length — a dot on the diamond —
-// so it draws along the chord instead, grabbable). the OUT handle reaches forward over the
-// FOLLOWING segment (governed by this keyframe's ease); the IN handle backward over the PRECEDING
-// segment (governed by the previous keyframe's ease).
-function derivedOut(pt: ForcePt, next: ForcePt): Offset {
-    return segmentSeed(toProfilePoint(pt), toProfilePoint(next), "out");
-}
-function derivedIn(pt: ForcePt, prev: ForcePt): Offset {
-    return segmentSeed(toProfilePoint(prev), toProfilePoint(pt), "in");
-}
-
-let dragTan: { id: number; side: "in" | "out" } | null = $state(null);
-let tanGrabDx = 0; // knob screen x − cursor x at grab (relative tracking, no jump)
-let tanGrabDy = 0;
-const THDRAG_PX = 4; // click-vs-drag dead zone on a handle knob (the Figma/Blender threshold)
-let tanDownX = 0; // grab client coords — the dead-zone origin for the click-vs-drag test
-let tanDownY = 0;
-let tanCx = 0; // last applyTan args (canvas-local, grab offset folded in) — the per-frame
-let tanCy = 0; // edge-grow re-maps the held handle through the grown axis (the keyframe-drag mirror)
-let tanMoved = false; // the gesture crossed the dead zone → a drag, not a select-click
-let tanMod = false; // Ctrl/Cmd held (live) — frees the offset-space grid snap (the keyframe-drag bypass)
-// the unit keyframe→knob screen ray captured at grab — the gesture-start axis magnet
-// (the geo tangent-handle mechanism, `latchAngle`): while the dragged tip stays within
-// LATCH_PX perpendicular of it the drag latches to the start direction, so a flat ghost
-// stays flat and a single-axis pull keeps the other axis pinned. zero when the grab was
-// keyframe-coincident (a zero-length Linear ghost) — no magnet then, matching geo.
-let tanRayX = 0;
-let tanRayY = 0;
-function tanDown(e: PointerEvent, hnd: FHandle, pt: ForcePt): void {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation(); // beat the diamond's own drag under the knob
-    const rect = canvas.getBoundingClientRect();
-    tanGrabDx = hnd.x - (e.clientX - rect.left);
-    tanGrabDy = hnd.y - (e.clientY - rect.top);
-    const rx = hnd.x - uPx(pt.u);
-    const ry = hnd.y - yOf(pt.g);
-    const rl = Math.hypot(rx, ry);
-    tanRayX = rl > 1e-6 ? rx / rl : 0;
-    tanRayY = rl > 1e-6 ? ry / rl : 0;
-    // any interaction addresses the handle (the Blender rule — the last-touched control is the
-    // active one): selecting on pointerdown swaps the readout to this handle for both a click and
-    // a drag. the dead zone keeps its one job below — gating the WRITE, not the selection — so a
-    // jittery click still selects but never materializes a tangent.
-    selectForceHandle(hnd.side);
-    tanDownX = e.clientX;
-    tanDownY = e.clientY;
-    tanMoved = false;
-    tanMod = e.ctrlKey || e.metaKey;
-    beginForceTangent(ecs, pt.id);
-    dragTan = { id: pt.id, side: hnd.side };
-    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note; a handle
-    // reshapes the curve between keys, which feeds back into v(s) same as a keyframe drag does.
-    gestureMapping = mapping;
-    beginDrag(canvas, e.pointerId);
-    window.addEventListener("pointermove", tanMove);
-    window.addEventListener("pointerup", tanUp);
-    window.addEventListener("pointercancel", tanUp); // finalize the history gesture on cancel too
-}
-function tanMove(e: PointerEvent): void {
-    if (dragTan === null) return;
-    tanMod = e.ctrlKey || e.metaKey; // live: the grid bypass can be toggled mid-drag
-    if (!tanMoved && Math.hypot(e.clientX - tanDownX, e.clientY - tanDownY) > THDRAG_PX)
-        tanMoved = true;
-    // the dead zone gates the WRITE, not just the release verdict: a sub-threshold jitter
-    // during a click must not write a tangent (materializing a ghost to explicit + recording
-    // a stray history entry). no `applyTan` until the gesture is a real drag; below it, tanUp
-    // resolves the release as a select-click.
-    if (!tanMoved) return;
-    const rect = canvas.getBoundingClientRect();
-    tanCx = e.clientX - rect.left + tanGrabDx;
-    tanCy = e.clientY - rect.top + tanGrabDy;
-    applyTan(tanCx, tanCy);
-}
-function applyTan(cx: number, cy: number): void {
-    if (dragTan === null) return;
-    const { id, side } = dragTan;
-    const pt = forcePts.find((p) => p.id === id);
-    if (!pt) return;
-    // gesture-start axis magnet: latch the candidate knob onto the grab ray while it
-    // stays within the corridor (the geo tangent-handle `latchAngle`), so a mostly-
-    // single-axis drag keeps the other axis at its start — a flat ghost drags flat.
-    const kx = uPx(pt.u);
-    const ky = yOf(pt.g);
-    const latch = latchAngle(cx - kx, cy - ky, tanRayX, tanRayY);
-    cx = kx + latch.x;
-    cy = ky + latch.y;
-    // the dragged side's raw (Δs, Δg) from the latched cursor, both in OFFSET space (the
-    // store's own arclength unit and g from the keyframe — the space the readout prints). `cx`
-    // is the chart's own axis (seconds-scaled in Time view); `dOf` (the gesture-frozen table)
-    // projects it to arclength before subtracting the keyframe's own global arclength position
-    // (`pt.startD + pt.s`) -- never `pt.u`, which is that SAME position on the chart's axis
-    // (S6 fix: this used to difference two axis-space values and store the result as arclength).
-    let ds = dOf(uAtPx(clamp(cx, LEFT_GUT, Math.max(LEFT_GUT, w)))) - (pt.startD + pt.s);
-    let dg = yToG(clamp(cy, TOP, h - BOT_PAD)) - pt.g;
-    // Δg grid-quantizes to the force vocabulary (G_GRID), so a snapped handle reads as
-    // vocabulary ("+0.5 g"); Ctrl/Cmd frees it to continuous. Δs stays CONTINUOUS (F3d): a
-    // keyframe's s is a placement on the axis (vocabulary), but a handle's Δs is curvature
-    // shaping — inherently continuous — so it is never quantized. the gesture-start axis magnet
-    // already fired above (latchAngle) on both axes; this is the grid path of the shared
-    // `snapAxis` resolver (empty targets, no value landmark) — magnet, THEN the Δg grid, then
-    // composeTangent's x-clamp last, since the clamp is the hard invariant that must win.
-    const active = snapActive(tanMod);
-    dg = snapAxis(active, 0, dg, [], G_GRID, (x) => x, null).value;
-    const tan = tangentFor(id, side, ds, dg);
-    if (tan) setForceTangent(ecs, id, tan);
-}
-// resolve a keyframe's full explicit tangent by feeding the pure `composeTangent` (timeline.ts)
-// this keyframe's neighbours and the live axis scales — the write both the handle drag and the
-// typed handle field go through. null when the point is gone (the gesture opens nothing).
-function tangentFor(id: number, side: "in" | "out", ds: number, dg: number): ForceTangent | null {
-    const pt = forcePts.find((p) => p.id === id);
-    if (!pt) return null;
-    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
-    const idx = pts.findIndex((p) => p.id === id);
-    const prevS = idx > 0 ? pts[idx - 1].s : null;
-    const nextS = idx < pts.length - 1 ? pts[idx + 1].s : null;
-    // a handle's Δs is stored in arclength always (S6, `Force.tin`/`tout`'s own unit — never a
-    // second unit the domain conversion used to scale it into), so the Aligned/Mirror coupling's
-    // screen-collinearity test still needs the axis scale (`pxPerU`) to read it on screen; the
-    // Δs VALUE itself is arclength either way.
-    return composeTangent(side, ds, dg, prevS, pt.s, nextS, forceTangent(ecs, id), clamped.pxPerU, pyPerG);
-}
-function tanUp(): void {
-    if (dragTan === null) return;
-    dragTan = null;
-    gestureMapping = null; // release the gesture-frozen table
-    // selection already happened on pointerdown (the Blender rule — any interaction addresses the
-    // handle); nothing to decide on release. the popover re-anchors clear of the workspace, so a
-    // drag leaving the handle selected no longer overlaps the diamond it addresses.
-    commit(history); // one handle drag → one entry; a no-move grab records nothing
-    window.removeEventListener("pointermove", tanMove);
-    window.removeEventListener("pointerup", tanUp);
-    window.removeEventListener("pointercancel", tanUp);
-}
-function cancelTanDrag(): void {
-    if (dragTan === null) return;
-    dragTan = null;
-    gestureMapping = null; // release the gesture-frozen table
-    cancel(); // interrupted (unmount mid-drag): revert to the pre-gesture handles
-    window.removeEventListener("pointermove", tanMove);
-    window.removeEventListener("pointerup", tanUp);
-    window.removeEventListener("pointercancel", tanUp);
-}
-
 // right-click a diamond → the force keyframe menu at the cursor.
 function forceCtx(e: MouseEvent, p: ForcePt): void {
     e.preventDefault();
@@ -2360,37 +2067,6 @@ const fmenuEase = $derived.by((): Easing => {
     void tick;
     const m = editor.forceMenu;
     return m === null ? Easing.Cubic : forceEase(ecs, m.id);
-});
-// whether the following segment is Custom — bounded by an explicit handle on either
-// SIDE of the segment (this keyframe's out or the next keyframe's in), never the far
-// sides (this keyframe's in / the next's out, which belong to the neighbouring segments).
-// DERIVED provenance, per-side, never a stored flag — agrees exactly with what a preset
-// pick on this keyframe clears (setForcesEase's segment-scoped clear).
-const fmenuCustom = $derived.by((): boolean => {
-    void tick;
-    const m = editor.forceMenu;
-    if (m === null) return false;
-    const pt = forcePts.find((p) => p.id === m.id);
-    if (!pt) return false;
-    if (forceTangent(ecs, m.id)?.out !== undefined) return true;
-    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
-    const idx = pts.findIndex((p) => p.id === m.id);
-    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    return next !== null && forceTangent(ecs, next.id)?.in !== undefined;
-});
-// whether the target keyframe holds explicit handles (any presence bit set) — a derived-only
-// keyframe has no tangent mode to edit, so it shows no Tangents ▸ submenu.
-const fmenuHasHandles = $derived.by((): boolean => {
-    void tick;
-    const m = editor.forceMenu;
-    return m !== null && forceTangent(ecs, m.id) !== undefined;
-});
-// the target keyframe's tangent mode — a stored tangent's own mode (Aligned when derived, though
-// the submenu that reads this only shows when a tangent is stored).
-const fmenuMode = $derived.by((): TangentMode => {
-    void tick;
-    const m = editor.forceMenu;
-    return (m !== null && forceTangent(ecs, m.id)?.mode) || TangentMode.Aligned;
 });
 // whether the target keyframe is the last in its section — it governs no following
 // segment, so its menu carries no Easing ▸ entry (nothing to ease). its in-handle is still
@@ -2431,71 +2107,41 @@ const fmenuItems = $derived.by((): MenuItem[] => {
     // single-subject rows the active member — grayed, never hidden (the enablement law).
     const setOk = forceSetEditable(ecs);
     const pt = forcePts.find((p) => p.id === id);
-    const activeOk = pt !== undefined && sectionEditable(editor.pinning, pt.section);
     // the Lock/Unlock row's member set — resolved by `acts.lockCandidates`, the same read the
     // toggle itself acts on: the label and the act are one row wearing two names (`editor-ui.md`'s
     // toggle-labeling law), so they must not derive the set twice.
     const lockIds = lockCandidates(ecs);
     const lock = pt === undefined ? null : lockLabel(editor.pinning, pt.section, lockIds, editor.locked);
-    // the Easing ▸ and Tangents ▸ fields are GETTERS: each is guarded by a builder branch, and
-    // `easeTargets`/`custom` walk the whole force store while `customGlyph` re-solves the addressed
-    // segment's bezier. a terminal single keyframe shows Delete alone, so it must pay for none of
-    // them. a getter runs synchronously inside this `$derived.by` when the builder reads it, so the
-    // reactive dependency still registers.
+    // the Easing ▸ field is a GETTER: guarded by a builder branch, and `easeTargets` walks the
+    // whole force store. a terminal single keyframe shows Delete alone, so it must pay for none
+    // of that. a getter runs synchronously inside this `$derived.by` when the builder reads it,
+    // so the reactive dependency still registers.
     return keyframeMenu(
         {
             setOk,
-            activeOk,
             lock,
             multi: multiForce,
             terminal: fmenuTerminal,
             get easeTargets() {
                 return bulkEaseIds.length;
             },
-            get custom() {
-                return fmenuCustom;
-            },
             get ease() {
                 return fmenuEase;
             },
-            hasHandles: fmenuHasHandles,
-            get mode() {
-                return fmenuMode;
-            },
             presetGlyph,
-            get customGlyph() {
-                return customGlyph(id);
-            },
         },
         {
             // the chrome keys first, the factory spread LAST (`editor-ui.md` Menus): a re-forked
             // `remove` here would otherwise shadow the hoisted body for the menu while `Del` kept
             // the factory's — the exact drift this seam deletes.
             setEase: (e) => setForcesEase(history, ecs, bulkEaseIds, e),
-            chooseCustom: () => chooseCustom(id),
-            pickMode: (mode) => pickForceMode(id, mode),
             ...keyframeActs(ecs),
         },
     );
 });
-// set the addressed keyframe's tangent mode as one undo entry (the geo `pickMode` analogue),
-// reconciling the handle pair in chart pixels so it stays jump-consistent with the drag coupling.
-function pickForceMode(id: number, mode: TangentMode): void {
-    setForceTangentMode(history, ecs, id, mode, clamped.pxPerU, pyPerG);
-}
-// choose Custom on the addressed segment (this keyframe → the next): step into handle edit on
-// this keyframe and materialize the segment's two bounding sides — this keyframe's out and the
-// next keyframe's in — from their current derived shape (no curve jump; a Linear segment seeds
-// chord-aligned so the handles are grabbable), as one undoable entry (`materializeCustom`). an
-// already-explicit side is left as-is.
-function chooseCustom(id: number): void {
-    enterForceEdit(id);
-    materializeCustom(history, ecs, id);
-}
 // ── easing-row curve glyphs (the Blender F-curve convention): each row draws its real curve
-// in a 0 0 22 14 viewBox, so the icon is the family it names and can't drift. a preset draws a
-// normalized flat-tangent S at the tag's influence (Linear degenerates to the chord); Custom
-// draws the addressed keyframe's actual following segment, fit to its own bounding box.
+// in a 0 0 22 14 viewBox, so the icon is the family it names and can't drift — a preset draws a
+// normalized flat-tangent S at the tag's influence (Linear degenerates to the chord).
 const GLYPH_PAD = 3;
 const GLYPH_W = 22;
 const GLYPH_H = 14;
@@ -2504,35 +2150,6 @@ const glyphY = (u: number): number => GLYPH_H - GLYPH_PAD - u * (GLYPH_H - 2 * G
 function presetGlyph(ease: Easing): string {
     const i = autoTangent(ease, 1, "out").ds; // the influence fraction (0 | 1/3 | 7/15)
     return `M${glyphX(0)} ${glyphY(0)} C${glyphX(i)} ${glyphY(0)} ${glyphX(1 - i)} ${glyphY(1)} ${glyphX(1)} ${glyphY(1)}`;
-}
-// build the profile ForcePoint (ease + explicit handles) for a UI force point.
-function toProfilePoint(p: ForcePt): ForcePoint {
-    const t = forceTangent(ecs, p.id);
-    return { s: p.s, g: p.g, ease: forceEase(ecs, p.id), in: t?.in, out: t?.out };
-}
-function customGlyph(id: number): string {
-    const pt = forcePts.find((p) => p.id === id);
-    if (!pt) return presetGlyph(forceEase(ecs, id));
-    const pts = forcePts.filter((p) => p.section === pt.section).sort((a, b) => a.s - b.s);
-    const idx = pts.findIndex((p) => p.id === id);
-    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    if (!next) return presetGlyph(forceEase(ecs, id)); // no following segment — fall back
-    const cps = segmentControls(toProfilePoint(pt), toProfilePoint(next));
-    let minS = Infinity;
-    let maxS = -Infinity;
-    let minG = Infinity;
-    let maxG = -Infinity;
-    for (const c of cps) {
-        minS = Math.min(minS, c.s);
-        maxS = Math.max(maxS, c.s);
-        minG = Math.min(minG, c.g);
-        maxG = Math.max(maxG, c.g);
-    }
-    const spanS = maxS - minS;
-    const spanG = maxG - minG;
-    const nx = (s: number): number => glyphX(spanS > 1e-9 ? (s - minS) / spanS : 0.5);
-    const ny = (g: number): number => (spanG > 1e-9 ? glyphY((g - minG) / spanG) : GLYPH_H / 2);
-    return `M${nx(cps[0].s)} ${ny(cps[0].g)} C${nx(cps[1].s)} ${ny(cps[1].g)} ${nx(cps[2].s)} ${ny(cps[2].g)} ${nx(cps[3].s)} ${ny(cps[3].g)}`;
 }
 // dismiss the force menu on any outside press or Escape (clicks on the menu pass through so
 // its items act first). Escape peels just this layer (capture + stop, so the window handler
@@ -3389,29 +3006,6 @@ function oneShotFieldEdit(v: number): void {
 function onFieldOneShotV(e: Event): void {
     oneShotFieldEdit(Number.parseFloat((e.currentTarget as HTMLInputElement).value));
 }
-// ── the selected handle's typed (Δs, Δg) fields ── mirrors the keyframe fields, but the
-// commit goes through the shared tangent write path (composeTangent — x-clamp + Aligned
-// coupling), history-bracketed as one entry. a typed value on a still-derived handle
-// materializes the explicit tangent (the un-edited side seeds from the derived shape).
-function handleFieldEdit(ds: number, dg: number): void {
-    const h = selHandle;
-    if (h === null || !Number.isFinite(ds) || !Number.isFinite(dg)) return; // guard a cleared field
-    if (!sectionEditable(editor.pinning, h.pt.section)) return; // the lockdown
-    const tan = tangentFor(h.pt.id, h.side, ds, dg);
-    if (!tan) return;
-    skipLanding(); // keyboard-committed keyframe mutation: same routing as kfFieldEdit above
-    beginForceTangent(ecs, h.pt.id);
-    setForceTangent(ecs, h.pt.id, tan);
-    commit(history);
-}
-function onHandleS(e: Event): void {
-    if (!selHandle) return;
-    handleFieldEdit(Number.parseFloat((e.currentTarget as HTMLInputElement).value), selHandle.dg);
-}
-function onHandleG(e: Event): void {
-    if (!selHandle) return;
-    handleFieldEdit(selHandle.ds, Number.parseFloat((e.currentTarget as HTMLInputElement).value));
-}
 // label scrub (the shallot inspector idiom): pointer-capture the key label and slide
 // horizontally to revise its value — one history gesture per scrub, rounded to the
 // field's displayed precision so the number never shows scrub jitter.
@@ -3424,16 +3018,15 @@ const SCRUB_G = 0.01; // g per px
 // a surface never moves under its own gesture (the point moves, the control stays
 // put; it re-anchors to the point on release). also holds the popover visible if
 // the scrub carries the diamond out of view.
-let scrubFreeze: { x: number; y: number; mode?: TipMode } | null = $state(null);
+let scrubFreeze: { x: number; y: number } | null = $state(null);
 interface ScrubOpts {
     seed: number; // the starting accumulator, read from the live value (not the tick display)
     rate: number; // value units per px of horizontal movement
     lo: number; // clamp bounds, applied to the accumulator every move — [-Infinity, Infinity]
     hi: number; // for an unbounded axis (g, Δg)
     round: number; // the displayed-precision multiplier (10 = one decimal, 100 = two)
-    write: (v: number) => void; // the rounded value's write — may itself be a no-op (handleScrub's
-    // tangentFor can return null on a degenerate composeTangent input)
-    freeze?: { x: number; y: number; mode?: TipMode }; // the popover's frozen anchor, when this
+    write: (v: number) => void; // the rounded value's write
+    freeze?: { x: number; y: number }; // the popover's frozen anchor, when this
     // scrub drives one (absent for a preference scrub, which anchors nothing)
     begin?: () => void; // the history-gesture opener; its presence is also the commit-on-release
     // switch (a preference scrub passes neither — it's not track state)
@@ -3443,10 +3036,10 @@ interface ScrubOpts {
 // neither event, so without this hook the closure survives: a second scrub on the same label
 // then attaches a SECOND listener set (double-accumulating movementX), and the stale up() still
 // fires on the next pointerup, committing a spurious extra history entry. Mirrors
-// `cancelForceDrag`/`cancelTanDrag`/`cancelLenDrag`'s own cancel-path shape.
+// `cancelForceDrag`/`cancelLenDrag`'s own cancel-path shape.
 let scrubCancel: (() => void) | null = null;
 // the one label-scrub body: guard, `beginDrag`, the movementX accumulator, and move/up/
-// pointercancel wiring — the three call sites below (`scrubStart`/`handleScrub`/`snapScrub`)
+// pointercancel wiring — the call sites below (`scrubStart`/`snapScrub`)
 // differ only in seed/rate/clamp/round/write plus the two optional hooks.
 function labelScrub(e: PointerEvent, opts: ScrubOpts): void {
     if (e.button !== 0) return; // right-press opens the context menu; a scrub must not open too
@@ -3595,60 +3188,6 @@ function scrubStart(e: PointerEvent, axis: "s" | "g"): void {
             write: subj.val.write,
             freeze: subj.freeze,
             begin: subj.begin,
-        });
-    }
-}
-// handle field scrub — the same shallot-inspector affordance as the keyframe d/F fields, on the
-// tangent (Δs, Δg) inputs. slides the offset; the write goes through the shared tangent path
-// (composeTangent — x-monotonicity clamp + Aligned coupling), one history entry. Δs clamps to its
-// monotonicity span (the keyframe-s scrub clamps to [0, len] the same way); Δg is unbounded.
-function handleScrub(e: PointerEvent, axis: "s" | "g"): void {
-    const sh = selHandle;
-    if (sh === null) return;
-    // the popover anchor FREEZES at gesture start — the knob rides a Δs/Δg scrub, but the
-    // control stays put (a surface never moves under its own gesture). the mode freezes too, so a
-    // scrub that carries the knob toward an edge never re-dodges mid-gesture.
-    const tip = handleTip(sh.x, sh.y, yOf(sh.pt.g), sh.side, w, h);
-    const freeze = { x: tip.x, y: tip.y, mode: tip.mode };
-    const id = sh.pt.id;
-    const side = sh.side;
-    // the x-monotonicity span for Δs, fixed for the gesture (neighbour s don't move) — mirrors
-    // composeTangent's clamp so the accumulator can't run past it.
-    const pts = forcePts.filter((p) => p.section === sh.pt.section).sort((a, b) => a.s - b.s);
-    const idx = pts.findIndex((p) => p.id === id);
-    const prev = idx > 0 ? pts[idx - 1] : null;
-    const next = idx < pts.length - 1 ? pts[idx + 1] : null;
-    const dsLo = side === "out" ? 0 : prev ? -(sh.pt.s - prev.s) : 0;
-    const dsHi = side === "out" ? (next ? next.s - sh.pt.s : 0) : 0;
-    if (axis === "s") {
-        const dg = sh.dg; // fixed for this gesture — only ds moves
-        labelScrub(e, {
-            seed: sh.ds,
-            rate: SCRUB_S,
-            lo: dsLo,
-            hi: dsHi,
-            round: 10,
-            write: (v) => {
-                const tan = tangentFor(id, side, v, dg);
-                if (tan) setForceTangent(ecs, id, tan);
-            },
-            freeze,
-            begin: () => beginForceTangent(ecs, id),
-        });
-    } else {
-        const ds = sh.ds; // fixed for this gesture — only dg moves
-        labelScrub(e, {
-            seed: sh.dg,
-            rate: SCRUB_G,
-            lo: -Infinity,
-            hi: Infinity,
-            round: 100,
-            write: (v) => {
-                const tan = tangentFor(id, side, ds, v);
-                if (tan) setForceTangent(ecs, id, tan);
-            },
-            freeze,
-            begin: () => beginForceTangent(ecs, id),
         });
     }
 }
@@ -4245,7 +3784,6 @@ function cancelAll(): void {
     navUp(); // and any in-flight navigator drag
     cancelForceDrag(); // and any in-flight keyframe drag (unified — force or strip)
     marqueeCancel(); // and any in-flight chart marquee (its listeners live on window)
-    cancelTanDrag(); // and any in-flight handle drag
     cancelLenDrag(); // and any in-flight extent drag
     cancelLabelScrub(); // and any in-flight label scrub (its listeners live on the label, not window)
     cancelStripDrag(); // and any in-flight strip resize/body drag
@@ -5103,33 +4641,6 @@ onMount(() => {
                     {/if}
                 {/each}
             </g>
-            <!-- the summoned tangent handles of the force keyframe in handle-edit mode: a
-                 thin arm from the diamond to each knob (solid = explicit stored offset,
-                 hollow = the derived flat ghost). the wide invisible .thit carries the grab;
-                 a drag authors the explicit tangent (the force analogue of geo tangent edit). -->
-            {#if editHandles}
-                {@const eh = editHandles}
-                {@const px = ptX(eh.pt)}
-                {@const py = yOf(eh.pt.g)}
-                <g class="thandles" clip-path="url(#fclip)">
-                    {#each eh.handles as hnd (hnd.side)}
-                        <line class="tarm" x1={px} y1={py} x2={hnd.x} y2={hnd.y} />
-                    {/each}
-                    {#each eh.handles as hnd (hnd.side)}
-                        <circle
-                            class="thit"
-                            cx={hnd.x}
-                            cy={hnd.y}
-                            r={THIT_R}
-                            onpointerdown={(e) => tanDown(e, hnd, eh.pt)}
-                            role="button"
-                            tabindex="-1"
-                            aria-label="{hnd.side} handle"
-                        />
-                        <circle class="tknob" class:ghost={hnd.ghost} cx={hnd.x} cy={hnd.y} r={THANDLE_R} />
-                    {/each}
-                </g>
-            {/if}
             <!-- pin-mode focus (kex2d-optimize-mode stage 4, the standard focus/mode
                  convention): everything outside the pinned section's span dims — lane, curve,
                  and markers alike (the dim is topmost) — while the span itself stays
@@ -5153,73 +4664,13 @@ onMount(() => {
                 </g>
             {/if}
         </svg>
-        <!-- the selected handle's typed (Δs, Δg) fields: the SAME popover surface, summoned at
-             the handle knob when a handle is picked (the readout swaps from the keyframe to the
-             handle). inert while the handle drags (it's the live readout then). commits go
-             through the tangent write path (x-clamp + Aligned coupling). -->
-        {#if selHandle}
-            <!-- anchored at the SELECTED KNOB, above/below primary — the keyframe popover's
-                 reading (`handleTip`): centred on the knob, on the vertical side away from the
-                 diamond (an up-pointing handle → above the knob). only an edge that would flip it
-                 back over the workspace dodges it horizontally outward instead — the collision
-                 fallback, never the default. attention lives where the drag just ended (F3's
-                 diamond anchor pulled the eye off the drag; F3b's horizontal side read as a
-                 different surface kind than the keyframe popover). frozen during a field scrub. -->
-            {@const tip = scrubFreeze?.mode
-                ? { x: scrubFreeze.x, y: scrubFreeze.y, mode: scrubFreeze.mode }
-                : handleTip(selHandle.x, selHandle.y, yOf(selHandle.pt.g), selHandle.side, w, h)}
-            {@const sText = fmt(selHandle.ds, 2)}
-            {@const hgText = fmt(selHandle.dg, 2)}
-            <div
-                class="ptip"
-                class:below={tip.mode === "below"}
-                class:side-right={tip.mode === "right"}
-                class:side-left={tip.mode === "left"}
-                class:dragging={dragTan !== null}
-                style="left: {tip.x}px; top: {tip.y}px"
-            >
-                <div class="fld">
-                    <span
-                        class="key"
-                        onpointerdown={(e) => handleScrub(e, "s")}
-                        role="presentation">Δs</span
-                    >
-                    <input
-                        type="number"
-                        step="0.1"
-                        value={sText}
-                        onchange={onHandleS}
-                        onfocus={(e) => e.currentTarget.select()}
-                        onkeydown={(e) => fieldKeydown(e, sText)}
-                        aria-label="Handle s offset (m)"
-                    />
-                    <span class="unit">m</span>
-                </div>
-                <div class="fld">
-                    <span
-                        class="key"
-                        onpointerdown={(e) => handleScrub(e, "g")}
-                        role="presentation">Δg</span
-                    >
-                    <input
-                        type="number"
-                        step="0.1"
-                        value={hgText}
-                        onchange={onHandleG}
-                        onfocus={(e) => e.currentTarget.select()}
-                        onkeydown={(e) => fieldKeydown(e, hgText)}
-                        aria-label="Handle g offset (g)"
-                    />
-                    <span class="unit">g</span>
-                </div>
-            </div>
         <!-- the selected point's typed s/g fields: a popover summoned AT the diamond
              (on the object, not a docked row). it follows a live drag as the value
              readout, pointer-inert so it never fights the drag; flips below the point
              near the chart top; clamps inside the chart horizontally. On a MULTI set it
              shows NO single-keyframe context, same as the viewport ring (editor-ui.md
              multi law) — standard multi-select carries no single-subject popover. -->
-        {:else if selPoint && !multi()}
+        {#if selPoint && !multi()}
             {@const mx = ptX(selPoint)}
             {#if scrubFreeze !== null || (mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R)}
                 {@const ax =
@@ -5677,15 +5128,6 @@ onMount(() => {
     .ptip.below {
         transform: translate(-50%, 12px);
     }
-    /* the handle popover's horizontal DODGE (the collision fallback only): out → right, in →
-       left, vertically centred, when an edge would flip the default above/below back over the
-       workspace. the default above/below reuse the point popover's `.ptip` / `.ptip.below`. */
-    .ptip.side-right {
-        transform: translate(12px, -50%);
-    }
-    .ptip.side-left {
-        transform: translate(calc(-100% - 12px), -50%);
-    }
     .ptip.dragging {
         pointer-events: none;
     }
@@ -5762,9 +5204,9 @@ onMount(() => {
        stylesheet had no rule reaching this state at all before this stage): the standard grayed
        treatment `.menu-item`/`.clip-add` already wear elsewhere (dim opacity, default cursor).
        The `:has()` selector below reaches the row's own scrub-handle label and unit too — the
-       label doubles as the scrub handle, and a scrub on a locked field must read as inert exactly
-       like the handles on `handleScrub`'s Δs/Δg row already do (never a second lockdown flag
-       threaded from script; the input's own native attribute is the one signal). */
+       label doubles as the scrub handle, and a scrub on a locked field must read as inert
+       (never a second lockdown flag threaded from script; the input's own native attribute is
+       the one signal). */
     .fld input:disabled {
         opacity: 0.4;
         cursor: default;
@@ -5804,7 +5246,6 @@ onMount(() => {
     :global([data-dragging]) .clip-add,
     :global([data-dragging]) .clip-flyout,
     :global([data-dragging]) .fhit,
-    :global([data-dragging]) .thit,
     :global([data-dragging]) .fmenu,
     :global([data-dragging]) .rmenu,
     :global([data-dragging]) .smenu,
@@ -6034,41 +5475,6 @@ onMount(() => {
         stroke: var(--accent);
         stroke-width: 2.5;
         opacity: 0.55;
-    }
-
-    /* the summoned tangent handles on the edited force keyframe (the force analogue of the
-       geo tangent-edit handles): a thin accent arm to each knob, a filled knob when the
-       handle is explicit / hollow when it's the derived (ghost) flat tangent. the wide
-       invisible .thit carries the grab. no cursor change: a handle states hover through color
-       (`editor-ui.md`'s hover rung), the same as every other point glyph. */
-    .tarm {
-        stroke: var(--accent);
-        stroke-width: 1;
-        opacity: 0.65;
-        pointer-events: none;
-    }
-    .thit {
-        fill: transparent;
-        pointer-events: all;
-        outline: none; /* pointer-only (tabindex -1); no browser focus ring on click */
-    }
-    .tknob {
-        fill: var(--accent);
-        stroke: #0e0d0c;
-        stroke-width: 1;
-        pointer-events: none; /* the fat hit circle owns the interaction */
-        transition: stroke 100ms var(--ease-out);
-    }
-    /* the knob is pickable through its fat .thit sibling, so it wears the same outline lift
-       every pickable glyph does (kex2d-idioms 10b). knobs carry no fill lift — the outline
-       lift alone is their hover read (the ghost knob's accent stroke lifts the same way). */
-    .thit:hover + .tknob {
-        stroke: var(--fg);
-    }
-    .tknob.ghost {
-        fill: transparent;
-        stroke: var(--accent);
-        stroke-width: 1.4;
     }
 
     /* the section clip strip: one clip per section in the marker lane, kind-colored

@@ -45,7 +45,6 @@ import {
     authoredHash,
     bakeLive,
     forceEase,
-    forceTangent,
     Section,
     sectionAt,
     SectionKind,
@@ -98,10 +97,11 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
 function sectionPoints(ecs: State, sectionId: number): { ids: number[]; points: ForcePoint[] } {
     const rows = sectionForces(ecs, sectionId);
     const ids = rows.map((r) => r.id);
-    const points: ForcePoint[] = rows.map((r) => {
-        const tan = forceTangent(ecs, r.id);
-        return { s: r.s, g: r.g, ease: forceEase(ecs, r.id), in: tan?.in, out: tan?.out };
-    });
+    const points: ForcePoint[] = rows.map((r) => ({
+        s: r.s,
+        g: r.g,
+        ease: forceEase(ecs, r.id),
+    }));
     return { ids, points };
 }
 

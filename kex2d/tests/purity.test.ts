@@ -389,16 +389,16 @@ describe("authored-component writer census — no second write path", () => {
         const sites = writeSites();
         // `doc.ts`'s whole-document load writes `Track.ds` with no `history` bracket at
         // all — deliberately, a fresh document is not an edit to undo past.
-        expect(sites.some((s) => s.file === "doc.ts" && s.line === 810 && !s.gestured)).toBe(true);
+        expect(sites.some((s) => s.file === "doc.ts" && s.line === 929 && !s.gestured)).toBe(true);
         // `controls.ts`'s keyboard-nudge writes `Handle.pos` inline inside
         // `beginMove`…`commit`.
-        expect(sites.some((s) => s.file === "controls.ts" && s.line === 1562 && s.gestured)).toBe(
+        expect(sites.some((s) => s.file === "controls.ts" && s.line === 1556 && s.gestured)).toBe(
             true,
         );
         // `controls.ts`'s `applyMultiDelta` writes `Handle.pos` with no gesture call in
         // its OWN body — its only caller opens the bracket (`beginMoves`…`commit`) —
         // the one-level call-site climb this walker exists to cover.
-        expect(sites.some((s) => s.file === "controls.ts" && s.line === 769 && s.gestured)).toBe(
+        expect(sites.some((s) => s.file === "controls.ts" && s.line === 767 && s.gestured)).toBe(
             true,
         );
     });

@@ -78,8 +78,6 @@ function tryRestore(
         s: p.s,
         g: p.g,
         ease: p.ease,
-        in: p.tangent?.in,
-        out: p.tangent?.out,
     }));
     return {
         points,

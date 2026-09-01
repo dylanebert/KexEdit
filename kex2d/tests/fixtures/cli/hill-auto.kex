@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
   "sections": [
     {
