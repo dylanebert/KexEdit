@@ -135,7 +135,6 @@ export interface Kex {
     cartArc(): number | null;
     convert(): void;
     convertAt(i: number): void;
-    ctxCut(): { at: number; t?: number } | null;
     deleteAt(i: number): boolean;
     // the chart's arclength->axis lens (`Timeline.svelte`'s `dOf`) -- S6's own oracle: called
     // before a drag to read the table the gesture will freeze.

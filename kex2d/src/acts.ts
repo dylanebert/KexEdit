@@ -27,7 +27,6 @@ import {
     resetNodesBulk,
     resetSection,
     setTangentModes,
-    splitSection,
     trimSuffix,
     trimTrack,
 } from "./history";
@@ -78,10 +77,10 @@ import {
  */
 
 /** the consent boundary's one predicate: whether the section-structure surface — Delete on a
- *  whole-section selection, either Convert direction on ANY section, Cut (any of its three
- *  landing surfaces), and the ruler's domain switch — may run right now. False while ANY pin
- *  session is open (`editor.pinning`), not just on the session's own section: convert/delete/
- *  cut aren't available inside the mode (the locked decision's consent-boundary law).
+ *  whole-section selection, either Convert direction on ANY section, and the ruler's domain
+ *  switch — may run right now. False while ANY pin session is open (`editor.pinning`), not
+ *  just on the session's own section: convert/delete aren't available inside the mode (the
+ *  locked decision's consent-boundary law).
  *  Deleting the session's own section would strand
  *  `editor.pinning` on a dead id; a convert would land a track rewrite INSIDE the open
  *  session — an upstream convert silently rebases what the stamp means. The domain switch
@@ -125,45 +124,6 @@ export function suffixRun(
     for (let i = 1; i < k; i++) if (orders[i] !== orders[i - 1] + 1) return null; // contiguous
     if (n - k < 2) return null; // a section keeps ≥ 2 nodes
     return { section, k };
-}
-
-/** a Cut's resolved landing point — `at` is the target's own coordinate for a landmark call (a
- *  node's `order`, a keyframe's `s`); `t` is the geo free-position parameter within segment `at`
- *  (the cursor-anchored section row's own case — `editor-ui.md`'s toLocal lens resolves
- *  it, the no-proximity-magnet locked decision), omitted or `≤ 0` for every landmark call (the
- *  reduction `track.splitGeoAt` and `history.splitSection` already carry). Ignored on a force
- *  section — `splitForce` is exact at any interior `s` since stage 1, landmark or free alike. */
-export type CutPosition = { at: number; t?: number };
-
-/** the ONE structural Cut body shared by the section, node, and keyframe menu triples
- *  (`editor-ui.md` Menus' key-act seam) — one `history.splitSection` call, its own kind-fitted
- *  dispatch (`track.splitGeoAt` for geo, `track.splitForce` for force) and its own undo entry, so
- *  the three rows can't drift onto three bodies. **The `sectionOpsAllowed` consent-boundary
- *  guard lives HERE, not at each of the three call sites** — the stage-4 review found the
- *  boundary re-broken by a hand-written guard missing from one surface, and stage 6's review
- *  found it broken again by a hand-written ENABLEMENT predicate on a fourth surface (the
- *  keyframe row/key) disagreeing with this guard. Three independently-maintained copies of the
- *  same check is the defect class, not any one omission; putting the guard in the one function
- *  every surface already funnels through makes a future surface inherit it for free rather than
- *  needing to remember it. Returns the new tail section id, or null (a non-interior point, or the
- *  guard). */
-export function cutSection(ecs: State, section: number, position: CutPosition): number | null {
-    if (!sectionOpsAllowed(editor.pinning)) return null;
-    return splitSection(history, ecs, section, position.at, position.t);
-}
-
-/** whether a landmark node `order` (in a chain of `count` nodes) is a valid Cut point —
- *  `splitGeo`'s own interior bound (1 ≤ order ≤ count − 2): never the entry node, never the chain
- *  end (both a no-op there — the locked decision's "a cut invoked from a node menu lands on that
- *  landmark", never a boundary already reached). */
-export function nodeCuttable(order: number, count: number): boolean {
-    return order > 0 && order < count - 1;
-}
-
-/** whether a landmark force keyframe at local `s` (in a section of `length`) is a valid Cut
- *  point — `splitForce`'s own interior bound (0 < s < length): never the entry, never the exit. */
-export function keyframeCuttable(s: number, length: number): boolean {
-    return s > 0 && s < length;
 }
 
 /** the selected node set as stable (section, order) members — the suffix-run enablement + the bulk
@@ -334,33 +294,18 @@ export function lockCandidates(ecs: State): number[] {
         .map((r) => r.id);
 }
 
-/** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`/`cutAt`)
+/** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`)
  *  — the chrome-free half of `SectionMenuActions`. `solve`/`solveShape`/`pinSolve`/
  *  `pinEnter` stay in `App.svelte` (each closes over the modal gate + abort controller — chrome,
  *  not document writes). `reset` and `pinExit` close their summoning context menu INSIDE the body
  *  (the locked decision: `closeContext` is an `editor` write like any other, and it's a no-op
  *  from the keyboard, where the deciders that reach these acts already return null while a menu
  *  is open). `remove`/`removeSet` dismiss by subject death instead
- *  — the menu derives null once the section is gone, so they carry no close.
- *
- *  `position` is Cut's own resolved landing point — genuinely CALLER-local (the menu's own screen
- *  cursor resolved through `editor-ui.md`'s toLocal lens, or `controls.ts`'s own read of
- *  the playhead through `cart.playheadPosition` + the same `sectionCutAt` seam — two different
- *  resolutions of the same `CutPosition` shape), so it rides in as a third constructor argument
- *  rather than being derivable from `subject` alone the way a node's order or a keyframe's `s` is.
- *  `null` (the default — no caller has resolved a position yet) makes `cutAt` a safe no-op; the
- *  row's own `enabled` and the keyboard decider's own `cuttable` are the real gates
- *  (`editor-ui.md`'s grays-never-hides law), and `cutSection` carries the `sectionOpsAllowed`
- *  consent-boundary guard itself (below). Named `cutAt`, not `cut` — `nodeActs`/`keyframeActs`
- *  bind `C` to `cut` on a NODE/keyframe landmark; this is a different act on a different subject
- *  that happens to share the same binding on ITS surface (`keys.ts sectionKeyAct`), and the two
- *  must stay apart by NAME for `Acts` (`tests/menu.test.ts`) to tell them apart — `append`/`add`'s
- *  own precedent, two acts colliding only in English. */
+ *  — the menu derives null once the section is gone, so they carry no close. */
 export function sectionActs(
     ecs: State,
     subject: number,
-    position: CutPosition | null = null,
-): Pick<SectionMenuActions, "remove" | "removeSet" | "reset" | "pinExit" | "cutAt"> {
+): Pick<SectionMenuActions, "remove" | "removeSet" | "reset" | "pinExit"> {
     return {
         remove: () => {
             if (!sectionOpsAllowed(editor.pinning)) return;
@@ -379,24 +324,11 @@ export function sectionActs(
             closeContext();
             exitPinMode(ecs);
         },
-        cutAt: () => {
-            // `cutSection` itself carries the `sectionOpsAllowed` guard now — the one shared
-            // enforcement point, not a fourth hand-written copy of it here.
-            if (position === null) return;
-            cutSection(ecs, subject, position);
-        },
     };
 }
 
-/** the node context menu's document acts — the FULL `NodeMenuActions` (none of the nine is
- *  chrome: every one is an ECS + `history` write on the target node or its selection set). `cut`
- *  is the landmark case (`t` omitted): the clicked node's own `order` reduces `track.splitGeoAt`
- *  to today's `splitGeo`, no subdivision, no `Custom` demotion (the locked decision's "a cut
- *  invoked from a node menu stays in the named-easing layer"). It's a structural op like
- *  `sectionActs`' remove/reset — Cut is barred while ANY pin session is open, on any section, not
- *  just the pinning one (the widened consent boundary above) — but unlike those, it carries no
- *  guard of its OWN here: `cutSection` enforces `sectionOpsAllowed` itself (above), the one shared
- *  point every Cut surface funnels through. */
+/** the node context menu's document acts — the FULL `NodeMenuActions` (every one is an ECS +
+ *  `history` write on the target node or its selection set). */
 export function nodeActs(ecs: State, eid: number): NodeMenuActions {
     return {
         add: () => select(extendTrack(history, ecs, Handle.section.get(eid))),
@@ -440,28 +372,17 @@ export function nodeActs(ecs: State, eid: number): NodeMenuActions {
         resetSet: () => {
             resetNodesBulk(history, ecs, nodeMembers(ecs));
         },
-        cut: () => {
-            cutSection(ecs, Handle.section.get(eid), { at: Handle.order.get(eid) });
-        },
     };
 }
 
-/** the force-keyframe context menu's document acts (`remove`/`toggleLock`/`cut`) — the chrome-free
+/** the force-keyframe context menu's document acts (`remove`/`toggleLock`) — the chrome-free
  *  half of `KeyframeMenuActions`. `setEase`/`chooseCustom`/`pickMode` stay in `Timeline.svelte`
  *  (chart-pixel couplings and the bulk-easing member set are its own deriveds). `remove` is the
  *  GUARDED body (`deleteSelectedForce`'s): a keyboard mutation skips a live landing first (deleting
  *  a moved key mid-window would leave the override easing a dead id) and refuses on a mixed-
  *  editability set (all-or-nothing, like every bulk row) — the menu row used to run the unguarded
- *  delete directly, the standing drift this hoist fixes. `cut` is single-subject (the ACTIVE
- *  keyframe, like `chooseCustom`'s own Custom row) — the landmark case (`t` omitted): the
- *  keyframe's own stored `s` is already the exact boundary value, so `track.splitForce` duplicates
- *  it verbatim, no subdivision, no `Custom` demotion. Cut is barred while ANY pin session is open,
- *  on any section (the widened consent boundary above) — enforced by `cutSection` itself, not a
- *  guard here (this surface has no partial-set shape to refuse into first the way `remove` does,
- *  so there's nothing this body needs to check before delegating). */
-export function keyframeActs(
-    ecs: State,
-): Pick<KeyframeMenuActions, "remove" | "toggleLock" | "cut"> {
+ *  delete directly, the standing drift this hoist fixes. */
+export function keyframeActs(ecs: State): Pick<KeyframeMenuActions, "remove" | "toggleLock"> {
     return {
         remove: () => {
             if (editor.force === null) return; // active is null iff the set is empty
@@ -471,12 +392,6 @@ export function keyframeActs(
         },
         toggleLock: () => {
             toggleLockedSet(lockCandidates(ecs));
-        },
-        cut: () => {
-            if (editor.force === null) return;
-            const eid = forceAt(ecs, editor.force);
-            if (eid === null) return;
-            cutSection(ecs, Force.section.get(eid), { at: Force.s.get(eid) });
         },
     };
 }

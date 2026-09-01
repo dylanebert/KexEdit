@@ -1,19 +1,20 @@
 // kex2d's S2 (kex2d-event-substrate) capture flows — the track-global velocity-span substrate.
-// Three arms, one per the spec's own S2 oracle line: a span authored across a section boundary
+// Two arms, one per the spec's own S2 oracle line: a span authored across a section boundary
 // drives both sections' override continuously; deleting the section under a span leaves the
-// span's stored rows untouched, still driving whatever geometry occupies its window; split
-// leaves every Strip/StripKeyframe row byte-identical (Join, the arm's other former half,
-// retired `kex2d-segment-removal` S1). Shared helpers + the `__kex` typed
-// hook live in `./flow`.
+// span's stored rows untouched, still driving whatever geometry occupies its window. (A third
+// arm proved a split never touches a strip's stored rows — Cut, the split op it drove through,
+// and Join, the arm's other former half, both retired end to end by `kex2d-segment-removal` S1/
+// S2, leaving no structural split/join op to exercise the property against.) Shared helpers +
+// the `__kex` typed hook live in `./flow`.
 //
 // Setup goes through `addStripAt` (a real guarded write, `history.addStrip`, exposed directly so
 // a span lands at an EXACT `[start, end)` the pointer-driven "Add velocity strip" menu can't
 // guarantee — it always anchors at the click's min-extent edge and grows toward a default
 // length). The BEHAVIOR under test — the bake's own windowed resolution, the structural ops, the
 // undo/redo round trip — always runs through the real production path (`BakeSystem`'s per-RAF
-// tick, `history.removeSection`/`splitSection` via the real Cut menu row).
+// tick, `history.removeSection` for the deletion arm).
 
-import { test, expect, kexCall, frameTimeline, clickMenuItem } from "./flow";
+import { test, expect, kexCall } from "./flow";
 
 // a track-global velocity span authored across two sections' shared boundary drives BOTH
 // sections' override continuously — no seam step in the velocity readback. Two force sections
@@ -107,65 +108,4 @@ test("deleting the section under a span leaves it untouched, driving the new occ
     // the third section shifted up to fill the gap; its own window now lands where the deleted
     // middle section's did (24..48) — the SAME span the deletion left untouched now drives it.
     await expect.poll(async () => Math.abs((await vAtD(35)) - value) < 0.5).toBe(true);
-});
-
-// a split never touches a strip's stored rows — no rebase, no mid-span split into two
-// strips, no merge-on-agreement at the seam (all retired, S2 Locked decision: strips are
-// track-global and span-blind to structural ops). One force section; a strip whose extent
-// straddles the exact station a Cut lands at (the old code's own straddling-strip rebase
-// branch); Cut, checked against the immediately-prior snapshot.
-//
-// RED-FIRST (quoted from the pre-S2 `splitForce`, same ref, two adjacent real lines):
-// `Strip.end.set(st.eid, s);` then `const tailId = createStrip(ecs, bId, 0, st.end - s, st.value);`
-// — literally trimming the original row's `end` and spawning a SECOND strip entity for the tail.
-// Against that code this arm reds at the post-Cut poll: `stripsOf()` reports two rows sharing the
-// original `value`, neither equal to `before`, instead of the untouched original.
-test("split leaves every strip row byte-identical", async ({ page, boot }) => {
-    await boot();
-
-    const sectionCount = () => kexCall(page, "sectionCount");
-    const stripsOf = () => kexCall(page, "stripsOf", 0);
-    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
-    const ctxCut = () => kexCall(page, "ctxCut");
-    const undoDepth = () => kexCall(page, "undoDepth");
-
-    await kexCall(page, "convertAt", 0);
-    await frameTimeline(page);
-
-    // a strip straddling the section's own midpoint — the interior cut below lands inside it.
-    const id = (await kexCall(page, "addStripAt", 6, 18, 7)) as number;
-    expect(id).not.toBe(null);
-    type StripRow = { id: number; start: number; end: number; value: number };
-    const snapshot = async (): Promise<{
-        strips: StripRow[];
-        kfs: { id: number; s: number; v: number }[];
-    }> => ({
-        strips: ((await stripsOf()) as StripRow[]).sort((a, b) => a.id - b.id),
-        kfs: (await stripKeyframesOf(id)) as { id: number; s: number; v: number }[],
-    });
-    const preCut = await snapshot();
-    const stripCountBefore = preCut.strips.length;
-
-    // right-click mid-strip (well inside [6, 18)) → Cut. `ctxCut` is the menu's own resolved
-    // landing, read before the row is clicked (`section.pw.ts`'s own "force cut flow" idiom) —
-    // asserting against it, not a re-derived pixel→domain guess.
-    const clipBox = await page.locator(".clip").first().boundingBox();
-    if (!clipBox) throw new Error("force clip not laid out");
-    const cx = clipBox.x + clipBox.width * 0.5;
-    const cy = clipBox.y + clipBox.height / 2;
-    const before = await undoDepth();
-    await page.mouse.click(cx, cy, { button: "right" });
-    await expect(page.locator(".ctxmenu")).toBeVisible();
-    const cut = await ctxCut();
-    if (cut === null) throw new Error("Cut did not resolve a landing position");
-    expect(cut.at).toBeGreaterThan(6);
-    expect(cut.at).toBeLessThan(18);
-    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Cut" })).toBeEnabled();
-    await clickMenuItem(page, ".ctxmenu", "Cut");
-    await expect.poll(sectionCount).toBe(2);
-    await expect.poll(undoDepth).toBe(before + 1);
-
-    const postCut = await snapshot();
-    expect(postCut.strips.length).toBe(stripCountBefore); // no new strip spawned
-    expect(postCut).toEqual(preCut); // every row (start/end/value + keyframes), byte-identical
 });

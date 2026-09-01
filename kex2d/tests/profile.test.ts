@@ -10,7 +10,6 @@ import {
     sampleForce,
     segmentControls,
     segmentSeed,
-    subdivide,
 } from "../src/profile";
 
 // the force-authoring layer (kex2d/AGENTS.md, force authoring): authored force
@@ -235,42 +234,6 @@ describe("cubic-bezier evaluation — analytic oracle with explicit handles", ()
             const g = bez(1, 2, 2.5, 3, t);
             expect(sampleForce(pts, s)).toBeCloseTo(g, 9);
         }
-    });
-});
-
-describe("subdivide — exact de Casteljau split (splitForce's exactness primitive)", () => {
-    // an explicit-handle segment (a genuine cubic, not a degenerate Linear/Cubic
-    // special case) — the same control points as the "cubic-bezier evaluation" oracle
-    // above: P0=(0,1) P1=(2,2) P2=(7,2.5) P3=(10,3).
-    const a: ForcePoint = { s: 0, g: 1, out: { ds: 2, dg: 1 } };
-    const b: ForcePoint = { s: 10, g: 3, in: { ds: -3, dg: -0.5 } };
-
-    test("the midpoint's g matches the original curve's own sample at the split target", () => {
-        for (const target of [1, 3, 4, 6, 8.5]) {
-            const sub = subdivide(a, b, target);
-            expect(sub.g).toBeCloseTo(sampleForce([a, b], target), 9);
-        }
-    });
-
-    test("the two subdivided halves reproduce the ORIGINAL curve exactly across the whole span", () => {
-        const target = 4;
-        const sub = subdivide(a, b, target);
-        const mid: ForcePoint = { s: target, g: sub.g, in: sub.inMid, out: sub.outMid };
-        const left: ForcePoint = { ...a, out: sub.outA };
-        const right: ForcePoint = { ...b, in: sub.inB };
-        const subdivided = [left, mid, right];
-
-        for (let s = 0; s <= 10; s += 0.5) {
-            expect(sampleForce(subdivided, s)).toBeCloseTo(sampleForce([a, b], s), 9);
-        }
-    });
-
-    test("both new boundary offsets are non-degenerate (a real split, not a collapse to the endpoint)", () => {
-        const sub = subdivide(a, b, 4);
-        expect(Math.hypot(sub.outA.ds, sub.outA.dg)).toBeGreaterThan(0);
-        expect(Math.hypot(sub.inB.ds, sub.inB.dg)).toBeGreaterThan(0);
-        expect(Math.hypot(sub.inMid.ds, sub.inMid.dg)).toBeGreaterThan(0);
-        expect(Math.hypot(sub.outMid.ds, sub.outMid.dg)).toBeGreaterThan(0);
     });
 });
 

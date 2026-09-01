@@ -288,7 +288,7 @@ layer's idiom).
 **Force authoring** (on the timeline chart, whole-track) — the chart draws every force section's
 points at once. Double-click over a force section's arc places a point at the authored profile's
 value (insertion never jumps the VALUE there — the new keyframe's own default-eased tangents
-still reshape the curve locally, unlike a Cut's exact de Casteljau-subdivided tangent; the section
+still reshape the curve locally; the section
 resolves from the cursor arclength, no selection needed); drag a diamond in both axes (horizontal =
 s, vertical = g); `Del` removes,
 `Esc` deselects; the popover at the selected diamond types or scrubs its s/g. Points are authored
@@ -306,12 +306,10 @@ direction — menus law), its action fitted to the kind: `geoforce.ts` on geo, `
 force. It grays (never hides) where the kind fits but the invoke
 can't run (no live bake, a multi-set), behind one **modal** (title + an indeterminate spinner —
 in-flight narration was feel-cut; Cancel or Esc, every other input blocked, then a transient
-outcome readout), and Delete (`Del`). **Cut** (`C`) is an editor op on the timeline
-clip strip's context menu: Cut's sole surface is the clip strip (no viewport equivalent), and its
-menu invocation snaps to a parked playhead within `SNAP_PX` (screen space), landing exactly on it
-without moving it. Boundary anchors draw as
+outcome readout), and Delete (`Del`). Boundary anchors draw as
 viewport diamonds + chart guides. One open chain — no branching, circuit closure, or mid-chain
-insertion. All ops undo via a byte-identical whole-track snapshot pair.
+insertion; no split or join op (`kex2d-segment-removal`) — the chain only grows or shrinks at its
+end, or shrinks by whole-section delete. All ops undo via a byte-identical whole-track snapshot pair.
 
 **Pin mode** (endpoint-preserving force edits) — entered from a force section's context menu
 (`Pin`): the section's current exit `(x, y, θ)` is **stamped** as the pin, the author retunes

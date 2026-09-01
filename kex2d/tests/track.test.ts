@@ -81,7 +81,6 @@ import {
     spawnForce,
     stationTaken,
     spanCoversOneEdge,
-    splitForce,
     seedTangent,
     setForceEase,
     setForcePoint,
@@ -1995,20 +1994,26 @@ describe("section extent identity (kex2d-section-extent stage 1)", () => {
         }
     });
 
-    test("a boundary keyframe's toGlobal equals the next section's offset, off-grid cuts", () => {
+    test("a boundary keyframe's toGlobal equals the next section's offset, off-grid adjacent sections", () => {
         for (const ds of dsList) {
             for (const length of lengths) {
                 if (onGrid(length, ds)) continue;
-                const cut = length * 0.4137; // an off-grid interior split position
-                const { state, eid, sec } = extentTrack(length, ds, [
-                    { s: 0, g: 1 },
-                    { s: length, g: 1 },
-                ]);
-                const tail = splitForce(state, sec, cut);
-                if (tail === null) throw new Error("split refused");
+                const headLen = length * 0.4137; // an off-grid interior boundary station
+                const tailLen = length - headLen;
+                // two adjacent force sections whose shared boundary sits off-grid — the
+                // property under test is `toGlobal`'s affine agreement at that boundary from
+                // either section's own side, independent of how the two sections came to be
+                // adjacent (no split verb needed: `sectionAt`'s own construction already
+                // authors two sections with an off-grid shared station).
+                const state = new State();
+                state.addSystem(BakeSystem);
+                const eid = createTrack(state);
+                Track.ds.set(eid, ds);
+                const head = createSection(state, 0, SectionKind.Force, headLen);
+                const tail = createSection(state, 1, SectionKind.Force, tailLen);
                 state.step(0);
                 const spans = sectionSpans(state, eid);
-                const headU = toGlobal(spans, sec, cut);
+                const headU = toGlobal(spans, head, headLen);
                 const tailEntryU = toGlobal(spans, tail, 0);
                 if (headU === null || tailEntryU === null) throw new Error("section off the bake");
                 const tol = accumTol(length);

@@ -229,50 +229,6 @@ export function segmentControls(a: ForcePoint, b: ForcePoint): { s: number; g: n
     ];
 }
 
-/** de Casteljau-subdivide the bezier segment between adjacent keyframes `a` and `b`
- *  at the arclength `target` (`a.s < target < b.s`) — the exact-cut primitive
- *  `splitForce` plants its boundary keyframe from. De Casteljau's split control
- *  points ARE the segment's own geometry, re-parented rather than re-derived, so the
- *  two resulting halves (a→mid, mid→b) trace exactly the original segment's curve,
- *  divided at `target`. Both `a`'s own `out` and `b`'s own `in` come back re-parented
- *  too — their old derived-from-`ease` sizing was scaled to the FULL span, invalid
- *  once the span splits — alongside the new midpoint's `in`/`out` half. Every
- *  returned offset is explicit: subdivision demotes the whole segment to Custom
- *  (`custom()`), the visible cost of exact mid-segment cutting. */
-export function subdivide(
-    a: ForcePoint,
-    b: ForcePoint,
-    target: number,
-): { g: number; outA: Offset; inMid: Offset; outMid: Offset; inB: Offset } {
-    const seg = segment(a, b);
-    const t = solveT(seg, target, (target - a.s) / (b.s - a.s));
-    const lerp = (x0: number, x1: number) => x0 + (x1 - x0) * t;
-
-    // the standard cubic de Casteljau split at `t`: two rounds of control-point
-    // lerps (P0..P3 → Q1..Q3 → R1..R2), the third round landing on the curve point
-    // itself (M) — the left curve is [P0, Q1, R1, M], the right [M, R2, Q3, P3].
-    const q1s = lerp(seg.s0, seg.p1s);
-    const q1g = lerp(seg.g0, seg.p1g);
-    const q2s = lerp(seg.p1s, seg.p2s);
-    const q2g = lerp(seg.p1g, seg.p2g);
-    const q3s = lerp(seg.p2s, seg.s1);
-    const q3g = lerp(seg.p2g, seg.g1);
-    const r1s = lerp(q1s, q2s);
-    const r1g = lerp(q1g, q2g);
-    const r2s = lerp(q2s, q3s);
-    const r2g = lerp(q2g, q3g);
-    const mS = lerp(r1s, r2s);
-    const mG = lerp(r1g, r2g);
-
-    return {
-        g: mG,
-        outA: { ds: q1s - seg.s0, dg: q1g - seg.g0 },
-        inMid: { ds: r1s - mS, dg: r1g - mG },
-        outMid: { ds: r2s - mS, dg: r2g - mG },
-        inB: { ds: q3s - seg.s1, dg: q3g - seg.g1 },
-    };
-}
-
 function bez(a0: number, a1: number, a2: number, a3: number, t: number): number {
     const u = 1 - t;
     return u * u * u * a0 + 3 * u * u * t * a1 + 3 * u * t * t * a2 + t * t * t * a3;

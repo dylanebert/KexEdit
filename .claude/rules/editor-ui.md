@@ -58,12 +58,12 @@ already *is* the playback. A separate playback render earns its place only for a
 
 **The isolation is one-way, and it's about control, not knowledge.** Authoring may *read* the
 playhead — it's already a snap landmark for a drag (Snapping, below), and an invoked op may name it
-as a position (kex2d's keyboard `Cut` lands there exactly). What the isolation forbids is the
+as a position. What the isolation forbids is the
 transport becoming an authoring control or authoring driving the transport: an op that resolves a
 position against the playhead must never *move* it, and a scrub must never edit. So the read is the
 sanctioned direction and the write is the violation — the same asymmetry that keeps one clock
-serving two scopes. Named because the rule read as an outright ban on a playhead-anchored op and was
-cited that way once (`kex2d-structural-editing`, before feel round 7 asked for exactly that op).
+serving two scopes. Named because the rule can otherwise misread as an outright ban on any
+playhead-anchored op, when only the write direction is barred.
 
 ## Document axis vs value axis
 
@@ -423,14 +423,13 @@ a declared list of the walking fields, and an assert that the fork not needing t
 
 - Right-click context menus are the app's menu language; a summoned menu never covers its invoker;
   functional menus animate minimally.
-- **Rows sort by group, then by frequency within the group.** Four groups, canonical order, each
-  with a membership test that classifies a new row:
+- **Rows sort by group, then by frequency within the group.** Three groups today, canonical order,
+  each with a membership test that classifies a new row:
 
   | group | test | members today |
   |---|---|---|
   | `create` | the document gains an object | Add, the append flyout's Geo/Force |
   | `modify` | changes the subject that summoned the menu, or enters / acts in / leaves a mode scoped to it | Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock, Meters/Seconds |
-  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | Cut |
   | `lifecycle` | the subject ends at its creation state or gone | Reset, then Delete |
 
   `modify` is the residual class, defined as such honestly. `danger` implies the terminal row of
@@ -439,18 +438,21 @@ a declared list of the walking fields, and an assert that the fork not needing t
   its menu while section Delete trailed.
 
   The membership tests are written about the subject, which is enough for every row whose object
-  *is* its subject. `joinNext` broke that: it modifies the subject and destroys the section beside
-  it, so under three groups the written test filed it under `modify` while `split` filed under
-  `create`, landing the pair that reads as one thought at opposite ends of the menu. **`structure`
-  closes the gap by changing what the membership test is about, not by widening `lifecycle`** (which
-  would still split the pair): a `structure` row's test is about the CHAIN — does it reach past the
-  subject to a neighbor — so Cut (the document gains a section, but by splitting one apart, not by
-  the plain `create` shape) and Join (destroys the neighbor beside the subject, not the subject
-  itself) both land there together. A fourth group was tried once before and rejected, but that
-  rejection doesn't transfer: it argued against splitting `mode` out of `modify` on a cost basis —
-  mode's rows are a small fraction of one menu, and splitting them out gave the four-row section
-  menu three separators for no new taxonomic class. `structure` is a real class the other three
-  can't express, and it costs the five-row section menu (Convert, Pin, Cut, Reset, Delete) only two separators.
+  *is* its subject — but not for a row that modifies the subject AND destroys or creates a
+  neighbor beside it (kex2d's own former `joinNext`/Cut pair: one filed under `modify`, the other
+  under `create`, splitting a pair that reads as one thought). **A fourth group, `structure`, is
+  the closer for that gap when it recurs — changing what the membership test is about, not
+  widening `lifecycle`** (which would still split the pair): a `structure` row's test is about the
+  CHAIN — does it reach past the subject to a neighbor. kex2d's own two occupants (Cut, Join) both
+  retired (`kex2d-segment-removal` S1/S2 — chained-duration segments have no split or join op), so
+  the group is dormant, not deleted from the design: `MenuGroup`/`GROUPS` narrow back to three
+  until a chain-reaching row returns, at which point it's the closer to reach for rather than
+  re-deriving the argument. A fourth group was tried once before and rejected on a DIFFERENT
+  basis, which doesn't transfer here: that rejection argued against splitting `mode` out of
+  `modify` on a cost basis — mode's rows are a small fraction of one menu, and splitting them out
+  bought no new taxonomic class for the separators it cost. `structure`'s chain-reaching test is a
+  real class the other three can't express, which is what earns it back when a chain-reaching row
+  exists to justify it.
 
   `GROUPS` in kex2d `src/menu.ts` is the source of truth for the group set and its canonical order;
   the table above is its prose mirror.
@@ -498,20 +500,15 @@ a declared list of the walking fields, and an assert that the fork not needing t
   is a true submenu parent and owes nothing.
 
   **A row earns a shortcut when the keyboard can name its position without a pointer.** That's the
-  test, and it's why the same op can be bound on one surface and not another. Cut's landmark paths
-  (the node menu's own node, the keyframe menu's own keyframe) bind `C` (kex2d `BINDINGS.cut`,
-  Premiere's razor key): the subject already supplies the exact point. The section row looked like
-  the counterexample — a free cursor position has nothing for a key to name, there being no "cut
-  here" without a cursor there — and shipped unbound on that reasoning. **It was too narrow.** The
-  playhead is a position the keyboard *can* name: deliberately parked, always addressable, no
-  pointer involved. So `C` on a selected section cuts at the playhead exactly (no threshold), the
-  row's own click still resolves the cursor (snapping to the playhead within `SNAP_PX`), and the row
-  advertises `C` — the hint names the *action*, which is genuinely keyboard-reachable, not the row's
-  own free-position read. The lesson generalizes past Cut: "no keyboard anchor" is a claim about
-  every position the surface can name, and a surface with a transport always has at least one.
-  The acts still stay apart by name — `NodeMenuActions.cut` / `KeyframeMenuActions.cut` versus
-  `SectionMenuActions.cutAt` — but for the seam's reason, not boundness: one English verb, two
-  acts, so the key-act seam's `Acts` table can tell them apart. (`append` / `add` remain the
+  test, and it's why the same op can be bound on one surface and not another — kex2d's own former
+  Cut (`kex2d-segment-removal` S2) worked this law hardest: its node/keyframe landmark rows bound a
+  key straight off the subject (the subject already supplies the exact point), while its
+  free-cursor section row looked like the counterexample — no cursor, no position to name — until
+  the playhead itself proved to be a position the keyboard *can* name (deliberately parked, always
+  addressable, no pointer involved), so the row bound too, off the playhead rather than off a
+  cursor. **"No keyboard anchor" is a claim about every position the surface can name, not about
+  the row's own preferred one** — check every nameable position on the surface (including a live
+  transport) before concluding a row must stay mouse-only. (`append` / `add` remain the
   bound-vs-unbound instance of the same naming rule.)
 
   **Which rows earn a key is derived, not picked — four laws, priority order.** (1) **Frequency
@@ -544,25 +541,25 @@ a declared list of the walking fields, and an assert that the fork not needing t
   it). Gray = "blocked action you know from elsewhere"; hidden = "state that isn't a thing
   here". **The surface is a third axis, above both**: a row that can never enable on the surface
   the menu was summoned from is ABSENT there, not grayed — graying says "not now", absence says
-  "not here". kex2d's `Cut` is the case: **the timeline clip strip is its sole surface** — it
-  omits itself entirely on both the canvas and the graph, because a position-along-arclength op
-  has no honest cursor reading on a spatial view (the canvas) and the graph is a plot of values,
-  not a strip of subjects (its empty space is a coordinate, not an object — round 8, below).
-  Feel round 7 rejected the grayed form outright ("confusing" — a permanently-disabled row reads
-  as broken chrome, not as a boundary); round 8 pushed the same law from "which subject" to
-  "which surface", retiring a graph-as-second-surface attempt that read as "right-clicking
-  randomly being equivalent to a timeline right-click." Structural, so it's a required field on
-  the builder's state (`menus.SectionMenuState.cutSurface`), never an optional one defaulting to
-  shown: every call site says which surface it is, and the menu-grammar oracle drives the flag
-  both directions with a positive control per direction.
+  "not here". kex2d's former Cut was the case (`kex2d-segment-removal` S2 retired the row and its
+  `cutSurface` field along with it): **the timeline clip strip was its sole surface** — it omitted
+  itself entirely on both the canvas and the graph, because a position-along-arclength op had no
+  honest cursor reading on a spatial view (the canvas) and the graph is a plot of values, not a
+  strip of subjects (its empty space is a coordinate, not an object). Feel round 7 rejected the
+  grayed form outright ("confusing" — a permanently-disabled row reads as broken chrome, not as a
+  boundary); round 8 pushed the same law from "which subject" to "which surface." A future row that
+  can't enable on every summoning surface earns the same shape: a required (never optional,
+  never defaulting to shown) surface field on the builder's state, every call site saying which
+  surface it is, and the menu-grammar oracle driving the flag both directions with a positive
+  control per direction.
 - **A consent boundary is a derived membership check inside the op, never a per-surface guard.**
   kex2d's structural ops broke three times on this: each fix added another hand-written guard at the
   new call site, the next surface reintroduced the hole, and the doc comment claimed coverage
-  throughout. It stopped when the guard moved *into* `cutSection`, so every surface inherits it by
-  construction and the wrong predicate became unrepresentable in the state type. The
-  declared-registry law applied to a guard rather than a row set — the op owns the boundary, a
-  caller owns only its row's enablement — and the oracle drives both directions: every act reaching
-  the op is gated by construction, and every row's enablement agrees with its act's guard.
+  throughout. It stopped when a guard moved *into* the act body every surface already routes
+  through (`sectionActs.remove`/`.removeSet`/`.reset` each check `sectionOpsAllowed` at their own
+  top, so every surface inherits it by construction), rather than living at each call site — the
+  declared-registry law applied to a guard rather than a row set: the op owns the boundary, a
+  caller owns only its row's enablement.
 - **An op's keyboard path and its menu row go live as one unit.** kex2d wired `J` into the live
   keydown decider while `App.svelte` never supplied `canJoin`, so the shortcut worked against a
   grayed row advertising that same key. Guard parity was never the defect; *availability* parity
@@ -669,8 +666,9 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
 - **Insert on the curve.** Double-click creates a keyframe at the authored profile's value there
   (the DAW/AE envelope-insertion identity), never at the cursor's y-value. The identity is over the
   VALUE, not the curve: the new keyframe carries its own default-eased tangents, so the curve still
-  reshapes locally around it. Only a Cut, which subdivides the segment exactly, preserves the shape
-  as well as the value.
+  reshapes locally around it. A segment-subdividing insertion (de Casteljau, exact at the inserted
+  parameter) is the one shape that would preserve the curve as well as the value — a bare
+  double-click insert does not, and isn't meant to.
 - **Nothing moves under its own gesture** (root `ui.md` "Surfaces hold still"). Chart addition:
   both axes clamp the cursor to the chart during a keyframe drag. Camera / document-axis
   navigation is a no-op while any gesture is live — a mid-gesture view change corrupts
@@ -692,8 +690,8 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   gesture**, since a gesture never snaps to a target it can't reach (Snapping) — a magnet pulling
   into a landing the write refuses is the defect that made the collision the common case rather
   than a rare one. Scope it to the property, never the surface: on a whole-track chart, keys in
-  *different* sections may share a station, and a cut plants exactly that pair at the boundary by
-  design. The restore path bypasses the guard whole — a document that already holds a coincident
+  *different* sections may legitimately share a station — a boundary coincidence, not a collision,
+  since the refusal is per-section, never track-wide. The restore path bypasses the guard whole — a document that already holds a coincident
   pair round-trips undo byte-identical instead of being repaired mid-history. (kex2d
   `track.stationTaken`, `tests/track.test.ts` "one station, one keyframe".)
 - **Arrow cursor over keyframes** (AE/Unity/Blender) — the shared law, Affordance typing. Hover

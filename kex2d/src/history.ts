@@ -43,9 +43,7 @@ import {
     sameForceTangent,
     sameForcePoint,
     sameNodes,
-    Section,
     SectionKind,
-    sectionAt,
     sections,
     type SectionSnapshot,
     seedTangent,
@@ -64,8 +62,6 @@ import {
     type SolvedGeo,
     spawnForce,
     spawnStrip,
-    splitForce,
-    splitGeoAt,
     createStrip as createStripTrack,
     destroyStrip,
     type StripState,
@@ -1222,7 +1218,7 @@ export function landDomain(h: History, ecs: State, target: Domain): void {
     );
 }
 
-// ── structural ops (append / split / delete) ──────────────────────────
+// ── structural ops (append / delete) ──────────────────────────
 // each wraps a whole-track snapshot pair — the op reorders sections and moves
 // nodes/points across them, so a per-section restore can't capture it; the pair
 // respawns every section's stored f32 verbatim, so undo/redo is byte-identical.
@@ -1233,42 +1229,6 @@ export function appendSection(h: History, ecs: State, kind: SectionKind): number
     const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
     const id = appendSectionTrack(ecs, kind);
-    const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
-    return id;
-}
-
-/** split a section, recording one undoable entry. `at` is a geo section's node order or
- *  segment index or a force section's arclength `s` (the caller supplies the right one
- *  for the kind); `t` is the geo free-position parameter within segment `at`
- *  (`track.splitGeoAt`'s own reduction: omitted or `≤ 0` is the landmark case, `splitGeo`
- *  at node order `at`, unchanged from before Cut; `0 < t < 1` is the interior de
- *  Casteljau-subdivided cut Cut needs, `at` then a SEGMENT index). Ignored on a force
- *  section — `splitForce` is already exact at any interior `s` (stage 1). no-op (records
- *  nothing) at a non-interior split point; returns the new tail section id, or null. */
-export function splitSection(
-    h: History,
-    ecs: State,
-    section: number,
-    at: number,
-    t = 0,
-): number | null {
-    const eid = sectionAt(ecs, section);
-    if (eid === null) return null;
-    // Strips no longer refuse a split (S2, Locked decision: track-global, span-blind, so
-    // `splitGeo`/`splitForce` always mutate once their own range check passes) — the geo
-    // Cut hoist this comment used to document is retired with them.
-    const pre = selHook?.snapshot(ecs);
-    const before = snapshotAll(ecs);
-    const id =
-        Section.kind.get(eid) === SectionKind.Geo
-            ? splitGeoAt(ecs, section, at, t)
-            : splitForce(ecs, section, at);
-    if (id === null) {
-        // an out-of-range split point (the only remaining refusal) never mutates, so no
-        // restore is needed.
-        return null;
-    }
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return id;

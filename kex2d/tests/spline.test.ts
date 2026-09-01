@@ -11,7 +11,6 @@ import {
     reflect,
     sampleAt,
     sampleChain,
-    subdivide,
     type Tangent,
     TangentMode,
 } from "../src/spline";
@@ -563,96 +562,6 @@ describe("sampleChain — stamp-on-append byte continuity", () => {
             expect(b.posY[k]).toBe(a.posY[k]);
         }
         for (let k = 0; k < ra.edges; k++) expect(b.ds[k]).toBe(a.ds[k]);
-    });
-});
-
-describe("subdivide — exact de Casteljau split (geo half of Cut's exactness)", () => {
-    // cubic Hermite basis, mirroring `spline.ts`'s private `hermite` — the independent
-    // oracle every assertion below checks `subdivide`'s output against.
-    function hermitePoint(
-        pa: { x: number; y: number },
-        va: readonly [number, number],
-        pb: { x: number; y: number },
-        vb: readonly [number, number],
-        s: number,
-    ): { x: number; y: number } {
-        const s2 = s * s;
-        const s3 = s2 * s;
-        const h00 = 2 * s3 - 3 * s2 + 1;
-        const h10 = s3 - 2 * s2 + s;
-        const h01 = -2 * s3 + 3 * s2;
-        const h11 = s3 - s2;
-        return {
-            x: h00 * pa.x + h10 * va[0] + h01 * pb.x + h11 * vb[0],
-            y: h00 * pa.y + h10 * va[1] + h01 * pb.y + h11 * vb[1],
-        };
-    }
-
-    // an explicit-tangent segment (a genuine cubic, not the Auto arc-rule special case).
-    const pa: Node = {
-        x: 0,
-        y: 0,
-        theta: 0.3,
-        tangent: { mode: TangentMode.Free, inX: -3, inY: -1, outX: 6, outY: 2 },
-    };
-    const pb: Node = {
-        x: 10,
-        y: 4,
-        theta: 1.1,
-        tangent: { mode: TangentMode.Free, inX: -5, inY: 1, outX: 2, outY: 3 },
-    };
-    const va: [number, number] = [pa.tangent!.outX, pa.tangent!.outY];
-    const vb: [number, number] = [pb.tangent!.inX, pb.tangent!.inY];
-
-    test("the midpoint lands exactly on the original curve's own sample at t", () => {
-        for (const t of [0.15, 0.4, 0.5, 0.73]) {
-            const sub = subdivide(pa, pb, t);
-            const orig = hermitePoint(pa, va, pb, vb, t);
-            expect(sub.x).toBeCloseTo(orig.x, 9);
-            expect(sub.y).toBeCloseTo(orig.y, 9);
-        }
-    });
-
-    test("the two subdivided halves reproduce the ORIGINAL curve exactly across the whole segment", () => {
-        const t = 0.4;
-        const sub = subdivide(pa, pb, t);
-        const mid = { x: sub.x, y: sub.y };
-        for (let s = 0; s <= 1; s += 0.05) {
-            const orig = hermitePoint(pa, va, pb, vb, s);
-            const got =
-                s <= t
-                    ? hermitePoint(pa, sub.outA, mid, sub.inMid, t > 0 ? s / t : 0)
-                    : hermitePoint(mid, sub.outMid, pb, sub.inB, (s - t) / (1 - t));
-            expect(got.x).toBeCloseTo(orig.x, 9);
-            expect(got.y).toBeCloseTo(orig.y, 9);
-        }
-    });
-
-    test("both new boundary tangents are non-degenerate (a real split, not a collapse to the endpoint)", () => {
-        const sub = subdivide(pa, pb, 0.4);
-        expect(Math.hypot(sub.outA[0], sub.outA[1])).toBeGreaterThan(0);
-        expect(Math.hypot(sub.inB[0], sub.inB[1])).toBeGreaterThan(0);
-        expect(Math.hypot(sub.inMid[0], sub.inMid[1])).toBeGreaterThan(0);
-        expect(Math.hypot(sub.outMid[0], sub.outMid[1])).toBeGreaterThan(0);
-    });
-
-    test("subdivide reads the SAME arc-rule tangent sampleAt/sampleChain resolve for an Auto (no explicit tangent) node pair", () => {
-        // node.tangent absent → `outVec`/`inVec` fall back to the arc rule (`handle()`,
-        // exposed as `autoTangent`) — the same seam `sampleAt` reads. Building `va`/`vb`
-        // from the exported `autoTangent` (not re-deriving `handle`'s formula) keeps this
-        // an oracle over PRODUCTION math, not a restatement of it.
-        const a2: Node = { x: 0, y: 0, theta: 0.2 };
-        const b2: Node = { x: 8, y: 3, theta: 0.9 };
-        const chordAngle = Math.atan2(b2.y - a2.y, b2.x - a2.x);
-        const chordLen = Math.hypot(b2.x - a2.x, b2.y - a2.y);
-        const va2 = autoTangent(a2.theta, chordAngle, chordLen);
-        const vb2 = autoTangent(b2.theta, chordAngle, chordLen);
-
-        const t = 0.62;
-        const sub = subdivide(a2, b2, t);
-        const orig = hermitePoint(a2, va2, b2, vb2, t);
-        expect(sub.x).toBeCloseTo(orig.x, 9);
-        expect(sub.y).toBeCloseTo(orig.y, 9);
     });
 });
 

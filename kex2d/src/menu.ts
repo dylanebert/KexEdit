@@ -5,15 +5,16 @@
  * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
  *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
  *   Meters/Seconds). The residual class, honestly.
- * - `structure` — changes the CHAIN by making a new section (Cut splits one apart).
  * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
  * frequency rule, demoted to a tiebreaker where it's cheap and unenforceable-but-harmless).
  * `danger` implies the terminal row of the whole menu. The grammar is machine-checked over every
  * builder across the full state matrix in `tests/menu.test.ts` — it is a gate, not a convention.
- */
-export const GROUPS = ["create", "modify", "structure", "lifecycle"] as const;
+ * A fourth group, `structure` (Cut/Join splitting or merging the chain), existed through
+ * `kex2d-segment-removal` S1 and left with S2 — Cut was its last member; a later segment-authoring
+ * unit may reintroduce a category when it next needs one, rather than reopening this one. */
+export const GROUPS = ["create", "modify", "lifecycle"] as const;
 
 export type MenuGroup = (typeof GROUPS)[number];
 
@@ -41,14 +42,7 @@ export type Binding = {
  * `Add` still tells you append is `Enter`.
  *
  * Homes: `remove` — `controls.ts` (section, node set, chain-end trim) + `Timeline.svelte` (force
- * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`;
- * `cut` — three landing surfaces, all through `keys.ts` deciders: a selected node's own landmark
- * (`controls.ts`), a selected force keyframe's own landmark (`Timeline.svelte`), and a selected
- * SECTION's own playhead (`controls.ts`, `kex2d-structural-editing` stage 8) — the reopening of
- * what used to be a hard asymmetry: a free CURSOR position has no keyboard anchor to name, but
- * the playhead does (`editor-ui.md` Menus, `editor-ui.md`'s transport-read clause), so the
- * clip-strip's cursor-anchored Cut row now advertises the same key its playhead-exact keyboard
- * twin fires.
+ * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`.
  * `convert`/`pin` — `App.svelte`'s own permanent listener (`kex2d-shortcuts` stage 3): the section
  * menu's remaining single-subject rows, dispatched through the MERGED chrome + document acts
  * record (`solve`/`solveShape`/`pinEnter` are chrome — `editor-ui.md` Menus, the act-BODY seam's
@@ -59,13 +53,15 @@ export type Binding = {
  * `reset` — `controls.ts` alone (`kex2d-shortcuts` stage 4): unlike Convert/Pin, `reset` is a plain
  * document act on BOTH `SectionMenuActions` and `NodeMenuActions` (`acts.ts sectionActs`/`nodeActs`
  * already return it — no modal, no `AbortController`), so it never needs the chrome-act merge;
- * `controls.ts`'s existing section/node keydown rungs dispatch it exactly like `remove`/`cut`.
+ * `controls.ts`'s existing section/node keydown rungs dispatch it exactly like `remove`.
  * One key, two subject kinds, per law 3: a section (`sectionKeyAct`) or a node/node-set
  * (`nodeKeyAct`, `resetSet` on a multi selection) — node 0's tangent-clear delegation lives inside
  * `track.resetNode` itself, invisible at this seam. Keyframes carry no Reset row and no binding
  * (the Easing-subsumes-Reset law, `kex2d-shortcuts` Locked decision), so `forceKeyAct` never reads it.
  * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
- * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
+ * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one. `C` (Cut's own
+ * binding through `kex2d-segment-removal` S1) is unclaimed since S2 retired Cut's last surface —
+ * free for a future segment-authoring gesture, not reclaimed here.
  */
 export const BINDINGS = {
     remove: { keys: ["Delete", "Backspace"], hint: "Del" },
@@ -75,11 +71,10 @@ export const BINDINGS = {
     // feel round 6 re-keyed it to `Q` for reachability while the other hand holds the pointer. A
     // feel verdict outranks a derivation, so it's recorded here rather than re-keyed.
     lock: { keys: ["q", "Q"], hint: "Q" },
-    cut: { keys: ["c", "C"], hint: "C" },
-    // mnemonic `C` is taken by Cut. `V` was the derived pick (law 4's tiebreaker) but is refused:
-    // Figma/Rive bind bare `V` to the base select/move tool, an arbitrary letter their camp
-    // standardized — exactly the reflex kex2d must not collide with. `D` is free across both
-    // camps and wins law 4's left-hand-reach tiebreaker (`kex2d-shortcuts` stage 5 feel verdict).
+    // `V` was the derived pick (law 4's tiebreaker) but is refused: Figma/Rive bind bare `V` to
+    // the base select/move tool, an arbitrary letter their camp standardized — exactly the reflex
+    // kex2d must not collide with. `D` is free across both camps and wins law 4's left-hand-reach
+    // tiebreaker (`kex2d-shortcuts` stage 5 feel verdict).
     convert: { keys: ["d", "D"], hint: "D" },
     // mnemonic-exact (Locked decision 1).
     pin: { keys: ["p", "P"], hint: "P" },

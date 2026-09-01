@@ -787,7 +787,7 @@ test("openContext on a member of a multi-set promotes it active, keeping the who
     openContext(50, 60, 1); // right-click a non-active MEMBER
     expect([...editor.sections.ids].sort((a, b) => a - b)).toEqual([1, 2, 3]); // set preserved
     expect(editor.sections.active).toBe(1); // promoted, not replaced
-    expect(editor.context).toEqual({ x: 50, y: 60, section: 1, cut: null, cutSurface: false });
+    expect(editor.context).toEqual({ x: 50, y: 60, section: 1 });
     closeContext();
     expect(editor.context).toBeNull();
 });
@@ -1078,7 +1078,7 @@ describe("writeHover / clearHover — the one seam every hover write and clear g
 // other co-selected members count, including cross-kind siblings. a per-kind `ids.size > 1`
 // predicate reads a two-member cross-kind sibling set as single-select, so the context readers
 // (manip ring, popover, readout) read this exported predicate instead. bulk-op applicability
-// readers (Delete set-lift, Cut single-subject gate, arrow-nudge group move) stay per-kind — the
+// readers (Delete set-lift, arrow-nudge group move) stay per-kind — the
 // law governs context, never bulk-op applicability.
 describe("multi — the set-level multi predicate", () => {
     // every arm constructs its selection through the production selectors a click calls
