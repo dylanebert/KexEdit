@@ -612,12 +612,11 @@ helper; timeline glyphs to selection's own stroke token at the base width, one r
 selected weight) — silhouette contrast without a size change. When languages stack, priority is infeasible-red >
 selection (brightened kind) > hover > kind color, enforced by feasibility-skip in every color
 pass rather than draw order; dash carries not-authored-truth, red its infeasible rung (Mode
-vocabulary, below). Hover's boundaries travel
-with the rung: suppressed for the whole of any gesture (guard on the one live-gesture flag),
-invisible on an already-selected element (selection is the stronger read of the same span), while
-a distinct resize handle keeps its hover over the selected span; `.clip-trim` is the in-project
-exemplar. There is no cross-surface hover sync — a clip's CSS hover and the viewport span stay local
-to their own surfaces.
+vocabulary, below). Hover's boundaries travel with the rung: a foreign gesture suppresses hover,
+while the surface under its own gesture keeps its read. Hover is invisible on an already-selected
+element (selection is the stronger read of the same span), while a distinct resize handle keeps its
+hover over the selected span; kex2d `.clip-trim` is the in-project exemplar. There is no
+cross-surface hover sync — a clip's CSS hover and the viewport span stay local to their own surfaces.
 
 ## Mode vocabulary
 
