@@ -683,7 +683,7 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
     await expect.poll(async () => (await xView())[1]).toBeGreaterThan(rest[1]);
 
     // Blur tears down the surviving strip station drag before pointerup can commit it.
-    const stripId = (await kexCall(page, "addStripAt", 0, 8, 5)) as number;
+    const stripId = (await kexCall(page, "addStripAt", 0, 40, 5)) as number;
     await kexCall(page, "placeStripKf", stripId, 12, 10);
     await frameTimeline(page);
     const stripKfs = () => kexCall(page, "stripKeyframesOf", stripId) as Promise<{ id: number; s: number; v: number }[]>;
