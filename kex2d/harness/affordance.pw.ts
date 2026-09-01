@@ -458,9 +458,9 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     // Pointer capture routes the move/up through the window listeners, so this witnesses the
     // teardown path rather than relying on `.hbandzone`'s leave event. Re-read the endpoint after
     // the drag because the off-band move may legitimately resize it to the track boundary.
-    const offBandStrip = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
-        (s) => s.id === created.id,
-    );
+    const offBandStrip = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === created.id);
     if (!offBandStrip) throw new Error("strip missing before off-band release");
     const [offBandEdgeX, offBandEdgeY] = toPage(offBandStrip.x0);
     await page.mouse.move(offBandEdgeX, offBandEdgeY);
@@ -476,9 +476,9 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     // Cancellation has the same non-preserving rule even when the pointer is captured. Dispatch
     // the event through window (where the real release listeners live), then release the test
     // mouse as cleanup if the browser does not synthesize its own cancel-up transition.
-    const cancelStrip = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
-        (s) => s.id === created.id,
-    );
+    const cancelStrip = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === created.id);
     if (!cancelStrip) throw new Error("strip missing before cancellation");
     const [cancelEdgeX, cancelEdgeY] = toPage(cancelStrip.x0);
     await page.mouse.move(cancelEdgeX, cancelEdgeY);
