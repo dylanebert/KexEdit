@@ -2103,6 +2103,11 @@ test("velocity projection holds during length drag", async ({ page, boot }) => {
     await boot();
     await seedHill(page);
     await kexCall(page, "convert");
+    await kexCall(page, "setLen", 0, 40);
+    await kexCall(page, "seedForceBump");
+    const speedStrip = (await kexCall(page, "addStripAt", 2, 40, 8)) as number;
+    await kexCall(page, "placeStripKf", speedStrip, 20, 40);
+    await kexCall(page, "placeStripKf", speedStrip, 30, 3);
     await frameTimeline(page);
     await expect
         .poll(async () => {
@@ -2115,14 +2120,21 @@ test("velocity projection holds during length drag", async ({ page, boot }) => {
     const trim = page.locator(".clip-trim");
     await expect(trim).toHaveCount(1);
     const box = await trim.boundingBox();
-    if (!box) throw new Error("length trim handle not laid out");
-    const before = await kexCall(page, "vRange");
+    const clip = await page.locator(".clip").first().boundingBox();
+    const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
+    if (!box || !clip) throw new Error("length trim handle not laid out");
+    const before = { range: await kexCall(page, "vRange"), fit: await kexCall(page, "vFit") };
     await page.keyboard.down("Control");
     await trim.hover();
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, { steps: 10 });
-    const held = await kexCall(page, "vRange");
-    expect(held).toEqual(before);
+    await page.mouse.move(clip.x + 12 * pxPerU, box.y + box.height / 2, { steps: 10 });
+    const held = { range: await kexCall(page, "vRange"), fit: await kexCall(page, "vFit") };
+    const heldLen = (await kexCall(page, "sectionLengths"))[0];
+    expect(heldLen).toBeLessThan(40);
+    expect(held.range).toEqual(before.range);
+    // The trim cuts the authored force bump's tail from the bake, so the fitted velocity target
+    // changes while the displayed projection is held. Removing `|| draggingLen` makes this red.
+    expect(held.fit).not.toEqual(before.fit);
     await page.mouse.up();
     await page.keyboard.up("Control");
     await expect
