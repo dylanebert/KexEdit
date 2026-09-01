@@ -3009,13 +3009,13 @@ function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandid
 // S3 (Affordances): the band's own hover read, canvas-local like `bandDown`'s own `px` (the
 // same `classifyStripHit` the press path uses, so the affordance and the gesture agree by
 // construction — never a second, hand-tuned hover geometry). Component-local, not the
-// viewport's `editor.hoverForce`/`hoverNode` seam (`editor.ts`): those are the controls'
-// pointermove sweep over VIEWPORT pick targets; the band is a canvas surface with no DOM
-// element per strip for CSS `:hover` to land on, so it needs its own read, the same way
-// `stripDrag` below is this band's own gesture state rather than a viewport one.
+// viewport's `editor.hoverForce`/`hoverNode` seam (`editor.ts`): the band is a canvas surface
+// with no DOM element per strip for CSS `:hover` to land on. The area hover rung lifts the fill;
+// `.hbandzone.body-hover` supplies `pointer`, and `.hbandzone.edge-hover` supplies `ew-resize`.
+// Foreign gestures suppress
+// this read, while the band's own drag keeps it live for the active edge/body affordance.
+// `bandUp` records the final in-band release so a stationary handle remains active.
 let bandHoverX: number | null = $state(null);
-// The band owns this coordinate: pointer movement follows the hit rectangle, and bandUp records
-// the final in-band release so the stationary handle remains the active affordance.
 function bandHoverMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     bandHoverX = e.clientX - rect.left;
@@ -3023,12 +3023,6 @@ function bandHoverMove(e: PointerEvent): void {
 function bandHoverLeave(): void {
     bandHoverX = null;
 }
-// suppressed for the whole of any OTHER gesture (editor-ui.md Kind color: "Hover's boundaries
-// travel with the rung ... suppressed for the whole of any gesture") — a foreign drag captures
-// the pointer on `canvas`, not this band's own hit rect, so `bandHoverX` would otherwise read
-// stale. The band's OWN drag (`stripDrag !== null`) is exempt: `bandMove` keeps `bandHoverX`
-// live during it (below), and showing the active edge/body read while it's being dragged is
-// the affordance, not staleness.
 const bandHit = $derived.by((): StripHit => {
     // `bandCandidates` computes fresh from the ECS (which is not reactive), so this carries the
     // per-frame pacing itself — the dependency it used to inherit from the `bandStrips` `$derived`.
@@ -3200,8 +3194,8 @@ function bandUp(e: Event): void {
     commit(history);
 }
 function cancelStripDrag(): void {
-    bandHoverX = null;
     if (stripDrag === null) return;
+    bandHoverX = null;
     stripDrag = null;
     snapX = null;
     gestureMapping = null; // release the gesture-frozen table
@@ -3318,8 +3312,6 @@ function bandDown(e: PointerEvent): void {
     }
     beginStripMove(ecs, s.id);
     beginDrag(canvas, e.pointerId);
-    // `beginDrag` owns the shared release flag and capture first; this band's listener only records
-    // its in-band stationary coordinate before the gesture-specific teardown.
     window.addEventListener("pointermove", bandMove);
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
@@ -3822,10 +3814,6 @@ function render(ctx: CanvasRenderingContext2D): void {
         // of the same selected/unselected split the CSS token would have driven — the base fill
         // sits one rung DOWN from the raw hue (S4, finding 4: dimmer, in-palette — the same
         // OKLCH move `hovered` makes upward, `colors.ts`), selection returning it to the full hue.
-        // S3 (Affordances): the hover rung, in kex2d's own channel — color, never the cursor
-        // (editor-ui.md Affordance typing). An AREA lifts its fill one `hovered()` rung
-        // (editor-ui.md Kind color); never on a stronger register (selection already reads
-        // brighter, the same `.fpt:hover:not(.sel)` precedence force keyframes use).
         const bodyHover = !sel && bandHit.kind === "body" && bandHit.id === s.id;
         ctx.globalAlpha = sel ? 0.85 : 0.55;
         ctx.fillStyle = bodyHover

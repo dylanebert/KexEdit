@@ -476,8 +476,9 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     await expect.poll(bandCursor).toBe("default");
 
     // Cancellation has the same non-preserving rule even when the pointer is captured. Dispatch
-    // the event through window (where the real release listeners live), then release the test
-    // mouse as cleanup if the browser does not synthesize its own cancel-up transition.
+    // the event through window (where the real release listeners live), then issue the real
+    // pointerup: beginDrag's shared dragging flag must be released before the empty-hit assertion,
+    // so that assertion cannot pass vacuously while the drag guard is still active.
     const cancelStrip = (
         (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
     ).find((s) => s.id === created.id);
