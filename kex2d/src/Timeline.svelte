@@ -3012,9 +3012,9 @@ function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandid
 // viewport's `editor.hoverForce`/`hoverNode` seam (`editor.ts`): the band is a canvas surface
 // with no DOM element per strip for CSS `:hover` to land on. The area hover rung lifts the fill;
 // `.hbandzone.body-hover` supplies `pointer`, and `.hbandzone.edge-hover` supplies `ew-resize`.
-// Foreign gestures suppress
-// this read, while the band's own drag keeps it live for the active edge/body affordance.
-// `bandUp` records the final in-band release so a stationary handle remains active.
+// Foreign gestures suppress this read, while the band's own drag keeps it live for the active
+// edge/body affordance. `bandUp` records an in-band pointerup so a stationary handle remains
+// active; `cancelStripDrag` clears hover only for this band's live drag, while idle blur preserves it.
 let bandHoverX: number | null = $state(null);
 function bandHoverMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
@@ -3030,7 +3030,10 @@ const bandHit = $derived.by((): StripHit => {
     // pointer move, and the affordance would lag the gesture it must agree with.
     void tick;
     if (eid === null) return { kind: "empty" };
-    if (editor.dragging && stripDrag === null) return { kind: "empty" };
+    if (editor.dragging && stripDrag === null) {
+        // Foreign capture sends pointerleave to the band, so suppression makes the hover falling edge safe.
+        return { kind: "empty" };
+    }
     if (bandHoverX === null) return { kind: "empty" };
     return classifyStripHit(bandHoverX, bandCandidates(), STRIP_HIT_R);
 });
@@ -3076,12 +3079,6 @@ const oneShotHover = $derived.by((): boolean => {
     if (bandHoverX === null) return false;
     return classifyOneShotHit(bandHoverX, oneShotGlyphX(), STRIP_HIT_R);
 });
-// Selection suppresses hover on the selected span body, while its distinct resize handle keeps
-// the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
-// only a real pointerup inside the horizontal band preserves the stationary read. An off-band
-// pointerup or pointercancel clears it in `bandUp`, and shared cancellation clears it in
-// `cancelStripDrag`.
-
 interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";

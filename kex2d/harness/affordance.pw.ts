@@ -322,10 +322,10 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // `ew-resize` cursor survive selection, while the selected span body keeps hover suppression.
 // The state table below covers both channels, including stationary release.
 //
-// Pointerup and pointercancel teardown is owned by `bandUp`: an in-band pointerup keeps the
-// release coordinate, while off-band release and cancellation clear it. Window blur teardown is
-// owned by `cancelStripDrag`; the state table drives both cancellation paths without claiming a
-// guarantee for other foreign gestures.
+// Pointerup teardown is owned by `bandUp`: an in-band pointerup keeps the release coordinate,
+// while off-band release clears it. Window blur cancels only this band's live drag through
+// `cancelStripDrag`; an idle blur preserves the stationary handle read. The state table drives
+// those guarded paths without claiming a guarantee for other foreign gestures.
 
 // RED-FIRST WITNESS (kex2d-strip-resize-affordance S1): the rewritten state × affordance
 // arm was run against unchanged production before the repair. It exited 1 because selected-edge
@@ -417,6 +417,15 @@ test("selected strip endpoint paint and cursor agree across the state table", as
             `selected endpoint release must retain edge paint: before ${JSON.stringify(selectedEdge)}, after ${JSON.stringify(selectedReleasedEdge)}`,
         ).toBeLessThanOrEqual(2);
 
+    // IDLE BLUR: with no band drag live, cancellation must not erase the stationary handle read.
+    // Dispatch blur without moving the pointer, then require the endpoint classification and cursor
+    // to survive exactly as they did after release.
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
+    await expect.poll(bandCursor).toBe("ew-resize");
+
     // UNSELECTED: rest is inert, body hover lifts its fill and pointer cursor, and endpoint hover
     // adds the resize stroke and ew-resize cursor.
     await page.keyboard.press("Escape");
@@ -476,9 +485,9 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     await expect.poll(bandCursor).toBe("default");
 
     // Cancellation has the same non-preserving rule even when the pointer is captured. Dispatch
-    // the event through window (where the real release listeners live), then issue the real
-    // pointerup: beginDrag's shared dragging flag must be released before the empty-hit assertion,
-    // so that assertion cannot pass vacuously while the drag guard is still active.
+    // the event through window (where the real release listeners live): the synthetic pointercancel
+    // already releases editor.dragging. The following real mouse up only resets Playwright's
+    // physical button so the next mouse down is a fresh press.
     const cancelStrip = (
         (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
     ).find((s) => s.id === created.id);
@@ -505,8 +514,8 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
     await expect.poll(bandCursor).toBe("default");
 
-    // Window blur is the shared cancellation path used when visibility changes interrupt a drag.
-    // It must clear the stationary endpoint read even though no pointercancel is delivered.
+    // Window blur while a drag is live is the shared cancellation path used when visibility changes
+    // interrupt it. It must clear the stationary endpoint read even though no pointercancel is delivered.
     const blurStrip = (
         (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
     ).find((s) => s.id === created.id);
