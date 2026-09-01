@@ -129,8 +129,8 @@ const PAIRS: Pair[] = [
                 new: "            : []; // MUTATED: strip s-axis snap targets killed",
             },
             {
-                old: '        const targets = kind === "force" ? gTargets(dragKfMemberSet) : vTargets(dragKfMemberSet);',
-                new: '        const targets = kind === "force" ? gTargets(dragKfMemberSet) : []; // MUTATED: strip v-axis snap targets killed',
+                old: "            axis.targets(dragKfMemberSet),",
+                new: '            kind === "force" ? axis.targets(dragKfMemberSet) : [], // MUTATED: strip v-axis snap targets killed',
             },
         ],
     },
