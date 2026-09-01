@@ -1223,27 +1223,15 @@ let snapY: number | null = $state(null); // an active g-axis snap: horizontal gu
 // moving magnet — the playhead. no ruler ticks: they're the zoom-dependent 1-2-5 raster,
 // display not content. the caller excludes the dragged point and picks whether its own
 // moving edge (the track end) is a target.
-// `sameSection` names the dragged anchor's own section: its keys are dropped from the pool
-// because a station one of them occupies is a landing the Δd cap holds short of
-// (`track.keyframeRoom`, S5b), and a gesture never snaps to a target it can't reach (editor-ui.md Snapping — the same law
-// that keeps the extent trim off its own moving edge). Keys in OTHER sections stay: a boundary
-// coincidence is legal and is exactly what a cut plants, so they remain reachable landmarks.
-function sTargets(opts: {
-    exclude?: Set<number>;
-    sameSection?: number | null;
-    playhead: boolean;
-    trackEnd: boolean;
-}): number[] {
+// The ruler scrub is the only surviving caller: it snaps to section boundaries, the track end,
+// and other force points, plus a parked playhead. Keyframe-only exclusion parameters left with the
+// retired force station drag would now describe behavior that has no caller.
+function sTargets(opts: { playhead: boolean; trackEnd: boolean }): number[] {
     const v = clamped;
     const out: number[] = [uToPx(v, 0)];
     for (const b of bounds) out.push(uToPx(v, b));
     if (opts.trackEnd) out.push(uToPx(v, uTotal));
-    for (const p of forcePts) {
-        if (opts.exclude?.has(p.id)) continue;
-        if (opts.sameSection != null && p.section === opts.sameSection) continue;
-        out.push(uToPx(v, p.u));
-    }
-    // the cart rides in arclength, so the playhead is the one landmark here that projects.
+    for (const p of forcePts) out.push(uToPx(v, p.u));
     if (opts.playhead && paused && cartS !== null) out.push(uToPx(v, uOf(cartS)));
     return out;
 }

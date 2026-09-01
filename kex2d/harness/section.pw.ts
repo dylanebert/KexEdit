@@ -688,12 +688,18 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     if (!fcb) throw new Error("force clip not laid out");
     await page.locator(".clip").nth(1).click(); // select the appended force section
     await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two continuation seeds
+    // Free chart insertion is gone, but the headless authoring command is the legitimate setup
+    // seam for this capture. The behavior under test remains the real value affordance: three
+    // authored points are present, and a pointer drag turns their flat profile into a hill.
+    await kexCall(page, "placeForce", 8, 1);
+    await expect.poll(async () => (await forceCounts())[1]).toBe(3);
 
-    // Pull the exit seed below 1g via its fat hit target → an airtime change that re-times the
+    // Pull the middle point below 1g via its fat hit target → an airtime change that re-times the
     // ride (the bake's total time shifts). `.fhit` is shared with velocity-strip keyframes.
     const tBefore = await tTotal();
+    const beforeForces = (await kexCall(page, "forces")) as { section: number; s: number; g: number }[];
     const hits = page.locator(".fhit");
-    await expect(hits).toHaveCount(2);
+    await expect(hits).toHaveCount(3);
     const centers = await hits.evaluateAll(
         (els, range) =>
             els
@@ -703,12 +709,17 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
                 .sort((a, b) => a.x - b.x),
         { x0: fcb.x, x1: fcb.x + fcb.width },
     );
-    expect(centers.length).toBe(2);
+    expect(centers.length).toBe(3);
     const crest = centers[1];
     await page.mouse.move(crest.x, crest.y);
     await page.mouse.down();
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
     await page.mouse.up();
+    const afterForces = (await kexCall(page, "forces")) as { section: number; s: number; g: number }[];
+    const middleBefore = beforeForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
+    const middleAfter = afterForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
+    if (!middleBefore || !middleAfter) throw new Error("three-point force hill disappeared");
+    expect(middleAfter.g).not.toBe(middleBefore.g);
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-3).toBe(true);
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-1-hill.png"), clip: strip });
@@ -1120,7 +1131,7 @@ test("pin mode flow", async ({ page, boot }) => {
     await expect
         .poll(async () => (await forces()).find((row) => row.id === nudgeId)?.g)
         .not.toBe(preMode[2].g);
-    expect(await sandboxDepth()).toBeGreaterThan(2); // the nudge is a sandbox entry
+    expect(await sandboxDepth()).toBe(3); // one press = one sandbox entry
     // …and the SECOND press needs a frame between it and the first, because the force nudge
     // resolves its base value from `forcePts` — the per-RAF PROJECTION, not the authored `Force`
     // component (`Timeline.svelte`'s `onKey`, the `nudgeKeyframes(members, ds, dv)` arm). Back to back,
@@ -1263,7 +1274,7 @@ test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) =>
     // wait is the bake output changing) — the same `tTotal` condition the wash flow's own append
     // uses. Measured once in 9 full runs at `KEX_WORKERS=1`: `.scrim` never appeared after `d`.
     await expect.poll(tTotal).not.toBe(tSeeded); // the appended section is IN the bake
-    await frames(page, 3); // allow the authored-hash bake gate to settle before the keyboard arm
+    await frames(page, 1);
 
     // ── `D` — Convert on the geo section: select it, press `D`, the same modal a click on the
     // row opens (`invoked solve flow`'s own step 2) comes up; Escape cancels, the row's own
@@ -2912,6 +2923,7 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
 
     const readD = 3; // between the start keyframe (s=0) and the mid one (s=6, v=12) — inside
     // the interpolated region until the start keyframe's own station passes it, at which point
+    const vBefore = await vAtD(readD);
     // it falls into the flat extrapolation BEFORE the earliest keyframe (S5's own out-of-extent
     // resolution) — a real, sampled change, not just a stored-field readback.
     const posKey = page.locator(".ptip .fld:nth-of-type(1) .key");
@@ -2927,10 +2939,7 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
     await expect
         .poll(async () => (await stripKeyframesOf()).find((k) => k.id === kf0.id)?.s)
         .toBeGreaterThan(readD);
-    // The strip keyframe's authored station is the label-scrub contract. The bake read at a
-    // fixed station is intentionally not used here: the display velocity is a derived sample
-    // and can remain on the same f32 value when the moved keyframe crosses that station; the
-    // graph-value and bake movement heirs are covered by the projection flows below.
+    expect(await vAtD(readD)).not.toBeCloseTo(vBefore, 2);
 
     // ── value label: drag the mid keyframe's own v ──
     const midKf = (await stripKeyframesOf()).find((k) => k.s === 6);

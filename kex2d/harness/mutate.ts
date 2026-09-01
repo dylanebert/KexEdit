@@ -126,7 +126,7 @@ const PAIRS: Pair[] = [
         mutations: [
             {
                 old: "        const targets = stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });",
-                new: "            : []; // MUTATED: strip s-axis snap targets killed",
+                new: "        const targets: number[] = []; // MUTATED: strip s-axis snap targets killed",
             },
             {
                 old: "            axis.targets(dragKfMemberSet),",

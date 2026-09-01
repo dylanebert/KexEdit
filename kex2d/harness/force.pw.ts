@@ -624,6 +624,106 @@ test("force keyframe position drag is inert while value drag survives (S4)", asy
 // Cross-kind selection remains covered by section.pw.ts; force value dragging remains covered
 // by the S4 shared-path control above.
 
+// Retained timeline heirs for the retired multiselect flow. The flow deliberately uses a real
+// marquee and real pointer gestures: live wheel/F suppression, bulk easing, blur teardown of a
+// strip station drag and of a label scrub, and multi-key popover suppression are all still
+// user-visible shared-path behavior. Force station dragging is not exercised because S4 removed
+// that axis; the strip station drag is its genuine surviving timeline counterpart.
+test("retained timeline gesture heirs after force position removal", async ({ page, boot }) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await frameTimeline(page);
+
+    const forces = () => kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+    const forceEases = () => kexCall(page, "forceEases") as Promise<number[]>;
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    const body = await page.locator(".dock .body").boundingBox();
+    if (!body) throw new Error("timeline body not laid out");
+    const hits = page.locator('.fhit[aria-label="Force point"]');
+    await expect(hits).toHaveCount(5);
+    const boxes = await hits.evaluateAll((els) =>
+        els.map((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }),
+    );
+    const xLo = (boxes[0].x + boxes[1].x) / 2;
+    const xHi = (boxes[3].x + boxes[4].x) / 2;
+    const top = body.y + CHART_TOP + 4;
+    const bottom = body.y + body.height - CHART_BOT_PAD - 4;
+    await marqueeDrag(page, xLo, top, xHi, bottom);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(3);
+    await expect(page.locator(".ptip")).toHaveCount(0); // multiForce popover suppression
+
+    // Bulk easing is retained even though station dragging is not: all selected non-terminal
+    // force keys change, while the two unselected continuation seeds remain Cubic (1).
+    await page.mouse.click(boxes[2].x, boxes[2].y, { button: "right" });
+    await expect(page.locator(".fmenu")).toBeVisible();
+    await clickFlyout(page, ".fmenu", "Easing", "Quintic");
+    const eased = await forceEases();
+    expect(eased.slice(1, 4)).toEqual([2, 2, 2]);
+    expect(eased[0]).toBe(1);
+    expect(eased[4]).toBe(1);
+
+    // Wheel and F are swallowed while a real chart marquee is live, then work at rest.
+    await frameTimeline(page);
+    const rest = await xView();
+    await page.mouse.move(xLo, top);
+    await page.mouse.down();
+    await page.mouse.move(xHi, bottom, { steps: 6 });
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(1);
+    await page.mouse.wheel(0, -600);
+    await page.keyboard.press("f");
+    await frames(page, 2);
+    expect(await xView()).toEqual(rest);
+    await page.mouse.up();
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.mouse.wheel(0, -600);
+    await expect.poll(async () => (await xView())[1]).toBeGreaterThan(rest[1]);
+
+    // Blur tears down the surviving strip station drag before pointerup can commit it.
+    const stripId = (await kexCall(page, "addStripAt", 0, 8, 5)) as number;
+    await kexCall(page, "placeStripKf", stripId, 12, 10);
+    await frameTimeline(page);
+    const stripKfs = () => kexCall(page, "stripKeyframesOf", stripId) as Promise<{ id: number; s: number; v: number }[]>;
+    const stripPx = () => kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const target = (await stripKfs())[1];
+    const point = (await stripPx()).find((p) => p.id === target.id);
+    if (!point) throw new Error("strip keyframe not laid out");
+    const before = target.s;
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.mouse.move(point.x + 35, point.y, { steps: 6 });
+    await expect.poll(async () => (await stripKfs()).find((k) => k.id === target.id)?.s).not.toBe(before);
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect.poll(async () => (await stripKfs()).find((k) => k.id === target.id)?.s).toBe(before);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.mouse.up();
+
+    // Label-scrub listeners live on the label, so blur must cancel them separately from the
+    // canvas drag teardown. The positive mid-scrub read proves the scrub really wrote first.
+    const selected = (await stripKfs()).find((k) => k.s === before);
+    if (!selected) throw new Error("restored strip keyframe not found");
+    const restoredPx = (await stripPx()).find((p) => p.id === selected.id);
+    if (!restoredPx) throw new Error("restored strip keyframe projection missing");
+    await page.mouse.click(restoredPx.x, restoredPx.y);
+    await expect(page.locator(".ptip")).toBeVisible();
+    const label = page.locator(".ptip .fld").nth(0).locator(".key");
+    const labelBox = await label.boundingBox();
+    if (!labelBox) throw new Error("strip position scrub label not laid out");
+    const scrubBefore = (await stripKfs()).find((k) => k.id === selected.id)?.s;
+    if (scrubBefore === undefined) throw new Error("strip keyframe vanished before label scrub");
+    await page.mouse.move(labelBox.x + labelBox.width / 2, labelBox.y + labelBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(labelBox.x + labelBox.width / 2 + 35, labelBox.y + labelBox.height / 2, { steps: 6 });
+    await expect.poll(async () => (await stripKfs()).find((k) => k.id === selected.id)?.s).not.toBe(scrubBefore);
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect.poll(async () => (await stripKfs()).find((k) => k.id === selected.id)?.s).toBe(scrubBefore);
+    await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
+    await page.mouse.up();
+});
+
 // Drive the CONTENT-ANCHORED PLAYHEAD PARKING flow (section-editor stage 3, fork 4): a
 // mixed geo→force chain with a force keyframe → park the playhead over the force section
 // via a REAL ruler scrub → drag the keyframe's g so the bake re-times → assert the parked
@@ -801,6 +901,128 @@ test("timeline domain flow", async ({ page, boot }) => {
 // Time-view force position dragging was retired with the force position axis in S4.
 // The surviving Time-view trim and strip-keyframe projection arms remain covered below and in
 // section.pw.ts; force value dragging is covered by the S4 shared-path control above.
+
+// Time-view trim heirs retained by S4. These are extent and downstream-layout behaviors, not the
+// removed force position axis, so they remain real pointer capture flows.
+test("timeline domain flow — Time-view trim writes arclength through the frozen table (S6c heir)", async ({ page, boot }) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
+    const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
+    const domain = () => kexCall(page, "domain");
+    const dOf = (u: number) => kexCall(page, "dOf", u) as Promise<number>;
+    const dOfTrim = (u: number) => kexCall(page, "dOfTrim", u) as Promise<number>;
+    const uOf = (d: number) => kexCall(page, "uOf", d) as Promise<number>;
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    await kexCall(page, "seedForceBump");
+    await kexCall(page, "setV0", 25);
+    await frameTimeline(page);
+    await page.locator(".rulerzone").click({ button: "right", position: { x: 40, y: 10 } });
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+    const rows = await forceU();
+    const start = rows[0];
+    const len0 = (await lengths())[0];
+    const startD = await dOf(start.u);
+    const trimU = await uOf(startD + len0);
+    const [, scale] = await xView();
+    const trim = page.locator(".clip-trim");
+    const box = await trim.boundingBox();
+    if (!box) throw new Error("Time-view trim handle not laid out");
+    const finalU = trimU + 50 / scale;
+    const expected = (await dOfTrim(finalU)) - startD;
+    await page.keyboard.down("Control");
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 50, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await expect.poll(async () => (await lengths())[0]).toBeCloseTo(expected, 0);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await lengths())[0]).toBeCloseTo(len0, 3);
+});
+
+test("timeline domain flow — Time-view extent trim extrapolates past the bake end (S6b heir)", async ({ page, boot }) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
+    const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
+    const domain = () => kexCall(page, "domain");
+    const dOf = (u: number) => kexCall(page, "dOf", u) as Promise<number>;
+    const dOfTrim = (u: number) => kexCall(page, "dOfTrim", u) as Promise<number>;
+    const uOf = (d: number) => kexCall(page, "uOf", d) as Promise<number>;
+    const tTotal = () => kexCall(page, "tTotal") as Promise<number>;
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    await kexCall(page, "seedForceBump");
+    await kexCall(page, "setV0", 25);
+    await frameTimeline(page);
+    await page.locator(".rulerzone").click({ button: "right", position: { x: 40, y: 10 } });
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+    const rows = await forceU();
+    const startD = await dOf(rows[0].u);
+    const len0 = (await lengths())[0];
+    const trimU = await uOf(startD + len0);
+    const past = (await tTotal()) + 2;
+    const clamped = await dOf(past);
+    const extended = await dOfTrim(past);
+    expect(extended).toBeGreaterThan(clamped + 1);
+    const [, scale] = await xView();
+    const trim = page.locator(".clip-trim");
+    const box = await trim.boundingBox();
+    if (!box) throw new Error("Time-view extrapolation trim not laid out");
+    await page.keyboard.down("Control");
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + (past - trimU) * scale, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const expected = extended - startD;
+    await expect.poll(async () => (await lengths())[0]).toBeCloseTo(expected, 0);
+    expect(Math.abs((await lengths())[0] - (clamped - startD))).toBeGreaterThan(0.5);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await lengths())[0]).toBeCloseTo(len0, 3);
+});
+
+test("timeline domain flow — downstream clip edge tracks an upstream Time-view trim past the bake end (S1 heir)", async ({ page, boot }) => {
+    await boot();
+    const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
+    const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
+    const domain = () => kexCall(page, "domain");
+    const dOf = (u: number) => kexCall(page, "dOf", u) as Promise<number>;
+    const uOf = (d: number) => kexCall(page, "uOf", d) as Promise<number>;
+    const tTotal = () => kexCall(page, "tTotal") as Promise<number>;
+    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+    await kexCall(page, "seedForceBump");
+    await kexCall(page, "setV0", 25);
+    await kexCall(page, "append", 1);
+    await frameTimeline(page);
+    await page.locator(".rulerzone").click({ button: "right", position: { x: 40, y: 10 } });
+    await clickMenuItem(page, ".rmenu", "Seconds");
+    await expect.poll(domain).toBe("time");
+    await frames(page, 2);
+    const rows = await forceU();
+    const [, scale] = await xView();
+    const clips = page.locator(".clip");
+    const trim = page.locator(".clip-trim").first();
+    const box = await trim.boundingBox();
+    const downstreamBefore = await clips.nth(1).boundingBox();
+    if (!box || !downstreamBefore) throw new Error("downstream Time-view trim not laid out");
+    const trimU = await uOf((await dOf(rows[0].u)) + (await lengths())[0]);
+    const past = (await tTotal()) + 2;
+    const x0 = box.x + box.width / 2;
+    await page.keyboard.down("Control");
+    await page.mouse.move(x0, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x0 + (past - trimU) * scale, box.y + box.height / 2, { steps: 12 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const downstreamAfter = await clips.nth(1).boundingBox();
+    if (!downstreamAfter) throw new Error("downstream clip vanished during trim");
+    expect(downstreamAfter.x).toBeGreaterThan(downstreamBefore.x + 4);
+    await expect.poll(async () => (await lengths())[0]).toBeGreaterThan(0);
+    await page.keyboard.press("Control+z");
+});
 
 // Viewport force markers (kex2d-idioms stage 3): every force keyframe draws ON the baked track —
 // the timeline's filled-diamond glyph in force gold, same entity on both surfaces — display +
