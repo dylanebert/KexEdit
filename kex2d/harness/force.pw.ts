@@ -26,6 +26,7 @@ import {
     SNAP_DEG_MAX,
     SAMPLE_BUDGET_M,
     frames,
+    type Kex,
     type Page,
 } from "./flow";
 
@@ -929,6 +930,72 @@ test("force easing menu flow", async ({ page, boot }) => {
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickMenuItem(page, ".fmenu", "Delete");
     await expect.poll(forceCount).toBe(beforeDelete - 1);
+});
+
+// S1 shared-path control: force diamonds use the same press-relative value anchor as strip
+// diamonds. The legal +10px-y grab is deliberately off-center; a horizontal move must preserve
+// authored g and its displayed projection while the live station changes.
+test("force keyframe off-center drag preserves value", async ({ page, boot }) => {
+    await boot();
+    await seedHill(page);
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => await kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const rows = (await kexCall(page, "forceU")) as {
+        id: number;
+        section: number;
+        s: number;
+        g: number;
+        u: number;
+    }[];
+    const beforeRow = rows.find((row) => row.s === 12);
+    if (!beforeRow) throw new Error("force keyframe at the stable setup station is missing");
+    const forceId = beforeRow.id;
+    const read = () =>
+        page.evaluate(
+            ({ forceId }) => {
+                const k = (window as unknown as { __kex: Kex }).__kex;
+                const row = k.forceU().find((candidate) => candidate.id === forceId);
+                return { row, range: k.gRange() };
+            },
+            { forceId },
+        );
+    const before = await read();
+    const [, pxPerU] = await kexCall(page, "xView");
+    const clip = await page.locator(".clip").first().boundingBox();
+    if (!before.row || !clip) throw new Error("force keyframe is not laid out");
+    const expectedX = clip.x + beforeRow.s * pxPerU;
+    const hitBoxes = await page.locator(".fhit").evaluateAll((els) =>
+        els.map((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }),
+    );
+    const hit = hitBoxes
+        .map((point) => ({ point, distance: Math.abs(point.x - expectedX) }))
+        .sort((a, b) => a.distance - b.distance)[0]?.point;
+    if (!hit) throw new Error("force keyframe hit target is not laid out");
+    const pressX = hit.x;
+    const pressY = hit.y + 10;
+    const range = before.range;
+    const g0 = before.row.g;
+    await page.keyboard.down("Control");
+    await page.mouse.move(pressX, pressY);
+    await page.mouse.down();
+    const samples: Awaited<ReturnType<typeof read>>[] = [];
+    for (let i = 1; i <= 5; i++) {
+        await page.mouse.move(pressX + i * 4, pressY);
+        samples.push(await read());
+    }
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    for (const sample of samples) {
+        if (!sample.row) throw new Error("force sample lost keyframe");
+        expect(sample.row.g).toBe(g0);
+        expect(sample.range).toEqual(range);
+    }
+    expect(samples.at(-1)?.row?.s).not.toBe(beforeRow.s);
 });
 
 // G2: the Tangents ▸ mode submenu (Mirror | Aligned | Free — the geo node menu's convention on a

@@ -1499,6 +1499,9 @@ let dragKfSection = -1; // the ANCHOR's section — the scope its own keys are u
 let dragKfStrip = -1; // the ANCHOR's strip id (strip kind only — for overlap check scope)
 let dragKfCx = 0; // last cursor, canvas-local px
 let dragKfCy = 0;
+// the press ordinate is separate from the live cursor ordinate: both are clamped through the
+// same chart bounds before the locked press-relative value delta is evaluated.
+let dragKfCy0 = 0;
 let dragKfMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
 let dragKfS0 = 0; // the grab s / v — each axis's gesture-start landmark (always-on magnet)
 let dragKfV0 = 0;
@@ -1539,8 +1542,12 @@ function applyKeyframeDrag(): void {
     // kinds, so a keyframe left outside its container by a resize stays exactly where the
     // cursor puts it.
     let sAnchor = dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0));
-    // v-axis: kind-specific mapping
-    let vAnchor = dragKfYToVal(clamp(dragKfCy, TOP, h - BOT_PAD));
+    // v-axis: kind-specific mapping. Preserve the authored value at the press point, then apply
+    // only the pointer delta. The separate clamped press ordinate keeps an off-center grab's
+    // cursor offset while making a horizontal move an exact zero value delta.
+    const cy0 = clamp(dragKfCy0, TOP, h - BOT_PAD);
+    const cy = clamp(dragKfCy, TOP, h - BOT_PAD);
+    let vAnchor = dragKfV0 + (dragKfYToVal(cy) - dragKfYToVal(cy0));
     snapX = null;
     snapY = null;
     const active = snapActive(dragKfMod);
@@ -1851,6 +1858,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     gestureMapping = mapping;
     // the grab origin
     dragKfU0 = uAtPx(clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
+    dragKfCy0 = clamp(dragKfCy, TOP, Math.max(TOP, h - BOT_PAD));
     // begin the history gesture (S2: one gesture for both kinds — mixed-set drag)
     beginKeyframeMoves(
         ecs,
