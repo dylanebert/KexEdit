@@ -942,17 +942,42 @@ test("force keyframe off-center drag preserves value", async ({ page, boot }) =>
     await expect.poll(async () => await kexCall(page, "forceCount")).toBe(5);
     await frameTimeline(page);
 
+    const rows = (await kexCall(page, "forceU")) as {
+        id: number;
+        section: number;
+        s: number;
+        g: number;
+        u: number;
+    }[];
+    const beforeRow = rows.find((row) => row.s === 12);
+    if (!beforeRow) throw new Error("force keyframe at the stable setup station is missing");
+    const forceId = beforeRow.id;
     const read = () =>
-        page.evaluate(() => {
-            const k = (window as unknown as { __kex: Kex }).__kex;
-            const row = k.forceU()[2];
-            return { row, range: k.gRange() };
-        });
+        page.evaluate(
+            ({ forceId }) => {
+                const k = (window as unknown as { __kex: Kex }).__kex;
+                const row = k.forceU().find((candidate) => candidate.id === forceId);
+                return { row, range: k.gRange() };
+            },
+            { forceId },
+        );
     const before = await read();
-    const hit = await page.locator(".fhit").nth(2).boundingBox();
-    if (!before.row || !hit) throw new Error("force keyframe is not laid out");
-    const pressX = hit.x + hit.width / 2;
-    const pressY = hit.y + hit.height / 2 + 10;
+    const [, pxPerU] = await kexCall(page, "xView");
+    const clip = await page.locator(".clip").first().boundingBox();
+    if (!before.row || !clip) throw new Error("force keyframe is not laid out");
+    const expectedX = clip.x + beforeRow.s * pxPerU;
+    const hitBoxes = await page.locator(".fhit").evaluateAll((els) =>
+        els.map((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }),
+    );
+    const hit = hitBoxes
+        .map((point) => ({ point, distance: Math.abs(point.x - expectedX) }))
+        .sort((a, b) => a.distance - b.distance)[0]?.point;
+    if (!hit) throw new Error("force keyframe hit target is not laid out");
+    const pressX = hit.x;
+    const pressY = hit.y + 10;
     const range = before.range;
     const g0 = before.row.g;
     await page.keyboard.down("Control");
@@ -970,7 +995,7 @@ test("force keyframe off-center drag preserves value", async ({ page, boot }) =>
         expect(sample.row.g).toBe(g0);
         expect(sample.range).toEqual(range);
     }
-    expect(samples.at(-1)?.row?.s).not.toBe(before.row.s);
+    expect(samples.at(-1)?.row?.s).not.toBe(beforeRow.s);
 });
 
 // G2: the Tangents ▸ mode submenu (Mirror | Aligned | Free — the geo node menu's convention on a

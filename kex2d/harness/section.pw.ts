@@ -1891,7 +1891,7 @@ test("strip keyframe delete before the selection tick settles", async ({ page, b
 // `__kex` hook only supplies pixel POSITIONS to drive the pointer at, per its own doc comment,
 // never the drag itself) and asserts the authored `s` moves by the cursor delta, never landing
 // on `end`.
-test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
+test("strip keyframe drag origin regression", async ({ page, boot }) => {
     await boot();
     await seedHill(page);
     await frameTimeline(page);
@@ -2022,6 +2022,9 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     const expectedDs = DxPx / pxPerU;
     const tol = 2 / pxPerU;
     expect(Math.abs(kf1.s - kf0.s - expectedDs)).toBeLessThan(tol);
+    // The vertical axis is held on this center-origin arm too: a horizontal move must preserve
+    // the authored velocity exactly, independent of the live projected point.
+    expect(kf1.v).toBe(kf0.v);
     // never lands on `end` — the buggy clamp's own tell, independent of the tolerance above.
     expect(kf1.s).toBeLessThan(strip.end - tol);
     expect(kf1.s).toBeGreaterThan(strip.start + tol);
@@ -2032,7 +2035,7 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
 // green horizontal arm cannot hide a view/range change. The +10px arms also perform the vertical
 // control: the expected value comes from the same pointer delta and the diamond keeps its grab
 // offset, rather than a horizontal-only special case.
-test("velocity strip keyframe drag attribution matrix", async ({ page, boot }) => {
+test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
     const arms = [
         { name: "center Ctrl", yOffset: 0, ctrl: true },
         { name: "center snap", yOffset: 0, ctrl: false },
@@ -2076,6 +2079,14 @@ test("velocity strip keyframe drag attribution matrix", async ({ page, boot }) =
         }
         await page.mouse.up();
         if (arm.ctrl) await page.keyboard.up("Control");
+        const diagnostic = (
+            label: string,
+            step: number | string,
+            sample: Awaited<ReturnType<typeof read>>,
+        ): string => {
+            const diamond = sample.point ? `(${sample.point.x},${sample.point.y})` : "missing";
+            return `${arm.name}: ${label}; first-moving step=${step}; value=${sample.row?.v ?? "missing"}; projected y=${sample.point?.y ?? "missing"}; range=${JSON.stringify(sample.range)}; press point=(${pressX},${pressY}); diamond center=${diamond}; grab offset=(${pressX - beforePoint.x},${pressY - beforePoint.y})`;
+        };
         const horizontalValueStable = samples.every((sample) => sample.row?.v === v0);
         const horizontalRangeStable = samples.every(
             (sample) => JSON.stringify(sample.range) === JSON.stringify(range0),
@@ -2085,13 +2096,26 @@ test("velocity strip keyframe drag attribution matrix", async ({ page, boot }) =
                 sample.point !== undefined && Math.abs(sample.point.y - beforePoint.y) <= 0.5,
         );
         const stationMoved = samples.at(-1)?.row?.s !== beforeRow.s;
-        console.log(
-            `matrix arm ${arm.name}: value=${horizontalValueStable ? "green" : "red"} range=${horizontalRangeStable ? "green" : "red"} projection=${horizontalProjectionStable ? "green" : "red"} station=${stationMoved ? "green" : "red"}`,
+        const firstMovingIndex = samples.findIndex(
+            (sample) =>
+                sample.row?.v !== v0 ||
+                (sample.point !== undefined && Math.abs(sample.point.y - beforePoint.y) > 0.5),
         );
-        if (!horizontalValueStable) failures.push(`${arm.name}: horizontal authored value moved`);
-        if (!horizontalRangeStable) failures.push(`${arm.name}: velocity range moved`);
-        if (!horizontalProjectionStable) failures.push(`${arm.name}: horizontal projected y moved`);
-        if (!stationMoved) failures.push(`${arm.name}: horizontal station did not move`);
+        const firstMoving = samples[firstMovingIndex] ?? samples[0];
+        if (!horizontalValueStable && firstMoving)
+            failures.push(
+                diagnostic("horizontal authored value moved", firstMovingIndex + 1, firstMoving),
+            );
+        if (!horizontalRangeStable && firstMoving)
+            failures.push(diagnostic("velocity range moved", firstMovingIndex + 1, firstMoving));
+        if (!horizontalProjectionStable && firstMoving)
+            failures.push(
+                diagnostic("horizontal projected y moved", firstMovingIndex + 1, firstMoving),
+            );
+        if (!stationMoved && firstMoving)
+            failures.push(
+                diagnostic("horizontal station did not move", firstMovingIndex + 1, firstMoving),
+            );
 
         if (arm.yOffset !== 0) {
             const range = before.range;
@@ -2111,18 +2135,17 @@ test("velocity strip keyframe drag attribution matrix", async ({ page, boot }) =
                 afterHorizontal.point.y + arm.yOffset + verticalDelta,
                 { steps: 5 },
             );
+            const vertical = await read();
             await page.mouse.up();
             if (arm.ctrl) await page.keyboard.up("Control");
-            const vertical = await read();
             if (!vertical.row || !vertical.point)
                 throw new Error(`${arm.name}: vertical sample missing`);
             const verticalValueStable = Math.abs(vertical.row.v - expectedV) < 1e-5;
             const offsetStable = Math.abs(vertical.point.y - (beforePoint.y + verticalDelta)) < 1;
-            console.log(
-                `matrix arm ${arm.name}: vertical value=${verticalValueStable ? "green" : "red"} offset=${offsetStable ? "green" : "red"} expected=${expectedV} actual=${vertical.row.v}`,
-            );
-            if (!verticalValueStable) failures.push(`${arm.name}: vertical delta incorrect`);
-            if (!offsetStable) failures.push(`${arm.name}: vertical grab offset changed`);
+            if (!verticalValueStable)
+                failures.push(diagnostic("vertical delta incorrect", "vertical", vertical));
+            if (!offsetStable)
+                failures.push(diagnostic("vertical grab offset changed", "vertical", vertical));
         }
     }
     if (failures.length > 0) throw new Error(failures.join("; "));
