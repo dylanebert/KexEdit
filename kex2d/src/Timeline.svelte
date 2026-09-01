@@ -576,15 +576,12 @@ const vTarget = $derived.by((): YFit => {
             if (c.v[i] > hi) hi = c.v[i];
         }
     }
-    const fitted = yFit(lo, hi, V_BASE, V_BAND);
-    // The recovered speed is non-negative and no velocity authoring surface can express a value
-    // below V_BASE, so fitted breathing room may not lower the displayed floor past that base.
-    return { ...fitted, lo: Math.max(V_BASE, fitted.lo) };
+    return yFit(lo, hi, V_BASE, V_BAND);
 });
-// the *displayed* velocity range — `yView`'s twin. It is display-only (the recovered curve is
-// not authored), but it HOLDS during every keyframe or handle drag so a live bake cannot move a
-// held diamond. On release it returns to the independently fitted `vTarget` through the same
-// eased settle idiom as the force view.
+// the displayed recovered-velocity range — `yView`'s twin. The recovered curve itself is derived,
+// but this display projection HOLDS during every keyframe, handle, or length drag so a live bake
+// cannot move a held diamond. On release it returns to the independently fitted `vTarget` through
+// the same eased-settle idiom as the force view.
 let vView: YFit = $state({ lo: V_BAND[0], hi: V_BAND[1], step: 1 });
 let vInit = false;
 let vHeld = false;
@@ -1775,7 +1772,7 @@ function kfDesc(kind: KfKind): KfDesc {
         floor: V_FLOOR,
         setter: setStripKeyframe,
         view: {
-            active: () => dragKf !== null || dragTan !== null,
+            active: () => dragKf !== null || draggingLen || dragTan !== null,
             read: () => vView,
             write: (next) => {
                 vView = next;
