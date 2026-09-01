@@ -78,7 +78,6 @@ import { convertDomain, convertFailed, pickable } from "./domain";
 import { Domain } from "./section";
 import {
     clampView,
-    creationTargets,
     dToU,
     fmt,
     frameAll,
@@ -607,9 +606,9 @@ const pyPerG = $derived.by((): number => {
 // ── force authoring: points on the curve, the keyframe idiom ──
 // filled diamonds at (s, g), authored INPUT (not optimization targets), so no drop-line
 // and no driving/driven. the chart is a WHOLE-TRACK view: it draws every force section's
-// points at once, and authoring is by cursor position — a double-click over a force
-// section's arc adds a point there (no section pre-selection). all edits route through
-// `history`. force points are authored section-local (s from the section entry, arclength
+// points at once. Free force insertion is removed in S4; surviving force edits are selection,
+// value dragging, easing, and the headless authoring command. all edits route through `history`.
+// force points are authored section-local (s from the section entry, arclength
 // ALWAYS — S6), so a point's chart position is its GLOBAL arclength projected onto the
 // chart's own axis (`uOf`), identity in Distance and through the live s↔t table in Time.
 //
@@ -1293,11 +1292,9 @@ function chartU(e: MouseEvent): number {
     return clamp(uAtPx(e.clientX - rect.left), 0, uTotal);
 }
 
-// double-click the chart drops a force point at that s, in whatever force section the
-// cursor is over (resolved on the chart's native axis — no section pre-selection), ON the authored
-// profile (g = the profile's value there — the DAW/AE envelope-insertion identity: a
-// new point never bends the curve, and drags from a known start). over a geo section
-// (or empty), it's a no-op.
+// double-click the chart creates a velocity keyframe on a strip's authored curve. Force
+// keyframes are authored by the surviving headless command surface until segment authoring
+// supplies their boundary gesture; a force-area double-click is inert.
 function chartCreate(e: MouseEvent): void {
     let u = chartU(e);
     // T2: if the double-click is over a strip's extent, create a velocity keyframe on
@@ -1321,38 +1318,16 @@ function chartCreate(e: MouseEvent): void {
             return;
         }
     }
-    // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
-    // bypass, and SNAP_PX all apply) — the AE insert-at-CTI idiom — before resolving the value.
-    // creation targets exclude force points (an occupied s is degenerate) but keep boundaries,
-    // origin, track end, and the parked playhead. no guide flash: a double-click has no gesture
-    // to clear one, and the resolver's guide is a drag-lifetime affordance.
-    if (snapActive(e.ctrlKey || e.metaKey)) {
-        const targets = creationTargets(
-            clamped,
-            bounds,
-            uTotal,
-            paused && cartS !== null ? uOf(cartS) : null,
-        );
-        const hit = snap(uToPx(clamped, u), targets);
-        if (hit !== null) u = clamp(pxToU(clamped, hit), 0, uTotal);
-    }
-    const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
-    if (!c) return; // not over a force section
-    // the lockdown (kex2d-optimize-mode stage 5): in-mode, keys are added only on the
-    // pinning section (the sanctioned way to create give) — other sections are read-only.
-    if (!sectionEditable(editor.pinning, c.id)) return;
-    // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
-    // point never bends the curve), so both position and value derive from the snapped place.
-    // `u` is the chart's own axis (seconds-scaled in Time view); `dOf` (the live table -- a
-    // create has no gesture to freeze one) projects it back to the arclength the store holds.
-    const s = clamp(dOf(u) - c.s0, 0, c.len);
-    selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
+    // No force insertion arm remains in this shared handler. Force keyframes stay selectable
+    // and value-draggable here; placement is reserved for the segment-authoring unit.
+    return;
 }
 
 // ── keyframe drag (unified: force and strip keyframes ride ONE code path — S1's substrate law).
-// drag a diamond in both axes (horizontal = s, vertical = g or v), one undo entry. the
-// last cursor position is kept in canvas space so the per-frame edge-grow (the yView/vView
-// effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a keyframe
+// drag a diamond's value axis (force: vertical g; strip: horizontal s and vertical v), one undo
+// entry. Force horizontal timing is inert in S4. The last cursor position is kept in canvas space
+// so the per-frame edge-grow (the yView/vView effect's drag branch) can re-map it through a grown
+// axis. Shift is a no-op on a keyframe
 // drag: the per-axis gesture-start magnet is the "change just one axis" affordance, so a
 // dominant-axis lock is redundant here.
 // `KfKind` itself lives in `kf-hit.ts`, imported above: the hit classifier is typed over the
@@ -1404,12 +1379,12 @@ function applyKeyframeDrag(): void {
     const axis = kfDesc(kind).axis;
     // both axes clamp the cursor to the chart
     const cx = clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w));
-    // s-axis: same projection for both kinds (arclength through the gesture-frozen table).
-    // NO extent clamp (S5, F2): a keyframe grab never snaps back into its strip/segment
-    // window — the container bound retired everywhere along this one shared path, both
-    // kinds, so a keyframe left outside its container by a resize stays exactly where the
-    // cursor puts it.
-    let sAnchor = dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0));
+    // The strip keyframe retains station dragging. Force timing is intentionally inert in this
+    // interim editor; its value axis remains live below.
+    const canMoveStation = kfDesc(kind).station;
+    let sAnchor = canMoveStation
+        ? dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0))
+        : dragKfS0;
     // v-axis: kind-specific mapping. Preserve the authored value at the press point, then apply
     // only the pointer delta. The separate clamped press ordinate keeps an off-center grab's
     // cursor offset while making a horizontal move an exact zero value delta.
@@ -1419,12 +1394,11 @@ function applyKeyframeDrag(): void {
     snapX = null;
     snapY = null;
     const active = snapActive(dragKfMod);
-    // s-axis snap — same `snapAxis` call for both kinds, kind-specific targets
-    {
+    // s-axis snap remains a strip-keyframe behavior. Force keyframes have no position-axis
+    // gesture, so they neither resolve station targets nor publish an x guide.
+    if (canMoveStation) {
         const uAnchor = uOf(dragKfStartD + sAnchor);
-        const targets = kind === "force"
-            ? sTargets({ exclude: dragKfMemberSet, sameSection: dragKfSection, playhead: true, trackEnd: true })
-            : stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });
+        const targets = stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });
         const startPx = uToPx(clamped, uOf(dragKfStartD + dragKfS0));
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
@@ -1523,7 +1497,9 @@ interface KfDesc {
     activate: (id: number) => void;
     setter: (ecs: State, id: number, s: number, v: number) => void;
     // Keyframe kind owns selection and station landmarks; the value axis owns value projection,
-    // snapping, storage floor, displayed view, fitted target, and edge-growth cap.
+    // snapping, storage floor, displayed view, and edge-growth cap. `station` narrows the shared
+    // gesture without duplicating its selection/value path.
+    station: boolean;
     axis: ValueAxis;
 }
 // Value-axis behavior is shared by every gesture that edits a channel. Keyframe descriptors
@@ -1580,6 +1556,7 @@ const forceKfDesc: KfDesc = {
     selectMany: selectForces,
     activate: activateForce,
     setter: setForcePoint,
+    station: false,
     axis: forceValueAxis,
 };
 const stripKfDesc: KfDesc = {
@@ -1628,6 +1605,7 @@ const stripKfDesc: KfDesc = {
     },
     activate: activateStripKf,
     setter: setStripKeyframe,
+    station: true,
     axis: velocityValueAxis,
 };
 function kfDesc(kind: KfKind): KfDesc {
@@ -1677,8 +1655,8 @@ $effect(() => {
 });
 // the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1;
 // S9 closes F7 by routing the selection grammar itself through `kfDesc` too, not just the
-// drag). No clamp domain (S5, F2): a grabbed keyframe drags freely past its strip/segment
-// extent, both kinds, through this one shared path.
+// drag). Strip timing remains free past its strip extent (S5, F2); force timing is intentionally
+// inert in S4 while both kinds retain shared selection and value dragging.
 function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): void {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -4371,10 +4349,10 @@ onMount(() => {
                     aria-valuenow={Math.round(uOf(cartS ?? 0) * 100) / 100}
                 />
             {/if}
-            <!-- the chart is the force-authoring surface (whole-track): double-click over
-                 a force section's arc drops a point at that (s, g); a bare click on empty
-                 chart deselects. authoring is by cursor position — no section selection
-                 needed. the diamonds sit above it. -->
+            <!-- the chart is the shared keyframe surface: strip double-click creates a strip
+                 keyframe; force diamonds remain selectable and value-draggable, while force
+                 insertion is reserved for segment authoring. a bare click on empty chart
+                 deselects. the diamonds sit above it. -->
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="chartzone"
@@ -5384,8 +5362,8 @@ onMount(() => {
         paint-order: stroke;
     }
 
-    /* the whole-track force-authoring chart surface: double-click places a point, a bare
-       click clears the selection. default cursor (the diamonds carry their own move cursor). */
+    /* the whole-track force surface: a bare click clears the selection. Force insertion is
+       intentionally absent; the diamonds carry their own move cursor. */
     .chartzone {
         fill: transparent;
         pointer-events: all;

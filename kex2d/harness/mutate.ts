@@ -125,7 +125,7 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe snap landing",
         mutations: [
             {
-                old: "            : stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });",
+                old: "        const targets = stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });",
                 new: "            : []; // MUTATED: strip s-axis snap targets killed",
             },
             {

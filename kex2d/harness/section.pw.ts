@@ -254,15 +254,12 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.mouse.click(bb.x + bb.width * 0.5, bb.y + bb.height * 0.62); // empty chart body
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 2. Add a force keyframe BY POSITION over the force section, with nothing
-    // selected — double-click the chart directly below the force clip's center. ──
+    // ── 2. Force-area double-click is inert in S4; no free force keyframe is inserted. ──
     const before = await forceCounts(); // [n_geo(0), 0]
     const fcb = await page.locator(".clip").nth(1).boundingBox(); // the force clip
     if (!fcb) throw new Error("force clip not laid out");
     await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
-    await expect.poll(async () => (await forceCounts())[1]).toBeGreaterThan(before[1]);
-    await page.waitForTimeout(SHOT_MS);
-    if (strip) await page.screenshot({ path: join(OUT, "section-2-keyframe.png"), clip: strip });
+    await expect.poll(async () => forceCounts()).toEqual(before);
 
     // ── 3. Escape peels EXACTLY ONE rung off the section context menu: the menu goes, the
     // section it was summoned on stays selected (root ui.md's layered dismissal). Both rungs are
@@ -656,10 +653,10 @@ test("coefficient field refusal flow", async ({ page, boot }) => {
 
 // Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5): compose the whole chain the
 // spec set out to author — a geo lead-in, a force airtime hill appended after it, then a
-// geo turnaround appended after that — end to end through the REAL affordances (the `+`
-// flyout, double-clicks over the force arc, the fat-hit crest drag). This is the
-// reproducible artifact behind the stage-5 verdict; the hands-on feel pass — where the
-// author sculpts the geometry and judges where the surface fights — stays the user's.
+// geo turnaround appended after that — using the real `+` flyout and surviving force-value
+// drag affordance. Force points are prepared through the headless authoring command because
+// free force-area double-click insertion is removed in S4. This is the reproducible artifact
+// behind the stage-5 verdict; the hands-on feel pass stays the user's.
 // Precise geometry isn't asserted: the claim is the composed chain builds through real
 // clicks and bakes, and the authored hill re-times the ride.
 test("mixed layout dogfood flow", async ({ page, boot }) => {
@@ -685,27 +682,18 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     const bb = await body.boundingBox();
     if (!bb) throw new Error("timeline body not laid out");
 
-    // ── 2. Author an airtime hill on the force section by real double-clicks over its arc
-    // — three points (1g shoulders + a crest), the gotcha's minimum for a dip (one point
-    // is a constant, so it takes three to make a localized bump). appendSection already
-    // seeded two continuation keyframes (stage B) at the section's entry/exit → 2 + 3 = 5. ──
+    // ── 2. Use the two continuation keys seeded on the force section. Free force-area
+    // double-click insertion is removed in S4; the value-drag heir edits the exit seed. ──
     const fcb = await page.locator(".clip").nth(1).boundingBox();
     if (!fcb) throw new Error("force clip not laid out");
-    await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two seeds
-    const cy = bb.y + bb.height * 0.5;
-    for (const f of [0.25, 0.5, 0.75]) await page.mouse.dblclick(fcb.x + fcb.width * f, cy);
-    await expect.poll(async () => (await forceCounts())[1]).toBe(5); // + the three hill points
+    await page.locator(".clip").nth(1).click(); // select the appended force section
+    await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two continuation seeds
 
-    // pull the crest below 1g via its fat hit target → an airtime dip that re-times the
-    // ride (the bake's total time shifts). five points now sort by x as: entry seed, the two
-    // 1g shoulders flanking the crest, the crest itself, exit seed — the crest is the MIDDLE
-    // of the five, not the middle of the three authored points. `.fhit` is shared with
-    // velocity-strip keyframes, and `seed()` (S3) carries no strip of its own (the track-start
-    // one-shot is a distinct point kind) — the five under test are the only five on the page,
-    // still scoped to the force clip's own x-range for the same reason a future strip would need it.
+    // Pull the exit seed below 1g via its fat hit target → an airtime change that re-times the
+    // ride (the bake's total time shifts). `.fhit` is shared with velocity-strip keyframes.
     const tBefore = await tTotal();
     const hits = page.locator(".fhit");
-    await expect(hits).toHaveCount(5);
+    await expect(hits).toHaveCount(2);
     const centers = await hits.evaluateAll(
         (els, range) =>
             els
@@ -715,8 +703,8 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
                 .sort((a, b) => a.x - b.x),
         { x0: fcb.x, x1: fcb.x + fcb.width },
     );
-    expect(centers.length).toBe(5);
-    const crest = centers[2];
+    expect(centers.length).toBe(2);
+    const crest = centers[1];
     await page.mouse.move(crest.x, crest.y);
     await page.mouse.down();
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
@@ -755,6 +743,10 @@ test("pin mode flow", async ({ page, boot }) => {
     const lockedCount = () => kexCall(page, "lockedCount");
     const forceSelIds = () => kexCall(page, "forceSelIds");
     const forceCount = () => kexCall(page, "forceCount");
+    const forceU = () =>
+        kexCall(page, "forceU") as Promise<
+            { id: number; section: number; s: number; g: number; u: number }[]
+        >;
     const panel = page.locator(".pinpanel");
     const solveBtn = page.locator(".pinpanel .solve");
     const reason = page.locator(".pinpanel .reason");
@@ -1001,18 +993,36 @@ test("pin mode flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "pin-2-locked.png"), clip: strip });
 
     // an in-mode-added key is free by construction: Solve re-arms and the reason clears —
-    // and the create lands in the SANDBOX.
-    const body = page.locator(".dock .body");
-    const bodyBox = await body.boundingBox();
-    const clipBox = await page.locator(".clip").first().boundingBox();
-    if (!bodyBox || !clipBox) throw new Error("timeline not laid out");
-    await page.mouse.dblclick(clipBox.x + clipBox.width * 0.08, bodyBox.y + bodyBox.height * 0.5);
+    // and the surviving headless force authoring command lands in the SANDBOX. Free chart-area
+    // insertion was removed in S4, so select the resulting diamond explicitly before Delete.
+    const addedId = await kexCall(page, "placeForce", 2, 1);
     await expect.poll(forceCount).toBe(6);
+    expect(addedId).toBeGreaterThan(0);
     expect(await sandboxDepth()).toBe(1); // the create is a sandbox entry
     expect(await undoDepth()).toBe(base); // …not an outer one
     await expect(solveBtn).toBeEnabled();
     await expect(reason).toHaveCount(0);
-    await page.keyboard.press("Delete"); // the create selected it; Del removes it again
+    const addedRow = (await forceU()).find((row) => row.id === addedId);
+    const addedClip = await page.locator(".clip").first().boundingBox();
+    const [, addedPxPerU] = await kexCall(page, "xView");
+    if (!addedRow || !addedClip) throw new Error("sandbox force key not laid out");
+    const addedHit = await page.locator(".fhit").evaluateAll(
+        (els, x) => {
+            const points = els.map((el) => {
+                const r = el.getBoundingClientRect();
+                return r.x + r.width / 2;
+            });
+            return points
+                .map((point, index) => ({ index, distance: Math.abs(point - x) }))
+                .sort((a, b) => a.distance - b.distance)[0]?.index;
+        },
+        addedClip.x + addedRow.s * addedPxPerU,
+    );
+    if (addedHit === undefined) throw new Error("sandbox force key has no hit target");
+    const added = await hit(addedHit);
+    await page.mouse.click(added.x, added.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.keyboard.press("Delete"); // explicit selection; Del removes it again
     await expect.poll(forceCount).toBe(5);
     expect(await sandboxDepth()).toBe(2);
     await expect(solveBtn).toBeDisabled();
@@ -1049,14 +1059,31 @@ test("pin mode flow", async ({ page, boot }) => {
     // stays in-mode with the draft untouched, its readout on the shared notice. ──
     await page.keyboard.press("Escape"); // clear the selection — a member click would PROMOTE
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
-    const crest2 = await hit(2);
+    const crestRow = (await forceU()).find((row) => row.g === 0);
+    const crestClip = await page.locator(".clip").first().boundingBox();
+    const [, crestPxPerU] = await kexCall(page, "xView");
+    if (!crestRow || !crestClip) throw new Error("crest force key not laid out");
+    const crestTargetIndex = await page.locator(".fhit").evaluateAll(
+        (els, x) => {
+            const points = els.map((el) => {
+                const r = el.getBoundingClientRect();
+                return r.x + r.width / 2;
+            });
+            return points
+                .map((point, index) => ({ index, distance: Math.abs(point - x) }))
+                .sort((a, b) => a.distance - b.distance)[0]?.index;
+        },
+        crestClip.x + crestRow.s * crestPxPerU,
+    );
+    if (crestTargetIndex === undefined) throw new Error("crest force key has no hit target");
+    const crest2 = await hit(crestTargetIndex);
     await page.mouse.click(crest2.x, crest2.y);
     await expect(page.locator(".ptip")).toBeVisible();
     const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
     await expect(gField).toBeEnabled(); // the pinning section's own fields stay live in-mode
     await gField.fill("1");
-    await gField.press("Enter");
-    await expect.poll(async () => sorted(await forces())[2].g).toBe(1);
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await forces()).every((row) => row.g === 1)).toBe(true);
     expect(await sandboxDepth()).toBe(3); // the popover edit is a sandbox entry
     const flattened = sorted(await forces());
     await solveBtn.click();
@@ -1076,7 +1103,7 @@ test("pin mode flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
     expect(await sandboxDepth()).toBe(2); // in-mode undo popped it (redo clears on the next edit)
-    const crest3 = await hit(2);
+    const crest3 = await hit(crestTargetIndex);
     await page.mouse.click(crest3.x, crest3.y);
     await page.keyboard.press("ArrowUp");
     await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
