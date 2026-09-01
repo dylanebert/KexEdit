@@ -7,6 +7,7 @@
       "dependencies": {
         "@dylanebert/shallot": "^0.9.4",
         "svelte": "^5.56.10",
+        "typegpu": "~0.12.4",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.5.10",
@@ -16,7 +17,7 @@
         "@webgpu/types": "^0.1.72",
         "svelte-check": "^4.7.6",
         "typescript": "~6",
-        "unplugin-typegpu": "~0.11.6",
+        "unplugin-typegpu": "~0.12.3",
         "vite": "^8.2.2",
       },
     },
@@ -58,7 +59,7 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.10", "", { "os": "win32", "cpu": "x64" }, "sha512-M+2dgBsl3lXRiTfgPVc2p3anS4Tocojke4rzFLScZ2Y/wmF+36dRb1iHCLiyGqOzQGyTplZH1HnEYviiAqi3nA=="],
 
-    "@dylanebert/shallot": ["@dylanebert/shallot@0.9.4", "", { "dependencies": { "@webgpu/types": "^0.1.70", "meshoptimizer": "^0.22.0", "unplugin-typegpu": "~0.12.1", "vite": "^8.0.0" }, "peerDependencies": { "playwright": "^1.0.0", "typegpu": "~0.12.0" }, "optionalPeers": ["playwright"], "bin": { "shallot": "bin/cli.ts" } }, "sha512-YrWo7rPpKGOmMs+oaWOQ4uVX+QLszueq9Xh02x5/G1b9vKfeNwF1vyVaENFiBW6x9d8OrjAoqAiL2Zy7isMJTQ=="],
+    "@dylanebert/shallot": ["@dylanebert/shallot@0.9.5", "", { "dependencies": { "@webgpu/types": "^0.1.70", "meshoptimizer": "^0.22.0", "unplugin-typegpu": "~0.12.1", "vite": "^8.0.0" }, "peerDependencies": { "playwright": "^1.0.0", "typegpu": "~0.12.0" }, "optionalPeers": ["playwright"], "bin": { "shallot": "bin/cli.ts" } }, "sha512-fR4K3rBJa6v4vYZmSTPjZoQVo/14V/ZL9/Z1pJac3dp1j57/VIHc3g46lQtRrgjbzqcCOoP1V9eIEFazQ0/tCA=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
@@ -258,9 +259,9 @@
 
     "svelte-check": ["svelte-check@4.7.6", "", { "dependencies": { "@jridgewell/trace-mapping": "^0.3.25", "@sveltejs/load-config": "^0.2.3", "chokidar": "^4.0.1", "fdir": "^6.2.0", "picocolors": "^1.0.0", "sade": "^1.7.4" }, "peerDependencies": { "svelte": "^4.0.0 || ^5.0.0-next.0", "typescript": "^5.0.0 || ^6.0.0" }, "bin": { "svelte-check": "bin/svelte-check" } }, "sha512-t2scM//ZuVbSY/T2w6FSBw1v9s2NEmh/g+sy1lqtosW5ylBV5AF4wFb1Ts9Kf3MbfPDUDJDZ9L436YT0SPTdvw=="],
 
-    "tinyest": ["tinyest@0.3.2", "", {}, "sha512-1wqSt97RLezWzeogLSVXHr+E3jpYO8jxyaK2AIdJeGoZZTCubwNxQ9IqU5gbQpJVcxlbPugPAsII+m9/gqpPSA=="],
+    "tinyest": ["tinyest@0.3.3", "", {}, "sha512-LUDiIzyDUQ1mGo8Bam9c7Dubid6Psx14zMzGNwwvOEmNs03FWNUtOrHVXd+TcCorzogQ24Rk0fcfdZ+9rGr1Fw=="],
 
-    "tinyest-for-wgsl": ["tinyest-for-wgsl@0.3.3", "", { "dependencies": { "tinyest": "~0.3.1" } }, "sha512-fo1oDSWVm901/2oZPZe6TsDjNPDhz/RArGSOLxon58NhkdxtD5GYovFj+gF1qrIDlxMpTxU/mPtYZNhFP2oJZw=="],
+    "tinyest-for-wgsl": ["tinyest-for-wgsl@0.4.1", "", { "dependencies": { "tinyest": "~0.3.3" } }, "sha512-2xCW2a6uJ+8jzYnaeVcJ1HdYBO3OYOsRNUdLEQ1D0O7KekfZkZ46qloczQRVozzbR+J1UocWpXI8UfF2E4CLOg=="],
 
     "tinyglobby": ["tinyglobby@0.2.17", "", { "dependencies": { "fdir": "^6.5.0", "picomatch": "^4.0.4" } }, "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g=="],
 
@@ -268,7 +269,7 @@
 
     "typed-binary": ["typed-binary@4.3.3", "", {}, "sha512-W2hLsSzt3k/tg38gDE4Fn/QiwcoqGuUHBc2cb3mXuH7KcYxe/GM57vzW14s2/bawB4R5knGgGq8Xb57vsaJ4Sg=="],
 
-    "typegpu": ["typegpu@0.11.9", "", { "dependencies": { "tinyest": "~0.3.2", "tsover-runtime": "^0.0.7", "typed-binary": "^4.3.3" }, "bin": { "typegpu": "./bin.mjs" } }, "sha512-AqBV6P9lW2jA7pEVDeiMD7Qoza9doPgueQbwyUyf09u4ndb9jOttHwpZ18c+BEzwLHaPlV50jw0hx5QsmVJGNg=="],
+    "typegpu": ["typegpu@0.12.4", "", { "dependencies": { "tinyest": "~0.3.3", "tsover-runtime": "^0.0.7", "typed-binary": "^4.3.3" }, "bin": { "typegpu": "./bin.mjs" } }, "sha512-4+w79fNPKFp7q/2lVJqNRo4ewr/4+IHuo1d4g2kSYyB53bx8TtbN8I+y2hO8TxNeHhRsUhKsAViDZX7mhtQDAg=="],
 
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
@@ -276,7 +277,7 @@
 
     "unplugin": ["unplugin@3.3.0", "", { "dependencies": { "@jridgewell/remapping": "^2.3.5", "picomatch": "^4.0.4", "webpack-virtual-modules": "^0.6.2" }, "peerDependencies": { "@farmfe/core": "*", "@rspack/core": "*", "bun-types-no-globals": "*", "esbuild": "*", "rolldown": "*", "rollup": "*", "unloader": "*", "vite": "*", "webpack": "*" }, "optionalPeers": ["@farmfe/core", "@rspack/core", "bun-types-no-globals", "esbuild", "rolldown", "rollup", "unloader", "vite", "webpack"] }, "sha512-qa66K+crbfyE6JK10GjvbJeRrOsuC/JpbnHctfyp/i4oBTxWOzJfRZyDiOk1PtErMFRu8JhsU/wPvOdBNWe5Rg=="],
 
-    "unplugin-typegpu": ["unplugin-typegpu@0.11.6", "", { "dependencies": { "@babel/parser": "^7.29.0", "@babel/traverse": "^7.29.0", "@babel/types": "^7.29.0", "ast-kit": "^2.2.0", "defu": "^6.1.4", "magic-string": "^0.30.21", "pathe": "^2.0.3", "picomatch": "^4.0.4", "tinyest": "~0.3.1", "tinyest-for-wgsl": "~0.3.2", "unplugin": "^3.0.0" }, "peerDependencies": { "typegpu": "^0.11.9" } }, "sha512-vtSqYUDOzlGkrlOTEa7wkaaz8HQdV/A7tktebBbSSxobFjEZqgeRz/GYF1KJXPCreNJ7HwBA+iEdl3xBKHHLPg=="],
+    "unplugin-typegpu": ["unplugin-typegpu@0.12.3", "", { "dependencies": { "@babel/parser": "^7.29.0", "@babel/traverse": "^7.29.0", "@babel/types": "^7.29.0", "ast-kit": "^2.2.0", "defu": "^6.1.4", "magic-string": "^0.30.21", "pathe": "^2.0.3", "picomatch": "^4.0.4", "tinyest": "~0.3.3", "tinyest-for-wgsl": "~0.4.1", "unplugin": "^3.0.0" }, "peerDependencies": { "typegpu": "^0.12.4" } }, "sha512-60jIV4kH2jt2GMCtPIKjnTiLMrtRGggUD+hPc/8anJrC1TDfBYwnjcQsX0fCJpK24zlF3Ivi3fPAN6o/cRmz+Q=="],
 
     "vite": ["vite@8.2.2", "", { "dependencies": { "lightningcss": "^1.33.0", "picomatch": "^4.0.5", "postcss": "^8.5.26", "rolldown": "~1.2.4", "tinyglobby": "^0.2.17" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.4.0 || ^0.5.0", "esbuild": "^0.27.0 || ^0.28.0", "jiti": ">=1.21.0", "less": "^4.0.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q=="],
 
@@ -293,6 +294,8 @@
     "unplugin-typegpu/magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
 
     "@dylanebert/shallot/unplugin-typegpu/magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
+
+    "@dylanebert/shallot/unplugin-typegpu/tinyest": ["tinyest@0.3.2", "", {}, "sha512-1wqSt97RLezWzeogLSVXHr+E3jpYO8jxyaK2AIdJeGoZZTCubwNxQ9IqU5gbQpJVcxlbPugPAsII+m9/gqpPSA=="],
 
     "@dylanebert/shallot/unplugin-typegpu/tinyest-for-wgsl": ["tinyest-for-wgsl@0.4.0", "", { "dependencies": { "tinyest": "~0.3.1" } }, "sha512-3vkeNf74HrJ1C6QJUiL92ArsaigD8ra52JBMTeyDfqEz6SawyCO1aiF+XCKiMt3MBaL5QIsKOHG5gl/v21MqKA=="],
   }
