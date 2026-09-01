@@ -5,8 +5,7 @@
  * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
  *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
  *   Meters/Seconds). The residual class, honestly.
- * - `structure` — changes the CHAIN, reaching past the subject to a neighbor (Cut makes a new
- *   section).
+ * - `structure` — changes the CHAIN by making a new section (Cut splits one apart).
  * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form

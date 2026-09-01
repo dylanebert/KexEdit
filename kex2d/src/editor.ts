@@ -1200,9 +1200,9 @@ export function selectSection(id: number | null, mode: SelectMode = "replace"): 
 }
 
 /** select a velocity strip by stable id. "replace" (default) collapses the strip set to `id`
- *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by today's gestures
- *  today but kept for the same reason `selectForces`' set shape is — a future Cut/Join bulk
- *  action). either non-clearing form sweeps the other kinds, mirroring `selectSection`. */
+ *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by today's gestures,
+ *  kept for bulk strip selection). either non-clearing form sweeps the other kinds, mirroring
+ *  `selectSection`. */
 export function selectStrip(id: number | null, mode: SelectMode = "replace"): void {
     if (id === null || mode === "replace") selectSingle("strip", id);
     else toggleSingle("strip", id);

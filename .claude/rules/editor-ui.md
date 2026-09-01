@@ -305,14 +305,7 @@ The worked example of the layered-expressiveness contract's summoned inner layer
   displayed before the delete (the authored out-vector, else the frozen `theta`). Re-head is own
   move + append only; only a user Reset clears authored state. **A demotion preserves** (undo
   restores the authored interior state). A split's boundary tip keeps its tangent, since it
-  still shapes the downstream first segment under the one-node view. A join carries the authored
-  out-half the other way: an explicit downstream node 0 is authored intent on the forward side, so
-  it rotates into the upstream frame and stamps the merged tip (`in` = the tip's own in-half, `out`
-  = the rotated downstream out), the tip's mode surviving only if the merged pair still satisfies
-  it. An `Auto` node 0 stamps nothing — its stored `theta` is placement bookkeeping. The cost is
-  deliberate: an `Auto` upstream tip merging against an explicit node 0 does get concretized,
-  losing its live chord rescale, because the author's forward gesture outranks the tip's
-  inference.
+  still shapes the downstream first segment under the one-node view.
 - **The explicit/inferred fork is a glyph channel only where it names a layer.** In the viewport a
   node's tangent being stored or still inferred is not a state the author picks (inferred is simply
   pre-first-drag, and it already displays `Aligned` checked), so every knob draws identically. On
@@ -437,7 +430,7 @@ a declared list of the walking fields, and an assert that the fork not needing t
   |---|---|---|
   | `create` | the document gains an object | Add, the append flyout's Geo/Force |
   | `modify` | changes the subject that summoned the menu, or enters / acts in / leaves a mode scoped to it | Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock, Meters/Seconds |
-  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | Cut, Join |
+  | `structure` | changes the CHAIN — reaches past the subject to a neighbor | Cut |
   | `lifecycle` | the subject ends at its creation state or gone | Reset, then Delete |
 
   `modify` is the residual class, defined as such honestly. `danger` implies the terminal row of
@@ -457,8 +450,7 @@ a declared list of the walking fields, and an assert that the fork not needing t
   rejection doesn't transfer: it argued against splitting `mode` out of `modify` on a cost basis —
   mode's rows are a small fraction of one menu, and splitting them out gave the four-row section
   menu three separators for no new taxonomic class. `structure` is a real class the other three
-  can't express (a subject-only test can't see "destroys its neighbor"), and it costs the six-row
-  section menu (Convert, Pin, Cut, Join, Reset, Delete) only two separators.
+  can't express, and it costs the five-row section menu (Convert, Pin, Cut, Reset, Delete) only two separators.
 
   `GROUPS` in kex2d `src/menu.ts` is the source of truth for the group set and its canonical order;
   the table above is its prose mirror.
