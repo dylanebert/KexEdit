@@ -71,7 +71,7 @@ Every chart axis is one or the other, and the distinction decides what may resca
 the kex2d timeline feel bug; the NLE reference: AE/Premiere never rezoom the timeline when a layer
 shortens):
 
-- **A value axis displays.** Auto-fit freely — the y g-range fits like the AE/Unity curve editors.
+- **A value axis displays.** Auto-fit freely at rest — the y g-range fits like the AE/Unity curve editors. During a live gesture its fitted target remains live; the root `ui.md` § Surfaces hold still governs the held displayed axis and edge growth.
 - **A document axis addresses.** It's the spatial home of every clip, keyframe, and guide, so
   content edits never rescale it — pan/zoom change only by explicit navigation (wheel, navigator,
   `F`, initial framing). Enforce as two paths: the content-edit clamp is pan-only; the fit floor
@@ -107,6 +107,8 @@ surface copies this shape:
   per-axis **gesture-start** landmark (the grab s / g) is a *direction-intent affordance, not a
   snap target*: it magnetizes in **every** mode, so a mostly-single-axis drag snaps the other axis
   back to exactly where it started (the "change just one axis" affordance) even under the bypass.
+  This snapping magnet is distinct from the drag anchor: it expresses direction intent, while the
+  press-relative anchor preserves the grab point independently of snapping.
   Grid steps are named constants (kex2d `S_GRID` / `G_GRID`, `timeline.ts`), the merge is
   landmark-over-grid (a landmark within `SNAP_PX` wins its radius, else the grid quantizes — the
   viewport geo-grid precedent), and only a landmark flashes a guide (the grid is ambient — the axis
@@ -704,6 +706,12 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   surface + behavior is root `ui.md` "Fields".
 - **Dismissal is layered** (root `ui.md` "Surfaces hold still"): keyframe selection is the
   transient layer between the focused field and the surface.
+- **Keyframe drags are press-relative.** Each candidate starts from the authored value and adds
+  the pointer's delta from the press ordinate, with both ordinates clamped through the same chart
+  bounds. A horizontal move therefore cannot change value, while vertical motion preserves the
+  cursor's original offset from the diamond; do not recenter the anchor or derive it from a live
+  view scale. The gesture-start magnet above is a separate snapping affordance, not this invariant;
+  the root `ui.md` § Surfaces hold still supplies the held-view law.
 - **No dominant-axis lock on a keyframe drag.** The per-axis gesture-start magnet (Snapping, above)
   already snaps the near-still axis back to its start, so a Shift lock is redundant; Shift is a
   no-op on a keyframe drag. Single-axis intent is the magnet's job, not a modifier's.

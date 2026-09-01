@@ -2156,15 +2156,49 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         if (!body) throw new Error("timeline body not laid out");
         return { top: body.y + CHART_TOP, bottom: body.y + body.height - CHART_BOT_PAD };
     };
+    const readAxes = () =>
+        page.evaluate(() => {
+            const k = (
+                window as unknown as {
+                    __kex: Kex & {
+                        valueAxes(): {
+                            gRange: [number, number];
+                            gFit: [number, number];
+                            vRange: [number, number];
+                            vFit: [number, number];
+                        };
+                    };
+                }
+            ).__kex;
+            return k.valueAxes();
+        });
     const growFrom = async (
         point: { x: number; y: number },
         edge: number,
         side: "top" | "bottom" = "top",
+        id?: number,
+        yOffset = 10,
+        overshoot = 120,
     ) => {
+        const press = { x: point.x, y: point.y + yOffset };
+        const cursorY = side === "top" ? edge - overshoot : edge + overshoot;
         await page.keyboard.down("Control");
-        await page.mouse.move(point.x, point.y);
+        await page.mouse.move(press.x, press.y);
         await page.mouse.down();
-        await page.mouse.move(point.x, side === "top" ? edge - 140 : edge + 140, { steps: 8 });
+        const grabbed =
+            id === undefined
+                ? null
+                : ((
+                      (await kexCall(page, "stripKfPx")) as {
+                          id: number;
+                          x: number;
+                          y: number;
+                      }[]
+                  ).find((candidate) => candidate.id === id) ?? null);
+        if (id !== undefined && grabbed === null)
+            throw new Error("off-center strip keyframe grab was not resolved");
+        await page.mouse.move(press.x, cursorY, { steps: 8 });
+        return { press, cursorY, grabbed };
     };
     const finish = async () => {
         await page.mouse.up();
@@ -2185,18 +2219,74 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
     }[];
     const stripPoint = stripPoints.find((candidate) => candidate.id === stripKfId);
     if (!stripPoint) throw new Error("strip edge-growth keyframe not laid out");
-    const stripBeforeV = await kexCall(page, "vRange");
-    const stripBeforeG = await kexCall(page, "gRange");
     const { top, bottom } = await chartBounds();
-    await growFrom(stripPoint, top);
+    const readStrip = () =>
+        page.evaluate((id) => {
+            const k = (window as unknown as { __kex: Kex }).__kex;
+            const axes = k.valueAxes();
+            const row = k
+                .stripKeyframesOf(
+                    (k.stripsOf(0) as { id: number }[]).find((s) =>
+                        (k.stripKeyframesOf(s.id) as { id: number }[]).some((x) => x.id === id),
+                    )?.id ?? -1,
+                )
+                .find((x) => x.id === id);
+            const point = k.stripKfPx().find((x) => x.id === id);
+            return { axes, row, point };
+        }, stripKfId);
+    const stripBeforeRead = await readStrip();
+    const stripBefore = stripBeforeRead.axes;
+    if (!stripBeforeRead.row || !stripBeforeRead.point)
+        throw new Error("strip edge-growth keyframe read was not complete");
+    const stripGrab = await growFrom(stripPoint, top, "top", stripKfId, -10);
     await expect
-        .poll(async () => (await kexCall(page, "vRange"))[1])
-        .toBeGreaterThan(stripBeforeV[1] + 0.01);
-    const stripDuringV = await kexCall(page, "vRange");
-    // The resting fit may have a rounded lower bound below V_BASE; the edge-grow cap applies to
-    // GROWTH, so a near-top drag must never make that lower bound move farther downward.
-    expect(stripDuringV[0]).toBe(stripBeforeV[0]);
-    expect(await kexCall(page, "gRange")).toEqual(stripBeforeG);
+        .poll(async () => (await readStrip()).axes.vRange[1])
+        .toBeGreaterThan(stripBefore.vRange[1] + 0.01);
+    // The top-edge press is 10px above the diamond, so it remains in the production candidate
+    // list while the pointer overshoots strongly. Compare the signed value-space offset against
+    // the clamped cursor ordinate, not the raw off-canvas pointer.
+    if (!stripGrab.grabbed) throw new Error("off-center strip keyframe grab was not resolved");
+    const grabOffsetPx = stripGrab.press.y - stripGrab.grabbed.y;
+    expect(Math.abs(grabOffsetPx + 10)).toBeLessThan(1);
+    const chartHeight = bottom - top;
+    const valueAt = (range: [number, number], y: number): number =>
+        range[0] +
+        (1 - (Math.max(top, Math.min(bottom, y)) - top) / chartHeight) * (range[1] - range[0]);
+    const stripDuring = await readStrip();
+    if (!stripDuring.row || !stripDuring.point)
+        throw new Error("grown strip keyframe left the production candidate list");
+    const growthFactor =
+        (stripDuring.axes.vRange[1] - stripDuring.axes.vRange[0]) /
+        (stripBefore.vRange[1] - stripBefore.vRange[0]);
+    // 120px of overshoot must produce a visible multi-percent span increase; this catches a
+    // growth path that only nudges the edge or never applies the active channel's cap.
+    expect(growthFactor).toBeGreaterThan(1.02);
+    const clampedCursorY = Math.max(top, Math.min(bottom, stripGrab.cursorY));
+    const expectedValueOffset =
+        stripBeforeRead.row.v - valueAt(stripDuring.axes.vRange, stripGrab.press.y);
+    // The chart coordinates are CSS pixels while the authored value is f32; one value-axis
+    // pixel is the derived floor for this comparison, so the signed offset may round once.
+    expect(stripDuring.row.v - valueAt(stripDuring.axes.vRange, clampedCursorY)).toBeCloseTo(
+        expectedValueOffset,
+        0,
+    );
+    const expectedDiamondY =
+        top +
+        (1 -
+            (stripDuring.row.v - stripDuring.axes.vRange[0]) /
+                (stripDuring.axes.vRange[1] - stripDuring.axes.vRange[0])) *
+            chartHeight;
+    expect(stripDuring.point.y - clampedCursorY).toBeCloseTo(expectedDiamondY - clampedCursorY, 1);
+    // The strip edit keeps the velocity fit inside its resting band while the recovered force
+    // target moves; both target fields are asserted from this one batched edge read.
+    expect(stripDuring.axes.gFit).not.toEqual(stripBefore.gFit);
+    expect(stripDuring.axes.vFit).toEqual(stripBefore.vFit);
+    await page.mouse.move(stripGrab.press.x, stripGrab.press.y);
+    const stripReturn = await readStrip();
+    if (!stripReturn.row) throw new Error("returned strip keyframe read was not complete");
+    expect(stripReturn.row.v).toBe(stripBeforeRead.row.v);
+    expect(stripDuring.axes.vRange[0]).toBe(stripBefore.vRange[0]);
+    expect(stripDuring.axes.gRange).toEqual(stripBefore.gRange);
     await finish();
     await frames(page, 40); // allow the released g-view's eased return to finish before the next arm
 
@@ -2214,16 +2304,14 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         (await kexCall(page, "stripKfPx")) as { id: number; x: number; y: number }[]
     ).find((candidate) => candidate.id === bottomKfId);
     if (!bottomPoint) throw new Error("strip lower-edge keyframe not laid out");
-    expect(bottomPoint.y).toBeGreaterThanOrEqual(bottom - 140);
-    const bottomBeforeV = await kexCall(page, "vRange");
-    const bottomBeforeG = await kexCall(page, "gRange");
+    const bottomBefore = await readAxes();
     await growFrom(bottomPoint, bottom, "bottom");
-    await expect.poll(async () => (await kexCall(page, "vRange"))[0]).toBe(bottomBeforeV[0]);
-    const bottomDuringV = await kexCall(page, "vRange");
-    expect(bottomDuringV[0]).toBeGreaterThanOrEqual(bottomBeforeV[0]);
-    expect(bottomDuringV[0]).toBe(bottomBeforeV[0]);
-    expect(bottomDuringV[1]).toBe(bottomBeforeV[1]);
-    expect(await kexCall(page, "gRange")).toEqual(bottomBeforeG);
+    await expect.poll(async () => (await readAxes()).vRange[0]).toBe(bottomBefore.vRange[0]);
+    const bottomDuring = await readAxes();
+    expect(bottomDuring.vRange[0]).toBeGreaterThanOrEqual(bottomBefore.vRange[0]);
+    expect(bottomDuring.vRange[0]).toBe(bottomBefore.vRange[0]);
+    expect(bottomDuring.vRange[1]).toBe(bottomBefore.vRange[1]);
+    expect(bottomDuring.gRange).toEqual(bottomBefore.gRange);
     await finish();
 
     // Force arm: the inverse route grows gRange while the velocity view remains byte-identical.
@@ -2246,14 +2334,14 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         .map((point) => ({ point, distance: Math.abs(point.x - expectedX) }))
         .sort((a, b) => a.distance - b.distance)[0]?.point;
     if (!forcePoint) throw new Error("force edge-growth hit target not laid out");
-    const forceBeforeV = await kexCall(page, "vRange");
-    const forceBeforeG = await kexCall(page, "gRange");
+    const forceBefore = await readAxes();
     const forceBounds = await chartBounds();
     await growFrom(forcePoint, forceBounds.top);
     await expect
-        .poll(async () => (await kexCall(page, "gRange"))[1])
-        .toBeGreaterThan(forceBeforeG[1] + 0.01);
-    expect(await kexCall(page, "vRange")).toEqual(forceBeforeV);
+        .poll(async () => (await readAxes()).gRange[1])
+        .toBeGreaterThan(forceBefore.gRange[1] + 0.01);
+    const forceDuring = await readAxes();
+    expect(forceDuring.vRange).toEqual(forceBefore.vRange);
     await finish();
 
     // Mixed arm: make the strip keyframe active last, then drag it. The shared set has no vertical
@@ -2291,15 +2379,15 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         (await kexCall(page, "stripKfPx")) as { id: number; x: number; y: number }[]
     ).find((candidate) => candidate.id === mixedKf);
     if (!liveMixedPoint) throw new Error("mixed active strip keyframe moved out of view");
-    const mixedBeforeV = await kexCall(page, "vRange");
-    const mixedBeforeG = await kexCall(page, "gRange");
+    const mixedBefore = await readAxes();
     const mixedBounds = await chartBounds();
     await growFrom(liveMixedPoint, mixedBounds.top);
     await expect
-        .poll(async () => (await kexCall(page, "vRange"))[1])
-        .toBeGreaterThan(mixedBeforeV[1] + 0.01);
-    expect((await kexCall(page, "vRange"))[0]).toBe(mixedBeforeV[0]);
-    expect(await kexCall(page, "gRange")).toEqual(mixedBeforeG);
+        .poll(async () => (await readAxes()).vRange[1])
+        .toBeGreaterThan(mixedBefore.vRange[1] + 0.01);
+    const mixedDuring = await readAxes();
+    expect(mixedDuring.vRange[0]).toBe(mixedBefore.vRange[0]);
+    expect(mixedDuring.gRange).toEqual(mixedBefore.gRange);
     await finish();
 });
 

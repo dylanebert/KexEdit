@@ -129,8 +129,8 @@ const PAIRS: Pair[] = [
                 new: "            : []; // MUTATED: strip s-axis snap targets killed",
             },
             {
-                old: '        const targets = kind === "force" ? gTargets(dragKfMemberSet) : vTargets(dragKfMemberSet);',
-                new: '        const targets = kind === "force" ? gTargets(dragKfMemberSet) : []; // MUTATED: strip v-axis snap targets killed',
+                old: "            axis.targets(dragKfMemberSet),",
+                new: '            kind === "force" ? axis.targets(dragKfMemberSet) : [], // MUTATED: strip v-axis snap targets killed',
             },
         ],
     },
@@ -157,11 +157,11 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe multi-member drag",
         mutations: [
             {
-                old: "        const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                old: "        const members = set.size > 1 ? forceDesc.pts().filter((m) => set.has(m.id)) : [pt];",
                 new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
             {
-                old: "        const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                old: "        const members = set.size > 1 ? stripDesc.pts().filter((m) => set.has(m.id)) : [pt];",
                 new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
         ],
