@@ -71,11 +71,12 @@ Every chart axis is one or the other, and the distinction decides what may resca
 the kex2d timeline feel bug; the NLE reference: AE/Premiere never rezoom the timeline when a layer
 shortens):
 
-- **A value axis displays.** Auto-fit is an at-rest behavior — the y g-range fits like the AE/Unity
-  curve editors. During a live gesture its fitted target remains live; the root `ui.md` § Surfaces
-  hold still governs the held displayed axis. Edge growth belongs only to the active anchor's
-  channel: a strip-keyframe drag grows the velocity range while the force range stays unchanged,
-  and a force-keyframe drag does the inverse.
+- **A value axis displays.** Auto-fit is an at-rest behavior. Each value channel fits its range like
+  the AE/Unity curve editors. During a live gesture its fitted target remains live; the root `ui.md`
+  § Surfaces hold still governs the held displayed axis: only pointer overshoot past an edge grows
+  it, in proportion to that overshoot. Edge growth belongs only to the active anchor's channel: a
+  strip-keyframe drag grows the velocity range while the force range stays unchanged, and a
+  force-keyframe drag does the inverse.
 - **A document axis addresses.** It's the spatial home of every clip, keyframe, and guide, so
   content edits never rescale it — pan/zoom change only by explicit navigation (wheel, navigator,
   `F`, initial framing). Enforce as two paths: the content-edit clamp is pan-only; the fit floor
@@ -714,7 +715,7 @@ The proven-reference set for any keyframe-on-a-chart surface (worked example: ke
   the pointer's delta from the press ordinate, with both ordinates clamped through the same chart
   bounds. A horizontal move therefore cannot change value. Vertical motion preserves the cursor's
   original offset from the diamond in value space; that offset survives view growth, while its
-  pixel gap scales with the span. Never reapply a stored pixel offset through the current view
+  pixel gap follows the span's scale. Never reapply a stored pixel offset through the current view
   scale. Never rebase the stored press ordinate: write it once, at press; pointer movement supplies
   only the current ordinate. Do not recenter the anchor. The gesture-start magnet above is a
   separate snapping affordance, not this invariant; the root `ui.md` § Surfaces hold still supplies
