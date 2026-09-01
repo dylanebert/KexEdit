@@ -322,14 +322,9 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // `ew-resize` cursor survive selection, while the selected span body keeps hover suppression.
 // The state table below covers both channels, including stationary release.
 //
-// Finding 2 (should-fix, not blocker): a foreign gesture holding pointer capture on `canvas`
-// was theorized to leave `.hbandzone`'s own `onpointermove`/`onpointerleave` unfired, so
-// `bandHoverX` would freeze and re-derive into a stale hover once `editor.dragging` dropped.
-// The narrow release legs below witness the boundary directly: only a real `pointerup` whose
-// release point remains inside the horizontal band preserves the stationary handle; `bandUp` clears
-// off-band `pointerup` and `pointercancel` synchronously, with the `$effect` serving only as a
-// backstop. This is the capture arm for the teardown claim, without widening the flow to unrelated
-// gestures.
+// Release teardown is owned by `bandUp`: an in-band pointerup keeps the release coordinate, while
+// off-band pointerup and pointercancel clear it. The state table below drives those paths and does
+// not claim protection for foreign gestures that it does not exercise.
 
 // RED-FIRST WITNESS (kex2d-strip-resize-affordance S1): the rewritten state × affordance
 // arm was run against unchanged production before the repair. It exited 1 because selected-edge
@@ -410,6 +405,11 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     await expect.poll(bandCursor).toBe("ew-resize");
     const selectedReleasedEdge = await probeChart(page, x0, bandY);
     expect(selectedReleasedEdge).not.toBeNull();
+    if (selectedRestEdge && selectedReleasedEdge)
+        expect(
+            dist(selectedReleasedEdge, selectedRestEdge),
+            `selected endpoint release must remain distinct from selected rest: rest ${JSON.stringify(selectedRestEdge)}, release ${JSON.stringify(selectedReleasedEdge)}`,
+        ).toBeGreaterThan(2);
     if (selectedEdge && selectedReleasedEdge)
         expect(
             dist(selectedReleasedEdge, selectedEdge),
@@ -530,6 +530,12 @@ test("the track-start one-shot: delete, create, and select through the real poin
     const glyphLocalX = (await kexCall(page, "oneShotPx")) as number;
     const gx = chartBox.x + glyphLocalX;
     const gy = chartBox.y + bandY;
+    const oneShotHover = (): Promise<boolean> =>
+        page.evaluate(() => {
+            const hook = (window as unknown as { __kex?: { oneShotHover?: () => boolean } }).__kex;
+            if (!hook?.oneShotHover) throw new Error("one-shot hover hook is unavailable");
+            return hook.oneShotHover();
+        });
 
     // hover the glyph — it reads apart from rest (the same body-hover differential S3's own
     // hit-zone-partition arm uses for a real strip's body), proving there IS a live affordance
@@ -539,6 +545,7 @@ test("the track-start one-shot: delete, create, and select through the real poin
     await frames(page, 1);
     const rest = await probeChart(page, glyphLocalX, bandY);
     await page.mouse.move(gx, gy);
+    await expect.poll(oneShotHover).toBe(true);
     await frames(page, 1);
     const hoverGlyph = await probeChart(page, glyphLocalX, bandY);
     expect(rest).not.toBeNull();
@@ -550,9 +557,12 @@ test("the track-start one-shot: delete, create, and select through the real poin
             `the glyph should lift its fill under hover past rest ${JSON.stringify(rest)}, got ${JSON.stringify(hoverGlyph)}`,
         ).toBeGreaterThan(HoverTol);
 
-    // SELECT: a real left-click on the glyph.
+    // SELECT: a real left-click on the glyph. Its pointerup leaves the pointer over the selected
+    // glyph, so the hover classification remains true after release; the renderer's `!selOs` guard
+    // still gives selection paint priority. This is the one-shot's bounded post-release consequence.
     await page.mouse.click(gx, gy);
     await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
+    await expect.poll(oneShotHover).toBe(true);
 
     // DELETE: a real Delete keypress on the selection — no drag-out, no extent to grow (fixed
     // at `d = 0`); the derived entry speed falls back to `V0` — read as the seed's own value
