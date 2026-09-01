@@ -448,16 +448,17 @@ test("force keyframe grab drags freely past its section's window after a resize 
     expect(after.s).toBeGreaterThan(shrunk); // still outside — never snapped back in
 });
 
-// Drive the FORCE EASING MENU + HANDLE-EDIT flow (kex2d-force-ux stage C, extended at stage
-// E): seed a force section with keyframes → RIGHT-CLICK a diamond for the keyframe menu →
+// Drive the FORCE EASING MENU flow (kex2d-force-ux stage C, extended at stage E): seed a force
+// section with keyframes → RIGHT-CLICK a diamond for the keyframe menu (Easing ▸ · Delete) →
 // open the Easing ▸ submenu and set Linear POINTER-TRUE (clickFlyout — the regression net for
-// the context-submenu clip class) → assert the leading keyframe's tag flipped → RIGHT-CLICK
-// the CURVE SPAN between two keyframes (not a diamond) → the same leading-keyframe menu (the
-// segment-span hit-target, a C-review coverage hole) → Reset via the menu, pointer-true
-// (`clickMenuItem`), clears it back to the derived easing → Delete, also pointer-true, removes
-// the keyframe. Every menu interaction is a real pointer event; __kex is read only for
-// assertions. The double-click handle-edit summon, the handle drag, and the Custom row this
-// flow used to also exercise left with the explicit per-keyframe force handles they edited,
+// the context-submenu clip class) → assert the leading keyframe's tag flipped → RIGHT-CLICK the
+// CURVE SPAN between two keyframes (not a diamond), and a right-click in empty chart space, both
+// open NO menu and change nothing (the retired leading-keyframe curve-span convention,
+// `editor-ui.md` Keyframe/curve-editor conventions) → the TERMINAL keyframe's menu drops
+// Easing ▸ entirely (Delete alone) → Delete, pointer-true (`clickMenuItem`), removes an interior
+// keyframe. Every menu interaction is a real pointer event; __kex is read only for assertions.
+// The double-click handle-edit summon, the handle drag, and the Custom/Reset rows this flow
+// used to also exercise left with the explicit per-keyframe force handles they edited,
 // `kex2d-segment-removal` S3 — every segment is now named.
 test("force easing menu flow", async ({ page, boot }) => {
     await boot();
@@ -479,8 +480,8 @@ test("force easing menu flow", async ({ page, boot }) => {
 
     // ── 1. Right-click the leading (first) keyframe → the force keyframe menu, in the grammar's
     // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
-    // terminal (kex2d-menu-grammar stage 2). (The Handles + Reset rows are gone — both subsumed
-    // into the Easing list: Custom steps in, a preset steps back out.) ──
+    // terminal (kex2d-menu-grammar stage 2). (The Handles + Reset rows, and the Custom preset
+    // Easing ▸ used to also carry, are gone — the submenu is Linear | Cubic | Quintic only.) ──
     await page.locator(".fpt").first().click({ button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     await expect
@@ -492,9 +493,9 @@ test("force easing menu flow", async ({ page, boot }) => {
         .toEqual(["Easing ▸", "Delete Del"]);
     // the rendered rows are the real `keyframeMenu` builder's, run in the page against this
     // keyframe's live state — the keyframe menu's half of the DOM cross-check. It reaches INSIDE
-    // `Easing ▸` by real hover, which is where the app's ONE authored within-group separator lives
-    // (the preset picks divided from Custom): the whole escape hatch rests on that row, and this is
-    // the only place it's verified as rendered DOM.
+    // `Easing ▸` by real hover to assert the preset rows (Linear | Cubic | Quintic) render — the
+    // app authors no separator anywhere now (`tests/menu.test.ts`'s `Separators` registry is
+    // empty; the one row it used to carry divided the presets from Custom, and left with it).
     await menuGrammar(page, ".fmenu", {
         builder: "keyframeMenu",
         // the leading keyframe of a bumped force section: single selection, non-terminal (it

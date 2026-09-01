@@ -831,18 +831,31 @@ function dropForceTangent(doc: Record<string, unknown>): Record<string, unknown>
     return { ...doc, version: 2, sections };
 }
 
+/** a single forward migration step: takes a raw doc at some version and returns one it stamps at
+ *  a higher version. */
+export type MigrationStep = (doc: Record<string, unknown>) => Record<string, unknown>;
+
 /** forward-only migrations, keyed by the version they migrate FROM — `migrations[1]` takes a v1
  *  raw doc and returns a v2 one. The seam exists so a version bump costs one function, not a
  *  rewrite. */
-const migrations: Record<number, (doc: Record<string, unknown>) => Record<string, unknown>> = {
+const migrations: Record<number, MigrationStep> = {
     1: dropForceTangent,
 };
 
 /** walk a raw parsed object forward from its declared `version` to `CURRENT_VERSION`, one
  *  registered migration step at a time. Refuses (never guesses) a version this build doesn't
  *  recognize — newer than `CURRENT_VERSION`, or older than any registered migration can
- *  bridge — both are "unknown version" the spec's rejection-arm oracle checks for. */
-function migrate(raw: Record<string, unknown>): Record<string, unknown> {
+ *  bridge — both are "unknown version" the spec's rejection-arm oracle checks for. Also refuses a
+ *  step that runs but does not strictly advance the version: an unguarded loop keyed only on
+ *  `v < CURRENT_VERSION` would spin forever on a step that forgets to bump (the hang is the worst
+ *  shape a data-load boundary can fail in), so every step's stamped version must exceed the one
+ *  it started from. `steps` defaults to the production table and is overridable only so a test
+ *  can register a deliberately non-bumping step against this same guard without touching the
+ *  production table. */
+export function migrate(
+    raw: Record<string, unknown>,
+    steps: Record<number, MigrationStep> = migrations,
+): Record<string, unknown> {
     if (!isInt(raw.version)) fail("version is missing or not an integer");
     let doc = raw;
     let v = raw.version as number;
@@ -851,11 +864,14 @@ function migrate(raw: Record<string, unknown>): Record<string, unknown> {
             `version ${v} is newer than this build supports (max ${CURRENT_VERSION}) — update kex2d`,
         );
     while (v < CURRENT_VERSION) {
-        const step = migrations[v];
+        const step = steps[v];
         if (!step) fail(`version ${v} has no migration path to ${CURRENT_VERSION}`);
         doc = step(doc);
         if (!isInt(doc.version)) fail(`migration from version ${v} did not stamp a valid version`);
-        v = doc.version as number;
+        const nextV = doc.version as number;
+        if (nextV <= v)
+            fail(`migration from version ${v} did not advance the version (stamped ${nextV})`);
+        v = nextV;
     }
     return doc;
 }

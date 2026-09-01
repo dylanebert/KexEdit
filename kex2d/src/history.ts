@@ -492,8 +492,8 @@ export function beginForceMove(ecs: State, id: number): void {
 /** open a gesture on a MULTI force-point move (the shared-delta bulk drag / arrow-nudge),
  *  snapshotting every member's full state in `ids` order. commit coalesces the live writes into
  *  one entry; the no-op test is {@link sameForcePoint} per member (see `beginForceMove` for why it
- *  is the whole snapshot and not `s`/`g`), so a click or a nudge back to start records nothing while
- *  a drag that cleared a provenance bit does. the size-1 case is `beginForceMove`. */
+ *  is the whole snapshot and not `s`/`g`), so a click or a nudge back to start records nothing for
+ *  every member. the size-1 case is `beginForceMove`. */
 export function beginForceMoves(ecs: State, ids: readonly number[]): void {
     begin(
         () => {

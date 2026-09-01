@@ -5,6 +5,8 @@ import {
     docFromEcs,
     type DocGeoTangent,
     loadDocument,
+    migrate,
+    type MigrationStep,
     numLit,
     parseDocument,
     saveDocument,
@@ -289,6 +291,21 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         expect(() => loadDocument(state, bad)).toThrow(/no migration path/);
         expect(snapshotAll(state)).toEqual(before);
     });
+
+    // the migration seam's monotonicity guard: a step that runs but does not strictly advance
+    // the version must refuse rather than spin — an unguarded `while (v < CURRENT_VERSION)` loop
+    // keyed only on `isInt(doc.version)` would hang forever on a step that forgets to bump (the
+    // natural copy-paste mistake, since `dropForceTangent` stamps the literal `version: 2`), and
+    // a hang on load is the worst failure shape a data boundary has. `migrate`'s injectable
+    // `steps` table lets this test register a deliberately non-bumping fake step against the
+    // real guard without mutating the production migration table. The timeout is a real guard,
+    // not decoration: with the monotonicity check removed, this test would hang rather than fail.
+    test("a migration step that does not advance the version refuses instead of hanging", () => {
+        const fakeSteps: Record<number, MigrationStep> = {
+            1: (doc) => ({ ...doc, version: 1 }), // stamps its OWN starting version — the bug
+        };
+        expect(() => migrate({ version: 1 }, fakeSteps)).toThrow(/did not advance the version/);
+    }, 1000);
 
     test("truncated JSON refuses and leaves the document untouched", () => {
         const { state } = flatTrack();
