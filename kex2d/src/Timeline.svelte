@@ -3014,11 +3014,16 @@ function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandid
 // element per strip for CSS `:hover` to land on, so it needs its own read, the same way
 // `stripDrag` below is this band's own gesture state rather than a viewport one.
 let bandHoverX: number | null = $state(null);
+// A band's own pointerup is the one release where the stationary handle remains the active
+// affordance; foreign gestures still clear their stale hover when the shared drag flag falls.
+let preserveBandHover = false;
 function bandHoverMove(e: PointerEvent): void {
+    preserveBandHover = false;
     const rect = canvas.getBoundingClientRect();
     bandHoverX = e.clientX - rect.left;
 }
 function bandHoverLeave(): void {
+    preserveBandHover = false;
     bandHoverX = null;
 }
 // suppressed for the whole of any OTHER gesture (editor-ui.md Kind color: "Hover's boundaries
@@ -3076,21 +3081,14 @@ const oneShotHover = $derived.by((): boolean => {
     if (bandHoverX === null) return false;
     return classifyOneShotHit(bandHoverX, oneShotGlyphX(), STRIP_HIT_R);
 });
-// removing the unknown state rather than managing it: the theorized failure was a FOREIGN
-// gesture capturing the pointer on `canvas` so `.hbandzone`'s own `onpointermove`/
-// `onpointerleave` never fire when it ends off the band, leaving `bandHoverX` stale at its
-// pre-gesture position to re-derive into a hover the instant `editor.dragging` drops (`bandHit`'s
-// guard above only suppresses WHILE dragging is true). Investigated with a debug hook across two
-// real repros (a force-keyframe drag, and a middle-click pan starting AT the hovered position,
-// both captured on `canvas` via `beginDrag`): in this Chromium/Playwright environment
-// `onpointerleave` fired correctly regardless of capture in both cases, so `bandHoverX` was
-// already `null` well before `editor.dragging` dropped — the theorized staleness window never
-// opened, and no repro was found that leaves it stale. Kept anyway as a zero-cost hardening
-// (nulling on every falling edge, band's-own-drag included, costs nothing visible there: `bandUp`
-// leaves the strip selected, and both hover reads above already gate `!sel`) rather than a
-// demonstrated fix — there is no red-first check for this one.
+// Selection suppresses hover on the selected span body, while its distinct resize handle keeps
+// the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
+// only a real pointerup inside the horizontal band preserves the stationary read. An off-band
+// pointerup or pointercancel clears it before the shared drag flag falls, so neither can leave a
+// phantom body/edge hover.
 $effect(() => {
-    if (!editor.dragging) bandHoverX = null;
+    if (editor.dragging) preserveBandHover = false;
+    else if (!preserveBandHover) bandHoverX = null;
 });
 
 interface StripDrag {
@@ -3179,8 +3177,23 @@ function bandMove(e: PointerEvent): void {
         for (const k of kfs) setStripKeyframe(ecs, k.id, k.s + dd, k.v);
     }
 }
-function bandUp(): void {
+function bandUp(e: Event): void {
     if (stripDrag === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = e instanceof PointerEvent ? e.clientX - rect.left : -1;
+    const py = e instanceof PointerEvent ? e.clientY - rect.top : -1;
+    // Preserve only this band's own, real pointerup while its release point is still inside the
+    // horizontal hit zone. Cancellation and off-band release must clear the read rather than
+    // carrying a body/edge hover past the shared drag teardown.
+    const inBand =
+        e instanceof PointerEvent &&
+        e.type === "pointerup" &&
+        px >= bandZoneX0() &&
+        px <= w &&
+        py >= RULER_H + GAP_H &&
+        py <= RULER_H + GAP_H + STRIP_H;
+    preserveBandHover = inBand;
+    bandHoverX = inBand ? px : null;
     stripDrag = null;
     snapX = null;
     gestureMapping = null; // release the gesture-frozen table
@@ -3306,10 +3319,12 @@ function bandDown(e: PointerEvent): void {
         };
     }
     beginStripMove(ecs, s.id);
-    beginDrag(canvas, e.pointerId);
+    // Register before `beginDrag` so this gesture owns its release handling; `bandUp` records any
+    // stationary endpoint before ending the shared drag.
     window.addEventListener("pointermove", bandMove);
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
+    beginDrag(canvas, e.pointerId);
 }
 // summoned creation: the menu row's action — a strip appears at the clicked station, selected,
 // curve flattened and solid (Locked decision), sized to a brake-section-typical span
