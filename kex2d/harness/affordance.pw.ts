@@ -325,10 +325,11 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // Finding 2 (should-fix, not blocker): a foreign gesture holding pointer capture on `canvas`
 // was theorized to leave `.hbandzone`'s own `onpointermove`/`onpointerleave` unfired, so
 // `bandHoverX` would freeze and re-derive into a stale hover once `editor.dragging` dropped.
-// The narrow release legs below now witness the boundary directly: only a real `pointerup` whose
-// release point remains inside the horizontal band preserves the stationary handle; an off-band
-// `pointerup` and `pointercancel` both clear the hover through the `$effect`. This is the capture
-// arm for the teardown claim, without widening the flow to unrelated gestures.
+// The narrow release legs below witness the boundary directly: only a real `pointerup` whose
+// release point remains inside the horizontal band preserves the stationary handle; `bandUp` clears
+// off-band `pointerup` and `pointercancel` synchronously, with the `$effect` serving only as a
+// backstop. This is the capture arm for the teardown claim, without widening the flow to unrelated
+// gestures.
 
 // RED-FIRST WITNESS (kex2d-strip-resize-affordance S1): the rewritten state × affordance
 // arm was run against unchanged production before the repair. It exited 1 because selected-edge
@@ -469,19 +470,6 @@ test("selected strip endpoint paint and cursor agree across the state table", as
         .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
     await page.mouse.down();
     await page.mouse.move(offBandEdgeX, 5, { steps: 4 });
-    await page.evaluate(
-        ({ x, y }) =>
-            window.dispatchEvent(
-                new PointerEvent("pointerup", {
-                    bubbles: true,
-                    cancelable: true,
-                    pointerId: 1,
-                    clientX: x,
-                    clientY: y,
-                }),
-            ),
-        { x: offBandEdgeX, y: 5 },
-    );
     await page.mouse.up();
     await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
     await expect.poll(bandCursor).toBe("default");

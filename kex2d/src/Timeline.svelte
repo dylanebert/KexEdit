@@ -3319,8 +3319,8 @@ function bandDown(e: PointerEvent): void {
         };
     }
     beginStripMove(ecs, s.id);
-    // Register before `beginDrag` so this release commits the strip and marks its stationary
-    // endpoint before the shared drag teardown runs the hover effect.
+    // Register before `beginDrag` so this gesture owns its release handling; `bandUp` records any
+    // stationary endpoint before ending the shared drag.
     window.addEventListener("pointermove", bandMove);
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
