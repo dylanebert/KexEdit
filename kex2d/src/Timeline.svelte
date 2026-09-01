@@ -3831,14 +3831,12 @@ function render(ctx: CanvasRenderingContext2D): void {
             ctx.strokeRect(cx0 + 0.5, RULER_H + GAP_H + CLIP_PAD + 0.5, cw - 1, CLIP_H - 1);
         }
         // the RESIZE affordance: a hovered endpoint reads apart from a hovered body by which
-        // STROKE it takes, never a cursor swap (the S3 premise correction — no `ew-resize` here,
-        // `editor-ui.md`'s field-row scrub idiom stays `.fld .key`'s own). A bright edge line at
-        // exactly the boundary, the force clip-trim's own hover-brightens-the-handle shape
-        // (`.clip-trim:hover`) read onto a canvas-drawn edge instead of a DOM one. `!sel` for the
-        // same reason `bodyHover` carries it: hover is invisible on an already-selected element
-        // (editor-ui.md Kind color) — unconditional, no exemption for the edge case. Spans the
+        // STROKE it takes, and its `.hbandzone` companion carries `ew-resize`. The handle is a
+        // distinct affordance over the selected span, so its hover stroke survives selection;
+        // body hover remains suppressed by `bodyHover` above. This is the canvas twin of the
+        // force clip-trim's hover-brightens-the-handle shape (`.clip-trim:hover`). Spans the
         // fill's own rendered height (`CLIP_H`), the same inset the fill itself draws at.
-        if (!sel && bandHit.kind === "endpoint" && bandHit.id === s.id) {
+        if (bandHit.kind === "endpoint" && bandHit.id === s.id) {
             const ex = bandHit.edge === "start" ? cx0 : cx0 + cw;
             ctx.strokeStyle = hovered(COLOR_VELOCITY);
             ctx.lineWidth = 2;
