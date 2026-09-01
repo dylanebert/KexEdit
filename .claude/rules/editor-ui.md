@@ -215,10 +215,8 @@ shape:
   rejected each time; closed): the viewport shows **no contextual controls** on a multi-set —
   ring, knobs, and readout all hide; single-select context on
   a multi selection is invalid. Under one container, "multi" is a property of the whole member
-  set: a selected strip that owns a selected strip keyframe is not a second subject, so `multi`
-  counts co-selected sibling subjects; an ancestor+owned-keyframe pair is single-subject, while
-  cross-kind siblings and two keyframes under one owner remain multi. A per-kind `ids.size > 1`
-  predicate reads a two-member cross-kind selection as single-select.
+  set: any two-member selection, cross-kind included, is a multi-set, and a per-kind
+  `ids.size > 1` predicate reads a two-member cross-kind selection as single-select.
   The timeline's typed-field popover is single-keyframe context too,
   so it hides on a multi-set exactly as the viewport ring does — standard multi-select shows no
   single-keyframe context, on any surface. No shared-delta readout, no count chip, no Mixed

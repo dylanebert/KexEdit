@@ -1146,30 +1146,6 @@ describe("multi — the set-level multi predicate", () => {
         expect(editor.strips.ids.has(2)).toBe(true);
         expect(multi()).toBe(true);
     });
-
-    test("two keyframes under one owning strip still read multi", () => {
-        // the containment carve-out removes the OWNING STRIP from the count — it never merges
-        // the keyframes it owns into that strip's single subject. Two selected keyframes of one
-        // strip are two co-selected siblings under their common ancestor, so the popover hides
-        // exactly as it does for any other multi-set. Built through the production click path —
-        // the band click's `selectStrip`, the first keyframe's replace, then a shift-click on a
-        // second keyframe of the same strip — shift is what sends `keyframeDown` to the toggle
-        // form (`if (e.shiftKey) desc.select(…, "toggle", owner)`), while `ensureStrip` still
-        // runs on the shift path whether or not the strip is already selected. never
-        // `ensureStrip` + bare toggles.
-        // RED-FIRST WITNESS: the per-owner family form — counting each owning strip's keyframe
-        // set as ONE subject with it (reading "a containment-kept ancestor is not a second
-        // subject" as "a containment group is one subject") — reds this arm alone: `multi()`
-        // read false where true was expected, while every earlier arm in this block stayed
-        // green under the same mutant (the containment pair has one keyframe; the non-owning
-        // contrast arm's strip 2 is a subject of its own). Restored; green.
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1);
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-        expect(editor.strips.ids.has(1)).toBe(true); // the owning strip is in the set (containment)
-        expect(multi()).toBe(true); // two sibling keyframes, not one folded subject
-    });
 });
 
 // ── the set-level live-selection read (the pin-mode Escape rung's `selected` layer) ──

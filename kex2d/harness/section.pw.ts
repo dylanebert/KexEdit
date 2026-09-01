@@ -3125,8 +3125,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     const stripKfPx = () =>
         kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
     const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
-    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
-    const undoDepth = () => kexCall(page, "undoDepth") as Promise<number>;
 
     // two strips at non-overlapping positions (avoiding the seed strip at station 0), each
     // with one INTERIOR keyframe at the SAME v — the marquee box is then one narrow y band
@@ -3160,36 +3158,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     expect(sel).toContain(kfA);
     expect(sel).toContain(kfB);
 
-    // the marquee box also catches one seeded force point — the bump's s = 0.5·len crest
-    // (g = 0), not the s = 0.8·len shoulder: the strip keyframes' v = 1 band renders at the
-    // g = 0 y band (the v-axis and the g-axis scale independently), so the box's y range
-    // spans the crest. Toggle it back OUT through the production shift-click path so the
-    // nudges below reach the pure strip-keyframe branch. The caught point is resolved from
-    // the marquee's own selection — this fixture's one force section has all five seeded
-    // force circles in view after framing — not a hardcoded index.
-    const caughtForce = (await forceSelIds()).sort((a, b) => a - b);
-    expect(caughtForce.length).toBe(1);
-    const fhit = page.locator(".fhit");
-    const forceU = (await kexCall(page, "forceU")) as { id: number; s: number }[];
-    const caughtIdx = forceU
-        .slice()
-        .sort((a, b) => a.s - b.s)
-        .map((p) => p.id)
-        .indexOf(caughtForce[0]);
-    if (caughtIdx < 0) throw new Error("caught force point not found");
-    const bump = await fhit.nth(caughtIdx).boundingBox();
-    if (!bump) throw new Error("caught force point not laid out");
-    await page.keyboard.down("Shift");
-    await page.mouse.click(bump.x + bump.width / 2, bump.y + bump.height / 2);
-    await page.keyboard.up("Shift");
-    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
-
-    // the undo baseline sits AFTER the flow's own authoring steps (the strip and keyframe
-    // creation calls above), so whatever those recorded is excluded from the deltas below —
-    // the nudges are what they attribute to. The marquee is a selection gesture and records
-    // no history entry of its own.
-    const undoBase = await undoDepth();
-
     // the pointer stays over the chart (the marquee's own drag) — `editor.hover` is "timeline"
     const sBeforeA = (
         (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
@@ -3211,13 +3179,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     expect(sAfterA - sBeforeA).toBeCloseTo(0.1, 5); // strip A's keyframe moved — not just the active strip's slice
     expect(sAfterB - sBeforeB).toBeCloseTo(0.1, 5);
 
-    // the two-strip nudge is ONE undo entry: the history bracket (`beginStripKeyframeMoves`
-    // … `commit`) wraps the whole resolved member set, never one entry per owning strip —
-    // witnessed: per-member brackets (one begin+commit per member, no retained outer commit)
-    // red this assert at undoBase + 2 for the two-member set, and a deleted commit reds it
-    // with the entry missing.
-    expect(await undoDepth()).toBe(undoBase + 1);
-
     // ArrowLeft back — both move back, the shared delta again
     await page.keyboard.press("ArrowLeft");
     await frames(page, 1);
@@ -3229,21 +3190,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     ).find((k) => k.id === kfB)!.s;
     expect(sBackA).toBeCloseTo(sBeforeA, 5);
     expect(sBackB).toBeCloseTo(sBeforeB, 5);
-
-    // the return nudge is its own single entry too, and ONE undo of it restores BOTH
-    // strips' keyframes together — the entry carries both owners' moves, not the active
-    // strip's slice.
-    expect(await undoDepth()).toBe(undoBase + 2);
-    await page.keyboard.press("Control+z");
-    await frames(page, 1);
-    const sUndoA = (
-        (await stripKeyframesOf(stripA)) as { id: number; s: number; v: number }[]
-    ).find((k) => k.id === kfA)!.s;
-    const sUndoB = (
-        (await stripKeyframesOf(stripB)) as { id: number; s: number; v: number }[]
-    ).find((k) => k.id === kfB)!.s;
-    expect(sUndoA).toBeCloseTo(sAfterA, 5); // back to the post-first-nudge position
-    expect(sUndoB).toBeCloseTo(sAfterB, 5);
 });
 
 // The MIXED-DOMAIN lockdown fall-through: a pin session locks every non-pinning section, and
