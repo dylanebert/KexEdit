@@ -287,8 +287,8 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
         ).toBeGreaterThan(HoverTol);
 
     // hover the START EDGE — the resize affordance reads apart from the body-hover fill lift,
-    // by a distinct stroke, never a cursor swap (the S3 premise correction). Await the
-    // classification reaching the endpoint kind for this strip's start edge.
+    // by a distinct stroke and the `ew-resize` cursor. Await the classification reaching the
+    // endpoint kind for this strip's start edge.
     const [edgePageX, edgePageY] = toPage(x0);
     await page.mouse.move(edgePageX, edgePageY);
     await expect
@@ -318,10 +318,9 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 });
 
 // ── S3 review fixes ──────────────────────────────────────────────────────────────────────────
-// Finding 1 against the S3 diff: the endpoint/resize hover stroke had no `!sel` guard, so
-// hovering a selected strip's edge layered a `hovered()` stroke over the selection outline
-// (`bodyHover` three lines up already carried the guard, citing the same rule). Covered below,
-// red-first.
+// The endpoint is a distinct resize handle over the selected span: its `hovered()` stroke and
+// `ew-resize` cursor survive selection, while the selected span body keeps hover suppression.
+// The state table below covers both channels, including stationary release.
 //
 // Finding 2 (should-fix, not blocker): a foreign gesture holding pointer capture on `canvas`
 // was theorized to leave `.hbandzone`'s own `onpointermove`/`onpointerleave` unfired, so
@@ -403,6 +402,22 @@ test("selected strip endpoint paint and cursor agree across the state table", as
             dist(selectedEdge, selectedRestEdge),
             `selected edge must paint apart from selected rest at the edge: rest ${JSON.stringify(selectedRestEdge)}, edge ${JSON.stringify(selectedEdge)}`,
         ).toBeGreaterThan(2);
+
+    // SELECTED ENDPOINT RELEASE: begin and end the resize gesture without moving away from the
+    // handle. Both the endpoint paint and its cursor must survive the shared drag teardown.
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
+    await expect.poll(bandCursor).toBe("ew-resize");
+    const selectedReleasedEdge = await probeChart(page, x0, bandY);
+    expect(selectedReleasedEdge).not.toBeNull();
+    if (selectedEdge && selectedReleasedEdge)
+        expect(
+            dist(selectedReleasedEdge, selectedEdge),
+            `selected endpoint release must retain edge paint: before ${JSON.stringify(selectedEdge)}, after ${JSON.stringify(selectedReleasedEdge)}`,
+        ).toBeLessThanOrEqual(2);
 
     // UNSELECTED: rest is inert, body hover lifts its fill and pointer cursor, and endpoint hover
     // adds the resize stroke and ew-resize cursor.

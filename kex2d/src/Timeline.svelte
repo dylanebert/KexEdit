@@ -3014,11 +3014,16 @@ function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandid
 // element per strip for CSS `:hover` to land on, so it needs its own read, the same way
 // `stripDrag` below is this band's own gesture state rather than a viewport one.
 let bandHoverX: number | null = $state(null);
+// A band's own pointerup is the one release where the stationary handle remains the active
+// affordance; foreign gestures still clear their stale hover when the shared drag flag falls.
+let preserveBandHover = false;
 function bandHoverMove(e: PointerEvent): void {
+    preserveBandHover = false;
     const rect = canvas.getBoundingClientRect();
     bandHoverX = e.clientX - rect.left;
 }
 function bandHoverLeave(): void {
+    preserveBandHover = false;
     bandHoverX = null;
 }
 // suppressed for the whole of any OTHER gesture (editor-ui.md Kind color: "Hover's boundaries
@@ -3076,21 +3081,13 @@ const oneShotHover = $derived.by((): boolean => {
     if (bandHoverX === null) return false;
     return classifyOneShotHit(bandHoverX, oneShotGlyphX(), STRIP_HIT_R);
 });
-// removing the unknown state rather than managing it: the theorized failure was a FOREIGN
-// gesture capturing the pointer on `canvas` so `.hbandzone`'s own `onpointermove`/
-// `onpointerleave` never fire when it ends off the band, leaving `bandHoverX` stale at its
-// pre-gesture position to re-derive into a hover the instant `editor.dragging` drops (`bandHit`'s
-// guard above only suppresses WHILE dragging is true). Investigated with a debug hook across two
-// real repros (a force-keyframe drag, and a middle-click pan starting AT the hovered position,
-// both captured on `canvas` via `beginDrag`): in this Chromium/Playwright environment
-// `onpointerleave` fired correctly regardless of capture in both cases, so `bandHoverX` was
-// already `null` well before `editor.dragging` dropped — the theorized staleness window never
-// opened, and no repro was found that leaves it stale. Kept anyway as a zero-cost hardening
-// (nulling on every falling edge, band's-own-drag included, costs nothing visible there: `bandUp`
-// leaves the strip selected, and both hover reads above already gate `!sel`) rather than a
-// demonstrated fix — there is no red-first check for this one.
+// Selection suppresses hover on the selected span body, while its distinct resize handle keeps
+// the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
+// its release preserves the stationary endpoint read, while foreign gesture teardown still clears
+// stale hover through the shared drag flag.
 $effect(() => {
-    if (!editor.dragging) bandHoverX = null;
+    if (editor.dragging) preserveBandHover = false;
+    else if (!preserveBandHover) bandHoverX = null;
 });
 
 interface StripDrag {
@@ -3179,8 +3176,15 @@ function bandMove(e: PointerEvent): void {
         for (const k of kfs) setStripKeyframe(ecs, k.id, k.s + dd, k.v);
     }
 }
-function bandUp(): void {
+function bandUp(e: Event): void {
     if (stripDrag === null) return;
+    preserveBandHover = true;
+    // Pointer capture can run the shared release listener before this one; re-read the release
+    // position so teardown cannot erase the stationary handle's hover coordinate.
+    if (e instanceof PointerEvent) {
+        const rect = canvas.getBoundingClientRect();
+        bandHoverX = e.clientX - rect.left;
+    }
     stripDrag = null;
     snapX = null;
     gestureMapping = null; // release the gesture-frozen table
@@ -3306,10 +3310,12 @@ function bandDown(e: PointerEvent): void {
         };
     }
     beginStripMove(ecs, s.id);
-    beginDrag(canvas, e.pointerId);
+    // Register before `beginDrag` so this release commits the strip and marks its stationary
+    // endpoint before the shared drag teardown runs the hover effect.
     window.addEventListener("pointermove", bandMove);
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
+    beginDrag(canvas, e.pointerId);
 }
 // summoned creation: the menu row's action — a strip appears at the clicked station, selected,
 // curve flattened and solid (Locked decision), sized to a brake-section-typical span
