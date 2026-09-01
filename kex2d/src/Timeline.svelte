@@ -3811,6 +3811,7 @@ function render(ctx: CanvasRenderingContext2D): void {
         // of the same selected/unselected split the CSS token would have driven — the base fill
         // sits one rung DOWN from the raw hue (S4, finding 4: dimmer, in-palette — the same
         // OKLCH move `hovered` makes upward, `colors.ts`), selection returning it to the full hue.
+        // Body-hover guard; see editor-ui.md "Kind color" for the handle exception.
         const bodyHover = !sel && bandHit.kind === "body" && bandHit.id === s.id;
         ctx.globalAlpha = sel ? 0.85 : 0.55;
         ctx.fillStyle = bodyHover
