@@ -3009,13 +3009,13 @@ function bandCandidates(strips: BandStrip[] = freshBandStrips()): StripHitCandid
 // S3 (Affordances): the band's own hover read, canvas-local like `bandDown`'s own `px` (the
 // same `classifyStripHit` the press path uses, so the affordance and the gesture agree by
 // construction — never a second, hand-tuned hover geometry). Component-local, not the
-// viewport's `editor.hoverForce`/`hoverNode` seam (`editor.ts`): those are the controls'
-// pointermove sweep over VIEWPORT pick targets; the band is a canvas surface with no DOM
-// element per strip for CSS `:hover` to land on, so it needs its own read, the same way
-// `stripDrag` below is this band's own gesture state rather than a viewport one.
+// viewport's `editor.hoverForce`/`hoverNode` seam (`editor.ts`): the band is a canvas surface
+// with no DOM element per strip for CSS `:hover` to land on. The area hover rung lifts the fill;
+// `.hbandzone.body-hover` supplies `pointer`, and `.hbandzone.edge-hover` supplies `ew-resize`.
+// Foreign gestures suppress this read, while the band's own drag keeps it live for the active
+// edge/body affordance. `bandUp` records an in-band pointerup so a stationary handle remains
+// active; `cancelStripDrag` clears hover only for this band's live drag, while idle blur preserves it.
 let bandHoverX: number | null = $state(null);
-// The band owns this coordinate: pointer movement follows the hit rectangle, and bandUp records
-// the final in-band release so the stationary handle remains the active affordance.
 function bandHoverMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     bandHoverX = e.clientX - rect.left;
@@ -3023,12 +3023,6 @@ function bandHoverMove(e: PointerEvent): void {
 function bandHoverLeave(): void {
     bandHoverX = null;
 }
-// suppressed for the whole of any OTHER gesture (editor-ui.md Kind color: "Hover's boundaries
-// travel with the rung ... suppressed for the whole of any gesture") — a foreign drag captures
-// the pointer on `canvas`, not this band's own hit rect, so `bandHoverX` would otherwise read
-// stale. The band's OWN drag (`stripDrag !== null`) is exempt: `bandMove` keeps `bandHoverX`
-// live during it (below), and showing the active edge/body read while it's being dragged is
-// the affordance, not staleness.
 const bandHit = $derived.by((): StripHit => {
     // `bandCandidates` computes fresh from the ECS (which is not reactive), so this carries the
     // per-frame pacing itself — the dependency it used to inherit from the `bandStrips` `$derived`.
@@ -3036,7 +3030,10 @@ const bandHit = $derived.by((): StripHit => {
     // pointer move, and the affordance would lag the gesture it must agree with.
     void tick;
     if (eid === null) return { kind: "empty" };
-    if (editor.dragging && stripDrag === null) return { kind: "empty" };
+    if (editor.dragging && stripDrag === null) {
+        // Foreign capture sends pointerleave to the band, so suppression makes the hover falling edge safe.
+        return { kind: "empty" };
+    }
     if (bandHoverX === null) return { kind: "empty" };
     return classifyStripHit(bandHoverX, bandCandidates(), STRIP_HIT_R);
 });
@@ -3067,6 +3064,10 @@ function bandZoneX0(): number {
     if (gx < LEFT_GUT) return LEFT_GUT;
     return Math.min(LEFT_GUT, gx - STRIP_HIT_R);
 }
+function bandBounds(): { x: number; y: number; width: number; height: number } {
+    const x = bandZoneX0();
+    return { x, y: RULER_H + GAP_H, width: Math.max(0, w - x), height: STRIP_H };
+}
 // the one-shot glyph's own hover read — `bandHit`'s point-kind twin, checked FIRST wherever
 // both could coincide (a real strip authored to start exactly at `d = 0` would otherwise share
 // screen space with the glyph): the one-shot is a distinct kind, so it gets its own hit-test
@@ -3078,11 +3079,6 @@ const oneShotHover = $derived.by((): boolean => {
     if (bandHoverX === null) return false;
     return classifyOneShotHit(bandHoverX, oneShotGlyphX(), STRIP_HIT_R);
 });
-// Selection suppresses hover on the selected span body, while its distinct resize handle keeps
-// the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
-// only a real pointerup inside the horizontal band preserves the stationary read. An off-band
-// pointerup or pointercancel clears it before the shared drag teardown.
-
 interface StripDrag {
     id: number;
     mode: "start" | "end" | "body";
@@ -3174,16 +3170,17 @@ function bandUp(e: Event): void {
     const rect = canvas.getBoundingClientRect();
     const px = e instanceof PointerEvent ? e.clientX - rect.left : -1;
     const py = e instanceof PointerEvent ? e.clientY - rect.top : -1;
+    const band = bandBounds();
     // Preserve only this band's own, real pointerup while its release point is still inside the
     // horizontal hit zone. Cancellation and off-band release must clear the read rather than
     // carrying a body/edge hover past the shared drag teardown.
     const inBand =
         e instanceof PointerEvent &&
         e.type === "pointerup" &&
-        px >= bandZoneX0() &&
-        px <= w &&
-        py >= RULER_H + GAP_H &&
-        py <= RULER_H + GAP_H + STRIP_H;
+        px >= band.x &&
+        px <= band.x + band.width &&
+        py >= band.y &&
+        py <= band.y + band.height;
     bandHoverX = inBand ? px : null;
     stripDrag = null;
     snapX = null;
@@ -3195,6 +3192,7 @@ function bandUp(e: Event): void {
 }
 function cancelStripDrag(): void {
     if (stripDrag === null) return;
+    bandHoverX = null;
     stripDrag = null;
     snapX = null;
     gestureMapping = null; // release the gesture-frozen table
@@ -3310,12 +3308,10 @@ function bandDown(e: PointerEvent): void {
         };
     }
     beginStripMove(ecs, s.id);
-    // Register before `beginDrag` so this gesture owns its release handling; `bandUp` records any
-    // stationary endpoint before ending the shared drag.
+    beginDrag(canvas, e.pointerId);
     window.addEventListener("pointermove", bandMove);
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
-    beginDrag(canvas, e.pointerId);
 }
 // summoned creation: the menu row's action — a strip appears at the clicked station, selected,
 // curve flattened and solid (Locked decision), sized to a brake-section-typical span
@@ -3815,10 +3811,6 @@ function render(ctx: CanvasRenderingContext2D): void {
         // of the same selected/unselected split the CSS token would have driven — the base fill
         // sits one rung DOWN from the raw hue (S4, finding 4: dimmer, in-palette — the same
         // OKLCH move `hovered` makes upward, `colors.ts`), selection returning it to the full hue.
-        // S3 (Affordances): the hover rung, in kex2d's own channel — color, never the cursor
-        // (editor-ui.md Affordance typing). An AREA lifts its fill one `hovered()` rung
-        // (editor-ui.md Kind color); never on a stronger register (selection already reads
-        // brighter, the same `.fpt:hover:not(.sel)` precedence force keyframes use).
         const bodyHover = !sel && bandHit.kind === "body" && bandHit.id === s.id;
         ctx.globalAlpha = sel ? 0.85 : 0.55;
         ctx.fillStyle = bodyHover
@@ -4994,15 +4986,15 @@ onMount(() => {
                  (S3) was already correct but unreachable for the glyph's left half until the
                  rect covering it existed. -->
             {#if eid !== null && sTotal > 0}
-                {@const bandX0 = bandZoneX0()}
+                {@const band = bandBounds()}
                 <rect
                     class="hbandzone"
                     class:edge-hover={bandHit.kind === "endpoint"}
                     class:body-hover={bandHit.kind === "body"}
-                    x={bandX0}
-                    y={RULER_H + GAP_H}
-                    width={Math.max(0, w - bandX0)}
-                    height={STRIP_H}
+                    x={band.x}
+                    y={band.y}
+                    width={band.width}
+                    height={band.height}
                     onpointerdown={bandDown}
                     onpointermove={bandHoverMove}
                     onpointerleave={bandHoverLeave}
