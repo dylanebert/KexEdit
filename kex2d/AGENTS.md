@@ -20,13 +20,12 @@ foundation everything builds on. A section's geo↔force flip is a **destructive
 resets to that kind's default (force → two seed keyframes continuing the entry force, at the
 default extent; geo
 → the flat two-node seed), made safe by byte-identical undo — no confirm dialog. **Structural ops**
-build the chain: append (geo/force at the end), split (a geo section at an interior node, a force
-section at an arclength s), delete (downstream closes the gap + rebases
+build the chain: append (geo/force at the end), delete (downstream closes the gap + rebases
 rigidly). One open chain — no branching, circuit closure, or mid-chain insertion.
 
 **The track start is a fixed-position anchor**, not a node (`START = {0,0,0,v0}`): what's really
 there is an initial-velocity anchor. Its position is fixed (the origin), and the **initial speed
-is derived, not a separate field**: `seed()` authors a real, section-0 minimum-extent velocity
+is derived, not a separate field**: `seed()` authors a real, TRACK-GLOBAL station 0 minimum-extent velocity
 strip, and `entrySpeed` reads the value of whichever strip covers station 0 (or `V0` when none
 does) — authored through the ordinary strip/keyframe gestures, not a popover on the anchor. The
 START diamond is selectable and still carries the dissipation-coefficient (μ/c) popover. Not
@@ -170,7 +169,7 @@ UI uses, so an agent edits a document exactly the way a person dragging a keyfra
 capture harness's own `__kex` hook (below) is a narrower, DEV-only surface for driving the live UI
 under test, not the authoring surface itself.
 
-**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `section`, `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
+**The authored components (the one source of truth):** `Track` (`ds`, `domain`, `friction`, `resistance` — no `v0`, derived, see `entrySpeed`; `count` is bake OUTPUT, not authored — `BakeSystem` writes it from the derived sample count, `track.ts`'s own `bake()`, so the document format (`doc.ts`) never carries it), `Section` (`id`, `order`, `kind`, `length`), `Handle` (geo node: `section`, `order`, section-local `pos`/`theta`), `Force` (keyframe: `section`, `id`, section-local `s`, `g`, `tmode`/`tin`/`tout`), `Strip` (velocity span: `id`, `start`/`end`/`value`), `StripKeyframe` (strip curve: `strip`, `id`, `s`/`v`), `OneShot` (the track-start entry-speed value: `id`, `value` — at most one entity carries it). Everything else is derived or ephemeral: `samples`/`bakeOut`/`sectionInfo` are `BakeSystem` output (recomputed, never authored); `editor.ts` holds selection + menu state; the Svelte `$state` (view pan/zoom, drag-in-flight, flyouts) is view state. `render.ts` and `cart.ts` read, never write.
 
 **Write only through the setters, only inside a history gesture.** `history` is one undo/redo stack
 (`begin`/`commit`/`cancel`; one gesture at a time, so a live drag collapses to one entry). Two

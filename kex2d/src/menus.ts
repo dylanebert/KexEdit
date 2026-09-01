@@ -180,8 +180,8 @@ export type NodeMenuActions = {
  *  enabled whenever the subject is editable, never gated on "has something to clear" — a reset that
  *  changes nothing records no undo entry (`sameNodes`), the same no-op guard every Reset row leans
  *  on. node 0 (the entry anchor) is the exception — never appendable/trimmable (it's the section
- *  entry, never an interior split point — a structural impossibility rather than a contextual one,
- *  so it's OMITTED like Add/Delete, not grayed), and its handle is a single free entry handle (no
+ *  entry — a structural impossibility rather than a contextual one, so it's OMITTED like Add/Delete,
+ *  not grayed), and its handle is a single free entry handle (no
  *  coupled in-side), so it carries NO Add/Delete and NO mode submenu: just Handles + Reset (back
  *  to the Auto C1 exit). */
 export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {

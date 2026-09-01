@@ -2263,7 +2263,7 @@ describe("menu source pins — builders and renderer stay singular", () => {
 
     // matches a MenuGroup value specifically (GROUPS in menu.ts), not an unrelated `group` field
     // (render.ts's ECS system-scheduling groups) or a JSDoc `@example`'s prose.
-    const groupPattern = /group:\s*"(create|modify|structure|lifecycle)"/;
+    const groupPattern = /group:\s*"(create|modify|lifecycle)"/;
 
     test('no `group: "` row literal outside src/menus.ts', () => {
         const bad = srcFiles.filter(
