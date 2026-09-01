@@ -2096,25 +2096,20 @@ test("velocity strip keyframe drag origin flow", async ({ page, boot }) => {
                 sample.point !== undefined && Math.abs(sample.point.y - beforePoint.y) <= 0.5,
         );
         const stationMoved = samples.at(-1)?.row?.s !== beforeRow.s;
-        const firstMovingIndex = samples.findIndex(
-            (sample) =>
-                sample.row?.v !== v0 ||
-                (sample.point !== undefined && Math.abs(sample.point.y - beforePoint.y) > 0.5),
-        );
+        const firstMovingIndex = samples.findIndex((sample) => sample.row?.s !== beforeRow.s);
+        const firstMovingStep = firstMovingIndex >= 0 ? firstMovingIndex + 1 : "none";
         const firstMoving = samples[firstMovingIndex] ?? samples[0];
-        if (!horizontalValueStable && firstMoving)
+        if (!horizontalValueStable)
             failures.push(
-                diagnostic("horizontal authored value moved", firstMovingIndex + 1, firstMoving),
+                diagnostic("horizontal authored value moved", firstMovingStep, firstMoving),
             );
-        if (!horizontalRangeStable && firstMoving)
-            failures.push(diagnostic("velocity range moved", firstMovingIndex + 1, firstMoving));
-        if (!horizontalProjectionStable && firstMoving)
+        if (!horizontalRangeStable)
+            failures.push(diagnostic("velocity range moved", firstMovingStep, firstMoving));
+        if (!horizontalProjectionStable)
+            failures.push(diagnostic("horizontal projected y moved", firstMovingStep, firstMoving));
+        if (!stationMoved)
             failures.push(
-                diagnostic("horizontal projected y moved", firstMovingIndex + 1, firstMoving),
-            );
-        if (!stationMoved && firstMoving)
-            failures.push(
-                diagnostic("horizontal station did not move", firstMovingIndex + 1, firstMoving),
+                diagnostic("horizontal station did not move", firstMovingStep, firstMoving),
             );
 
         if (arm.yOffset !== 0) {
