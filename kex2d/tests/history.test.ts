@@ -40,7 +40,6 @@ import {
     deleteStrips,
     deleteStripKeyframes,
     extendTrack,
-    joinSections,
     redo,
     removeSections,
     resetSection,
@@ -72,7 +71,6 @@ import {
     addNode,
     authoredHash,
     BakeSystem,
-    createForcePoint,
     createSection,
     createStrip,
     createTrack,
@@ -677,113 +675,6 @@ test("removeSections refuses (records nothing) when the set is EVERY section —
     expect(removeSections(h, state, [a, b])).toBe(false); // would leave zero
     expect(sections(state).length).toBe(2); // untouched
     expect(h.undo.length).toBe(1); // only the append — the refused delete recorded nothing
-});
-
-test("joinSections: a contiguous same-kind SET joins into ONE entry; undo restores every section + the selection set byte-identical", () => {
-    clearSelection();
-    const { state, sec: a } = nodes(); // one geo section, order 0
-    const h = createHistory();
-    const b = appendSection(h, state, SectionKind.Geo); // order 1
-    const c = appendSection(h, state, SectionKind.Geo); // order 2
-    expect(sections(state).map((s) => s.id)).toEqual([a, b, c]);
-    // the stable (non-eid) fields — `restoreAll` respawns fresh eids on undo (the allocator
-    // recycles LIFO), so `eid` itself is never part of a byte-identity claim; `id`/`order`/`kind`/
-    // `length` are the authored payload the restore must reproduce exactly.
-    const stable = (s: { id: number; order: number; kind: SectionKind; length: number }) => ({
-        id: s.id,
-        order: s.order,
-        kind: s.kind,
-        length: s.length,
-    });
-    const beforeSnapshot = sections(state).map(stable);
-
-    // a shift-click set of the first two, b active.
-    selectSection(a);
-    selectSection(b, "toggle");
-    expect(editor.sections.ids.size).toBe(2);
-
-    expect(joinSections(h, state, [a, b])).toBe(a); // the head (lowest order) survives
-    expect(sections(state).map((s) => s.id)).toEqual([a, c]);
-    expect(h.undo.length).toBe(3); // two appends + ONE bulk join
-
-    undo(h, state);
-    expect(sections(state).map(stable)).toEqual(beforeSnapshot); // byte-identical (stable fields)
-    // the selection SET restored (undo restores both, per the SelectionHook).
-    expect([...editor.sections.ids].sort((x, y) => x - y)).toEqual([a, b].sort((x, y) => x - y));
-
-    redo(h, state);
-    expect(sections(state).map((s) => s.id)).toEqual([a, c]);
-});
-
-test("joinSections refuses (records nothing) on a NON-CONTIGUOUS set — a gap in the run", () => {
-    clearSelection();
-    const { state, sec: a } = nodes();
-    const h = createHistory();
-    const b = appendSection(h, state, SectionKind.Geo);
-    const c = appendSection(h, state, SectionKind.Geo);
-    expect(joinSections(h, state, [a, c])).toBeNull(); // b sits between — not a run
-    expect(sections(state).map((s) => s.id)).toEqual([a, b, c]); // untouched
-    expect(h.undo.length).toBe(2); // only the two appends
-});
-
-test("joinSections refuses (records nothing) ACROSS kinds", () => {
-    clearSelection();
-    const { state, sec: a } = nodes(); // geo
-    const h = createHistory();
-    const b = appendSection(h, state, SectionKind.Force);
-    expect(joinSections(h, state, [a, b])).toBeNull();
-    expect(sections(state).length).toBe(2); // untouched
-    expect(h.undo.length).toBe(1); // only the append
-});
-
-test("joinSections refuses (records nothing) on a set smaller than 2 — nothing to join", () => {
-    clearSelection();
-    const { state, sec: a } = nodes();
-    const h = createHistory();
-    expect(joinSections(h, state, [a])).toBeNull();
-    expect(joinSections(h, state, [])).toBeNull();
-    expect(h.undo.length).toBe(0);
-});
-
-test(
-    "joinSections keeps BOTH boundary keyframes when two independently-authored neighbors " +
-        "disagree in value (the value guard, at the joinSections layer — `ops.test.ts`'s " +
-        "`joinNext` pin is the substrate-layer twin; this is the bulk op stage 5 adds and wires " +
-        "to the UI, never exercised through it before)",
-    () => {
-        clearSelection();
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createForcePoint(state, a, 10, 1);
-        createForcePoint(state, a, 20, 3); // A's own boundary keyframe: g=3
-        const b = createSection(state, 1, SectionKind.Force, 20);
-        createForcePoint(state, b, 0, 5); // B's own boundary keyframe: g=5 — DISAGREES
-        createForcePoint(state, b, 10, 2);
-        const h = createHistory();
-
-        expect(joinSections(h, state, [a, b])).toBe(a);
-
-        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
-        // both boundary keyframes survive, at the same s (20) — nothing merged.
-        expect(after).toEqual([
-            { s: 10, g: 1 },
-            { s: 20, g: 3 },
-            { s: 20, g: 5 },
-            { s: 30, g: 2 },
-        ]);
-    },
-);
-
-test("joinSections refuses (records nothing) on a stale id", () => {
-    clearSelection();
-    const { state, sec: a } = nodes();
-    const h = createHistory();
-    const b = appendSection(h, state, SectionKind.Geo);
-    expect(joinSections(h, state, [a, b, 99999])).toBeNull();
-    expect(sections(state).map((s) => s.id)).toEqual([a, b]); // untouched
-    expect(h.undo.length).toBe(1); // only the append
 });
 
 // ── sticky append length, per section kind ──────────────

@@ -288,36 +288,6 @@ describe("sectionActs", () => {
         expect(sections(state).length).toBe(before);
         exitPinMode(state);
     });
-
-    test("join merges the selected contiguous run and selects the survivor", () => {
-        const { state, a, b, c } = threeGeoSections();
-        selectSection(a);
-        selectSection(b, "toggle");
-        sectionActs(state, a).join();
-        expect(sections(state).map((s) => s.id)).toEqual([a, c]);
-        expect(editor.sections.active).toBe(a);
-    });
-
-    test("join no-ops (records nothing) on a set that isn't a valid run — the menu grays it", () => {
-        const { state, a, b, c } = threeGeoSections(); // b sits between: a, c is a gap
-        selectSection(a);
-        selectSection(c, "toggle");
-        const undoBefore = history.undo.length;
-        sectionActs(state, a).join();
-        expect(sections(state).map((s) => s.id)).toEqual([a, b, c]);
-        expect(history.undo.length).toBe(undoBefore);
-    });
-
-    test("join refuses while ANY pin session is open, even on a different section", () => {
-        const { state, a, b } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        selectSection(a);
-        selectSection(b, "toggle");
-        const before = sections(state).length;
-        sectionActs(state, a).join();
-        expect(sections(state).length).toBe(before);
-        exitPinMode(state);
-    });
 });
 
 describe("nodeActs", () => {

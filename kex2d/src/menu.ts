@@ -6,7 +6,7 @@
  *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
  *   Meters/Seconds). The residual class, honestly.
  * - `structure` — changes the CHAIN, reaching past the subject to a neighbor (Cut makes a new
- *   section, Join destroys the one beside it).
+ *   section).
  * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
@@ -49,10 +49,7 @@ export type Binding = {
  * what used to be a hard asymmetry: a free CURSOR position has no keyboard anchor to name, but
  * the playhead does (`editor-ui.md` Menus, `editor-ui.md`'s transport-read clause), so the
  * clip-strip's cursor-anchored Cut row now advertises the same key its playhead-exact keyboard
- * twin fires. `join` — `controls.ts`, the bulk section-set rung beside `remove`'s own multi
- * branch (the mnemonic pick — Blender's and Audacity's own Join is Ctrl+J, not attested bare in
- * either camp, but `J` stays: no rival mnemonic candidate exists): unlike Cut it needs no cursor
- * position, only the live selected set, so it's wired directly rather than deferred.
+ * twin fires.
  * `convert`/`pin` — `App.svelte`'s own permanent listener (`kex2d-shortcuts` stage 3): the section
  * menu's remaining single-subject rows, dispatched through the MERGED chrome + document acts
  * record (`solve`/`solveShape`/`pinEnter` are chrome — `editor-ui.md` Menus, the act-BODY seam's
@@ -63,7 +60,7 @@ export type Binding = {
  * `reset` — `controls.ts` alone (`kex2d-shortcuts` stage 4): unlike Convert/Pin, `reset` is a plain
  * document act on BOTH `SectionMenuActions` and `NodeMenuActions` (`acts.ts sectionActs`/`nodeActs`
  * already return it — no modal, no `AbortController`), so it never needs the chrome-act merge;
- * `controls.ts`'s existing section/node keydown rungs dispatch it exactly like `remove`/`join`/`cut`.
+ * `controls.ts`'s existing section/node keydown rungs dispatch it exactly like `remove`/`cut`.
  * One key, two subject kinds, per law 3: a section (`sectionKeyAct`) or a node/node-set
  * (`nodeKeyAct`, `resetSet` on a multi selection) — node 0's tangent-clear delegation lives inside
  * `track.resetNode` itself, invisible at this seam. Keyframes carry no Reset row and no binding
@@ -80,7 +77,6 @@ export const BINDINGS = {
     // feel verdict outranks a derivation, so it's recorded here rather than re-keyed.
     lock: { keys: ["q", "Q"], hint: "Q" },
     cut: { keys: ["c", "C"], hint: "C" },
-    join: { keys: ["j", "J"], hint: "J" },
     // mnemonic `C` is taken by Cut. `V` was the derived pick (law 4's tiebreaker) but is refused:
     // Figma/Rive bind bare `V` to the base select/move tool, an arbitrary letter their camp
     // standardized — exactly the reflex kex2d must not collide with. `D` is free across both

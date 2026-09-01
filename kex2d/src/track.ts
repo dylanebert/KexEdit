@@ -20,15 +20,12 @@ import {
     evalForce,
     evalGeo,
     localize,
-    place,
     type Section as SectionSpec,
     SectionKind,
     type Strip as StripSpec,
 } from "./section";
 import {
     autoTangent,
-    collinearVec,
-    COLLINEAR_TOL,
     type Node,
     reflect,
     sampleChain,
@@ -76,7 +73,7 @@ export const Track = {
 /** one section in the track's chain. `id` is the stable identity undo/redo and
  *  node/point membership address (eids recycle across a delete→undo; ids never do
  *  — the `Handle.order` convention). `order` is its position along the chain
- *  (0 = first), reassigned by the structural ops (append/split/join/delete). `kind`
+ *  (0 = first), reassigned by the structural ops (append/split/delete). `kind`
  *  is the `SectionKind`. `length` is a FORCE section's extent — the span the force
  *  profile covers, in METERS OF ARCLENGTH always (`Track.domain` is a display lens, not a
  *  second unit); unused (0) for a geo section, whose extent is its node chain.
@@ -251,7 +248,7 @@ export function sameForceTangent(a?: ForceTangent, b?: ForceTangent): boolean {
 /** an authored velocity strip — track-global, span-blind to sections (person's verdict,
  *  2026-08-25): a velocity span controls the velocity over its own extent regardless of
  *  section type, may overlap multiple sections, and persists through segment resize and
- *  structural ops (split/join/delete/convert never touch it). `id` is the strip's own
+ *  structural ops (split/delete/convert never touch it). `id` is the strip's own
  *  stable identity (undo/redo address, eid-recycle safe). `start`/`end` are the span's
  *  boundaries in TRACK-GLOBAL arclength `d` (meters from track start — the `toGlobal`/
  *  `toLocal` seam's own coordinate, R's lock 2026-08-25), and `value` is the constant
@@ -1104,7 +1101,7 @@ export function edgeStrips(
 /** the section's own baked per-edge chord array, sampled fresh off its LIVE geo nodes —
  *  chord length is frame-invariant (rigid placement preserves distance), so no entry/
  *  placement is needed. The pre-bake reading a structural op (a geo strip's edge-index
- *  resolution, a geo join's arclength rebase) needs before a real bake exists to read
+ *  resolution) needs before a real bake exists to read
  *  `bakeOut`/`sectionInfo` from — reusing this instead of a bake read is what keeps a
  *  structural op honest about NOT depending on stale bake output. */
 function geoChordDs(
@@ -2109,8 +2106,8 @@ const FORCE_POINT_EQ: {
  *  its own guard (`editor-ui.md`'s consent-boundary law).
  *
  *  **Section-scoped, never track-global.** Two keys in DIFFERENT sections may share a station: a
- *  cut plants exactly that pair at the boundary by design and `joinNext`'s collapse is what makes
- *  the round trip lossless, so a track-global check would refuse the document's own structural op.
+ *  cut plants exactly that pair at the boundary by design, so a track-global check would refuse
+ *  the document's own structural op.
  *
  *  Equality is at f32 via `Math.fround`, which is COARSER than the store: `Force.s` is
  *  `sparse(f32)` but the columns do not round on set (a stored 0.9 reads back 0.9, while
@@ -2806,11 +2803,11 @@ export function applyConvertGeo(
     });
 }
 
-// ── structural ops (append / split / join / delete) ──────────────────────────
+// ── structural ops (append / split / delete) ──────────────────────────
 // each mutates the section chain directly; `history` wraps it in a whole-track
-// snapshot pair so undo is byte-identical. geo split/join re-express nodes rigidly
-// in the boundary frame (`place`/`localize`, exact to f32 round-off); force
-// split/join partition + rebase points in meters of arclength (lossless).
+// snapshot pair so undo is byte-identical. geo split re-expresses nodes rigidly
+// in the boundary frame (`localize`, exact to f32 round-off); force
+// split partitions + rebases points in meters of arclength (lossless).
 
 /** shift every section at or past `threshold` order by `delta` — makes room to
  *  insert (delta +1) or closes a gap after a remove (delta −1). */
@@ -2819,13 +2816,6 @@ function bumpOrders(ecs: State, threshold: number, delta: number): void {
         const o = Section.order.get(eid);
         if (o >= threshold) Section.order.set(eid, o + delta);
     }
-}
-
-/** the section immediately after `sectionId` in the chain, or null at the end. */
-function nextSection(ecs: State, sectionId: number): SectionRow | null {
-    const secs = sections(ecs);
-    const i = secs.findIndex((s) => s.id === sectionId);
-    return i >= 0 && i + 1 < secs.length ? secs[i + 1] : null;
 }
 
 /** the track-global strip layer of a whole-track snapshot — {@link snapshotAll}'s own
@@ -2938,7 +2928,7 @@ export function trackDs(ecs: State): number {
 
 /** the recovered exit state of a geo section's head chain `[0..k]`, in the section's
  *  local frame — the exact frame the bake places the downstream tail at (`evalGeo` →
- *  `exitOf`). split/join must re-express against THIS heading, not the boundary node's
+ *  `exitOf`). a split must re-express against THIS heading, not the boundary node's
  *  stored `Handle.theta`: an explicit tangent decouples `Handle.theta` from the curve's
  *  recovered tangent, so a stored-theta frame rotates the whole downstream section. the
  *  recovered exit IS the bake's downstream entry, so `place∘localize` telescopes and the
@@ -3282,177 +3272,6 @@ export function splitForce(ecs: State, sectionId: number, s: number): number | n
     return bId;
 }
 
-/** whether two vectors are equal within `COLLINEAR_TOL` — `Mirror`'s own constraint
- *  (`editTangent`: both sides equal the dragged forward vector). */
-function vecEqual(ax: number, ay: number, bx: number, by: number): boolean {
-    const scale = Math.max(Math.hypot(ax, ay), Math.hypot(bx, by));
-    return Math.hypot(ax - bx, ay - by) <= scale * COLLINEAR_TOL;
-}
-
-/** whether two FORWARD-pointing tangent vectors are collinear AND same-direction —
- *  `Aligned`'s own constraint (`alignTangent`: one shared forward direction, per-side
- *  length) under the join merge's forward/forward convention. `spline.collinearVec` is the
- *  bare, direction-agnostic core; the positive-dot clause is named HERE because it's this
- *  caller's convention, not the core's — `seedTangent`'s `in`/`out` both point forward
- *  along travel, so a genuinely aligned pair has positive dot, and an antiparallel pair is
- *  a state the arc rule can never emit (`kex2d-followups` Locked decision, bug (1): a
- *  bare `collinearVec` call here stamped `Aligned` on an antiparallel merged pair). */
-function vecCollinear(ax: number, ay: number, bx: number, by: number): boolean {
-    return collinearVec(ax, ay, bx, by) && ax * bx + ay * by > 0;
-}
-
-/** the join merge rule's stamp (`joinNext`, geo branch): B node
- *  0's explicit out-vector is authored intent, rotated into A's frame (`frameTheta` —
- *  `headExit`'s recovered exit heading, A-local; `autoTangent` is rotation-equivariant so
- *  the arc-rule seed below is taken directly at the A-local chord rather than rotated
- *  after the fact) and stamped onto the merged tip: `in` = A's tip's own in-half (its
- *  explicit `in`, else the arc-rule vector `seedTangent` derives for this same node —
- *  `seedTangent`'s `prev === null` branch is what guards a single-node A, where the tip
- *  has no previous node to take a chord from; a bespoke inline read here once skipped that
- *  guard and stamped `in = (0, 0)`, bug (2)), `out` = B's rotated out. Mode preserves A's
- *  iff the merged pair still satisfies it (`Mirror`: the two vectors equal; `Aligned`:
- *  collinear AND same-direction) — an authored-state predicate over what was just
- *  computed, never a resolved-float comparison — else `Free`. An `Auto` A tip has no
- *  explicit mode to preserve; it displays `Aligned` (`editor-ui.md`: inference is
- *  aligned-shaped), so it reads that way here too. */
-function mergeTangent(
-    ecs: State,
-    sectionId: number,
-    aOrder: number,
-    frameTheta: number,
-    bTangent: Tangent,
-): void {
-    const aTip = handleAt(ecs, sectionId, aOrder);
-    if (aTip === null)
-        throw new Error(`mergeTangent: node ${aOrder} not found in section ${sectionId}`);
-
-    const c = Math.cos(frameTheta);
-    const s = Math.sin(frameTheta);
-    const outX = c * bTangent.outX - s * bTangent.outY;
-    const outY = s * bTangent.outX + c * bTangent.outY;
-
-    const aTan = readTangent(aTip);
-    let inX: number;
-    let inY: number;
-    if (aTan) {
-        inX = aTan.inX;
-        inY = aTan.inY;
-    } else {
-        // discard the out-half — mergeTangent only needs how the tip ARRIVES; seedTangent's
-        // in-vector derivation is the same arc-rule read a bespoke inline copy once got wrong.
-        // the `TangentMode.Aligned` mode argument rides along with that discarded out-half —
-        // it's never read back, so don't chase it as a decision.
-        const seed = seedTangent(ecs, sectionId, aOrder, TangentMode.Aligned);
-        if (!seed)
-            throw new Error(`mergeTangent: node ${aOrder} not found in section ${sectionId}`);
-        inX = seed.inX;
-        inY = seed.inY;
-    }
-
-    const aMode = aTan?.mode ?? TangentMode.Aligned;
-    let mode: TangentMode;
-    if (aMode === TangentMode.Mirror) {
-        mode = vecEqual(inX, inY, outX, outY) ? TangentMode.Mirror : TangentMode.Free;
-    } else if (aMode === TangentMode.Aligned) {
-        mode = vecCollinear(inX, inY, outX, outY) ? TangentMode.Aligned : TangentMode.Free;
-    } else {
-        mode = TangentMode.Free;
-    }
-
-    writeTangent(aTip, { mode, inX, inY, outX, outY });
-}
-
-/** join a section with the next one in the chain (same-kind only). geo appends the
- *  neighbor's shape nodes re-expressed in the head's tip frame (exact inverse of a
- *  geo split); force concatenates the extents and rebases the neighbor's points. the
- *  neighbor is removed and downstream orders close up. returns true when joined.
- *
- *  Strips are untouched (S2, Locked decision): they're track-global and span-blind, so
- *  a join never rebases or merges them — the next bake's in-pass window resolution
- *  reads whatever now occupies the joined section's (wider) global window. */
-export function joinNext(ecs: State, sectionId: number): boolean {
-    const aEid = sectionAt(ecs, sectionId);
-    const b = nextSection(ecs, sectionId);
-    if (aEid === null || b === null) return false;
-    const aKind = Section.kind.get(aEid) as SectionKind;
-    if (aKind !== b.kind) return false;
-
-    if (aKind === SectionKind.Geo) {
-        const aHandles = sectionHandles(ecs, sectionId);
-        const aN = aHandles.length - 1;
-        // place B against A's RECOVERED exit (the bake's downstream entry, the exact
-        // inverse of a geo split), not A's stored tip heading — see `headExit`.
-        const frame = headExit(ecs, aHandles, aN);
-        const bHandles = sectionHandles(ecs, b.id);
-        const bTangent = readTangent(bHandles[0]);
-        // the join merge rule: B node 0 explicit is authored intent on the forward
-        // half — carry it into the merged tip rather than discarding it (the
-        // implicit-discard class the idioms unit closed for delete). B node 0 Auto has
-        // nothing authored on the forward side, so the merged tip stays exactly what
-        // it was (today's behavior).
-        if (bTangent) mergeTangent(ecs, sectionId, aN, frame.theta, bTangent);
-        // skip B node 0 (== the shared boundary, already A's tip); append B[1..m].
-        for (let j = 1; j < bHandles.length; j++) {
-            const w = place(frame, {
-                x: Handle.pos.x.get(bHandles[j]),
-                y: Handle.pos.y.get(bHandles[j]),
-                theta: Handle.theta.get(bHandles[j]),
-                tangent: readTangent(bHandles[j]),
-            });
-            spawnNode(ecs, sectionId, aN + j, w.x, w.y, w.theta, w.tangent);
-        }
-        for (const h of bHandles) ecs.destroy(h);
-    } else {
-        const aLen = Section.length.get(aEid);
-        const aForces = sectionForces(ecs, sectionId);
-        const bForces = sectionForces(ecs, b.id);
-        const aTail: ForceRow | undefined = aForces[aForces.length - 1];
-        const bHead: ForceRow | undefined = bForces[0];
-        // a coincident boundary pair — A's own last keyframe sitting exactly at its
-        // length, B's own first sitting exactly at 0 — is `splitForce`'s own planted
-        // duplicate ONLY when the two also agree in VALUE: position alone is a
-        // positional heuristic that also matches two independently-authored adjacent
-        // sections whose keyframes happen to sit on the shared boundary (a documented
-        // snap landmark, `editor-ui.md` Snapping — the common case once stage 5's Join
-        // runs over an arbitrary same-kind selection, not just a Cut's own round trip).
-        // Collapsing to one keyframe is lossless (preserves the sampled profile)
-        // exactly when `g` agrees too — that's the shape a subdivided/duplicated split
-        // boundary always has. When the values disagree the join is reconciling a real
-        // discontinuity: keep both keyframes, the pre-fix behavior for that path.
-        const coincident =
-            aTail !== undefined &&
-            bHead !== undefined &&
-            aTail.s === aLen &&
-            bHead.s === 0 &&
-            aTail.g === bHead.g;
-        if (coincident && aTail !== undefined && bHead !== undefined) {
-            const aTan = readForceTangent(aTail.eid);
-            const bTan = readForceTangent(bHead.eid);
-            // the merged key becomes the LEADING keyframe of the tail's opening
-            // segment — `profile.segment`'s own rule, the same reasoning
-            // `splitForce`'s landmark branch already applies (the tail's opening
-            // keyframe carries the departing point's `out` half forward). So its
-            // `ease` must be bHead's, not aTail's: aTail's is inert pre-join (A's
-            // last key, held flat past it), and a merge that keeps it stale re-derives
-            // an undeclared `out` from the wrong easing tag whenever bHead carries no
-            // explicit handle.
-            Force.ease.set(aTail.eid, Force.ease.get(bHead.eid) as Easing);
-            writeForceTangent(aTail.eid, { mode: TangentMode.Free, in: aTan?.in, out: bTan?.out });
-            ecs.destroy(bHead.eid);
-        }
-        for (const p of bForces) {
-            if (coincident && bHead !== undefined && p.eid === bHead.eid) continue;
-            Force.section.set(p.eid, sectionId);
-            Force.s.set(p.eid, p.s + aLen);
-        }
-        Section.length.set(aEid, aLen + b.length);
-    }
-    ecs.destroy(b.eid);
-    provenance.delete(b.id);
-    bumpOrders(ecs, b.order + 1, -1);
-    return true;
-}
-
 /** delete a section and its payload; downstream sections close the gap and rebase
  *  rigidly (their nodes are section-local, so the bake re-places them at the new
  *  upstream exit). refuses to remove the last remaining section. returns true when
@@ -3663,7 +3482,7 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
 
 /** one section's OWN content — kind, and its authored payload (a geo section's node poses, a
  *  force section's extent + points). Deliberately excludes `order`: chain position isn't
- *  content, so a reorder (a split/join, a reindex) doesn't change it. Deliberately excludes
+ *  content, so a reorder (a split, a reindex) doesn't change it. Deliberately excludes
  *  strips too (S2): they're track-global, span-blind to any one section (Locked decision),
  *  so they fold into {@link bakeHash} once, track-wide (`stripsHash`), never per section.
  *  Factored out of `bakeHash`'s per-section loop so the bake gate and the provenance token

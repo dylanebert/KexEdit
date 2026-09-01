@@ -61,15 +61,9 @@ export type SectionMenuState = {
      *  `oncontextmenu` handler at all). `cutSurface: false` there omits the row entirely rather
      *  than shipping it permanently disabled (the exact shape feel round 7 rejected on the force
      *  graph BEFORE round 8 removed the graph as a surface outright). Single-subject only, like
-     *  `canCut` — never read on a multi-set, where Join takes the slot instead. */
+     *  `canCut` — never read on a multi-set, which carries no structure row of its own (Join,
+     *  the former multi-set occupant, retired `kex2d-segment-removal` S1). */
     cutSurface: boolean;
-    /** the selected section SET is a valid Join run — `controls.sectionsJoinable` (a contiguous
-     *  run of ≥2, one kind). Multi-set only: never read on a single-subject menu (below, the
-     *  Cut/Pin symmetry's mirror image). OPTIONAL, the same shape as `canCut` — `sectionMenu`'s
-     *  own state is only ever built in `App.svelte`, out of this stage's scope, so wiring a real
-     *  reading lands there even though the predicate itself needs no cursor lens (unlike Cut);
-     *  until supplied, Join ships present but conservatively grayed (never `true` by default). */
-    canJoin?: boolean;
 };
 
 export type SectionMenuActions = {
@@ -91,9 +85,6 @@ export type SectionMenuActions = {
      *  table to tell them apart (`append`/`add`'s own precedent), not because one is bound and
      *  the other isn't: both are, now. */
     cutAt: () => void;
-    /** the set-lifted Join (stage 5) — merges the selected contiguous same-kind run into one
-     *  section as one undo entry (`history.joinSections`). */
-    join: () => void;
 };
 
 /** The ONE conversion row. A section is always exactly one kind, so only one direction was ever
@@ -116,17 +107,18 @@ function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
 }
 
 /** the context menu as data: one array of MenuItems, rendered by the shared menu language —
- *  the conversion row, Pin (force only) / Join (multi only), Cut (single only), Reset, then
+ *  the conversion row, Pin (force only), Cut (single only), Reset, then
  *  Delete. multi-select (Premiere multi-clip): the single-subject rows gray (a set has no single
  *  subject, `selected === 1`); Delete carries the set-lifted enablement, Pin and Cut OMIT instead
- *  (a multi-set has neither a single subject to pin nor a single cursor position to cut at) while
- *  Join takes their vacated slot (a single-subject selection has nothing to join). the
+ *  (a multi-set has neither a single subject to pin nor a single cursor position to cut at) and
+ *  carry no set-lifted structure row of their own (Join, the former multi-set occupant, retired
+ *  `kex2d-segment-removal` S1). the
  *  destructive Convert row (both single and bulk) was removed (kex2d-geoforce-editor stage 5):
  *  redundant with delete + append; Reset is its kind-HELD successor (kex2d-idioms stage 2) — back
  *  to the kind's default, not a flip. */
 export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuItem[] {
     // inside a live pin session on THIS section: the mode's own rows replace the normal
-    // menu entirely — convert/delete/join aren't available inside the mode (the locked
+    // menu entirely — convert/delete aren't available inside the mode (the locked
     // decision's consent-boundary law). Solve gates on the same headroom read as the panel's
     // button (below MIN_FREE free keys there is nothing to solve — pure counting).
     if (s.inMode) {
@@ -164,16 +156,14 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
     }
     // Cut — single-subject, like Pin above: a multi-section selection has no single cursor
     // position to cut at, so it's OMITTED there (never grayed) rather than shown dead, the same
-    // "a row that could never fire on this subject" law that keeps Pin off the multi menu.
+    // "a row that could never fire on this subject" law that keeps Pin off the multi menu — a
+    // multi-set carries no structure row at all now (Join, its former occupant, retired
+    // `kex2d-segment-removal` S1).
     // `shortcut: BINDINGS.cut.hint` — stage 8 reopened the asymmetry: the row's own click still
     // resolves a cursor, but `C` on this same surface resolves the PLAYHEAD instead
     // (`keys.ts sectionKeyAct`, `editor-ui.md`'s Menus section) — the hint names the ACTION,
-    // which now genuinely is keyboard-reachable, not the row's own free-position read. Join is
-    // Cut's multi-set mirror: a single-subject selection has nothing to join (`joinNext` needs a
-    // same-kind neighbor beside it, and the rejected single-subject "Join Next" would read
-    // asymmetric next to a point-anchored Cut — the locked decision), so it's OMITTED there and
-    // shown only over a multi-set, `shortcut`ed (Blender/Audacity's `J`) since the whole selected
-    // set names the run with no cursor needed. `cutSurface` is the OTHER omission axis (stage 7):
+    // which now genuinely is keyboard-reachable, not the row's own free-position read.
+    // `cutSurface` is the OTHER omission axis (stage 7):
     // the canvas can never serve Cut regardless of selection shape, so the row is absent there
     // too — "a row that could never fire on this SURFACE" is the same law as "on this subject",
     // just read off a different field, and both gate the row's PRESENCE, never its `enabled`.
@@ -184,14 +174,6 @@ export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuIte
             shortcut: BINDINGS.cut.hint,
             enabled: s.canCut === true,
             action: a.cutAt,
-        });
-    } else if (s.multi) {
-        items.push({
-            label: "Join",
-            group: "structure",
-            shortcut: BINDINGS.join.hint,
-            enabled: s.canJoin === true,
-            action: a.join,
         });
     }
     // Reset clears an authored velocity control (strip); undo restores it. The label carries

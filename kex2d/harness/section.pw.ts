@@ -1434,38 +1434,6 @@ test("force cut flow", async ({ page, boot }) => {
     expect(bySVal(await forces())).toEqual(pre); // undo restored the authored profile exactly
 });
 
-// Join by multi-select (stage 5's own op, wired since that stage — this flow is its first
-// real-UI proof): shift-click a contiguous same-kind run into a set, right-click a member (the
-// promote-vs-replace grammar keeps the set), Join merges it as one undo entry.
-test("join a run flow", async ({ page, boot }) => {
-    await boot();
-
-    const sectionCount = () => kexCall(page, "sectionCount");
-    const sectionKinds = () => kexCall(page, "sectionKinds");
-    const undoDepth = () => kexCall(page, "undoDepth");
-
-    await seedHill(page);
-    await kexCall(page, "append", 0); // a second geo section
-    await kexCall(page, "append", 0); // a third — three geo sections in a row
-    await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,0,0");
-    await frameTimeline(page);
-
-    const before = await undoDepth();
-    await page.locator(".clip").nth(0).click();
-    await page
-        .locator(".clip")
-        .nth(1)
-        .click({ modifiers: ["Shift"] }); // a two-section run, {0,1}
-    await page.locator(".clip").nth(0).click({ button: "right" }); // right-click keeps the set
-    await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Join" })).toBeEnabled();
-    await clickMenuItem(page, ".ctxmenu", "Join");
-    await expect.poll(sectionCount).toBe(2); // {0,1} merged; the third section stays apart
-    await expect.poll(undoDepth).toBe(before + 1);
-    await page.keyboard.press("Control+z");
-    await expect.poll(sectionCount).toBe(3);
-});
-
 // T1's summoned creation: right-click on the velocity-strip header band → context menu →
 // "Add velocity strip" → the strip appears at the clicked station at minimum extent, selected.
 // Empty band space is inert (no create-drag — the rescope that retired C5's rejected idiom).

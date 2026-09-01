@@ -21,7 +21,6 @@ import {
     deleteMembers,
     extendTrack,
     history,
-    joinSections,
     removeSection,
     removeSections,
     resetNodes,
@@ -82,7 +81,7 @@ import {
  *  whole-section selection, either Convert direction on ANY section, Cut (any of its three
  *  landing surfaces), and the ruler's domain switch — may run right now. False while ANY pin
  *  session is open (`editor.pinning`), not just on the session's own section: convert/delete/
- *  cut/join aren't available inside the mode (the locked decision's consent-boundary law).
+ *  cut aren't available inside the mode (the locked decision's consent-boundary law).
  *  Deleting the session's own section would strand
  *  `editor.pinning` on a dead id; a convert would land a track rewrite INSIDE the open
  *  session — an upstream convert silently rebases what the stamp means. The domain switch
@@ -335,13 +334,13 @@ export function lockCandidates(ecs: State): number[] {
         .map((r) => r.id);
 }
 
-/** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`/`cutAt`/
- *  `join`) — the chrome-free half of `SectionMenuActions`. `solve`/`solveShape`/`pinSolve`/
+/** the section context menu's document acts (`remove`/`removeSet`/`reset`/`pinExit`/`cutAt`)
+ *  — the chrome-free half of `SectionMenuActions`. `solve`/`solveShape`/`pinSolve`/
  *  `pinEnter` stay in `App.svelte` (each closes over the modal gate + abort controller — chrome,
  *  not document writes). `reset` and `pinExit` close their summoning context menu INSIDE the body
  *  (the locked decision: `closeContext` is an `editor` write like any other, and it's a no-op
  *  from the keyboard, where the deciders that reach these acts already return null while a menu
- *  is open). `remove`/`removeSet`/`join` dismiss by subject death (or survivor promotion) instead
+ *  is open). `remove`/`removeSet` dismiss by subject death instead
  *  — the menu derives null once the section is gone, so they carry no close.
  *
  *  `position` is Cut's own resolved landing point — genuinely CALLER-local (the menu's own screen
@@ -356,18 +355,12 @@ export function lockCandidates(ecs: State): number[] {
  *  bind `C` to `cut` on a NODE/keyframe landmark; this is a different act on a different subject
  *  that happens to share the same binding on ITS surface (`keys.ts sectionKeyAct`), and the two
  *  must stay apart by NAME for `Acts` (`tests/menu.test.ts`) to tell them apart — `append`/`add`'s
- *  own precedent, two acts colliding only in English.
- *
- *  `join` is the set-lifted Join (stage 5): it reads the selected set exactly like `removeSet`
- *  does, carries the SAME `sectionOpsAllowed` guard every structural row here does (Join reaches
- *  past its subject to destroy a neighbor — squarely the consent boundary Cut joined at stage 4),
- *  and re-selects the merge's survivor (`history.joinSections`' own return) rather than clearing
- *  the selection the way a delete must. */
+ *  own precedent, two acts colliding only in English. */
 export function sectionActs(
     ecs: State,
     subject: number,
     position: CutPosition | null = null,
-): Pick<SectionMenuActions, "remove" | "removeSet" | "reset" | "pinExit" | "cutAt" | "join"> {
+): Pick<SectionMenuActions, "remove" | "removeSet" | "reset" | "pinExit" | "cutAt"> {
     return {
         remove: () => {
             if (!sectionOpsAllowed(editor.pinning)) return;
@@ -391,11 +384,6 @@ export function sectionActs(
             // enforcement point, not a fourth hand-written copy of it here.
             if (position === null) return;
             cutSection(ecs, subject, position);
-        },
-        join: () => {
-            if (!sectionOpsAllowed(editor.pinning)) return;
-            const survivor = joinSections(history, ecs, [...editor.sections.ids]);
-            if (survivor !== null) selectSection(survivor);
         },
     };
 }

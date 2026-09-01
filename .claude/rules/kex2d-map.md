@@ -271,12 +271,10 @@ Since S2 (`kex2d-event-substrate`) a strip is track-global, so this checks again
 TRACK's own edge structure (`stripCoversOneEdge`, off `trackEdgeArray` — every section's own pure
 `sectionEdgeDs` concatenated in chain order, itself never a bake read), not one section's grid.
 That writer set is now just: `createStrip`, `setStrip` — the two guarded writers `stripOverlapped`/
-`stripCoversOneEdge` sit inside. **Split, join, delete, and convert are no longer writers of this
+`stripCoversOneEdge` sit inside. **Split, delete, and convert are no writers of this
 floor at all**: a strip is span-blind to structural ops (Locked decision) — `splitForce`/`splitGeo`
 carry no strip pre-check (there is nothing left for a split to displace: the strip's own stored
-`[start, end)` never moves), `joinNext` carries no re-floor (`refloorStrips` retired with it — a
-join changes no section's own window in a way that could shrink a strip's *stored* span below one
-edge, since the span itself is untouched), and `deleteSection`/`convertSection` destroy or reset
+`[start, end)` never moves), and `deleteSection`/`convertSection` destroy or reset
 no strip. A domain flip carries no strip clamp either, unchanged — it is a pure `Track.domain`
 column write (`domain.convertDomain`/`history.landDomain`) and never touches a strip's stored
 span. `setStrip`/`createStrip` refuse the write outright when either guard fails (no repair, no
@@ -660,7 +658,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   typed on `SolvedGeo`), `forceBake` (a force section's dense bake as `geofit`
   reads it — `evalForce` at the track-nominal step, clipped to the sample budget `chain` leaves it,
   so the fit's input is the displayed prefix),
-  `appendSection`/`splitGeo`/`splitForce`/`joinNext`/`deleteSection` — none of the four touch a
+  `appendSection`/`splitGeo`/`splitForce`/`deleteSection` — none of the four touch a
   strip row since S2 (§ Velocity strips): a strip's own `[start, end)` never moves, splits, merges,
   or gets destroyed on a structural op, so `snapshotSection`/`restoreSection`'s `SectionSnapshot`
   carries no `strips` field at all (a section's own convert/reset payload is strip-free by
@@ -672,17 +670,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   survives exactly — the stated cost is that subdivision produces explicit tangents, so both new
   boundary keys read `Custom` instead of their named easing), `geoCutAt` (a node order, or a
   `(j, t)` landing, → `splitGeo`) and `sectionCutAt` (a native-axis `s` → `splitForce`).
-  **The cut/join boundary-keyframe law.** A cut duplicates the landmark it lands on into both
-  halves, so `joinNext`'s collapse is what makes the round trip lossless — and it dedupes on
-  position *and* value, never position alone: a section boundary is a documented snap landmark, so
-  two independently-authored neighbors routinely hold keys there, and collapsing is lossless exactly
-  when the two agree in `g`. Where they disagree the join is reconciling a real discontinuity and
-  both keys stay. The collapse **carries the departing key's ease** (`bHead`'s, not `aTail`'s):
-  `profile.segment` derives a segment's tangents from the *leading* keyframe's ease, and a collapse
-  changes which keyframe leads — `aTail`'s ease is inert pre-join (last key of its section, the
-  profile holds flat past it) while `bHead`'s governs the tail's opening segment. General form:
-  **a structural op that undoes another op must test for the shape, not the position** — position
-  alone is provenance guesswork, and snapping makes the false positive routine. Initial speed
+  Initial speed
   (derived, no stored field): `entrySpeed`/`setStartSpeed` (§ Velocity strips).
   `startEntry`, `V0`, `EXTEND_DIST`, `MAX_SAMPLES`, `DS_NOMINAL`. Bake liveness: `authoredHash`
   (the gate's reading computed from the LIVE authored state, not read off the last bake) +
@@ -717,7 +705,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   rows — the one silent-corruption path). Global `Track.ds` is deliberately excluded: a first
   section's entry is ds-invariant, so it restores across a global ds change — benign, the restore
   returns authored-exact rows; don't fold ds in (it only converts benign restores into fits).
-  Destroy paths (`deleteSection`/`joinNext`) evict; ids never recycle, so a stale entry can't
+  Destroy paths (`deleteSection`) evict; ids never recycle, so a stale entry can't
   alias; a future document-load path must wipe the map (nothing else clears it). A restore never
   re-stamps. `convertSection` (the destructive flip) neither stamps nor consults.
   **The downstream freeze** (`setBakeFreeze`, pin mode): while set, `bake()` runs TWO chains
@@ -871,7 +859,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   payload); `restoreProvenance` is `landSolve`'s twin without a solve — lands a stamped payload
   verbatim (current `order` kept, no re-stamp) as one undoable entry, the `"restored"` outcome's
   write path for both directions' `tryRestore`.
-  Structural: `appendSection`/`splitSection`/`joinSection`/`removeSection` — each a whole-track
+  Structural: `appendSection`/`splitSection`/`removeSection` — each a whole-track
   `snapshotAll`/`restoreAll` pair (they reorder sections + move nodes across them). Pin-mode
   seams: `redirectHistory` (while set, EVERY `record` lands in the sandbox — structural
   containment, and the redirect target is exempt from `MAX_UNDO` eviction: Exit replays and the
@@ -1280,10 +1268,10 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 - **Stored `Handle.theta` ≠ the recovered curve heading once a node carries an explicit tangent.**
   `Handle.theta` only drives the `Auto` arc rule; an explicit tangent's own vector governs the curve
   instead, and nothing re-derives `theta` to track it. An op that needs the curve's actual
-  *direction* — the append/reflect seed, a split/join section boundary — must read the real exit
-  (`exitHeading` for append/extend, `headExit` for split/join: the section's recovered geometric
+  *direction* — the append/reflect seed, a split section boundary — must read the real exit
+  (`exitHeading` for append/extend, `headExit` for split: the section's recovered geometric
   exit, `evalGeo(...).exit`), never `Handle.theta`, or it re-frames the downstream shape by however
-  far the two have drifted apart (`tests/ops.test.ts`'s split/join world-curve pins guard this).
+  far the two have drifted apart (`tests/ops.test.ts`'s split world-curve pin guards this).
 - **`sampleChain` per-edge ds is the exact chord.** `dsArr[i] = |P_{i+1} − P_i|`. A near-coincident
   segment or `MAX_SAMPLES` truncation commits the prefix + orphans trailing nodes.
 - **A force section's exit is the geometry-RECOVERED state, not the integrator's.** `evalForce`
@@ -1391,7 +1379,7 @@ branch, never the helper it calls.
 **A test touching a structural op re-resolves its sections by stable `order`/`id`, never by a
 held eid.** A domain flip no longer churns eids at all — `convertDomain`'s forward land
 (`history.landDomain`) writes `Track.domain` alone, and there is no keyframe to plant, destroy,
-or respawn. Split/join/delete still do: they renumber the chain and `restoreAll` (their undo/
+or respawn. Split/delete still do: they renumber the chain and `restoreAll` (their undo/
 redo path) destroys and respawns a section's whole payload, so an eid captured before the op
 addresses nothing after; a test that held one read `Section.length` as 0 and looked like a
 physics bug.
@@ -1412,9 +1400,9 @@ sample both halves' authored profile across the ORIGINAL extent and assert f32-i
 pre-cut sample. On baked geometry the bound is the two discretizations' own disagreement, derived
 from `ds` and the extent (each half resolves its own `(edges, ds)` from its own length through
 `profile.resolveStep`, so the halves' σ grids restart at the cut on a step of their own), never an
-absolute number. The vacuity has a second face: a dedupe test that
+absolute number. The vacuity has a second face: a test that
 asserts the authored `{s, g}` list and never the sampled profile misses everything the payload
-doesn't carry, which is how the join's ease defect stayed green through every gate.
+doesn't carry.
 
 **Two suites split by what they import, not by feature.** `tests/optimize.test.ts` is the KERNEL
 suite — it reaches `optimize.ts`/`profile`/`section` only. `tests/pin.test.ts` is the mode's
