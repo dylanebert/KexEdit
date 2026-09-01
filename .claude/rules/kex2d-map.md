@@ -794,8 +794,8 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
 - `editor.ts` — **`_members` + `_active` here are the only selection storage in kex2d, and a
   per-kind selection *field* is the regression this substrate exists to prevent — no type blocks
   it** (`tsc` compiles a reintroduced `nodes: Selection` data property clean, measured), so
-  `tests/substrate.oracle.ts` is the only detector and it runs in no gate: run it by hand
-  whenever the selection block changes. Ephemeral UI state: one unified selection container — an ordered set of
+  `tests/substrate.test.ts` is the only detector and it runs in the default `bun test` gate.
+  Ephemeral UI state: one unified selection container — an ordered set of
   `{kind, id}` members (`Member`) plus one `active: {kind, id}` — over seven kinds (`node`,
   `force`, `section`, `strip`, `stripKf`, `start`, `oneShot`). The per-kind views
   (`nodes`, `forces`, `sections`, `strips`, `stripKfs` — each an `ids` set plus an `active`
@@ -1321,7 +1321,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 ## Test tiers
 
-`bun test` is the whole default gate (~14 s, 1451 tests) and it runs every time. The corpus-scale
+`bun test` is the whole default gate (~12.3 s, 1969 tests) and it runs every time. The corpus-scale
 `.oracle.ts` files sit outside it and are **run explicitly by path, exactly like the labs** — no
 `package.json` script, no composite. Run the one whose kernel you touched:
 
@@ -1333,7 +1333,6 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 | `bun test ./tests/forcegeo.oracle.ts` | `geofit.ts` — the force→geo dual-budget fit | ~2 s |
 | `bun test ./tests/polish.oracle.ts` | `polish.ts` / `fit.ts` — full-free corpus, field-wise against a stamp-matched golden | ~1 s |
 | `bun test ./tests/optimize.oracle.ts` | `optimize.ts` — the corpus-scale solve claims | <1 s |
-| `bun test ./tests/substrate.oracle.ts` | `editor.ts` — the unified selection substrate's structural shape | <1 s |
 
 The `./` prefix is load-bearing — a bare path is a name filter to bun and silently matches nothing.
 
