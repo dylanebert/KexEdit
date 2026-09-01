@@ -469,6 +469,19 @@ test("selected strip endpoint paint and cursor agree across the state table", as
         .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
     await page.mouse.down();
     await page.mouse.move(offBandEdgeX, 5, { steps: 4 });
+    await page.evaluate(
+        ({ x, y }) =>
+            window.dispatchEvent(
+                new PointerEvent("pointerup", {
+                    bubbles: true,
+                    cancelable: true,
+                    pointerId: 1,
+                    clientX: x,
+                    clientY: y,
+                }),
+            ),
+        { x: offBandEdgeX, y: 5 },
+    );
     await page.mouse.up();
     await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
     await expect.poll(bandCursor).toBe("default");
