@@ -157,11 +157,11 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe multi-member drag",
         mutations: [
             {
-                old: "        const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                old: "        const members = set.size > 1 ? forceDesc.pts().filter((m) => set.has(m.id)) : [pt];",
                 new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
             {
-                old: "        const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];",
+                old: "        const members = set.size > 1 ? stripDesc.pts().filter((m) => set.has(m.id)) : [pt];",
                 new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
         ],
