@@ -275,8 +275,8 @@ const V_BASE = 0; // the velocity axis's always-shown baseline (0 m/s), not `Y_B
 // extreme g almost instantly). Derived from BAND, so the band stays the one authored constant.
 const GROW_HEADROOM = 1;
 const GROW_CAP: [number, number] = [BAND[0] - GROW_HEADROOM, BAND[1] + GROW_HEADROOM];
-// the velocity axis has its own cap: preserve its authored resting band and pin its lower
-// edge to V_BASE, since no authorable velocity lives below that floor.
+// the velocity axis has its own growth cap: preserve its authored resting ceiling and stop
+// lower-edge growth at V_BASE, the displayed baseline (stored velocity values remain floored).
 const V_GROW_CAP: [number, number] = [V_BASE, V_BAND[1] + GROW_HEADROOM];
 const Y_BASE = 1; // gravity baseline (1g)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
@@ -518,50 +518,12 @@ const yTarget = $derived.by((): YFit => {
 // tight), and `yView` approaches it ASYMMETRICALLY: it grows fast and contracts lazily — the
 // AE/Unity "grow when content needs it, never snap back" feel, smoothed for the web.
 let yView: YFit = $state({ lo: BAND[0], hi: BAND[1], step: 1 });
-let yInit = false;
 const Y_OUT = 0.3; // per-frame approach when EXPANDING the view (snappy)
 const Y_IN = 0.05; // per-frame approach when CONTRACTING (lazy — no snap-back)
 const EDGE_RATE = 0.2; // edge-scroll speed (∝ px past the edge); a by-eye feel constant
-// a gesture holds the axis (below) and grows it at the edge (up to GROW_CAP), so the frame a
-// release leaves behind is the gesture's, not the content's. `yReturn` marks the re-fit that follows: it runs at
-// the EXPANSION rate, so the room a drag borrowed comes back in ~0.35 s however far it was grown,
-// instead of oozing for ~2.5 s — long enough that the next gesture re-freezes it and the grown axis
-// just stands. A contraction with no gesture behind it (a delete, an undo) keeps the lazy rate:
-// THAT is the "content shrank, don't snap back" case.
-let yHeld = false;
-let yReturn = false;
-$effect(() => {
-    void tick; // the ONLY dependency: one run per animation frame
-    // untracked: the body reads + writes yView, so a tracked read would make the
-    // effect depend on its own write and loop. tick alone paces it.
-    untrack(() => {
-        const t = yTarget;
-        if (!yInit) {
-            yView = t; // first valid range appears instantly, no ease-in from the seed
-            yInit = true;
-            return;
-        }
-        // drag mode: the active descriptor's axis HOLDS during every keyframe, handle, or length
-        // drag — the live re-bake must never re-fit the view under the held cursor. Edge growth is still
-        // owned by the active anchor's descriptor, so a strip-keyframe drag grows only velocity,
-        // while the force view remains held. Auto-fit resumes on release and eases to its target.
-        const forceView = kfDesc("force").view;
-        if (forceView.active()) {
-            yHeld = true;
-            const edge = forceView.edge();
-            if (edge) growValueAxis(forceView, edge.cy, edge.reapply);
-            return;
-        }
-        if (yHeld) {
-            yHeld = false;
-            yReturn = true;
-        }
-        const eased = yEase(yView, t, Y_OUT, yReturn ? Y_OUT : Y_IN);
-        if (eased.lo === t.lo && eased.hi === t.hi) yReturn = false; // the borrowed room is back
-        if (eased !== yView) yView = eased;
-    });
-});
-
+// A value axis holds during a live value gesture and grows only when its active anchor owns
+// the edge. On release it eases back to its fitted target; unrelated content contraction keeps
+// the lazy settle rate.
 // the velocity channel's own auto-fit target — `yTarget`'s twin, scanning `vCurve` instead
 // of `curve`, resting on `V_BAND`/`V_BASE`. It is fitted independently of the displayed view:
 // keyframe, handle, or length gestures hold the latter while the recovered curve keeps updating the former.
@@ -583,34 +545,6 @@ const vTarget = $derived.by((): YFit => {
 // cannot move a held diamond. On release it returns to the independently fitted `vTarget` through
 // the same eased-settle idiom as the force view.
 let vView: YFit = $state({ lo: V_BAND[0], hi: V_BAND[1], step: 1 });
-let vInit = false;
-let vHeld = false;
-let vReturn = false;
-$effect(() => {
-    void tick;
-    untrack(() => {
-        const velocityView = kfDesc("strip").view;
-        if (!vInit) {
-            vView = velocityView.fitted();
-            vInit = true;
-            return;
-        }
-        if (velocityView.active()) {
-            vHeld = true;
-            const edge = velocityView.edge();
-            if (edge) growValueAxis(velocityView, edge.cy, edge.reapply);
-            return;
-        }
-        if (vHeld) {
-            vHeld = false;
-            vReturn = true;
-        }
-        const eased = yEase(vView, velocityView.fitted(), Y_OUT, vReturn ? Y_OUT : Y_IN);
-        if (eased.lo === velocityView.fitted().lo && eased.hi === velocityView.fitted().hi)
-            vReturn = false;
-        if (eased !== vView) velocityView.write(eased);
-    });
-});
 
 // pick the track domain (the ruler menu's Meters/Seconds rows — no keyboard twin, the second feel
 // check-in's call). This is a DOCUMENT conversion, not a view change: `convertDomain` converts every
@@ -700,12 +634,20 @@ $effect(() => {
 // supplies the read/write pair and channel-specific cap; a within-chart cursor leaves the axis
 // unchanged (yGrow returns it by identity).
 interface KfView {
-    active: () => boolean;
     read: () => YFit;
     write: (next: YFit) => void;
     fitted: () => YFit;
     cap: [number, number];
     edge: () => { cy: number; reapply: () => void } | null;
+}
+interface ValueAxis {
+    val: (p: ForcePt | StripKfPt) => number;
+    valToY: (value: number) => number;
+    yToVal: (py: number) => number;
+    grid: number;
+    floor: number | null;
+    targets: (exclude: Set<number>) => number[];
+    view: KfView;
 }
 function growValueAxis(axis: KfView, cy: number, reapply: () => void): void {
     const current = axis.read();
@@ -1546,19 +1488,10 @@ let dragKfMembers: {
     dvScale: number; // 1 for the active kind in a single-domain set, 0 otherwise (S5 axis law)
 }[] = [];
 let dragKfMemberSet: Set<number> = new Set();
-// the v-to-pixel and pixel-to-v projections, kind-specific: force uses yOf/yToG (g axis),
-// strip uses vOf/its inverse (v axis). set at drag start.
-let dragKfValToY: (v: number) => number = yOf;
-let dragKfYToVal: (py: number) => number = yToG;
-let dragKfVGrid = G_GRID;
-let dragKfValFloor: number | null = null; // null for force, V_FLOOR for strip
-// the write, kind-specific: `setForcePoint`/`setStripKeyframe` share one `(ecs, id, s, v)`
-// signature — the descriptor's own "setter" facet (`kfDesc`, S9), set at drag start alongside
-// the other per-kind config so this write loop needs no `kind` branch of its own.
-let dragKfSetter: (ecs: State, id: number, s: number, v: number) => void = setForcePoint;
 function applyKeyframeDrag(): void {
     if (dragKf === null) return;
     const kind = dragKf.kind;
+    const axis = kfDesc(kind).axis;
     // both axes clamp the cursor to the chart
     const cx = clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w));
     // s-axis: same projection for both kinds (arclength through the gesture-frozen table).
@@ -1572,7 +1505,7 @@ function applyKeyframeDrag(): void {
     // cursor offset while making a horizontal move an exact zero value delta.
     const cy0 = clamp(dragKfCy0, TOP, h - BOT_PAD);
     const cy = clamp(dragKfCy, TOP, h - BOT_PAD);
-    let vAnchor = dragKfV0 + (dragKfYToVal(cy) - dragKfYToVal(cy0));
+    let vAnchor = dragKfV0 + (axis.yToVal(cy) - axis.yToVal(cy0));
     snapX = null;
     snapY = null;
     const active = snapActive(dragKfMod);
@@ -1594,9 +1527,16 @@ function applyKeyframeDrag(): void {
     }
     // v-axis snap — same `snapAxis` call, kind-specific targets and grid
     {
-        const targets = kind === "force" ? gTargets(dragKfMemberSet) : vTargets(dragKfMemberSet);
-        const startPy = dragKfValToY(dragKfV0);
-        const r = snapAxis(active, dragKfValToY(vAnchor), vAnchor, targets, dragKfVGrid, dragKfYToVal, startPy);
+        const startPy = axis.valToY(dragKfV0);
+        const r = snapAxis(
+            active,
+            axis.valToY(vAnchor),
+            vAnchor,
+            axis.targets(dragKfMemberSet),
+            axis.grid,
+            axis.yToVal,
+            startPy,
+        );
         vAnchor = r.guide === startPy ? dragKfV0 : r.value;
         snapY = r.guide;
     }
@@ -1678,17 +1618,57 @@ interface KfDesc {
         owners?: ReadonlyMap<number, number>,
     ) => void;
     activate: (id: number) => void;
-    val: (p: ForcePt | StripKfPt) => number; // value mapping: which field is "the value" (g or v)
-    valToY: (v: number) => number;
-    yToVal: (py: number) => number;
-    grid: number;
-    floor: number | null;
     setter: (ecs: State, id: number, s: number, v: number) => void;
-    // The active channel owns its displayed view, fitted target, and edge-growth cap. Keeping
-    // these facets on the descriptor prevents the shared drag path from choosing a strip/force
-    // view at the write site.
-    view: KfView;
+    // Keyframe kind owns selection and station landmarks; the value axis owns value projection,
+    // snapping, storage floor, displayed view, fitted target, and edge-growth cap.
+    axis: ValueAxis;
 }
+// Value-axis behavior is shared by every gesture that edits a channel. Keyframe descriptors
+// select the authoring kind; these objects own the axis projection and its held view.
+const forceValueAxis: ValueAxis = {
+    val: (p) => (p as ForcePt).g,
+    valToY: (value) => yOf(value),
+    yToVal: (py) => yToG(py),
+    grid: G_GRID,
+    floor: null,
+    targets: (exclude) => gTargets(exclude),
+    view: {
+        read: () => yView,
+        write: (next) => {
+            yView = next;
+        },
+        fitted: () => yTarget,
+        cap: GROW_CAP,
+        edge: () => {
+            if (dragKf?.kind === "force")
+                return { cy: dragKfCy, reapply: applyKeyframeDrag };
+            if (dragTan !== null && tanMoved)
+                return { cy: tanCy, reapply: () => applyTan(tanCx, tanCy) };
+            return null;
+        },
+    },
+};
+const velocityValueAxis: ValueAxis = {
+    val: (p) => (p as StripKfPt).v,
+    valToY: (value) => vOf(value),
+    yToVal: (py) => vView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo),
+    grid: V_GRID,
+    floor: V_FLOOR,
+    targets: (exclude) => vTargets(exclude),
+    view: {
+        read: () => vView,
+        write: (next) => {
+            vView = next;
+        },
+        fitted: () => vTarget,
+        cap: V_GROW_CAP,
+        edge: () =>
+            dragKf?.kind === "strip"
+                ? { cy: dragKfCy, reapply: applyKeyframeDrag }
+                : null,
+    },
+};
+
 function kfDesc(kind: KfKind): KfDesc {
     if (kind === "force")
         return {
@@ -1697,28 +1677,8 @@ function kfDesc(kind: KfKind): KfDesc {
             select: selectForce,
             selectMany: selectForces,
             activate: activateForce,
-            val: (p) => (p as ForcePt).g,
-            valToY: yOf,
-            yToVal: yToG,
-            grid: G_GRID,
-            floor: null,
             setter: setForcePoint,
-            view: {
-                active: () => dragKf !== null || draggingLen || dragTan !== null,
-                read: () => yView,
-                write: (next) => {
-                    yView = next;
-                },
-                fitted: () => yTarget,
-                cap: GROW_CAP,
-                edge: () => {
-                    if (dragKf?.kind === "force")
-                        return { cy: dragKfCy, reapply: applyKeyframeDrag };
-                    if (dragTan !== null && tanMoved)
-                        return { cy: tanCy, reapply: () => applyTan(tanCx, tanCy) };
-                    return null;
-                },
-            },
+            axis: forceValueAxis,
         };
     return {
         sel: editor.stripKfs,
@@ -1765,27 +1725,52 @@ function kfDesc(kind: KfKind): KfDesc {
             if (active !== null && resolvedOwners.has(active)) stripTipDismissed = false;
         },
         activate: activateStripKf,
-        val: (p) => (p as StripKfPt).v,
-        valToY: vOf,
-        yToVal: (py) => vView.lo + (1 - (py - TOP) / (h - BOT_PAD - TOP)) * (vView.hi - vView.lo),
-        grid: V_GRID,
-        floor: V_FLOOR,
         setter: setStripKeyframe,
-        view: {
-            active: () => dragKf !== null || draggingLen || dragTan !== null,
-            read: () => vView,
-            write: (next) => {
-                vView = next;
-            },
-            fitted: () => vTarget,
-            cap: V_GROW_CAP,
-            edge: () =>
-                dragKf?.kind === "strip"
-                    ? { cy: dragKfCy, reapply: applyKeyframeDrag }
-                    : null,
-        },
+        axis: velocityValueAxis,
     };
 }
+
+// One predicate governs every value-axis gesture; each channel then owns only its projection,
+// target, and edge-growth route. This keeps later segment gestures from becoming keyframe kinds.
+const valueGestureActive = (): boolean => dragKf !== null || draggingLen || dragTan !== null;
+interface SettledValueAxis {
+    axis: ValueAxis;
+    initialized: boolean;
+    held: boolean;
+    returning: boolean;
+}
+const settledValueAxes: SettledValueAxis[] = [
+    { axis: forceValueAxis, initialized: false, held: false, returning: false },
+    { axis: velocityValueAxis, initialized: false, held: false, returning: false },
+];
+$effect(() => {
+    void tick;
+    untrack(() => {
+        for (const state of settledValueAxes) {
+            const { axis } = state;
+            const view = axis.view;
+            const target = view.fitted();
+            if (!state.initialized) {
+                view.write(target);
+                state.initialized = true;
+                continue;
+            }
+            if (valueGestureActive()) {
+                state.held = true;
+                const edge = view.edge();
+                if (edge) growValueAxis(view, edge.cy, edge.reapply);
+                continue;
+            }
+            if (state.held) {
+                state.held = false;
+                state.returning = true;
+            }
+            const eased = yEase(view.read(), target, Y_OUT, state.returning ? Y_OUT : Y_IN);
+            if (eased.lo === target.lo && eased.hi === target.hi) state.returning = false;
+            if (eased !== view.read()) view.write(eased);
+        }
+    });
+});
 // the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1;
 // S9 closes F7 by routing the selection grammar itself through `kfDesc` too, not just the
 // drag). No clamp domain (S5, F2): a grabbed keyframe drags freely past its strip/segment
@@ -1863,17 +1848,17 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];
         for (const m of members)
             allMembers.push({
-                id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.val(m),
+                id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
                 section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                floor: forceDesc.floor, dvScale: mixed ? 0 : 1,
+                floor: forceDesc.axis.floor, dvScale: mixed ? 0 : 1,
             });
         // other kind: its selected members move in s only (dvScale 0)
         if (stripIds.size > 0) {
             for (const m of stripDesc.pts.filter((m) => stripIds.has(m.id)))
                 allMembers.push({
-                    id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.val(m),
+                    id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
                     section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                    floor: stripDesc.floor, dvScale: 0,
+                    floor: stripDesc.axis.floor, dvScale: 0,
                 });
         }
     } else {
@@ -1881,31 +1866,26 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];
         for (const m of members)
             allMembers.push({
-                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.val(m),
+                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
                 section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                floor: stripDesc.floor, dvScale: mixed ? 0 : 1,
+                floor: stripDesc.axis.floor, dvScale: mixed ? 0 : 1,
             });
         // other kind: its selected members move in s only (dvScale 0)
         if (forceIds.size > 0) {
             for (const m of forceDesc.pts.filter((m) => forceIds.has(m.id)))
                 allMembers.push({
-                    id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.val(m),
+                    id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
                     section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                    floor: forceDesc.floor, dvScale: 0,
+                    floor: forceDesc.axis.floor, dvScale: 0,
                 });
         }
     }
     dragKfMembers = allMembers;
     dragKfS0 = pt.s;
-    dragKfV0 = desc.val(pt);
+    dragKfV0 = desc.axis.val(pt);
     dragKfStartD = pt.startD;
     dragKfSection = pt.section;
     dragKfStrip = kind === "force" ? -1 : (pt as StripKfPt).strip;
-    dragKfValToY = desc.valToY;
-    dragKfYToVal = desc.yToVal;
-    dragKfVGrid = desc.grid;
-    dragKfValFloor = desc.floor;
-    dragKfSetter = desc.setter;
     // common drag setup
     dragKfMemberSet = new Set(dragKfMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
@@ -2021,7 +2001,7 @@ function freshKfSnapshot(): {
         byKind.set(kind, pts);
         for (const p of pts) {
             const x = ptX(p);
-            const y = desc.valToY(desc.val(p));
+            const y = desc.axis.valToY(desc.axis.val(p));
             if (x < LEFT_GUT || x > w) continue;
             if (y < yLo || y > yHi) continue;
             cand.push({ kind, id: p.id, x, y });
@@ -2112,7 +2092,7 @@ function marqueeUp(): void {
     let anyHits = false;
     for (const kind of KF_KINDS) {
         const desc = kfDesc(kind);
-        const cand = desc.pts.map((p) => ({ id: p.id, x: ptX(p), y: desc.valToY(desc.val(p)) }));
+        const cand = desc.pts.map((p) => ({ id: p.id, x: ptX(p), y: desc.axis.valToY(desc.axis.val(p)) }));
         const hitIds = hits(rect, cand);
         if (hitIds.length === 0) continue;
         anyHits = true;
@@ -4681,10 +4661,21 @@ onMount(() => {
         if (k) {
             k.gRange = (): [number, number] => [yView.lo, yView.hi];
             k.vRange = (): [number, number] => [vView.lo, vView.hi];
-            // The fitted velocity target is intentionally a separate DEV read from vRange: a
-            // projection-hold capture must observe the recovered curve moving while the displayed
-            // axis remains held, then observe that held axis settle back to this target on release.
+            k.gFit = (): [number, number] => [yTarget.lo, yTarget.hi];
             k.vFit = (): [number, number] => [vTarget.lo, vTarget.hi];
+            // One read gives the edge-growth witness both displayed projections and their live
+            // fitted targets; the held range must move only for the active anchor's channel.
+            k.valueAxes = (): {
+                gRange: [number, number];
+                gFit: [number, number];
+                vRange: [number, number];
+                vFit: [number, number];
+            } => ({
+                gRange: [yView.lo, yView.hi],
+                gFit: [yTarget.lo, yTarget.hi],
+                vRange: [vView.lo, vView.hi],
+                vFit: [vTarget.lo, vTarget.hi],
+            });
             k.xView = (): [number, number] => [view.pan, view.pxPerU];
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
             // every keyframe's coordinate on that axis — paired with the stored `s` (S6: the
@@ -4737,6 +4728,15 @@ onMount(() => {
                 return freshKfSnapshot()
                     .cand.filter((c) => c.kind === "strip")
                     .map((c) => ({ id: c.id, x: rect.left + c.x, y: rect.top + c.y }));
+            };
+            k.stripKfAllPx = (): { id: number; x: number; y: number }[] => {
+                const rect = canvas.getBoundingClientRect();
+                const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+                return computeStripKfPts(computeBandStrips(freshSpans, ecs), freshSpans, ecs).map((p) => ({
+                    id: p.id,
+                    x: rect.left + ptX(p),
+                    y: rect.top + velocityValueAxis.valToY(velocityValueAxis.val(p)),
+                }));
             };
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a

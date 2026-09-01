@@ -169,7 +169,14 @@ export interface Kex {
     gRange(): [number, number];
     vRange(): [number, number];
     vFit(): [number, number];
+    valueAxes(): {
+        gRange: [number, number];
+        gFit: [number, number];
+        vRange: [number, number];
+        vFit: [number, number];
+    };
     stripKfPx(): { id: number; x: number; y: number }[];
+    stripKfAllPx(): { id: number; x: number; y: number }[];
     stripPx(): { id: number; x0: number; x1: number }[];
     hoverForceId(): number | null;
     guides(): { ray: boolean; angle: string | null; length: string | null };

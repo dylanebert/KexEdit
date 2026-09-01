@@ -2156,15 +2156,47 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         if (!body) throw new Error("timeline body not laid out");
         return { top: body.y + CHART_TOP, bottom: body.y + body.height - CHART_BOT_PAD };
     };
+    const readAxes = () =>
+        page.evaluate(() => {
+            const k = (
+                window as unknown as {
+                    __kex: Kex & {
+                        valueAxes(): {
+                            gRange: [number, number];
+                            gFit: [number, number];
+                            vRange: [number, number];
+                            vFit: [number, number];
+                        };
+                    };
+                }
+            ).__kex;
+            return k.valueAxes();
+        });
     const growFrom = async (
         point: { x: number; y: number },
         edge: number,
         side: "top" | "bottom" = "top",
+        id?: number,
     ) => {
+        const press = { x: point.x, y: point.y + 10 };
+        const cursorY = side === "top" ? edge - 20 : edge + 20;
         await page.keyboard.down("Control");
-        await page.mouse.move(point.x, point.y);
+        await page.mouse.move(press.x, press.y);
         await page.mouse.down();
-        await page.mouse.move(point.x, side === "top" ? edge - 140 : edge + 140, { steps: 8 });
+        const grabbed =
+            id === undefined
+                ? null
+                : ((
+                      (await kexCall(page, "stripKfAllPx")) as {
+                          id: number;
+                          x: number;
+                          y: number;
+                      }[]
+                  ).find((candidate) => candidate.id === id) ?? null);
+        if (id !== undefined && grabbed === null)
+            throw new Error("off-center strip keyframe grab was not resolved");
+        await page.mouse.move(press.x, cursorY, { steps: 8 });
+        return { press, cursorY, grabbed };
     };
     const finish = async () => {
         await page.mouse.up();
@@ -2185,18 +2217,20 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
     }[];
     const stripPoint = stripPoints.find((candidate) => candidate.id === stripKfId);
     if (!stripPoint) throw new Error("strip edge-growth keyframe not laid out");
-    const stripBeforeV = await kexCall(page, "vRange");
-    const stripBeforeG = await kexCall(page, "gRange");
+    const stripBefore = await readAxes();
     const { top, bottom } = await chartBounds();
-    await growFrom(stripPoint, top);
+    const stripGrab = await growFrom(stripPoint, top, "top", stripKfId);
     await expect
-        .poll(async () => (await kexCall(page, "vRange"))[1])
-        .toBeGreaterThan(stripBeforeV[1] + 0.01);
-    const stripDuringV = await kexCall(page, "vRange");
-    // The resting fit may have a rounded lower bound below V_BASE; the edge-grow cap applies to
-    // GROWTH, so a near-top drag must never make that lower bound move farther downward.
-    expect(stripDuringV[0]).toBe(stripBeforeV[0]);
-    expect(await kexCall(page, "gRange")).toEqual(stripBeforeG);
+        .poll(async () => (await readAxes()).vRange[1])
+        .toBeGreaterThan(stripBefore.vRange[1] + 0.01);
+    const stripDuring = await readAxes();
+    // A +10px legal off-center press is the non-vacuous grab-offset control; the same gesture
+    // then crosses the edge, exercising growth without recentering at pointerdown.
+    if (!stripGrab.grabbed) throw new Error("off-center strip keyframe grab was not resolved");
+    const grabOffset = stripGrab.press.y - stripGrab.grabbed.y;
+    expect(Math.abs(grabOffset - 10)).toBeLessThan(1);
+    expect(stripDuring.vRange[0]).toBe(stripBefore.vRange[0]);
+    expect(stripDuring.gRange).toEqual(stripBefore.gRange);
     await finish();
     await frames(page, 40); // allow the released g-view's eased return to finish before the next arm
 
@@ -2215,15 +2249,14 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
     ).find((candidate) => candidate.id === bottomKfId);
     if (!bottomPoint) throw new Error("strip lower-edge keyframe not laid out");
     expect(bottomPoint.y).toBeGreaterThanOrEqual(bottom - 140);
-    const bottomBeforeV = await kexCall(page, "vRange");
-    const bottomBeforeG = await kexCall(page, "gRange");
+    const bottomBefore = await readAxes();
     await growFrom(bottomPoint, bottom, "bottom");
-    await expect.poll(async () => (await kexCall(page, "vRange"))[0]).toBe(bottomBeforeV[0]);
-    const bottomDuringV = await kexCall(page, "vRange");
-    expect(bottomDuringV[0]).toBeGreaterThanOrEqual(bottomBeforeV[0]);
-    expect(bottomDuringV[0]).toBe(bottomBeforeV[0]);
-    expect(bottomDuringV[1]).toBe(bottomBeforeV[1]);
-    expect(await kexCall(page, "gRange")).toEqual(bottomBeforeG);
+    await expect.poll(async () => (await readAxes()).vRange[0]).toBe(bottomBefore.vRange[0]);
+    const bottomDuring = await readAxes();
+    expect(bottomDuring.vRange[0]).toBeGreaterThanOrEqual(bottomBefore.vRange[0]);
+    expect(bottomDuring.vRange[0]).toBe(bottomBefore.vRange[0]);
+    expect(bottomDuring.vRange[1]).toBe(bottomBefore.vRange[1]);
+    expect(bottomDuring.gRange).toEqual(bottomBefore.gRange);
     await finish();
 
     // Force arm: the inverse route grows gRange while the velocity view remains byte-identical.
@@ -2246,14 +2279,14 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         .map((point) => ({ point, distance: Math.abs(point.x - expectedX) }))
         .sort((a, b) => a.distance - b.distance)[0]?.point;
     if (!forcePoint) throw new Error("force edge-growth hit target not laid out");
-    const forceBeforeV = await kexCall(page, "vRange");
-    const forceBeforeG = await kexCall(page, "gRange");
+    const forceBefore = await readAxes();
     const forceBounds = await chartBounds();
     await growFrom(forcePoint, forceBounds.top);
     await expect
-        .poll(async () => (await kexCall(page, "gRange"))[1])
-        .toBeGreaterThan(forceBeforeG[1] + 0.01);
-    expect(await kexCall(page, "vRange")).toEqual(forceBeforeV);
+        .poll(async () => (await readAxes()).gRange[1])
+        .toBeGreaterThan(forceBefore.gRange[1] + 0.01);
+    const forceDuring = await readAxes();
+    expect(forceDuring.vRange).toEqual(forceBefore.vRange);
     await finish();
 
     // Mixed arm: make the strip keyframe active last, then drag it. The shared set has no vertical
@@ -2291,15 +2324,15 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         (await kexCall(page, "stripKfPx")) as { id: number; x: number; y: number }[]
     ).find((candidate) => candidate.id === mixedKf);
     if (!liveMixedPoint) throw new Error("mixed active strip keyframe moved out of view");
-    const mixedBeforeV = await kexCall(page, "vRange");
-    const mixedBeforeG = await kexCall(page, "gRange");
+    const mixedBefore = await readAxes();
     const mixedBounds = await chartBounds();
     await growFrom(liveMixedPoint, mixedBounds.top);
     await expect
-        .poll(async () => (await kexCall(page, "vRange"))[1])
-        .toBeGreaterThan(mixedBeforeV[1] + 0.01);
-    expect((await kexCall(page, "vRange"))[0]).toBe(mixedBeforeV[0]);
-    expect(await kexCall(page, "gRange")).toEqual(mixedBeforeG);
+        .poll(async () => (await readAxes()).vRange[1])
+        .toBeGreaterThan(mixedBefore.vRange[1] + 0.01);
+    const mixedDuring = await readAxes();
+    expect(mixedDuring.vRange[0]).toBe(mixedBefore.vRange[0]);
+    expect(mixedDuring.gRange).toEqual(mixedBefore.gRange);
     await finish();
 });
 
