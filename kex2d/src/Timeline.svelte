@@ -541,8 +541,8 @@ $effect(() => {
             yInit = true;
             return;
         }
-        // drag mode: the active descriptor's axis HOLDS during every keyframe or handle drag —
-        // the live re-bake must never re-fit the view under the held cursor. Edge growth is still
+        // drag mode: the active descriptor's axis HOLDS during every keyframe, handle, or length
+        // drag — the live re-bake must never re-fit the view under the held cursor. Edge growth is still
         // owned by the active anchor's descriptor, so a strip-keyframe drag grows only velocity,
         // while the force view remains held. Auto-fit resumes on release and eases to its target.
         const forceView = kfDesc("force").view;
