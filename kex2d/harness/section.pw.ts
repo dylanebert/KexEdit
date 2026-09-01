@@ -697,7 +697,11 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     // Pull the middle point below 1g via its fat hit target → an airtime change that re-times the
     // ride (the bake's total time shifts). `.fhit` is shared with velocity-strip keyframes.
     const tBefore = await tTotal();
-    const beforeForces = (await kexCall(page, "forceU")) as { section: number; s: number; g: number }[];
+    const beforeForces = (await kexCall(page, "forceU")) as {
+        section: number;
+        s: number;
+        g: number;
+    }[];
     const hits = page.locator(".fhit");
     await expect(hits).toHaveCount(3);
     const centers = await hits.evaluateAll(
@@ -715,7 +719,11 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
     await page.mouse.up();
-    const afterForces = (await kexCall(page, "forceU")) as { section: number; s: number; g: number }[];
+    const afterForces = (await kexCall(page, "forceU")) as {
+        section: number;
+        s: number;
+        g: number;
+    }[];
     const middleBefore = beforeForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
     const middleAfter = afterForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
     if (!middleBefore || !middleAfter) throw new Error("three-point force hill disappeared");

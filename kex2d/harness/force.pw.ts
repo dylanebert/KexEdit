@@ -634,7 +634,6 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
     await kexCall(page, "seedForceBump");
     await frameTimeline(page);
 
-    const forces = () => kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
     const forceEases = () => kexCall(page, "forceEases") as Promise<number[]>;
     const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
     const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
@@ -686,8 +685,12 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
     const stripId = (await kexCall(page, "addStripAt", 0, 40, 5)) as number;
     await kexCall(page, "placeStripKf", stripId, 12, 10);
     await frameTimeline(page);
-    const stripKfs = () => kexCall(page, "stripKeyframesOf", stripId) as Promise<{ id: number; s: number; v: number }[]>;
-    const stripPx = () => kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const stripKfs = () =>
+        kexCall(page, "stripKeyframesOf", stripId) as Promise<
+            { id: number; s: number; v: number }[]
+        >;
+    const stripPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
     const target = (await stripKfs())[1];
     const point = (await stripPx()).find((p) => p.id === target.id);
     if (!point) throw new Error("strip keyframe not laid out");
@@ -695,9 +698,13 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
     await page.mouse.move(point.x, point.y);
     await page.mouse.down();
     await page.mouse.move(point.x + 35, point.y, { steps: 6 });
-    await expect.poll(async () => (await stripKfs()).find((k) => k.id === target.id)?.s).not.toBe(before);
+    await expect
+        .poll(async () => (await stripKfs()).find((k) => k.id === target.id)?.s)
+        .not.toBe(before);
     await page.evaluate(() => window.dispatchEvent(new Event("blur")));
-    await expect.poll(async () => (await stripKfs()).find((k) => k.id === target.id)?.s).toBe(before);
+    await expect
+        .poll(async () => (await stripKfs()).find((k) => k.id === target.id)?.s)
+        .toBe(before);
     await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
     await page.mouse.up();
 
@@ -716,10 +723,16 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
     if (scrubBefore === undefined) throw new Error("strip keyframe vanished before label scrub");
     await page.mouse.move(labelBox.x + labelBox.width / 2, labelBox.y + labelBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(labelBox.x + labelBox.width / 2 + 35, labelBox.y + labelBox.height / 2, { steps: 6 });
-    await expect.poll(async () => (await stripKfs()).find((k) => k.id === selected.id)?.s).not.toBe(scrubBefore);
+    await page.mouse.move(labelBox.x + labelBox.width / 2 + 35, labelBox.y + labelBox.height / 2, {
+        steps: 6,
+    });
+    await expect
+        .poll(async () => (await stripKfs()).find((k) => k.id === selected.id)?.s)
+        .not.toBe(scrubBefore);
     await page.evaluate(() => window.dispatchEvent(new Event("blur")));
-    await expect.poll(async () => (await stripKfs()).find((k) => k.id === selected.id)?.s).toBe(scrubBefore);
+    await expect
+        .poll(async () => (await stripKfs()).find((k) => k.id === selected.id)?.s)
+        .toBe(scrubBefore);
     await expect(page.locator("#app[data-dragging]")).toHaveCount(0);
     await page.mouse.up();
 });
@@ -904,7 +917,10 @@ test("timeline domain flow", async ({ page, boot }) => {
 
 // Time-view trim heirs retained by S4. These are extent and downstream-layout behaviors, not the
 // removed force position axis, so they remain real pointer capture flows.
-test("timeline domain flow — Time-view trim writes arclength through the frozen table (S6c heir)", async ({ page, boot }) => {
+test("timeline domain flow — Time-view trim writes arclength through the frozen table (S6c heir)", async ({
+    page,
+    boot,
+}) => {
     await boot();
     const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
     const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
@@ -942,7 +958,10 @@ test("timeline domain flow — Time-view trim writes arclength through the froze
     await expect.poll(async () => (await lengths())[0]).toBeCloseTo(len0, 3);
 });
 
-test("timeline domain flow — Time-view extent trim extrapolates past the bake end (S6b heir)", async ({ page, boot }) => {
+test("timeline domain flow — Time-view extent trim extrapolates past the bake end (S6b heir)", async ({
+    page,
+    boot,
+}) => {
     await boot();
     const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
     const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
@@ -974,7 +993,9 @@ test("timeline domain flow — Time-view extent trim extrapolates past the bake 
     await page.keyboard.down("Control");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + (past - trimU) * scale, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.move(box.x + box.width / 2 + (past - trimU) * scale, box.y + box.height / 2, {
+        steps: 10,
+    });
     await page.mouse.up();
     await page.keyboard.up("Control");
     const expected = extended - startD;
@@ -984,9 +1005,11 @@ test("timeline domain flow — Time-view extent trim extrapolates past the bake 
     await expect.poll(async () => (await lengths())[0]).toBeCloseTo(len0, 3);
 });
 
-test("timeline domain flow — downstream clip edge tracks an upstream Time-view extent (S1 heir)", async ({ page, boot }) => {
+test("timeline domain flow — downstream clip edge tracks an upstream Time-view extent (S1 heir)", async ({
+    page,
+    boot,
+}) => {
     await boot();
-    const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
     const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
     const domain = () => kexCall(page, "domain");
 
