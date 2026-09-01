@@ -2515,7 +2515,7 @@ test("strip keyframe .sel reads membership not strip context (S4)", async ({ pag
 
 // S9 capture arm 1 (kex2d-event-substrate, F7 finding (a)): a marquee dragged over a strip
 // keyframe selects it, and a shift-marquee toggles it — the same arm shape the force-keyframe
-// marquee already has ("timeline multiselect flow", force.pw.ts). Before S9, `marqueeUp`'s
+// marquee already has ("retained timeline gesture heirs after force position removal", force.pw.ts). Before S9, `marqueeUp`'s
 // candidate list was built from `forcePts` alone, so a rubber-band never took a strip keyframe,
 // with or without shift. Constructs a real strip via `addStripAt` (a real guarded write,
 // `history.addStrip`) with two interior keyframes via `placeStripKf` at known stations, selects

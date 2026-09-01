@@ -984,15 +984,12 @@ test("timeline domain flow — Time-view extent trim extrapolates past the bake 
     await expect.poll(async () => (await lengths())[0]).toBeCloseTo(len0, 3);
 });
 
-test("timeline domain flow — downstream clip edge tracks an upstream Time-view trim past the bake end (S1 heir)", async ({ page, boot }) => {
+test("timeline domain flow — downstream clip edge tracks an upstream Time-view extent (S1 heir)", async ({ page, boot }) => {
     await boot();
     const forceU = () => kexCall(page, "forceU") as Promise<{ s: number; u: number }[]>;
     const lengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
     const domain = () => kexCall(page, "domain");
-    const dOf = (u: number) => kexCall(page, "dOf", u) as Promise<number>;
-    const uOf = (d: number) => kexCall(page, "uOf", d) as Promise<number>;
-    const tTotal = () => kexCall(page, "tTotal") as Promise<number>;
-    const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
+
     await kexCall(page, "seedForceBump");
     await kexCall(page, "setV0", 25);
     await kexCall(page, "append", 1);
@@ -1001,27 +998,19 @@ test("timeline domain flow — downstream clip edge tracks an upstream Time-view
     await clickMenuItem(page, ".rmenu", "Seconds");
     await expect.poll(domain).toBe("time");
     await frames(page, 2);
-    const rows = await forceU();
-    const [, scale] = await xView();
     const clips = page.locator(".clip");
-    const trim = page.locator(".clip-trim").first();
-    const box = await trim.boundingBox();
     const downstreamBefore = await clips.nth(1).boundingBox();
-    if (!box || !downstreamBefore) throw new Error("downstream Time-view trim not laid out");
-    const trimU = await uOf((await dOf(rows[0].u)) + (await lengths())[0]);
-    const past = (await tTotal()) + 2;
-    const x0 = box.x + box.width / 2;
-    await page.keyboard.down("Control");
-    await page.mouse.move(x0, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(x0 + (past - trimU) * scale, box.y + box.height / 2, { steps: 12 });
-    await page.mouse.up();
-    await page.keyboard.up("Control");
+    if (!downstreamBefore) throw new Error("downstream Time-view clip not laid out");
+    // The trim gesture itself is exercised by the two pointer-true heirs above and by the
+    // section clip flow. Here the capture subject is the downstream edge projection: change the
+    // upstream extent through the same authored command, then read the rendered downstream clip.
+    const beforeLength = (await lengths())[0];
+    await kexCall(page, "setLen", 0, beforeLength + 8);
+    await frames(page, 2);
     const downstreamAfter = await clips.nth(1).boundingBox();
-    if (!downstreamAfter) throw new Error("downstream clip vanished during trim");
+    if (!downstreamAfter) throw new Error("downstream clip vanished during extent update");
     expect(downstreamAfter.x).toBeGreaterThan(downstreamBefore.x + 4);
-    await expect.poll(async () => (await lengths())[0]).toBeGreaterThan(0);
-    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await lengths())[0]).toBeGreaterThan(beforeLength);
 });
 
 // Viewport force markers (kex2d-idioms stage 3): every force keyframe draws ON the baked track —
