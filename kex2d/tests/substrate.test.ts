@@ -16,7 +16,7 @@ import { join } from "node:path";
 //      so a reintroduced `nodes: emptySel()` is a compile error. the per-kind accessors are
 //      getters over the unified set, not stored fields.
 //
-// Run explicitly (`bun test ./tests/substrate.oracle.ts`): a source query, not a behavioral arm.
+// Runs in the default `bun test` gate: a source query, not a behavioral arm.
 
 const src = readFileSync(join(import.meta.dir, "..", "src", "editor.ts"), "utf8");
 
