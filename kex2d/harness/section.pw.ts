@@ -691,13 +691,13 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     // Free chart insertion is gone, but the headless authoring command is the legitimate setup
     // seam for this capture. The behavior under test remains the real value affordance: three
     // authored points are present, and a pointer drag turns their flat profile into a hill.
-    await kexCall(page, "placeForce", 8, 1);
+    await kexCall(page, "placeForceAt", 1, 8, 1);
     await expect.poll(async () => (await forceCounts())[1]).toBe(3);
 
     // Pull the middle point below 1g via its fat hit target → an airtime change that re-times the
     // ride (the bake's total time shifts). `.fhit` is shared with velocity-strip keyframes.
     const tBefore = await tTotal();
-    const beforeForces = (await kexCall(page, "forces")) as { section: number; s: number; g: number }[];
+    const beforeForces = (await kexCall(page, "forceU")) as { section: number; s: number; g: number }[];
     const hits = page.locator(".fhit");
     await expect(hits).toHaveCount(3);
     const centers = await hits.evaluateAll(
@@ -715,7 +715,7 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     await page.mouse.down();
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
     await page.mouse.up();
-    const afterForces = (await kexCall(page, "forces")) as { section: number; s: number; g: number }[];
+    const afterForces = (await kexCall(page, "forceU")) as { section: number; s: number; g: number }[];
     const middleBefore = beforeForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
     const middleAfter = afterForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
     if (!middleBefore || !middleAfter) throw new Error("three-point force hill disappeared");
@@ -2923,6 +2923,7 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
 
     const readD = 3; // between the start keyframe (s=0) and the mid one (s=6, v=12) — inside
     // the interpolated region until the start keyframe's own station passes it, at which point
+    await frames(page, 4); // allow the authored strip keyframe to reach the bake before sampling
     const vBefore = await vAtD(readD);
     // it falls into the flat extrapolation BEFORE the earliest keyframe (S5's own out-of-extent
     // resolution) — a real, sampled change, not just a stored-field readback.
