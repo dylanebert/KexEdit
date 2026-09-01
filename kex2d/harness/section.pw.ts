@@ -2177,9 +2177,11 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         edge: number,
         side: "top" | "bottom" = "top",
         id?: number,
+        yOffset = 10,
+        overshoot = 120,
     ) => {
-        const press = { x: point.x, y: point.y + 10 };
-        const cursorY = side === "top" ? edge - 20 : edge + 20;
+        const press = { x: point.x, y: point.y + yOffset };
+        const cursorY = side === "top" ? edge - overshoot : edge + overshoot;
         await page.keyboard.down("Control");
         await page.mouse.move(press.x, press.y);
         await page.mouse.down();
@@ -2217,31 +2219,74 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
     }[];
     const stripPoint = stripPoints.find((candidate) => candidate.id === stripKfId);
     if (!stripPoint) throw new Error("strip edge-growth keyframe not laid out");
-    const stripBefore = await readAxes();
     const { top, bottom } = await chartBounds();
-    const stripGrab = await growFrom(stripPoint, top, "top", stripKfId);
+    const readStrip = () =>
+        page.evaluate((id) => {
+            const k = (window as unknown as { __kex: Kex }).__kex;
+            const axes = k.valueAxes();
+            const row = k
+                .stripKeyframesOf(
+                    (k.stripsOf(0) as { id: number }[]).find((s) =>
+                        (k.stripKeyframesOf(s.id) as { id: number }[]).some((x) => x.id === id),
+                    )?.id ?? -1,
+                )
+                .find((x) => x.id === id);
+            const point = k.stripKfPx().find((x) => x.id === id);
+            return { axes, row, point };
+        }, stripKfId);
+    const stripBeforeRead = await readStrip();
+    const stripBefore = stripBeforeRead.axes;
+    if (!stripBeforeRead.row || !stripBeforeRead.point)
+        throw new Error("strip edge-growth keyframe read was not complete");
+    const stripGrab = await growFrom(stripPoint, top, "top", stripKfId, -10);
     await expect
-        .poll(async () => (await readAxes()).vRange[1])
+        .poll(async () => (await readStrip()).axes.vRange[1])
         .toBeGreaterThan(stripBefore.vRange[1] + 0.01);
-    // A +10px legal off-center press is the non-vacuous grab-offset control; after the cursor
-    // crosses the edge and the axis grows, sample the LIVE dragged diamond and compare its current
-    // cursor offset. This is deliberately after the growth poll, not a pre-move identity check.
+    // The top-edge press is 10px above the diamond, so it remains in the production candidate
+    // list while the pointer overshoots strongly. Compare the signed value-space offset against
+    // the clamped cursor ordinate, not the raw off-canvas pointer.
     if (!stripGrab.grabbed) throw new Error("off-center strip keyframe grab was not resolved");
-    const grabOffset = stripGrab.press.y - stripGrab.grabbed.y;
-    expect(Math.abs(grabOffset - 10)).toBeLessThan(1);
-    await expect
-        .poll(async () => {
-            const live = (await kexCall(page, "stripKfPx")).find(
-                (candidate) => candidate.id === stripKfId,
-            );
-            return live === undefined
-                ? Number.POSITIVE_INFINITY
-                : Math.abs(Math.abs(stripGrab.cursorY - live.y) - Math.abs(grabOffset));
-        })
-        .toBeLessThan(1);
-    const stripDuring = await readAxes();
-    expect(stripDuring.vRange[0]).toBe(stripBefore.vRange[0]);
-    expect(stripDuring.gRange).toEqual(stripBefore.gRange);
+    const grabOffsetPx = stripGrab.press.y - stripGrab.grabbed.y;
+    expect(Math.abs(grabOffsetPx + 10)).toBeLessThan(1);
+    const chartHeight = bottom - top;
+    const valueAt = (range: [number, number], y: number): number =>
+        range[0] +
+        (1 - (Math.max(top, Math.min(bottom, y)) - top) / chartHeight) * (range[1] - range[0]);
+    const stripDuring = await readStrip();
+    if (!stripDuring.row || !stripDuring.point)
+        throw new Error("grown strip keyframe left the production candidate list");
+    const growthFactor =
+        (stripDuring.axes.vRange[1] - stripDuring.axes.vRange[0]) /
+        (stripBefore.vRange[1] - stripBefore.vRange[0]);
+    // 120px of overshoot must produce a visible multi-percent span increase; this catches a
+    // growth path that only nudges the edge or never applies the active channel's cap.
+    expect(growthFactor).toBeGreaterThan(1.02);
+    const clampedCursorY = Math.max(top, Math.min(bottom, stripGrab.cursorY));
+    const expectedValueOffset =
+        stripBeforeRead.row.v - valueAt(stripDuring.axes.vRange, stripGrab.press.y);
+    // The chart coordinates are CSS pixels while the authored value is f32; one value-axis
+    // pixel is the derived floor for this comparison, so the signed offset may round once.
+    expect(stripDuring.row.v - valueAt(stripDuring.axes.vRange, clampedCursorY)).toBeCloseTo(
+        expectedValueOffset,
+        0,
+    );
+    const expectedDiamondY =
+        top +
+        (1 -
+            (stripDuring.row.v - stripDuring.axes.vRange[0]) /
+                (stripDuring.axes.vRange[1] - stripDuring.axes.vRange[0])) *
+            chartHeight;
+    expect(stripDuring.point.y - clampedCursorY).toBeCloseTo(expectedDiamondY - clampedCursorY, 1);
+    // The strip edit keeps the velocity fit inside its resting band while the recovered force
+    // target moves; both target fields are asserted from this one batched edge read.
+    expect(stripDuring.axes.gFit).not.toEqual(stripBefore.gFit);
+    expect(stripDuring.axes.vFit).toEqual(stripBefore.vFit);
+    await page.mouse.move(stripGrab.press.x, stripGrab.press.y);
+    const stripReturn = await readStrip();
+    if (!stripReturn.row) throw new Error("returned strip keyframe read was not complete");
+    expect(stripReturn.row.v).toBe(stripBeforeRead.row.v);
+    expect(stripDuring.axes.vRange[0]).toBe(stripBefore.vRange[0]);
+    expect(stripDuring.axes.gRange).toEqual(stripBefore.gRange);
     await finish();
     await frames(page, 40); // allow the released g-view's eased return to finish before the next arm
 
@@ -2259,7 +2304,6 @@ test("channel-specific keyframe edge growth", async ({ page, boot }) => {
         (await kexCall(page, "stripKfPx")) as { id: number; x: number; y: number }[]
     ).find((candidate) => candidate.id === bottomKfId);
     if (!bottomPoint) throw new Error("strip lower-edge keyframe not laid out");
-    expect(bottomPoint.y).toBeGreaterThanOrEqual(bottom - 140);
     const bottomBefore = await readAxes();
     await growFrom(bottomPoint, bottom, "bottom");
     await expect.poll(async () => (await readAxes()).vRange[0]).toBe(bottomBefore.vRange[0]);

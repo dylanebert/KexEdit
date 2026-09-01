@@ -653,14 +653,7 @@ function growValueAxis(axis: KfView, cy: number, reapply: () => void): void {
     const current = axis.read();
     const grown = yGrow(current, cy, TOP, h - BOT_PAD, EDGE_RATE, axis.cap);
     if (grown === current) return;
-    // Growing a range changes the screen projection of the authored anchor. Rebase the stored
-    // press ordinate from its original cursor-to-anchor offset before reapplying the
-    // press-relative candidate; this keeps that offset through edge growth without deriving the
-    // authored value from a pixel offset.
-    const valueAxis = dragKf !== null ? kfDesc(dragKf.kind).axis : null;
-    const isKeyframeAxis = valueAxis !== null && axis === valueAxis.view;
     axis.write(grown);
-    if (isKeyframeAxis) dragKfCy0 = valueAxis.valToY(dragKfV0) + dragKfGrabOffset;
     reapply();
 }
 
@@ -1476,7 +1469,6 @@ let dragKfCy = 0;
 // the press ordinate is separate from the live cursor ordinate: both are clamped through the
 // same chart bounds before the locked press-relative value delta is evaluated.
 let dragKfCy0 = 0;
-let dragKfGrabOffset = 0; // cursor ordinate − authored diamond ordinate at press, in screen px
 let dragKfMod = false; // Ctrl/Cmd held (live) — the snap bypass modifier
 let dragKfS0 = 0; // the grab s / v — each axis's gesture-start landmark (always-on magnet)
 let dragKfV0 = 0;
@@ -1609,7 +1601,7 @@ let stripTipDismissed = $state(false);
 // named facets) doesn't require folding them in here.
 interface KfDesc {
     sel: Selection;
-    pts: (ForcePt | StripKfPt)[];
+    pts: () => (ForcePt | StripKfPt)[];
     // the strip kind's BOTH non-null forms require the owning strip as their containment
     // input — the third param carries it (`StripKfPt.strip`, the caller's own hit data,
     // never an ECS read); the force kind ignores it. the field type keeps it optional (the
@@ -1682,7 +1674,7 @@ const velocityValueAxis: ValueAxis = {
 // value axis without allocating a closure on every hit or RAF.
 const forceKfDesc: KfDesc = {
     sel: editor.forces,
-    pts: forcePts,
+    pts: () => freshKfPts("force"),
     select: selectForce,
     selectMany: selectForces,
     activate: activateForce,
@@ -1696,7 +1688,7 @@ const stripKfDesc: KfDesc = {
     // strip, so a marquee can now take keyframes across two different strips at once. the
     // render already draws every strip's diamonds (`stripKfPts` covers all strips), so the
     // filter was the siloing — not a visibility gate.
-    pts: stripKfPts,
+    pts: () => freshKfPts("strip"),
     // both click forms resolve the OWNER from the click's own hit data — the owner param
     // `keyframeDown` reads off the strip-kf render point (`StripKfPt.strip`), never through
     // an ECS read and never through the active strip. the replace sweep keeps exactly
@@ -1856,7 +1848,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     if (kind === "force") {
         // active kind: full selection (or just the clicked point if single)
         const set = forceIds;
-        const members = set.size > 1 ? forceDesc.pts.filter((m) => set.has(m.id)) : [pt];
+        const members = set.size > 1 ? forceDesc.pts().filter((m) => set.has(m.id)) : [pt];
         for (const m of members)
             allMembers.push({
                 id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
@@ -1865,7 +1857,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             });
         // other kind: its selected members move in s only (dvScale 0)
         if (stripIds.size > 0) {
-            for (const m of stripDesc.pts.filter((m) => stripIds.has(m.id)))
+            for (const m of stripDesc.pts().filter((m) => stripIds.has(m.id)))
                 allMembers.push({
                     id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
                     section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
@@ -1874,7 +1866,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         }
     } else {
         const set = stripIds;
-        const members = set.size > 1 ? stripDesc.pts.filter((m) => set.has(m.id)) : [pt];
+        const members = set.size > 1 ? stripDesc.pts().filter((m) => set.has(m.id)) : [pt];
         for (const m of members)
             allMembers.push({
                 id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
@@ -1883,7 +1875,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             });
         // other kind: its selected members move in s only (dvScale 0)
         if (forceIds.size > 0) {
-            for (const m of forceDesc.pts.filter((m) => forceIds.has(m.id)))
+            for (const m of forceDesc.pts().filter((m) => forceIds.has(m.id)))
                 allMembers.push({
                     id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
                     section: m.section, ownerId: m.section, setter: forceDesc.setter,
@@ -1908,7 +1900,6 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     // the grab origin
     dragKfU0 = uAtPx(clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w)));
     dragKfCy0 = clamp(dragKfCy, TOP, Math.max(TOP, h - BOT_PAD));
-    dragKfGrabOffset = dragKfCy0 - desc.axis.valToY(dragKfV0);
     // begin the history gesture (S2: one gesture for both kinds — mixed-set drag)
     beginKeyframeMoves(
         ecs,
@@ -2022,23 +2013,6 @@ function freshKfSnapshot(): {
     return { cand, at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id) };
 }
 
-// The harness probe follows the same fresh production projection as the press path and render.
-// During an active edge-growth drag, retain the active strip diamond even while its projected
-// point is outside the clip: the pointer is intentionally beyond the chart edge, and this is the
-// only live sample that can prove its press-relative offset through that clipped interval.
-function stripKfProbe(): StripKfPt[] {
-    const points = freshKfPts("strip") as StripKfPt[];
-    const activeId = dragKf?.kind === "strip" ? dragKf.id : null;
-    const yLo = TOP;
-    const yHi = Math.max(TOP, h - BOT_PAD);
-    return points.filter((p) => {
-        if (p.id === activeId) return true;
-        const x = ptX(p);
-        const y = velocityValueAxis.valToY(velocityValueAxis.val(p));
-        return x >= LEFT_GUT && x <= w && y >= yLo && y <= yHi;
-    });
-}
-
 // every left-button press on the chart — from a diamond's own hit circle OR from the chart-wide
 // rect beneath it. Classifies fresh, then hands off to the existing `keyframeDown` with the point
 // read from the same snapshot; a miss is an empty-chart press and falls through to the marquee,
@@ -2121,7 +2095,7 @@ function marqueeUp(): void {
     let anyHits = false;
     for (const kind of KF_KINDS) {
         const desc = kfDesc(kind);
-        const cand = desc.pts.map((p) => ({ id: p.id, x: ptX(p), y: desc.axis.valToY(desc.axis.val(p)) }));
+        const cand = desc.pts().map((p) => ({ id: p.id, x: ptX(p), y: desc.axis.valToY(desc.axis.val(p)) }));
         const hitIds = hits(rect, cand);
         if (hitIds.length === 0) continue;
         anyHits = true;
@@ -2134,14 +2108,14 @@ function marqueeUp(): void {
         if (kind === "strip") {
             const resSet = new Set(res.ids);
             owners = new Map<number, number>();
-            for (const p of desc.pts)
+            for (const p of desc.pts())
                 if (resSet.has(p.id)) owners.set(p.id, (p as StripKfPt).strip);
         }
         desc.selectMany(res.ids, res.active, owners);
         // ensure owning strips are selected for strip-kf hits (the layered invariant)
         if (kind === "strip") {
             const hitSet = new Set(hitIds);
-            for (const p of desc.pts) {
+            for (const p of desc.pts()) {
                 if (hitSet.has(p.id)) ensureStrip((p as StripKfPt).strip);
             }
         }
@@ -4749,11 +4723,9 @@ onMount(() => {
             // move/widen changed the bake.
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
-                return stripKfProbe().map((p) => ({
-                    id: p.id,
-                    x: rect.left + ptX(p),
-                    y: rect.top + velocityValueAxis.valToY(velocityValueAxis.val(p)),
-                }));
+                return freshKfSnapshot()
+                    .cand.filter((c) => c.kind === "strip")
+                    .map((c) => ({ id: c.id, x: rect.left + c.x, y: rect.top + c.y }));
             };
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
             // page-absolute like `stripKfPx`) — S3's own capture flow reads these to drive a
