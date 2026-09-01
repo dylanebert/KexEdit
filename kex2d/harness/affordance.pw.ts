@@ -322,9 +322,10 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // `ew-resize` cursor survive selection, while the selected span body keeps hover suppression.
 // The state table below covers both channels, including stationary release.
 //
-// Release teardown is owned by `bandUp`: an in-band pointerup keeps the release coordinate, while
-// off-band pointerup and pointercancel clear it. The state table below drives those paths and does
-// not claim protection for foreign gestures that it does not exercise.
+// Pointerup and pointercancel teardown is owned by `bandUp`: an in-band pointerup keeps the
+// release coordinate, while off-band release and cancellation clear it. Window blur teardown is
+// owned by `cancelStripDrag`; the state table drives both cancellation paths without claiming a
+// guarantee for other foreign gestures.
 
 // RED-FIRST WITNESS (kex2d-strip-resize-affordance S1): the rewritten state × affordance
 // arm was run against unchanged production before the repair. It exited 1 because selected-edge
@@ -502,6 +503,23 @@ test("selected strip endpoint paint and cursor agree across the state table", as
     await page.mouse.up();
     await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
     await expect.poll(bandCursor).toBe("default");
+
+    // Window blur is the shared cancellation path used when visibility changes interrupt a drag.
+    // It must clear the stationary endpoint read even though no pointercancel is delivered.
+    const blurStrip = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === created.id);
+    if (!blurStrip) throw new Error("strip missing before blur cancellation");
+    const [blurEdgeX, blurEdgeY] = toPage(blurStrip.x0);
+    await page.mouse.move(blurEdgeX, blurEdgeY);
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
+    await page.mouse.down();
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await page.mouse.up();
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
+    await expect.poll(bandCursor).toBe("default");
 });
 
 // ── S3 (kex2d-event-substrate, "one-shot events are a structurally distinct kind") ─────────────
@@ -559,7 +577,8 @@ test("the track-start one-shot: delete, create, and select through the real poin
 
     // SELECT: a real left-click on the glyph. Its pointerup leaves the pointer over the selected
     // glyph, so the hover classification remains true after release; the renderer's `!selOs` guard
-    // still gives selection paint priority. This is the one-shot's bounded post-release consequence.
+    // still gives selection paint priority. This is a regression pin for the pre-S1 behavior, not
+    // a claim that this unit introduced the stationary value.
     await page.mouse.click(gx, gy);
     await expect.poll(async () => kexCall(page, "oneShotSelected")).toBe(true);
     await expect.poll(oneShotHover).toBe(true);

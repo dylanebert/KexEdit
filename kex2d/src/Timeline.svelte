@@ -3067,6 +3067,10 @@ function bandZoneX0(): number {
     if (gx < LEFT_GUT) return LEFT_GUT;
     return Math.min(LEFT_GUT, gx - STRIP_HIT_R);
 }
+function bandBounds(): { x: number; y: number; width: number; height: number } {
+    const x = bandZoneX0();
+    return { x, y: RULER_H + GAP_H, width: Math.max(0, w - x), height: STRIP_H };
+}
 // the one-shot glyph's own hover read — `bandHit`'s point-kind twin, checked FIRST wherever
 // both could coincide (a real strip authored to start exactly at `d = 0` would otherwise share
 // screen space with the glyph): the one-shot is a distinct kind, so it gets its own hit-test
@@ -3081,7 +3085,8 @@ const oneShotHover = $derived.by((): boolean => {
 // Selection suppresses hover on the selected span body, while its distinct resize handle keeps
 // the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
 // only a real pointerup inside the horizontal band preserves the stationary read. An off-band
-// pointerup or pointercancel clears it before the shared drag teardown.
+// pointerup or pointercancel clears it in `bandUp`, and shared cancellation clears it in
+// `cancelStripDrag`.
 
 interface StripDrag {
     id: number;
@@ -3174,16 +3179,17 @@ function bandUp(e: Event): void {
     const rect = canvas.getBoundingClientRect();
     const px = e instanceof PointerEvent ? e.clientX - rect.left : -1;
     const py = e instanceof PointerEvent ? e.clientY - rect.top : -1;
+    const band = bandBounds();
     // Preserve only this band's own, real pointerup while its release point is still inside the
     // horizontal hit zone. Cancellation and off-band release must clear the read rather than
     // carrying a body/edge hover past the shared drag teardown.
     const inBand =
         e instanceof PointerEvent &&
         e.type === "pointerup" &&
-        px >= bandZoneX0() &&
-        px <= w &&
-        py >= RULER_H + GAP_H &&
-        py <= RULER_H + GAP_H + STRIP_H;
+        px >= band.x &&
+        px <= band.x + band.width &&
+        py >= band.y &&
+        py <= band.y + band.height;
     bandHoverX = inBand ? px : null;
     stripDrag = null;
     snapX = null;
@@ -3194,6 +3200,7 @@ function bandUp(e: Event): void {
     commit(history);
 }
 function cancelStripDrag(): void {
+    bandHoverX = null;
     if (stripDrag === null) return;
     stripDrag = null;
     snapX = null;
@@ -3310,12 +3317,12 @@ function bandDown(e: PointerEvent): void {
         };
     }
     beginStripMove(ecs, s.id);
-    // Register before `beginDrag` so this gesture owns its release handling; `bandUp` records any
-    // stationary endpoint before ending the shared drag.
+    beginDrag(canvas, e.pointerId);
+    // `beginDrag` owns the shared release flag and capture first; this band's listener only records
+    // its in-band stationary coordinate before the gesture-specific teardown.
     window.addEventListener("pointermove", bandMove);
     window.addEventListener("pointerup", bandUp);
     window.addEventListener("pointercancel", bandUp);
-    beginDrag(canvas, e.pointerId);
 }
 // summoned creation: the menu row's action — a strip appears at the clicked station, selected,
 // curve flattened and solid (Locked decision), sized to a brake-section-typical span
@@ -4994,15 +5001,15 @@ onMount(() => {
                  (S3) was already correct but unreachable for the glyph's left half until the
                  rect covering it existed. -->
             {#if eid !== null && sTotal > 0}
-                {@const bandX0 = bandZoneX0()}
+                {@const band = bandBounds()}
                 <rect
                     class="hbandzone"
                     class:edge-hover={bandHit.kind === "endpoint"}
                     class:body-hover={bandHit.kind === "body"}
-                    x={bandX0}
-                    y={RULER_H + GAP_H}
-                    width={Math.max(0, w - bandX0)}
-                    height={STRIP_H}
+                    x={band.x}
+                    y={band.y}
+                    width={band.width}
+                    height={band.height}
                     onpointerdown={bandDown}
                     onpointermove={bandHoverMove}
                     onpointerleave={bandHoverLeave}
