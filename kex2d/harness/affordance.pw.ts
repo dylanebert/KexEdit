@@ -325,14 +325,10 @@ test("velocity band hit-zone partition (S3): hover lifts the body fill, and edge
 // Finding 2 (should-fix, not blocker): a foreign gesture holding pointer capture on `canvas`
 // was theorized to leave `.hbandzone`'s own `onpointermove`/`onpointerleave` unfired, so
 // `bandHoverX` would freeze and re-derive into a stale hover once `editor.dragging` dropped.
-// Investigated with a debug hook (`Timeline.svelte`'s own comment on the fix) across two real
-// repros — a foreign force-keyframe drag, and a middle-click pan starting AT the hovered
-// position — and in this Chromium/Playwright environment `onpointerleave` fired correctly
-// regardless of capture in both cases: `bandHoverX` was already `null` well before
-// `editor.dragging` dropped, so the theorized staleness window never opened. No capture arm
-// exists for this one — a check that stays green with the fix reverted is not evidence, and
-// re-mutating confirmed exactly that (both directions green). The `$effect` guard is still in
-// `Timeline.svelte`, kept as a zero-cost hardening rather than a demonstrated fix.
+// The narrow release legs below now witness the boundary directly: only a real `pointerup` whose
+// release point remains inside the horizontal band preserves the stationary handle; an off-band
+// `pointerup` and `pointercancel` both clear the hover through the `$effect`. This is the capture
+// arm for the teardown claim, without widening the flow to unrelated gestures.
 
 // RED-FIRST WITNESS (kex2d-strip-resize-affordance S1): the rewritten state × affordance
 // arm was run against unchanged production before the repair. It exited 1 because selected-edge
@@ -457,6 +453,54 @@ test("selected strip endpoint paint and cursor agree across the state table", as
             dist(selectedEdge, edge),
             `selected edge must reuse the existing edge-hover paint: selected ${JSON.stringify(selectedEdge)}, unselected ${JSON.stringify(edge)}`,
         ).toBeLessThanOrEqual(2);
+
+    // An endpoint release outside the horizontal band must not preserve the last body/edge read.
+    // Pointer capture routes the move/up through the window listeners, so this witnesses the
+    // teardown path rather than relying on `.hbandzone`'s leave event. Re-read the endpoint after
+    // the drag because the off-band move may legitimately resize it to the track boundary.
+    const offBandStrip = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === created.id,
+    );
+    if (!offBandStrip) throw new Error("strip missing before off-band release");
+    const [offBandEdgeX, offBandEdgeY] = toPage(offBandStrip.x0);
+    await page.mouse.move(offBandEdgeX, offBandEdgeY);
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
+    await page.mouse.down();
+    await page.mouse.move(offBandEdgeX, 5, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
+    await expect.poll(bandCursor).toBe("default");
+
+    // Cancellation has the same non-preserving rule even when the pointer is captured. Dispatch
+    // the event through window (where the real release listeners live), then release the test
+    // mouse as cleanup if the browser does not synthesize its own cancel-up transition.
+    const cancelStrip = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
+        (s) => s.id === created.id,
+    );
+    if (!cancelStrip) throw new Error("strip missing before cancellation");
+    const [cancelEdgeX, cancelEdgeY] = toPage(cancelStrip.x0);
+    await page.mouse.move(cancelEdgeX, cancelEdgeY);
+    await expect
+        .poll(() => kexCall(page, "bandHit"))
+        .toEqual({ kind: "endpoint", id: created.id, edge: "start" });
+    await page.mouse.down();
+    await page.mouse.move(cancelEdgeX, 5, { steps: 4 });
+    await page.evaluate(() => {
+        window.dispatchEvent(
+            new PointerEvent("pointercancel", {
+                bubbles: true,
+                cancelable: true,
+                pointerId: 1,
+                clientX: 5,
+                clientY: 5,
+            }),
+        );
+    });
+    await page.mouse.up();
+    await expect.poll(() => kexCall(page, "bandHit")).toEqual({ kind: "empty" });
+    await expect.poll(bandCursor).toBe("default");
 });
 
 // ── S3 (kex2d-event-substrate, "one-shot events are a structurally distinct kind") ─────────────

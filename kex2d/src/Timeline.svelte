@@ -3083,8 +3083,9 @@ const oneShotHover = $derived.by((): boolean => {
 });
 // Selection suppresses hover on the selected span body, while its distinct resize handle keeps
 // the hover stroke and cursor. During the band's own drag `bandMove` keeps this coordinate live;
-// its release preserves the stationary endpoint read, while foreign gesture teardown still clears
-// stale hover through the shared drag flag.
+// only a real pointerup inside the horizontal band preserves the stationary read. An off-band
+// pointerup or pointercancel clears it before the shared drag flag falls, so neither can leave a
+// phantom body/edge hover.
 $effect(() => {
     if (editor.dragging) preserveBandHover = false;
     else if (!preserveBandHover) bandHoverX = null;
@@ -3178,13 +3179,21 @@ function bandMove(e: PointerEvent): void {
 }
 function bandUp(e: Event): void {
     if (stripDrag === null) return;
-    preserveBandHover = true;
-    // Pointer capture can run the shared release listener before this one; re-read the release
-    // position so teardown cannot erase the stationary handle's hover coordinate.
-    if (e instanceof PointerEvent) {
-        const rect = canvas.getBoundingClientRect();
-        bandHoverX = e.clientX - rect.left;
-    }
+    const rect = canvas.getBoundingClientRect();
+    const px = e instanceof PointerEvent ? e.clientX - rect.left : -1;
+    const py = e instanceof PointerEvent ? e.clientY - rect.top : -1;
+    // Preserve only this band's own, real pointerup while its release point is still inside the
+    // horizontal hit zone. Cancellation and off-band release must clear the read rather than
+    // carrying a body/edge hover past the shared drag teardown.
+    const inBand =
+        e instanceof PointerEvent &&
+        e.type === "pointerup" &&
+        px >= bandZoneX0() &&
+        px <= w &&
+        py >= RULER_H + GAP_H &&
+        py <= RULER_H + GAP_H + STRIP_H;
+    preserveBandHover = inBand;
+    bandHoverX = inBand ? px : null;
     stripDrag = null;
     snapX = null;
     gestureMapping = null; // release the gesture-frozen table
