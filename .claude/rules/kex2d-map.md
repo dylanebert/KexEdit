@@ -1321,7 +1321,8 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 ## Test tiers
 
-`bun test` is the whole default gate (~12.3 s, 1969 tests) and it runs every time. The corpus-scale
+`bun test` is the whole default gate and it runs every time — read its population off its own
+summary line rather than off a number here, which rots between passes. The corpus-scale
 `.oracle.ts` files sit outside it and are **run explicitly by path, exactly like the labs** — no
 `package.json` script, no composite. Run the one whose kernel you touched:
 
@@ -1336,7 +1337,7 @@ across a restore, the force-profile endpoint hold, the START anchor) live in `ke
 
 The `./` prefix is load-bearing — a bare path is a name filter to bun and silently matches nothing.
 
-All six cost ~74 s against the default gate's 14 s, so they are never a routine pre-commit sweep.
+All six together cost several times the default gate's wall clock, so they are never a routine pre-commit sweep.
 **Every oracle has a fast-tier sentinel sibling** (`convert.test.ts`, `refine.test.ts`,
 `roundtrip.test.ts`, …) hitting the same kernel on a mini-corpus against the same frozen fixture, so
 a kernel edit still fails in seconds without the oracle; the oracle confirms the corpus-wide claim,
