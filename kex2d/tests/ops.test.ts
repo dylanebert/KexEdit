@@ -3,8 +3,6 @@ import { State } from "@dylanebert/shallot";
 import {
     appendSection as appendCmd,
     createHistory,
-    joinSection as joinCmd,
-    joinSections as joinSectionsCmd,
     removeSection as removeCmd,
     splitSection as splitCmd,
     undo,
@@ -14,7 +12,6 @@ import {
     allStrips,
     appendSection,
     BakeSystem,
-    convertSection,
     createForcePoint,
     createSection,
     createStrip,
@@ -31,7 +28,6 @@ import {
     handleAt,
     handleTangent,
     insertGeoNode,
-    joinNext,
     reheadOnDrag,
     removeTrailingHandle,
     samples,
@@ -46,7 +42,6 @@ import {
     setTangent,
     setTrackDomain,
     setTrackFriction,
-    spawnStrip,
     splitForce,
     splitGeo,
     splitGeoAt,
@@ -54,7 +49,7 @@ import {
     trackDs,
 } from "../src/track";
 import { Domain } from "../src/section";
-import { custom, DEFAULT_G, Easing, type ForcePoint, sampleForce } from "../src/profile";
+import { custom, DEFAULT_G, type Easing, type ForcePoint, sampleForce } from "../src/profile";
 import { editTangent, subdivide, TangentMode } from "../src/spline";
 import { stitchNode } from "../src/tangents";
 
@@ -76,10 +71,10 @@ function forcePoints(state: State, sectionId: number): ForcePoint[] {
     });
 }
 
-// the multi-section structural ops: append / split / join / delete over the section
+// the multi-section structural ops: append / split / delete over the section
 // chain (kex2d/AGENTS.md, structural ops). the substrate (chain, sectionInfo,
 // local storage) is covered in section.test.ts; this pins the ECS-authoring layer —
-// chain continuity across a boundary, split/join losslessness (f32 rigid round-off),
+// chain continuity across a boundary, split losslessness (f32 rigid round-off),
 // and the rigid-placement payoff: an upstream edit rigidly carries downstream. device-free.
 
 /** a two-geo-section chain: a bent lead-in section (exit heading ≠ 0, so the boundary
@@ -158,27 +153,6 @@ function maxCurvature(pts: { x: number; y: number }[]): number {
         if (ab > 0 && bc > 0 && ca > 0) k = Math.max(k, (4 * area) / (ab * bc * ca));
     }
     return k;
-}
-
-/** append a geo section B after the track's current (sole) section and bake once,
- *  returning B's id and the RECOVERED boundary heading `phi` (A's actual bake exit,
- *  `sectionInfo`'s own reading) — the exact rotation `joinNext`'s own `headExit` will
- *  use, learned from a real bake rather than guessed (the join-pin technique above,
- *  factored out for the mode-preservation pins below, which all need it). */
-function boundaryPhi(state: State): { b: number; phi: number } {
-    const b = appendSection(state, SectionKind.Geo);
-    state.step(0);
-    const infoB = sectionInfo.get(b);
-    if (!infoB) throw new Error("section B info missing");
-    return { b, phi: infoB.entry.theta };
-}
-
-/** B node 0's local out-vector that rotates, through the join, to the given A-frame world
- *  vector `(vx, vy)` — `R(−phi)`, the exact inverse of `mergeTangent`'s `R(phi)` stamp. */
-function localOutFor(phi: number, vx: number, vy: number): { x: number; y: number } {
-    const c = Math.cos(phi);
-    const s = Math.sin(phi);
-    return { x: c * vx + s * vy, y: -s * vx + c * vy };
 }
 
 describe("chain continuity", () => {
@@ -490,13 +464,12 @@ describe("split", () => {
             expect(sampleForce(tail, s - 25)).toBeCloseTo(sampleForce(original, s), 5);
     });
 
-    test("splitting a force section in a Time-domain track is a lossless partition in the store's unit (seconds), and the cut → join round trip closes", () => {
-        // splitForce/joinNext partition whatever unit `Track.domain` holds — the docstrings
+    test("splitting a force section in a Time-domain track is a lossless partition in the store's unit (seconds)", () => {
+        // splitForce partitions whatever unit `Track.domain` holds — the docstrings
         // used to say "arclength s", which is false once the store is seconds. This pins
-        // the split as a lossless partition in the store's own unit, then joins back —
-        // exercising the exactness fix and the join dedupe in the domain the timeline's
-        // s-axis actually authors in when the track is Time (`kex2d/AGENTS.md` Two
-        // coordinate frames).
+        // the split as a lossless partition in the store's own unit, the domain the
+        // timeline's s-axis actually authors in when the track is Time
+        // (`kex2d/AGENTS.md` Two coordinate frames).
         const state = new State();
         state.addSystem(BakeSystem);
         createTrack(state);
@@ -523,18 +496,6 @@ describe("split", () => {
         // by the cut (the boundary key continues the original curve, not a flat hold).
         for (let s = 0; s <= 20; s += 2)
             expect(sampleForce(forcePoints(state, a), s)).toBeCloseTo(sampleForce(before, s), 5);
-
-        // join dedupes the coincident boundary pair the split planted: the round trip
-        // closes to A(10), the merged boundary(20), B(30) — one extra keyframe over the
-        // pre-split pair, permanent (an arbitrary mid-segment cut isn't a landmark, so
-        // the join can dedupe the duplicate but can't un-plant the point) — and the
-        // sampled profile across the WHOLE extent is byte-close to the original.
-        expect(joinNext(state, a)).toBe(true);
-        expect(sectionForces(state, a).map((p) => p.s)).toEqual([10, 20, 30]);
-        expect(sections(state).find((s) => s.id === a)?.length).toBe(40);
-        const after = forcePoints(state, a);
-        for (let s = 0; s <= 40; s += 2)
-            expect(sampleForce(after, s)).toBeCloseTo(sampleForce(before, s), 5);
     });
 
     // C3: Cut is lossless for a velocity strip — the pre-op v² samples across the WHOLE
@@ -672,555 +633,6 @@ describe("split", () => {
     });
 });
 
-describe("join", () => {
-    test("joining two independently-authored force sections with DIFFERING boundary values keeps both keyframes (no silent destruction)", () => {
-        // two adjacent sections built directly (NOT via splitForce) whose own keyframes
-        // happen to sit exactly on the shared boundary — the common case once Join runs
-        // over an arbitrary same-kind selection: a section boundary is a documented snap
-        // landmark (`editor-ui.md` Snapping), so an author placing a keyframe there is
-        // ordinary, not a split artifact. The two values disagree (a real discontinuity,
-        // e.g. a hard-cut transition authored on purpose) — the dedupe guard must NOT
-        // fire, or it would silently destroy one keyframe and overwrite the other's
-        // tangent based on position alone.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createForcePoint(state, a, 10, 1);
-        createForcePoint(state, a, 20, 3); // A's own boundary keyframe: g=3
-        const b = createSection(state, 1, SectionKind.Force, 20);
-        createForcePoint(state, b, 0, 5); // B's own boundary keyframe: g=5 — DISAGREES
-        createForcePoint(state, b, 10, 2);
-
-        expect(joinNext(state, a)).toBe(true);
-
-        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
-        // both boundary keyframes survive, at the same s (20) — nothing merged.
-        expect(after).toEqual([
-            { s: 10, g: 1 },
-            { s: 20, g: 3 },
-            { s: 20, g: 5 },
-            { s: 30, g: 2 },
-        ]);
-    });
-
-    test("joining two independently-authored force sections with EQUAL boundary values dedupes losslessly", () => {
-        // the mirror case: the two boundary keyframes agree in value, so collapsing to
-        // one is the lossless merge (whether they arrived there via a Cut or two authors
-        // independently landing on the same value) — the guard's positive control.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createForcePoint(state, a, 10, 1);
-        createForcePoint(state, a, 20, 3);
-        const b = createSection(state, 1, SectionKind.Force, 20);
-        createForcePoint(state, b, 0, 3); // agrees with A's boundary value
-        createForcePoint(state, b, 10, 2);
-
-        expect(joinNext(state, a)).toBe(true);
-
-        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
-        expect(after).toEqual([
-            { s: 10, g: 1 },
-            { s: 20, g: 3 },
-            { s: 30, g: 2 },
-        ]);
-    });
-
-    test("join carries bHead's ease onto the merged key, not aTail's inert one", () => {
-        // A and B agree in VALUE at the shared boundary (the dedupe fires) but carry
-        // DIFFERENT eases. aTail's ease is inert pre-join — it's A's last key, so the
-        // profile holds flat past it — while bHead's ease governs the tail's opening
-        // segment (`profile.segment`'s leading-keyframe rule). bHead carries no
-        // explicit tangent, so a wrong ease hides inside the derived-from-ease
-        // fallback rather than showing up as a stored vector mismatch.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createForcePoint(state, a, 10, 1, Easing.Linear);
-        createForcePoint(state, a, 20, 3, Easing.Quintic); // aTail: ease inert pre-join
-        const b = createSection(state, 1, SectionKind.Force, 20);
-        createForcePoint(state, b, 0, 3, Easing.Linear); // bHead: agrees in g, governs the tail's opening segment
-        createForcePoint(state, b, 10, 2, Easing.Cubic);
-
-        // the pre-op observable: sample each section's OWN profile before the join,
-        // over the whole joined extent — never the op's own helper at one boundary
-        // (`kex2d-map.md` Test tiers).
-        const preA = forcePoints(state, a);
-        const preB = forcePoints(state, b);
-        const reference: number[] = [];
-        for (let s = 0; s <= 40; s += 2)
-            reference.push(s <= 20 ? sampleForce(preA, s) : sampleForce(preB, s - 20));
-
-        expect(joinNext(state, a)).toBe(true);
-
-        const after = forcePoints(state, a);
-        let i = 0;
-        for (let s = 0; s <= 40; s += 2, i++)
-            expect(sampleForce(after, s)).toBeCloseTo(reference[i], 5);
-    });
-
-    test("joining across a boundary with an explicit tangent keeps the baked world curve", () => {
-        // one-sided: A and B are built directly, NOT via splitGeo (a split→join round-trip
-        // would cancel the frame bug — the two re-frames compose back to identity — so it
-        // can't pin `joinNext`'s own use of `headExit`). mirrors the split pin above.
-        //
-        // A's tip (node 2) carries an explicit Mirror tangent whose direction is far from its
-        // stored `Handle.theta` (a stale leftover from `reflect`, unused once a tangent is
-        // explicit) — the exact decoupling `headExit` must resolve against the RECOVERED exit,
-        // not the stale stored heading. B's entry node is given the world-equal tangent
-        // (rotated into B's own local frame) so the two-section bake's departure from the
-        // boundary matches what the join will produce once A's tip's own vector goes live —
-        // isolating the assertion to whether `headExit` places B's downstream node at the
-        // right world position, not a re-authoring of the departure itself.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const mag = 15;
-        const ang = 1.2;
-        const wx = mag * Math.cos(ang);
-        const wy = mag * Math.sin(ang);
-        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
-
-        const b = appendSection(state, SectionKind.Geo);
-        state.step(0); // learn B's actual recovered entry frame (A's real exit, not a guess)
-        const infoB = sectionInfo.get(b);
-        if (!infoB) throw new Error("section B info missing");
-        const phi = infoB.entry.theta;
-        const c = Math.cos(phi);
-        const s = Math.sin(phi);
-        // rotate A's tip's world-space tangent into B's local frame (R(−phi)) so B's own
-        // departure matches, in world space, the vector that will govern the join.
-        setTangent(state, b, 0, {
-            mode: TangentMode.Mirror,
-            inX: c * wx + s * wy,
-            inY: -s * wx + c * wy,
-            outX: c * wx + s * wy,
-            outY: -s * wx + c * wy,
-        });
-        state.step(0);
-        const before = worldSamples(eid);
-
-        expect(joinNext(state, a)).toBe(true);
-        state.step(0);
-        const after = worldSamples(eid);
-
-        expect(after.length).toBe(before.length);
-        let maxDev = 0;
-        for (let i = 0; i < before.length; i++)
-            maxDev = Math.max(
-                maxDev,
-                Math.hypot(after[i].x - before[i].x, after[i].y - before[i].y),
-            );
-        // same derived floor as the split pin (`splitting at a node with an explicit tangent
-        // keeps the baked world curve`, above): the Auto join's f32 rigid round-off, with
-        // headroom well below the metres a stale-theta frame would drift on this decoupled
-        // boundary.
-        expect(maxDev).toBeLessThan(0.05);
-    });
-
-    test("joining across a boundary with an explicit B node 0 carries B's authored departure", () => {
-        // the join merge rule (kex2d-burndown spec, sub-stage 2): B node 0's explicit
-        // out-vector is authored intent (the stitch gesture's whole point) and must
-        // survive the join. Built directly (not via splitGeo — the round trip's two
-        // re-frames cancel the bug, so it can't pin this). B's out is DELIBERATELY
-        // DIFFERENT from A's tip's own out — the world-curve pin above makes them equal,
-        // which is why it stays green today even though the merge silently discards B's
-        // authored departure and keeps A's tip whole instead.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const mag = 15;
-        const ang = 1.2;
-        const wx = mag * Math.cos(ang);
-        const wy = mag * Math.sin(ang);
-        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
-
-        const b = appendSection(state, SectionKind.Geo);
-        state.step(0);
-        // B node 0's own authored out — off A's tip's departure direction by 0.6 rad, a
-        // real reshape of the departure past the boundary.
-        const bAng = ang + 0.6;
-        const bx = mag * Math.cos(bAng);
-        const by = mag * Math.sin(bAng);
-        setTangent(state, b, 0, { mode: TangentMode.Free, inX: bx, inY: by, outX: bx, outY: by });
-        state.step(0);
-        const before = worldSamples(eid);
-
-        expect(joinNext(state, a)).toBe(true);
-        state.step(0);
-        const after = worldSamples(eid);
-
-        expect(after.length).toBe(before.length);
-        let maxDev = 0;
-        for (let i = 0; i < before.length; i++)
-            maxDev = Math.max(
-                maxDev,
-                Math.hypot(after[i].x - before[i].x, after[i].y - before[i].y),
-            );
-        // same derived floor as the two pins above — the merge must carry B's authored
-        // out-half, not discard it; the track doesn't move.
-        expect(maxDev).toBeLessThan(0.05);
-    });
-
-    // the merge rule's mode-preservation predicate (kex2d-burndown spec, sub-stage 2):
-    // authored state, never a resolved-float comparison. Four pins over its two modes ×
-    // two outcomes — the piece of the Locked decision that earned its own paragraph plus
-    // an explicitly rejected alternative, so it ships with direct coverage of the stored
-    // mode, not just a world-curve deviation a hardcoded `Free` or an inverted `Mirror`
-    // branch would leave green.
-    test("join stamps Mirror when the merged pair still satisfies it", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const mag = 15;
-        const ang = 1.2;
-        const wx = mag * Math.cos(ang);
-        const wy = mag * Math.sin(ang);
-        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
-
-        const { b, phi } = boundaryPhi(state);
-        // B's own authored out, rotated through the join, lands exactly on A's in-half
-        // (wx, wy) — the Mirror-preserving case.
-        const lo = localOutFor(phi, wx, wy);
-        setTangent(state, b, 0, {
-            mode: TangentMode.Free,
-            inX: lo.x,
-            inY: lo.y,
-            outX: lo.x,
-            outY: lo.y,
-        });
-
-        expect(joinNext(state, a)).toBe(true);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Mirror);
-        expect(merged?.inX).toBeCloseTo(wx, 4);
-        expect(merged?.inY).toBeCloseTo(wy, 4);
-        expect(merged?.outX).toBeCloseTo(wx, 4);
-        expect(merged?.outY).toBeCloseTo(wy, 4);
-    });
-
-    test("join stamps Free when a Mirror tip's merged pair no longer matches", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const mag = 15;
-        const ang = 1.2;
-        const wx = mag * Math.cos(ang);
-        const wy = mag * Math.sin(ang);
-        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
-
-        const { b, phi } = boundaryPhi(state);
-        // B's own authored out, rotated through the join, points well off A's in-half
-        // (0.6 rad away) — the pair no longer satisfies Mirror.
-        const bAng = ang + 0.6;
-        const vx = mag * Math.cos(bAng);
-        const vy = mag * Math.sin(bAng);
-        const lo = localOutFor(phi, vx, vy);
-        setTangent(state, b, 0, {
-            mode: TangentMode.Free,
-            inX: lo.x,
-            inY: lo.y,
-            outX: lo.x,
-            outY: lo.y,
-        });
-
-        expect(joinNext(state, a)).toBe(true);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Free);
-    });
-
-    test("join stamps Aligned when the merged pair stays collinear", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const ang = 0.4;
-        const ix = 12 * Math.cos(ang);
-        const iy = 12 * Math.sin(ang);
-        const ox = 8 * Math.cos(ang);
-        const oy = 8 * Math.sin(ang);
-        setTangent(state, a, 2, {
-            mode: TangentMode.Aligned,
-            inX: ix,
-            inY: iy,
-            outX: ox,
-            outY: oy,
-        });
-
-        const { b, phi } = boundaryPhi(state);
-        // B's own authored out, rotated through the join, shares A's in-half's direction
-        // at a different length — still collinear, so Aligned survives.
-        const vx = 20 * Math.cos(ang);
-        const vy = 20 * Math.sin(ang);
-        const lo = localOutFor(phi, vx, vy);
-        setTangent(state, b, 0, {
-            mode: TangentMode.Free,
-            inX: lo.x,
-            inY: lo.y,
-            outX: lo.x,
-            outY: lo.y,
-        });
-
-        expect(joinNext(state, a)).toBe(true);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Aligned);
-        expect(merged?.inX).toBeCloseTo(ix, 4);
-        expect(merged?.inY).toBeCloseTo(iy, 4);
-        expect(merged?.outX).toBeCloseTo(vx, 4);
-        expect(merged?.outY).toBeCloseTo(vy, 4);
-    });
-
-    test("join stamps Free when an Aligned tip's merged pair goes non-collinear", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const ang = 0.4;
-        const ix = 12 * Math.cos(ang);
-        const iy = 12 * Math.sin(ang);
-        const ox = 8 * Math.cos(ang);
-        const oy = 8 * Math.sin(ang);
-        setTangent(state, a, 2, {
-            mode: TangentMode.Aligned,
-            inX: ix,
-            inY: iy,
-            outX: ox,
-            outY: oy,
-        });
-
-        const { b, phi } = boundaryPhi(state);
-        // B's own authored out, rotated through the join, points 0.5 rad off A's in-half's
-        // direction — no longer collinear.
-        const offAng = ang + 0.5;
-        const vx = 20 * Math.cos(offAng);
-        const vy = 20 * Math.sin(offAng);
-        const lo = localOutFor(phi, vx, vy);
-        setTangent(state, b, 0, {
-            mode: TangentMode.Free,
-            inX: lo.x,
-            inY: lo.y,
-            outX: lo.x,
-            outY: lo.y,
-        });
-
-        expect(joinNext(state, a)).toBe(true);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Free);
-    });
-
-    // bug (1), kex2d-followups: the merged pair's mode-preservation test is direction-agnostic
-    // cross-product only — collinear-but-REVERSED reads as Aligned, a state the forward/forward
-    // arc rule can never emit (`seedTangent`'s in/out both point forward along travel). Fixed by
-    // requiring a positive dot alongside the cross-product test.
-    test("join stamps Free when an Aligned tip's merged pair comes out antiparallel (bug 1)", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-        ])
-            addNode(state, a, x, y);
-        const ang = 0.4;
-        const ix = 12 * Math.cos(ang);
-        const iy = 12 * Math.sin(ang);
-        const ox = 8 * Math.cos(ang);
-        const oy = 8 * Math.sin(ang);
-        setTangent(state, a, 2, {
-            mode: TangentMode.Aligned,
-            inX: ix,
-            inY: iy,
-            outX: ox,
-            outY: oy,
-        });
-
-        const { b, phi } = boundaryPhi(state);
-        // B's own authored out, rotated through the join, points exactly OPPOSITE A's in-half's
-        // direction — collinear (cross ≈ 0) but antiparallel (dot < 0): the merge's own
-        // forward/forward convention can never produce this from an inferred chain, so it must
-        // read as Free, not Aligned.
-        const vx = -20 * Math.cos(ang);
-        const vy = -20 * Math.sin(ang);
-        const lo = localOutFor(phi, vx, vy);
-        setTangent(state, b, 0, {
-            mode: TangentMode.Free,
-            inX: lo.x,
-            inY: lo.y,
-            outX: lo.x,
-            outY: lo.y,
-        });
-
-        expect(joinNext(state, a)).toBe(true);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Free);
-    });
-
-    // bug (2), kex2d-followups: `mergeTangent` on a single-node A restated `seedTangent`'s
-    // in-vector derivation off an unguarded `aHandles[aN - 1]`, undefined for a single-node A
-    // (its tip has no previous node) — stamping `in = (0, 0)`. Fixed by delegating to
-    // `seedTangent` itself, whose `prev === null` branch already guards exactly this.
-    test("join seeds the correct heading vector for a single-node A (bug 2, not (0, 0))", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0); // A has exactly one node — its tip IS node 0
-
-        // a single-node A is below the two-node bake floor (`track.ts bake`'s "keep the prior
-        // bake rather than half-render the chain" guard), so this deliberately builds B WITHOUT
-        // a live bake — `joinNext`'s geo branch computes its own frame via `headExit`
-        // (pure `evalGeo`, no ECS bake) and never reads `sectionInfo`.
-        const b = appendSection(state, SectionKind.Geo);
-        setTangent(state, b, 0, {
-            mode: TangentMode.Free,
-            inX: -3,
-            inY: 1,
-            outX: 5,
-            outY: 2,
-        });
-
-        expect(joinNext(state, a)).toBe(true);
-        const merged = handleTangent(state, a, 0);
-        expect(merged).not.toBeUndefined();
-        // node 0's heading is the flat entry (theta = 0): the seeded in-vector is the unit
-        // heading (1, 0) — not the unguarded read's (0, 0).
-        expect(merged?.inX).toBeCloseTo(1, 6);
-        expect(merged?.inY).toBeCloseTo(0, 6);
-    });
-});
-
-// C3 review, finding 3 (superseded by S2's track-global migration): `joinNext`'s
-// ~50-line strip merge/rebase (the geo rebase-only branch and the force
-// merge-on-agreement branch) was reached by NO test anywhere in the suite before
-// this. S2 deletes that whole code path — strips are track-global and
-// segment-independent (Locked decision), so join is span-blind by construction and
-// every strip row (and its keyframes) survives a join byte-identical, addressed by
-// its own stable id, never rebased or merged.
-describe("joinNext — velocity strip merge/rebase (C3 review, coverage)", () => {
-    test("geo join leaves every strip byte-identical — join never touches strips (Locked decision)", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, 24, 0); // flat, straight — A's own arclength is exactly 24
-        const b = createSection(state, 1, SectionKind.Geo, 0);
-        addNode(state, b, 0, 0);
-        addNode(state, b, 10, 0);
-        createStrip(state, 20, 24, 5); // near A's own tail
-        createStrip(state, 26, 30, 7); // inside B's own extent (B opens at global 24)
-        state.step(0);
-
-        const before = allStrips(state);
-
-        expect(joinNext(state, a)).toBe(true);
-
-        // span-blind (S2 Locked decision): no rebase, no merge — both rows unchanged.
-        expect(allStrips(state)).toEqual(before);
-    });
-
-    test("force join leaves abutting strips byte-identical even when their values agree at the boundary — no merge", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createStrip(state, 15, 20, 5); // touches A's own length
-        createSection(state, 1, SectionKind.Force, 10);
-        createStrip(state, 20, 24, 5); // touches B's own start (global), SAME value
-
-        const before = allStrips(state);
-
-        expect(joinNext(state, a)).toBe(true);
-
-        const after = allStrips(state);
-        expect(after.length).toBe(2); // no merge — span-blind join leaves both rows
-        expect(after).toEqual(before);
-    });
-
-    test("force join leaves abutting strips byte-identical when their values disagree — no merge, no rebase", () => {
-        // the Locked decision: sections are span-blind, join stops touching strips
-        // entirely — the old merge-on-agreement / rebase-on-disagreement fork retires
-        // along with it, so agreeing and disagreeing values behave identically now.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createStrip(state, 15, 20, 5);
-        createSection(state, 1, SectionKind.Force, 10);
-        createStrip(state, 20, 24, 9); // disagrees
-
-        const before = allStrips(state);
-
-        expect(joinNext(state, a)).toBe(true);
-
-        expect(allStrips(state)).toEqual(before);
-    });
-
-    test("force join's degenerate-point case: two point strips at the shared boundary both survive byte-identical", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        // `createStrip` refuses zero-length spans, so use `spawnStrip` (the restore
-        // path, bypassing the guard) to set up the pre-existing point strips this
-        // scenario tests.
-        spawnStrip(state, 1001, 20, 20, 5); // a point exactly at A's own end
-        createSection(state, 1, SectionKind.Force, 10);
-        spawnStrip(state, 1002, 20, 20, 9); // a point at the same global boundary — disagrees
-
-        const before = allStrips(state);
-
-        expect(joinNext(state, a)).toBe(true);
-
-        expect(allStrips(state)).toEqual(before);
-    });
-});
-
 // `splitGeoAt` — the free-position geo cut (`spline.subdivide` + `insertGeoNode` +
 // `splitGeo`). The landmark cases (t at 0 or 1) reduce to today's `splitGeo`
 // unchanged; the interior case is the world-curve pin, `headExit`'s telescoping
@@ -1339,37 +751,6 @@ describe("splitGeoAt — geo cut at arbitrary t", () => {
         const after2 = handleTangent(state, a, 3);
         expect(after2?.outX).toBeCloseTo(before2.outX, 5);
         expect(after2?.outY).toBeCloseTo(before2.outY, 5);
-    });
-
-    test("split→join round trip at an arbitrary t restores the node payload (exact to f32 round-off)", () => {
-        const { state, a } = fourNode();
-        const before = sectionHandles(state, a).map((e) => ({
-            x: Handle.pos.x.get(e),
-            y: Handle.pos.y.get(e),
-        }));
-
-        const b = splitGeoAt(state, a, 1, 0.35);
-        expect(b).not.toBeNull();
-        if (b === null) return;
-        // the mid-segment cut planted a genuine extra node (not a landmark), so the join
-        // dedupes only the coincident pair the cut itself created — the round trip closes
-        // to ONE extra authored node over the original four, permanent (mirrors
-        // `splitForce`'s extra planted keyframe).
-        expect(joinNext(state, a)).toBe(true);
-
-        expect(sections(state).length).toBe(1);
-        const after = sectionHandles(state, a).map((e) => ({
-            x: Handle.pos.x.get(e),
-            y: Handle.pos.y.get(e),
-        }));
-        expect(after.length).toBe(before.length + 1);
-        // the node-level round trip: every ORIGINAL node's position survives untouched
-        // (the extra planted node sits between whichever two it split).
-        for (const p of before) {
-            expect(
-                after.some((q) => Math.abs(q.x - p.x) < 1e-3 && Math.abs(q.y - p.y) < 1e-3),
-            ).toBe(true);
-        }
     });
 });
 
@@ -1649,155 +1030,6 @@ describe("sectionCutAt — the kind-fitted geo/force dispatch", () => {
     });
 });
 
-describe("split → join round-trips", () => {
-    test("geo split then join restores the node payload (exact to f32 round-off)", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 6],
-            [40, 6],
-            [60, -2],
-            [80, 0],
-        ])
-            addNode(state, a, x, y);
-        const before = sectionHandles(state, a).map((e) => ({
-            x: Handle.pos.x.get(e),
-            y: Handle.pos.y.get(e),
-            theta: Handle.theta.get(e),
-        }));
-
-        const b = splitGeo(state, a, 2);
-        expect(b).not.toBeNull();
-        expect(joinNext(state, a)).toBe(true); // join A with the tail it just spawned
-
-        expect(sections(state).length).toBe(1);
-        const after = sectionHandles(state, a).map((e) => ({
-            x: Handle.pos.x.get(e),
-            y: Handle.pos.y.get(e),
-            theta: Handle.theta.get(e),
-        }));
-        expect(after.length).toBe(before.length);
-        for (let i = 0; i < before.length; i++) {
-            expect(after[i].x).toBeCloseTo(before[i].x, 4);
-            expect(after[i].y).toBeCloseTo(before[i].y, 4);
-            expect(after[i].theta).toBeCloseTo(before[i].theta, 5);
-        }
-    });
-
-    test("force split then join restores the extent and the sampled profile exactly (Distance domain)", () => {
-        // the payload no longer round-trips to the original TWO keyframes — an
-        // arbitrary mid-segment cut (s=16, strictly between 8 and 24) plants a genuine
-        // third keyframe (the exactness fix), and the join dedupes only the coincident
-        // PAIR the split itself created, not the point. The two original keyframes'
-        // own g survive untouched; the oracle that actually matters is the sampled
-        // profile, byte-close across the whole extent through the round trip.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 40);
-        createForcePoint(state, a, 8, 1.5);
-        createForcePoint(state, a, 24, 0.4);
-        const before = forcePoints(state, a);
-
-        const b = splitForce(state, a, 16);
-        expect(b).not.toBeNull();
-        expect(joinNext(state, a)).toBe(true);
-
-        expect(sections(state).length).toBe(1);
-        expect(sections(state)[0].length).toBeCloseTo(40, 5);
-        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
-        expect(after.map((p) => p.s)).toEqual([8, 16, 24]);
-        expect(after[0].g).toBe(before[0].g);
-        expect(after[2].g).toBe(before[1].g);
-
-        const afterPoints = forcePoints(state, a);
-        for (let s = 0; s <= 40; s += 2)
-            expect(sampleForce(afterPoints, s)).toBeCloseTo(sampleForce(before, s), 5);
-    });
-
-    test("join refuses across kinds", () => {
-        const { state, a } = twoGeo();
-        convertSection(state, a); // a is now force, b is geo — mismatched
-        expect(joinNext(state, a)).toBe(false);
-    });
-
-    // pin (3), kex2d-followups: the tolerance's LOW side. The four mode-preservation pins above
-    // use 0.5–0.6 rad offsets, so COLLINEAR_TOL could regress to 1e-2 or 1e-12 and every one
-    // stays green. A split→join round trip reproduces the boundary vectors to f32 round-off —
-    // exactly the band 1e-6 admits and 1e-12 rejects — so an explicit Mirror boundary surviving
-    // the trip is the low-side pin.
-    test("split→join round trip preserves an explicit Mirror boundary to f32 round-off", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-            [60, -2],
-        ])
-            addNode(state, a, x, y);
-        const mag = 12;
-        const ang = 0.7;
-        const wx = mag * Math.cos(ang);
-        const wy = mag * Math.sin(ang);
-        setTangent(state, a, 2, { mode: TangentMode.Mirror, inX: wx, inY: wy, outX: wx, outY: wy });
-
-        const b = splitGeo(state, a, 2);
-        expect(b).not.toBeNull();
-        expect(joinNext(state, a)).toBe(true);
-
-        expect(sections(state).length).toBe(1);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Mirror);
-        expect(merged?.inX).toBeCloseTo(wx, 4);
-        expect(merged?.inY).toBeCloseTo(wy, 4);
-        expect(merged?.outX).toBeCloseTo(wx, 4);
-        expect(merged?.outY).toBeCloseTo(wy, 4);
-    });
-
-    // the same low-side pin on the OTHER branch of mergeTangent's mode check: an explicit
-    // Aligned boundary must survive the trip through `vecCollinear`, exactly as Mirror must
-    // survive `vecEqual` above.
-    test("split→join round trip preserves an explicit Aligned boundary to f32 round-off", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        for (const [x, y] of [
-            [0, 0],
-            [20, 4],
-            [40, 4],
-            [60, -2],
-        ])
-            addNode(state, a, x, y);
-        const inMag = 8;
-        const outMag = 12;
-        const ang = 0.7;
-        const inX = inMag * Math.cos(ang);
-        const inY = inMag * Math.sin(ang);
-        const outX = outMag * Math.cos(ang);
-        const outY = outMag * Math.sin(ang);
-        setTangent(state, a, 2, { mode: TangentMode.Aligned, inX, inY, outX, outY });
-
-        const b = splitGeo(state, a, 2);
-        expect(b).not.toBeNull();
-        expect(joinNext(state, a)).toBe(true);
-
-        expect(sections(state).length).toBe(1);
-        const merged = handleTangent(state, a, 2);
-        expect(merged?.mode).toBe(TangentMode.Aligned);
-        expect(merged?.inX).toBeCloseTo(inX, 4);
-        expect(merged?.inY).toBeCloseTo(inY, 4);
-        expect(merged?.outX).toBeCloseTo(outX, 4);
-        expect(merged?.outY).toBeCloseTo(outY, 4);
-    });
-});
-
 describe("upstream edits carry downstream rigidly", () => {
     test("moving a lead-in node leaves the downstream section's local shape untouched", () => {
         const { state, eid, a, b } = twoGeo();
@@ -2014,87 +1246,10 @@ describe("undo (byte-identical)", () => {
         expect(after).toEqual(before);
     });
 
-    test("join and delete record undoable entries; a cross-kind join records nothing", () => {
+    test("delete records an undoable entry", () => {
         const { state, a } = twoGeo();
         const h = createHistory();
-        expect(joinCmd(h, state, a)).toBe(true); // both geo → joins
-        expect(h.undo.length).toBe(1);
-        undo(h, state);
-        expect(sections(state).length).toBe(2);
-
         expect(removeCmd(h, state, a)).toBe(true);
         expect(h.undo.length).toBe(1);
-    });
-
-    test("joinSections (bulk) → undo restores the section chain byte-identical", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, a, 0, 0);
-        addNode(state, a, EXTEND_DIST, 0);
-        const b = appendSection(state, SectionKind.Geo);
-        const c = appendSection(state, SectionKind.Geo);
-        state.step(0);
-        const before = sections(state).map((s) => ({ id: s.id, order: s.order, kind: s.kind }));
-        const h = createHistory();
-
-        expect(joinSectionsCmd(h, state, [a, b])).toBe(a); // the head of the run survives
-        expect(sections(state).map((s) => s.id)).toEqual([a, c]);
-        expect(h.undo.length).toBe(1); // ONE bulk join entry
-
-        undo(h, state);
-        expect(sections(state).map((s) => ({ id: s.id, order: s.order, kind: s.kind }))).toEqual(
-            before,
-        ); // restoreAll replays the stored payload verbatim
-    });
-});
-
-// the Cut → Join round trip at the DOCUMENT layer (`history.splitSection` + the set-lifted
-// `history.joinSections`, stage 5's own op), both `Track.domain`s — the store's unit is
-// domain-dependent (`kex2d/AGENTS.md` Two coordinate frames), and the Time-domain split test
-// above (`splitting a force section in a Time-domain track…`) is the precedent this extends from
-// the raw substrate functions (`splitForce`/`joinNext`) up to the document ops a real Cut-then-
-// bulk-Join gesture actually calls.
-describe("Cut → Join round trip (document ops, both `Track.domain`s)", () => {
-    function roundTrip(domain: Domain): void {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        if (domain === Domain.Time) setTrackDomain(state, domain);
-        const a = createSection(state, 0, SectionKind.Force, 40);
-        createForcePoint(state, a, 8, 1.5);
-        createForcePoint(state, a, 24, 0.4);
-        const before = forcePoints(state, a);
-        const h = createHistory();
-
-        const b = splitCmd(h, state, a, 16); // Cut, mid-segment — plants the boundary keyframe
-        expect(b).not.toBeNull();
-        if (b === null) return;
-        expect(sections(state).length).toBe(2);
-
-        expect(joinSectionsCmd(h, state, [a, b])).toBe(a); // the bulk Join, the set-lifted op
-        expect(sections(state).length).toBe(1);
-        expect(sections(state)[0].length).toBeCloseTo(40, 5);
-
-        // the authored payload: the two original keyframes' own g survive untouched (dedupe
-        // collapses only the coincident pair the split itself planted).
-        const after = sectionForces(state, a).map((p) => ({ s: p.s, g: p.g }));
-        expect(after.map((p) => p.s)).toEqual([8, 16, 24]);
-        expect(after[0].g).toBe(before[0].g);
-        expect(after[2].g).toBe(before[1].g);
-
-        // the sampled profile: byte-close to the original across the whole extent.
-        const afterPoints = forcePoints(state, a);
-        for (let s = 0; s <= 40; s += 2)
-            expect(sampleForce(afterPoints, s)).toBeCloseTo(sampleForce(before, s), 5);
-    }
-
-    test("Distance domain: Cut then bulk Join restores the sampled profile + authored payload", () => {
-        roundTrip(Domain.Distance);
-    });
-
-    test("Time domain: Cut then bulk Join restores the sampled profile + authored payload", () => {
-        roundTrip(Domain.Time);
     });
 });

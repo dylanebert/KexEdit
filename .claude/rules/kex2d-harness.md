@@ -347,7 +347,7 @@ job is to summon a person rather than to fail a run.
   `force.pw.ts` (force authoring + the timeline), `section.pw.ts` (the section chain + invoked
   solves), `lab.pw.ts` (the atom-page labs), `affordance.pw.ts` (popover/hover/hit-zone
   affordances), `freshness.pw.ts` (the `__kex` hook's ECS-direct read freshness),
-  `substrate.pw.ts` (section-boundary and split/join structural invariants) — the count lives in
+  `substrate.pw.ts` (section-boundary and split structural invariants) — the count lives in
   `capture.ts`'s `stage.files`, not this prose. `capture.pw.config.ts`'s `testMatch` is the `*.pw.ts`
   glob; `capture.ts`'s `stage.files` names each file explicitly (a list, not a glob, so the
   staging-list pin above is what keeps a future flow file honest). The `__kex` DEV surface got a

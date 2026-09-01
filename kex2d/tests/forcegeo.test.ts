@@ -465,7 +465,7 @@ describe("provenance short-circuit", () => {
     }, 60_000);
 
     test("splitSection's residue resolves correctly with zero invalidation code — both halves fall through to the fit", async () => {
-        // the spec's claim: a split/join's residue resolves correctly with zero invalidation
+        // the spec's claim: a split's residue resolves correctly with zero invalidation
         // code. The head keeps its stamped id but its own content shrinks (fewer rows, a shorter
         // length) — a token miss; the tail is a freshly minted section id that was never stamped
         // — no provenance to consult at all. Both land on the fit, not because anything reached in

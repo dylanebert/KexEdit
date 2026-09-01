@@ -53,7 +53,6 @@ import {
     Handle,
     handleAt,
     handleTangent,
-    joinNext,
     MAX_FIT_EDGES,
     MAX_SAMPLES,
     MIN_FORCE_LEN,
@@ -1380,7 +1379,7 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
         expect(readProvenance(sec)).toBeUndefined();
     });
 
-    test("destroying a section evicts its stamp (deleteSection and joinNext)", () => {
+    test("destroying a section evicts its stamp (deleteSection)", () => {
         const { state } = track();
         const second = appendSection(state, SectionKind.Geo);
         if (second === null) throw new Error("append failed");
@@ -1389,13 +1388,6 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
         expect(readProvenance(second)).toBeDefined();
         expect(deleteSection(state, second)).toBe(true);
         expect(readProvenance(second)).toBeUndefined();
-
-        const third = appendSection(state, SectionKind.Geo);
-        if (third === null) throw new Error("append failed");
-        state.step(0);
-        stampProvenance(state, third, snapshotSection(state, third));
-        expect(joinNext(state, sections(state)[0].id)).toBe(true);
-        expect(readProvenance(third)).toBeUndefined();
     });
 });
 
@@ -3881,78 +3873,5 @@ describe("validStripValue routing: createStrip's seed and setStrip's value (S2, 
         expect(row?.value).toBe(4);
         expect(row?.start).toBe(6); // position still writes independently of the value refusal
         expect(row?.end).toBe(16);
-    });
-});
-
-describe("joinNext leaves every strip row and keyframe byte-identical (S2)", () => {
-    /** every strip row plus every strip's keyframes, in a comparable plain form — the whole
-     *  strip layer's observable state, which a structural op must not move. */
-    function stripLayer(state: State) {
-        return allStrips(state).map((r) => ({
-            id: r.id,
-            start: r.start,
-            end: r.end,
-            value: r.value,
-            kfs: stripKeyframes(state, r.id).map((k) => ({ id: k.id, s: k.s, v: k.v })),
-        }));
-    }
-
-    test("the 2.28 m + 2.26 m coarser-joined-grid pair: both min-extent strips survive untouched", () => {
-        // this geometry used to be the join's own worst case — the joined grid is coarser
-        // (5 + 5 edges resolve to 9, not 10), so the old `refloorStrips` re-quantized both
-        // halves onto it. A join no longer reads or writes a strip at all (Locked decision),
-        // so the stored coordinates are the same numbers before and after, on any grid.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 2.28);
-        createSection(state, 1, SectionKind.Force, 2.26);
-        state.step(0);
-        // track-global stations: A's own last edge, then B's own first edge (past A's 2.28 m).
-        const aExtent = stripMinExtentAt(state, 2.27);
-        const bExtent = stripMinExtentAt(state, 2.29);
-        if (!aExtent || !bExtent) throw new Error("no resolvable edge structure");
-        expect(bExtent.start).toBeGreaterThanOrEqual(aExtent.end); // one edge per side, not two in A
-        expect(createStrip(state, aExtent.start, aExtent.end, 5)).not.toBeNull();
-        expect(createStrip(state, bExtent.start, bExtent.end, 7)).not.toBeNull();
-
-        const before = stripLayer(state);
-        expect(before.length).toBe(2);
-
-        expect(joinNext(state, a)).toBe(true);
-        expect(sections(state).length).toBe(1); // the join really landed
-        state.step(0);
-
-        expect(stripLayer(state)).toEqual(before);
-    });
-
-    test("the merge-join fixture (two abutting strips at the same value) no longer merges or rebases", () => {
-        // the S3 defect's own fixture: A's strip touched A's exit and B's touched B's entry at
-        // the SAME value, so the old force branch merged them into one strip whose rebased
-        // `Strip.end` stranded its own boundary keyframe. Nothing merges now — two rows in,
-        // two rows out, every keyframe on its authored station.
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const a = createSection(state, 0, SectionKind.Force, 20);
-        createSection(state, 1, SectionKind.Force, 20);
-        state.step(0);
-        const aId = createStrip(state, 10, 20, 8) as number; // up to A's own exit (global 20)
-        const bId = createStrip(state, 20, 30, 8) as number; // from B's own entry, same value
-        expect(aId).not.toBeNull();
-        expect(bId).not.toBeNull();
-        const endKfId = stripKeyframes(state, aId).find((k) => k.s === 20)?.id;
-        if (endKfId === undefined) throw new Error("no seeded end keyframe");
-
-        const before = stripLayer(state);
-        expect(before.length).toBe(2);
-
-        expect(joinNext(state, a)).toBe(true);
-        expect(sections(state).length).toBe(1); // the join really landed
-        state.step(0);
-
-        expect(stripLayer(state)).toEqual(before);
-        expect(allStrips(state).map((r) => r.id)).toEqual([aId, bId]); // no merge
-        expect(stripKeyframeState(state, endKfId)?.s).toBe(20); // no rebase to chase
     });
 });

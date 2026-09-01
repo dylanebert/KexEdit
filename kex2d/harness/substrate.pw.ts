@@ -1,8 +1,9 @@
 // kex2d's S2 (kex2d-event-substrate) capture flows — the track-global velocity-span substrate.
 // Three arms, one per the spec's own S2 oracle line: a span authored across a section boundary
 // drives both sections' override continuously; deleting the section under a span leaves the
-// span's stored rows untouched, still driving whatever geometry occupies its window; split and
-// join leave every Strip/StripKeyframe row byte-identical. Shared helpers + the `__kex` typed
+// span's stored rows untouched, still driving whatever geometry occupies its window; split
+// leaves every Strip/StripKeyframe row byte-identical (Join, the arm's other former half,
+// retired `kex2d-segment-removal` S1). Shared helpers + the `__kex` typed
 // hook live in `./flow`.
 //
 // Setup goes through `addStripAt` (a real guarded write, `history.addStrip`, exposed directly so
@@ -10,7 +11,7 @@
 // guarantee — it always anchors at the click's min-extent edge and grows toward a default
 // length). The BEHAVIOR under test — the bake's own windowed resolution, the structural ops, the
 // undo/redo round trip — always runs through the real production path (`BakeSystem`'s per-RAF
-// tick, `history.removeSection`/`splitSection`/`joinSections` via the real Cut/Join menu rows).
+// tick, `history.removeSection`/`splitSection` via the real Cut menu row).
 
 import { test, expect, kexCall, frameTimeline, clickMenuItem } from "./flow";
 
@@ -108,18 +109,18 @@ test("deleting the section under a span leaves it untouched, driving the new occ
     await expect.poll(async () => Math.abs((await vAtD(35)) - value) < 0.5).toBe(true);
 });
 
-// a split or join never touches a strip's stored rows — no rebase, no mid-span split into two
+// a split never touches a strip's stored rows — no rebase, no mid-span split into two
 // strips, no merge-on-agreement at the seam (all retired, S2 Locked decision: strips are
 // track-global and span-blind to structural ops). One force section; a strip whose extent
 // straddles the exact station a Cut lands at (the old code's own straddling-strip rebase
-// branch); Cut then Join, each checked against the immediately-prior snapshot.
+// branch); Cut, checked against the immediately-prior snapshot.
 //
 // RED-FIRST (quoted from the pre-S2 `splitForce`, same ref, two adjacent real lines):
 // `Strip.end.set(st.eid, s);` then `const tailId = createStrip(ecs, bId, 0, st.end - s, st.value);`
 // — literally trimming the original row's `end` and spawning a SECOND strip entity for the tail.
 // Against that code this arm reds at the post-Cut poll: `stripsOf()` reports two rows sharing the
 // original `value`, neither equal to `before`, instead of the untouched original.
-test("split and join leave every strip row byte-identical", async ({ page, boot }) => {
+test("split leaves every strip row byte-identical", async ({ page, boot }) => {
     await boot();
 
     const sectionCount = () => kexCall(page, "sectionCount");
@@ -167,21 +168,4 @@ test("split and join leave every strip row byte-identical", async ({ page, boot 
     const postCut = await snapshot();
     expect(postCut.strips.length).toBe(stripCountBefore); // no new strip spawned
     expect(postCut).toEqual(preCut); // every row (start/end/value + keyframes), byte-identical
-
-    // Join the two force sections back — the same byte-identical law, checked against the
-    // immediately-prior (post-Cut) snapshot.
-    const preJoin = postCut;
-    await page.locator(".clip").nth(0).click();
-    await page
-        .locator(".clip")
-        .nth(1)
-        .click({ modifiers: ["Shift"] });
-    await page.locator(".clip").nth(0).click({ button: "right" });
-    await expect(page.locator(".ctxmenu")).toBeVisible();
-    await expect(page.locator(".ctxmenu").getByRole("menuitem", { name: "Join" })).toBeEnabled();
-    await clickMenuItem(page, ".ctxmenu", "Join");
-    await expect.poll(sectionCount).toBe(1);
-
-    const postJoin = await snapshot();
-    expect(postJoin).toEqual(preJoin);
 });

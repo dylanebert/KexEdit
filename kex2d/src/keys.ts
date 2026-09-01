@@ -19,16 +19,13 @@ import type { KeyframeMenuActions, NodeMenuActions, SectionMenuActions } from ".
  * today; a decider takes their RESULTS, never recomputes them.
  */
 
-/** the whole-section delete + bulk-join + playhead-Cut rung's state (`controls.ts`'s
+/** the whole-section delete + playhead-Cut rung's state (`controls.ts`'s
  *  `onKeyDown`, a section selected). */
 export type SectionKeyState = {
     /** the consent boundary: no pin session is open (`sectionOpsAllowed`). */
     opsAllowed: boolean;
     /** a multi-section selection — deletes as one entry (`removeSections`) vs. `removeSection`. */
     multi: boolean;
-    /** the selected set is a valid Join run — `controls.sectionsJoinable` (a contiguous run of
-     *  ≥2, one kind) — `J`'s own gate, mirroring `remove`'s `multi` fork. */
-    joinable: boolean;
     /** the playhead resolves to a cut position on THIS section — `track.sectionCutAt`'s own
      *  non-null return, read off the playhead's own stored arclength (never a cursor reading:
      *  `C`'s clip-strip home is playhead-exact, no threshold — `editor-ui.md`'s transport-read
@@ -38,11 +35,11 @@ export type SectionKeyState = {
      *  flag gates on resolvability, not on the op's own acceptance. Single-subject only, mirroring
      *  `nodeCuttable`/`keyframeCuttable` (a multi-set has no single subject to cut, the same reason
      *  it OMITS the menu row). OPTIONAL, the same shape as its siblings — an existing caller
-     *  driving only remove/join keeps compiling. */
+     *  driving only remove keeps compiling. */
     cuttable?: boolean;
     /** Convert's own geo→force enablement (`canSolve`, `menus.ts convertRow`) — the same reading
      *  `App.svelte` hands the menu builder. OPTIONAL, the `cuttable` shape: an existing caller
-     *  driving only remove/join/cut keeps compiling. */
+     *  driving only remove/cut keeps compiling. */
     canSolve?: boolean;
     /** Convert's own force→geo enablement (`canSolveShape`). */
     canSolveShape?: boolean;
@@ -55,12 +52,12 @@ export type SectionKeyState = {
     /** Reset's own enablement (`track.sectionResettable`) — exactly one section, and a live
      *  bake on a force section only (the seed's entry force is bake-recovered; a geo reset reads
      *  no bake). OPTIONAL, the `canSolve` shape: an existing caller driving only
-     *  remove/join/cut/convert/pin keeps compiling. */
+     *  remove/cut/convert/pin keeps compiling. */
     canReset?: boolean;
 };
 
-/** whole-section Delete/`J`/`C`/`D`/`P`/`R`: `remove` for a single section, `removeSet` for a
- *  multi-selection (`BINDINGS.remove`), `join` for a valid multi-set run (`BINDINGS.join`),
+/** whole-section Delete/`C`/`D`/`P`/`R`: `remove` for a single section, `removeSet` for a
+ *  multi-selection (`BINDINGS.remove`),
  *  `cutAt` on a cuttable single section (`BINDINGS.cut`, playhead-exact — the clip strip's
  *  keyboard twin of its cursor-anchored menu row, `SectionMenuActions.cutAt` itself unchanged:
  *  only the resolved `position` argument differs by caller), `solve`/`solveShape` on `D`
@@ -76,11 +73,10 @@ export function sectionKeyAct(
     s: SectionKeyState,
 ): Extract<
     keyof SectionMenuActions,
-    "remove" | "removeSet" | "join" | "cutAt" | "solve" | "solveShape" | "pinEnter" | "reset"
+    "remove" | "removeSet" | "cutAt" | "solve" | "solveShape" | "pinEnter" | "reset"
 > | null {
     if (!s.opsAllowed) return null;
     if (bound(BINDINGS.remove, key)) return s.multi ? "removeSet" : "remove";
-    if (bound(BINDINGS.join, key)) return s.joinable ? "join" : null;
     if (bound(BINDINGS.cut, key)) return !s.multi && s.cuttable === true ? "cutAt" : null;
     if (bound(BINDINGS.convert, key))
         return s.canSolveShape === true ? "solveShape" : s.canSolve === true ? "solve" : null;

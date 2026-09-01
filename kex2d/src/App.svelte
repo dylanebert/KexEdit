@@ -14,7 +14,6 @@ import {
     attachControls,
     manipKnobs,
     sectionsDeletable,
-    sectionsJoinable,
     selectedMetrics,
 } from "./controls";
 import {
@@ -170,7 +169,7 @@ onMount(() => {
 // extended to "mode open" (`editor.pinning !== null`), not just mid-solve: Escape is the
 // mode's dismissal rung, Enter is Solve (the mode-scoped exception, `BINDINGS.solve` — Locked
 // decision 1's law 3), and Delete/Backspace on a section selection is swallowed here too —
-// defense in depth alongside `controls.ts`'s own guard, since convert/delete/join aren't
+// defense in depth alongside `controls.ts`'s own guard, since convert/delete aren't
 // available inside the mode (the locked decision's consent-boundary law). Gated on the live
 // field, not a tick-derived read (the dismissal standard every menu here wears) — `solvable`
 // reads `computePinSolvable()` fresh rather than the tick-derived `pinSolvable`, same reason.
@@ -229,12 +228,12 @@ onMount(() => {
 
 // Convert (`D`) and Pin (`P`) — the section context menu's own remaining shortcuts
 // (`kex2d-shortcuts` stage 3): routed through `keys.ts`'s `sectionKeyAct`, the same decider
-// `controls.ts` drives for remove/join/cutAt, but dispatched through the MERGED chrome + document
+// `controls.ts` drives for remove/cutAt, but dispatched through the MERGED chrome + document
 // acts record (`chromeActs` + `sectionActs`, Locked decision 2): `solve`/`solveShape`/`pinEnter`
 // are chrome (`editor-ui.md` Menus, the act-BODY seam's residual clause 2), so `controls.ts` —
 // which only reaches `acts.ts` — can't be their home; this permanent listener is, since the
 // chrome bodies live in this component. Filtered to the two OWN keys FIRST (`bound`, not a raw
-// compare) so this listener never re-handles remove/join/cut — those stay `controls.ts`'s alone.
+// compare) so this listener never re-handles remove/cut — those stay `controls.ts`'s alone.
 onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
         if (activeKind() !== "section") return;
@@ -251,7 +250,6 @@ onMount(() => {
         const act = sectionKeyAct(e.key, {
             opsAllowed: sectionOpsAllowed(editor.pinning),
             multi: editor.sections.ids.size > 1,
-            joinable: false,
             canSolve: computeCanSolve(section),
             canSolveShape: computeCanSolveShape(section),
             canPin: computeCanPin(section),
@@ -911,18 +909,6 @@ const canDelete = $derived.by((): boolean => {
         sectionOpsAllowed(editor.pinning)
     );
 });
-// whether the selected section SET is Join-able — `sectionsJoinable` (a contiguous same-kind
-// run, `controls.ts`) plus the pin consent boundary Join shares with every structural row
-// (it reaches past its subject to destroy a neighbor, squarely inside the lockdown). computable
-// today straight off `editor.sections.ids` and `sections(ecs)` — unlike `canCut`, it needs no
-// `toLocal` cursor-resolution lens, so it isn't deferred to stage 6.
-const canJoin = $derived.by((): boolean => {
-    void tick;
-    return (
-        sectionsJoinable([...editor.sections.ids], sections(ecs)) &&
-        sectionOpsAllowed(editor.pinning)
-    );
-});
 // whether the invoked geo→force solve is available on this selection (`sectionSolvable`,
 // controls.ts, target `Geo`): one geo section with a live bake. `convertGeo` THROWS on each of
 // those, so this enablement is the gate, not a hint — and it grays rather than hides (the
@@ -1035,9 +1021,6 @@ const ctxItems = $derived.by((): MenuItem[] => {
             },
             get canDelete() {
                 return canDelete;
-            },
-            get canJoin() {
-                return canJoin;
             },
             get canCut() {
                 return canCut;

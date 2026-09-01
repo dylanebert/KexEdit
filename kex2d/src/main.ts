@@ -371,7 +371,7 @@ if (import.meta.env.DEV) {
             addStripKeyframe(history, ecs, stripId, s, v),
         // author a track-global velocity strip at an EXACT `[start, end)` (undo-recorded, real
         // guarded write — `history.addStrip`), the substrate-precision setup twin of
-        // `placeForce`: the S2 oracle's boundary/delete/split/join arms need a span positioned
+        // `placeForce`: the S2 oracle's boundary/delete/split arms need a span positioned
         // exactly across a known section boundary, which the pointer-driven "Add velocity
         // strip" menu (min-extent-anchored, grown toward a default length) can't guarantee.
         addStripAt: (start: number, end: number, value: number): number | null =>
