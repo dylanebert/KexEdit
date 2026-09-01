@@ -262,8 +262,8 @@ if (import.meta.env.DEV) {
         // ── force-authoring hooks (stage C) ──
         kind: (): number => sections(ecs)[0]?.kind ?? SectionKind.Geo,
         forceCount: (): number => sectionForces(ecs, sec()).length,
-        // the authored points, sorted by s — the flow asserts a dblclick create
-        // resolves its g ON the profile (not at the cursor's y).
+        // the authored force points, sorted by s — used by value-drag/menu/domain/marker flows.
+        // GUI double-click force creation was retired by kex2d-segment-removal S4.
         forces: (): { id: number; s: number; g: number }[] =>
             sectionForces(ecs, sec()).map((p) => ({ id: p.id, s: p.s, g: p.g })),
         // a section span's mid-sample screen point (canvas-local px), by chain index — where
@@ -327,8 +327,13 @@ if (import.meta.env.DEV) {
         forceSelActive: (): number | null => editor.force,
         // flip geo↔force on the section (destructive convert, one undo entry).
         convert: (): void => convertSection(history, ecs, sec()),
-        // author a force point at (s, g) — the "place a point on the curve" step.
+        // author a force point at (s, g) on the foundation section — setup-only headless force
+        // authoring retained after GUI free insertion left in kex2d-segment-removal S4.
         placeForce: (s: number, g: number): number => createForce(history, ecs, sec(), s, g),
+        // author a force point on an explicit section id — the mixed-section capture setup twin
+        // of `placeForce`, not a GUI replacement for the retired free insertion gesture.
+        placeForceIn: (section: number, s: number, g: number): number =>
+            createForce(history, ecs, section, s, g),
         // author a strip keyframe at (s, v) on the given strip — the freshness arm's synchronous
         // create, mirroring `placeForce`'s shape so the arm can create and read in one evaluate.
         placeStripKf: (stripId: number, s: number, v: number): number =>

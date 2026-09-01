@@ -674,7 +674,7 @@ describe("declaredCorpusViolations — the ownership arm", () => {
         // the corpus arm — the gate would tolerate a red whose owner names nothing. The arm reds
         // it, naming the dead owner.
         const bad: DeclaredEntry = {
-            title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
+            title: "timeline domain flow — Time-view force trim extrapolates past the bake's end (S6b)",
             owner: { kind: "spec", ref: "nonexistent-spec-slug" },
             evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
         };
@@ -688,7 +688,7 @@ describe("declaredCorpusViolations — the ownership arm", () => {
         // arm reds it. Deciding field: `owner.kind` — `spec` checks `specs/<ref>.md` exists, and
         // it does not.
         const bad: DeclaredEntry = {
-            title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
+            title: "timeline domain flow — Time-view force trim extrapolates past the bake's end (S6b)",
             owner: { kind: "spec", ref: "kex2d-selection-substrate" },
             evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
         };
@@ -701,7 +701,7 @@ describe("declaredCorpusViolations — the ownership arm", () => {
         // is deleted. Deciding field: `owner.kind: "git-history"` — checks `git log --
         // specs/<ref>.md` for output, which exists for `kex2d-selection-substrate`.
         const good: DeclaredEntry = {
-            title: "timeline domain flow — Time-view double-click create writes arclength (S6c2)",
+            title: "timeline domain flow — Time-view force trim extrapolates past the bake's end (S6b)",
             owner: { kind: "git-history", ref: "kex2d-selection-substrate" },
             evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
         };
@@ -749,7 +749,7 @@ describe("removalSummons — the stale-entry removal summons", () => {
         ...over,
     });
     const declaredTitle =
-        "timeline domain flow — Time-view double-click create writes arclength (S6c2)";
+        "timeline domain flow — Time-view force trim extrapolates past the bake's end (S6b)";
     const declaredSet = new Set([declaredTitle]);
 
     test("silent when the v2 population is too small — the empty-population latch", () => {

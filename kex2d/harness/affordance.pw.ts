@@ -129,7 +129,7 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
     const g0 = await at();
     if (g0 === undefined) throw new Error("selected keyframe not readable");
 
-    const cursor = await scrubKey(page, ".ptip .fld:nth-of-type(2) .key", 40);
+    const cursor = await scrubKey(page, ".ptip .fld:nth-of-type(1) .key", 40);
     expect(cursor, "the g key paints the scrub cursor").toBe("ew-resize");
     await expect
         .poll(at, { message: "a drag on a key painting ew-resize moves the value", timeout: 1000 })
