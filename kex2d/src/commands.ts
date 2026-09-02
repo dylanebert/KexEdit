@@ -55,6 +55,7 @@ import {
     nextForce,
     reheadOnDrag,
     runExtentOf,
+    setHandlePosition,
     runIdOf,
     Section,
     SectionKind,
@@ -477,7 +478,7 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             const before = Handle.pos.x.get(eid);
             const beforeY = Handle.pos.y.get(eid);
             beginMove(ecs, op.section);
-            Handle.pos.set(eid, op.x, op.y);
+            setHandlePosition(ecs, eid, op.x, op.y);
             if (eid === lastHandle(ecs, op.section)) reheadOnDrag(ecs, eid);
             commit(h);
             const moved = Handle.pos.x.get(eid) !== before || Handle.pos.y.get(eid) !== beforeY;

@@ -75,6 +75,7 @@ import {
     sectionResettable,
     sections,
     seedTangent,
+    setHandlePosition,
     setTangent,
     Strip,
     stripAt,
@@ -764,7 +765,7 @@ export function applyMultiDelta(
         const targets = polarDelta(fs.chain, fs.selected, axis, delta, LENGTH_MIN);
         for (const eid of sectionHandles(ecs, sec)) {
             const p = targets.get(Handle.order.get(eid));
-            if (p) Handle.pos.set(eid, p.x, p.y);
+            if (p) setHandlePosition(ecs, eid, p.x, p.y);
         }
         const tip = lastHandle(ecs, sec);
         // the tip re-heads only on its OWN move (reheadOnDrag's single-drag law): polarDelta moves
@@ -963,18 +964,18 @@ function frameViewport(ecs: State, canvas: HTMLCanvasElement): void {
 /** write a dragged node's section-local position from a world target — `localize`
  *  against the node's section entry (identity for the first section). returns false
  *  with no live entry (nothing written). */
-function placeNode(eid: number, worldX: number, worldY: number): boolean {
+function placeNode(ecs: State, eid: number, worldX: number, worldY: number): boolean {
     const entry = sectionInfo.get(Handle.section.get(eid))?.entry;
     if (!entry) return false;
     const local = localize(entry, { x: worldX, y: worldY, theta: 0 });
-    Handle.pos.set(eid, local.x, local.y);
+    setHandlePosition(ecs, eid, local.x, local.y);
     return true;
 }
 
 /** the default surface's node write: place, then refresh the tip re-head (the tip
  *  re-heads on its own move — `reheadOnDrag`'s law). the manipulator drags land here. */
 function dragTo(ecs: State, eid: number, worldX: number, worldY: number): void {
-    if (placeNode(eid, worldX, worldY)) reheadOnDrag(ecs, eid);
+    if (placeNode(ecs, eid, worldX, worldY)) reheadOnDrag(ecs, eid);
 }
 
 /** write a tangent-edit free node-body drag's target — the summoned inner layer's node write,
@@ -992,7 +993,7 @@ export function dragFreeTo(ecs: State, eid: number, worldX: number, worldY: numb
         const seed = seedTangent(ecs, section, order, TangentMode.Aligned);
         if (seed) setTangent(ecs, section, order, seed);
     }
-    placeNode(eid, worldX, worldY);
+    placeNode(ecs, eid, worldX, worldY);
 }
 
 /** advance a tangent-edit free node-body drag: fold in the grab offset, map to world, and write
@@ -1553,7 +1554,7 @@ export function attachControls(
                 // written straight to the authored local position — no world round trip (`nodeLocal`'s
                 // rigid-placement note): back-to-back presses read each other's write immediately, not
                 // last frame's bake.
-                Handle.pos.set(eid, t.x, t.y);
+                setHandlePosition(ecs, eid, t.x, t.y);
                 reheadOnDrag(ecs, eid);
                 // the nudge is the keyboard twin of the manipulator drag, sticky length included —
                 // always armed, since a nudge always moves.
@@ -1576,7 +1577,7 @@ export function attachControls(
                 step,
             );
             beginMove(ecs, Handle.section.get(eid));
-            Handle.pos.set(eid, t.x, t.y);
+            setHandlePosition(ecs, eid, t.x, t.y);
             commit(history);
             return;
         }

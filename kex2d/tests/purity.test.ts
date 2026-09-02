@@ -357,26 +357,31 @@ function isGestured(
 
 /** every authored-component write-site outside `track.ts`/`history.ts`, resolved
  *  gestured or not. This IS the census — its population is every `src/` file. */
+function sitesIn(file: string, text: string): WriteSite[] {
+    const sites: WriteSite[] = [];
+    const mask = codeMask(text);
+    const pairs = braceMatches(text, mask);
+    WRITE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null = WRITE_RE.exec(text);
+    while (m !== null) {
+        if (mask[m.index]) {
+            sites.push({
+                file,
+                line: text.slice(0, m.index).split("\n").length,
+                text: m[0],
+                gestured: isGestured(text, mask, pairs, m.index),
+            });
+        }
+        m = WRITE_RE.exec(text);
+    }
+    return sites;
+}
+
 function writeSites(): WriteSite[] {
     const sites: WriteSite[] = [];
     for (const file of collectSrcFiles(srcRoot)) {
         if (file === "track.ts" || file === "history.ts") continue;
-        const text = readFileSync(join(srcRoot, file), "utf8");
-        const mask = codeMask(text);
-        const pairs = braceMatches(text, mask);
-        WRITE_RE.lastIndex = 0;
-        let m: RegExpExecArray | null = WRITE_RE.exec(text);
-        while (m !== null) {
-            if (mask[m.index]) {
-                sites.push({
-                    file,
-                    line: text.slice(0, m.index).split("\n").length,
-                    text: m[0],
-                    gestured: isGestured(text, mask, pairs, m.index),
-                });
-            }
-            m = WRITE_RE.exec(text);
-        }
+        sites.push(...sitesIn(file, readFileSync(join(srcRoot, file), "utf8")));
     }
     return sites;
 }
@@ -387,40 +392,36 @@ describe("authored-component writer census — no second write path", () => {
         const sites = writeSites();
         expect(sites.length).toBeGreaterThan(0);
         expect(sites.some((s) => s.file === "doc.ts")).toBe(true);
-        expect(sites.some((s) => s.file === "controls.ts")).toBe(true);
     });
 
-    test("positive control: a comment mentioning a write-site is not a write-site", () => {
-        // `commands.ts` docblocks `Handle.pos.set(...)` in prose (citing `controls.ts`'s
-        // gesture) right beside a REAL write two lines later — if the scanner read
-        // comments as code this control would find a spurious extra `commands.ts` site.
-        const text = readFileSync(join(srcRoot, "commands.ts"), "utf8");
-        expect(text).toContain("`Handle.pos.set(...); reheadOnDrag(ecs, eid);`");
-        const sites = writeSites().filter((s) => s.file === "commands.ts");
+    test("foreign geometry writers route through the canonical position setter", () => {
+        const commands = readFileSync(join(srcRoot, "commands.ts"), "utf8");
+        const controls = readFileSync(join(srcRoot, "controls.ts"), "utf8");
+        expect(writeSites().filter((s) => s.file === "commands.ts")).toHaveLength(0);
+        expect(writeSites().filter((s) => s.file === "controls.ts")).toHaveLength(0);
+        expect(commands).toContain("setHandlePosition(ecs, eid, op.x, op.y)");
+        expect(controls.match(/setHandlePosition\(ecs, eid,/g)?.length).toBeGreaterThanOrEqual(4);
+    });
+
+    test("positive control: the walker masks comments and climbs to a gestured caller", () => {
+        const source = `
+            // Handle.pos.set(eid, 1, 2)
+            function write(eid: number): void { Handle.pos.set(eid, 3, 4); }
+            function gesture(eid: number): void { beginMove(); write(eid); commit(); }
+        `;
+        const sites = sitesIn("control.ts", source);
         expect(sites).toHaveLength(1);
         expect(sites[0].text).toBe("Handle.pos.set(");
-    });
+        expect(sites[0].gestured).toBe(true);
 
-    test("positive control: the walker discriminates gestured from un-gestured", () => {
-        const sites = writeSites();
+        const productionSites = writeSites();
         // `doc.ts`'s whole-document load writes `Track.ds` with no `history` bracket at
         // all — deliberately, a fresh document is not an edit to undo past.
-        expect(sites.some((s) => s.file === "doc.ts" && !s.gestured)).toBe(true);
+        expect(productionSites.some((s) => s.file === "doc.ts" && !s.gestured)).toBe(true);
         // The migrated force value/easing owner must remain in the census rather than
         // letting the force-authoring arm pass vacuously on station-only `Force` writes.
         expect(AUTHORED_COMPONENTS).toContain("ForceBoundary");
         expect(AUTHORED_COMPONENTS).toContain("Segment");
-        // `controls.ts`'s keyboard-nudge writes `Handle.pos` inline inside
-        // `beginMove`…`commit`.
-        expect(sites.some((s) => s.file === "controls.ts" && s.line === 1556 && s.gestured)).toBe(
-            true,
-        );
-        // `controls.ts`'s `applyMultiDelta` writes `Handle.pos` with no gesture call in
-        // its OWN body — its only caller opens the bracket (`beginMoves`…`commit`) —
-        // the one-level call-site climb this walker exists to cover.
-        expect(sites.some((s) => s.file === "controls.ts" && s.line === 767 && s.gestured)).toBe(
-            true,
-        );
     });
 
     test("every un-gestured write-site lives in doc.ts, and doc.ts actually has one", () => {

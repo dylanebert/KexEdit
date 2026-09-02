@@ -1644,6 +1644,14 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
     return eid;
 }
 
+/** Canonical position writer for an authored geometry boundary. Foreign authoring surfaces
+ * use this instead of writing the compatibility `Handle.pos` projection directly. Heading changes
+ * remain explicit because only a moved run tip is permitted to re-head. */
+export function setHandlePosition(ecs: State, eid: number, x: number, y: number): void {
+    if (!ecs.has(eid, Handle)) return;
+    Handle.pos.set(eid, x, y);
+}
+
 /** the heading a node is born with at section-local `(x, y)`: the circular-arc reflection of
  *  its predecessor's exit about their chord — `addNode`'s own seed, shared with `resetNode` so
  *  re-creation can't drift from creation (placed straight along the exit, the reflection
