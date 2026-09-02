@@ -4999,9 +4999,8 @@ test("App.svelte Convert/Pin listener routes through activeKind, not editor.sect
         (document.activeElement as HTMLElement)?.blur?.();
     });
     await page.keyboard.press("d");
-    // This fixed generous wait clears the measured ~2.03 s worst-case async conversion. It is not
-    // a conversion-time bound and does not add another bridge.
-    await frames(page, 180);
+    // This fixed wait exceeds the measured ~2.03 s worst case; it is not a conversion-time bound.
+    await frames(page, 120);
     expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
 });
 
