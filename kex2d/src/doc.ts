@@ -298,15 +298,20 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
 export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
     const maxWireId = Math.max(-1, ...doc.segments.map((run) => run.id));
     let nextMemberId = maxWireId + 1;
+    let nextOrder = 0;
     const segments = doc.segments.flatMap((run) => {
-        if (!run.members) return [fromDocSegment(run)];
+        if (!run.members) {
+            const member = fromDocSegment(run);
+            member.order = nextOrder++;
+            return [member];
+        }
         return run.members
             .map((member, index) => {
                 const station = member.station;
                 const end = run.members![index + 1]?.station ?? run.length;
                 return fromDocSegment({
                     id: index === 0 ? run.id : nextMemberId++,
-                    order: run.order + index,
+                    order: nextOrder++,
                     kind: member.kind,
                     length: Math.fround(end - station),
                     nodes: member.nodes,

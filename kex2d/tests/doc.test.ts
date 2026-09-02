@@ -13,6 +13,7 @@ import {
     serializeDocument,
 } from "../src/doc";
 import { Easing } from "../src/profile";
+import { rebuildSectionProjection } from "../src/projection";
 import { scenarios } from "../src/scenarios";
 import { TangentMode } from "../src/spline";
 import {
@@ -26,6 +27,7 @@ import {
     createTrack,
     samples,
     SectionKind,
+    sections,
     snapshotAll,
     spawnNode,
     Track,
@@ -631,23 +633,42 @@ describe("frozen v2 migration corpus", () => {
 });
 
 describe("run-nested unstable-v3 wire", () => {
-    test("load → save → load preserves synthesized ids and the multi-member run snapshot", () => {
+    test("load → save → load keeps one contiguous id space across multi-member edge runs", () => {
+        const run = (
+            id: number,
+            order: number,
+            kind: SectionKind,
+            length: number,
+            stations: number[],
+        ) => {
+            const nodes =
+                kind === SectionKind.Geo
+                    ? [
+                          { id: 0, order: 0, x: 0, y: 0, theta: 0 },
+                          { id: 1, order: 1, x: 1, y: 0, theta: 0 },
+                      ]
+                    : [];
+            const row = { id, order, kind, length, nodes, points: [] };
+            return stations.length > 1
+                ? {
+                      ...row,
+                      members: stations.map((station) => ({
+                          station,
+                          kind,
+                          nodes: [],
+                          points: [],
+                      })),
+                  }
+                : row;
+        };
         const wire = serializeDocument({
             version: CURRENT_VERSION,
             track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
             segments: [
-                {
-                    id: 41,
-                    order: 0,
-                    kind: SectionKind.Force,
-                    length: 30,
-                    nodes: [],
-                    points: [],
-                    members: [
-                        { station: 0, kind: SectionKind.Force, nodes: [], points: [] },
-                        { station: 11.25, kind: SectionKind.Force, nodes: [], points: [] },
-                    ],
-                },
+                run(41, 0, SectionKind.Force, 30, [0, 11.25]),
+                run(50, 1, SectionKind.Force, 8, [0]),
+                run(60, 2, SectionKind.Geo, 0, [0]),
+                run(70, 3, SectionKind.Force, 20, [0, 7]),
             ],
             strips: [],
             oneShot: [],
@@ -656,10 +677,12 @@ describe("run-nested unstable-v3 wire", () => {
         state.addSystem(BakeSystem);
         loadDocument(state, wire);
         const first = snapshotAll(state);
-        expect(first.segments.map((s) => s.id)).toEqual([41, 42]);
-        expect(first.segments.map((s) => [s.run, s.runStation, s.runExtent])).toEqual([
-            [41, 0, 30],
-            [41, 11.25, 30],
+        expect(first.segments.map((segment) => segment.order)).toEqual([0, 1, 2, 3, 4, 5]);
+        expect(first.segments.map((segment) => segment.id)).toEqual([41, 71, 50, 60, 70, 72]);
+        expect(first.segments.map((segment) => segment.run)).toEqual([41, 41, 50, 60, 70, 70]);
+        expect(sections(state).map((section) => section.id)).toEqual([41, 50, 60, 70]);
+        expect(rebuildSectionProjection(state).map((section) => section.id)).toEqual([
+            41, 50, 60, 70,
         ]);
         const canonical = saveDocument(state);
         loadDocument(state, canonical);

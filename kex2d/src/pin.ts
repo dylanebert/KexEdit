@@ -50,6 +50,7 @@ import {
     SectionKind,
     sectionForces,
     sectionInfo,
+    runExtentOf,
     sectionWindows,
     stripsForStep,
     trackDs,
@@ -76,7 +77,8 @@ function sectionSpec(ecs: State, sectionId: number): SectionSpec | null {
     if (eid === null || Section.kind.get(eid) !== SectionKind.Force) return null;
     const info = sectionInfo.get(sectionId);
     if (!info) return null;
-    const length = Section.length.get(eid);
+    const length = runExtentOf(ecs, sectionId);
+    if (length === null) return null;
     // the pairing seam: conform once here so every downstream use of this spec's `step`
     // (this module's own `forceProfile`/`evalForce` call below, and `optimize.ts`'s kernel,
     // which reads `spec.step.ds` through `OptimizeOpts`) marches at the same exact step the

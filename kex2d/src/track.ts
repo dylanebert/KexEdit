@@ -1343,8 +1343,16 @@ export function segments(ecs: State): SectionRow[] {
     return rows;
 }
 
-/** @temporary S7 — legacy section reader projected from the canonical segment chain. */
-export const sections = segments;
+/** @temporary S7 — one authored-section row per total evaluator run. */
+export function sections(ecs: State): SectionRow[] {
+    return rebuildRunProjection(ecs).map((run, order) => ({
+        eid: segmentAt(ecs, run.segmentIds[0]!)!,
+        id: run.id,
+        order,
+        kind: run.kind as SectionKind,
+        length: run.length,
+    }));
+}
 
 /** resolve a canonical segment by its stable id to its eid, or null. */
 export function segmentAt(ecs: State, id: number): number | null {
@@ -1354,8 +1362,21 @@ export function segmentAt(ecs: State, id: number): number | null {
     return null;
 }
 
-/** @temporary S7 — legacy section lookup projected from stable segment identity. */
-export const sectionAt = segmentAt;
+/** @temporary S7 — resolve a run id to its entry member entity. */
+export function sectionAt(ecs: State, id: number): number | null {
+    const run = rebuildRunProjection(ecs).find((row) => row.id === id);
+    return run ? segmentAt(ecs, run.segmentIds[0]!) : null;
+}
+
+/** the run identity owning a canonical segment. */
+export function runIdOf(ecs: State, segmentId: number): number | null {
+    return rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(segmentId))?.id ?? null;
+}
+
+/** the conserved authored extent of a run, addressed by run identity. */
+export function runExtentOf(ecs: State, id: number): number | null {
+    return rebuildRunProjection(ecs).find((row) => row.id === id)?.length ?? null;
+}
 
 /** a section's place on the track-global arclength axis: the distance `d` at the section's
  *  entry (the cumulative baked arclength of every upstream section) and its own baked
@@ -1497,14 +1518,14 @@ export function forceMarkers(ecs: State): ForceMarker[] {
             const segmentId = run.segmentIds[member]!;
             const offset = run.stations[member]!;
             const memberExtent = run.stations[member + 1]! - offset;
-            for (const p of sectionForces(ecs, segmentId)) {
+            for (const p of segmentForces(ecs, segmentId)) {
                 if (p.s > memberExtent) continue;
                 const addr = forceSample(out, info, last, offset + p.s);
                 if (!addr) continue;
                 const j = Math.min(addr.index + 1, last);
                 res.push({
                     id: p.id,
-                    section: segmentId,
+                    section: run.id,
                     x: s.posX[addr.index] + addr.frac * (s.posX[j] - s.posX[addr.index]),
                     y: s.posY[addr.index] + addr.frac * (s.posY[j] - s.posY[addr.index]),
                 });
@@ -1945,21 +1966,34 @@ export interface ForceRow {
     g: number;
 }
 
-/** every force point on a section, sorted by arclength — the order `forceProfile`
- *  and the timeline both consume. */
-export function sectionForces(ecs: State, sectionId: number): ForceRow[] {
+function segmentForces(ecs: State, segmentId: number): ForceRow[] {
     const rows: ForceRow[] = [];
     for (const eid of ecs.query([Force])) {
-        if (Force.section.get(eid) !== sectionId) continue;
+        if (Force.section.get(eid) !== segmentId) continue;
         rows.push({
             eid,
-            section: sectionId,
+            section: segmentId,
             id: Force.id.get(eid),
             s: Force.s.get(eid),
             g: Force.g.get(eid),
         });
     }
     rows.sort((a, b) => a.s - b.s);
+    return rows;
+}
+
+/** every force point in a run, gathered at its conserved run-local station. */
+export function sectionForces(ecs: State, sectionId: number): ForceRow[] {
+    const run = rebuildRunProjection(ecs).find((row) => row.id === sectionId);
+    if (!run) return [];
+    const rows = run.segmentIds.flatMap((segmentId, index) =>
+        segmentForces(ecs, segmentId).map((row) => ({
+            ...row,
+            section: run.id,
+            s: run.stations[index]! + row.s,
+        })),
+    );
+    rows.sort((a, b) => a.s - b.s || a.id - b.id);
     return rows;
 }
 
@@ -2137,8 +2171,13 @@ export function stationTaken(ecs: State, sectionId: number, s: number, exceptId:
 export function setForcePoint(ecs: State, id: number, s: number, g: number): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
-    const lands = !stationTaken(ecs, Force.section.get(eid), s, id);
-    if (lands) Force.s.set(eid, s);
+    const run = rebuildRunProjection(ecs).find((row) =>
+        row.segmentIds.includes(Force.section.get(eid)),
+    );
+    const runId = run?.id ?? Force.section.get(eid);
+    const lands = !stationTaken(ecs, runId, s, id);
+    if (lands)
+        Force.s.set(eid, s - (run?.stations[run.segmentIds.indexOf(Force.section.get(eid))] ?? 0));
     ForceBoundary.g.set(eid, g);
 }
 
@@ -2173,7 +2212,10 @@ export function setForceEase(ecs: State, id: number, ease: Easing): void {
 export function nextForce(ecs: State, id: number): number | null {
     const eid = forceAt(ecs, id);
     if (eid === null) return null;
-    const rows = sectionForces(ecs, Force.section.get(eid));
+    const run = rebuildRunProjection(ecs).find((row) =>
+        row.segmentIds.includes(Force.section.get(eid)),
+    );
+    const rows = sectionForces(ecs, run?.id ?? Force.section.get(eid));
     const idx = rows.findIndex((r) => r.id === id);
     return idx >= 0 && idx < rows.length - 1 ? rows[idx + 1].id : null;
 }
@@ -2189,8 +2231,8 @@ export interface SectionLengthState {
 
 /** snapshot a section's extent by id, or undefined if it's gone. */
 export function sectionLengthState(ecs: State, id: number): SectionLengthState | undefined {
-    const eid = sectionAt(ecs, id);
-    return eid === null ? undefined : { id, length: Section.length.get(eid) };
+    const length = runExtentOf(ecs, id);
+    return length === null ? undefined : { id, length };
 }
 
 /** set a force section's extent, in the track's active domain unit, floored at that
@@ -2200,12 +2242,12 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(id));
     if (!run) return;
     const terminal = run.segmentIds[run.segmentIds.length - 1]!;
-    const eid = sectionAt(ecs, terminal)!;
+    const eid = segmentAt(ecs, terminal)!;
     const terminalIndex = run.segmentIds.length - 1;
     const prefix = run.stations[terminalIndex]!;
     const nextExtent = Math.max(minRunForceExtent(ecs, id), length);
     Section.length.set(eid, nextExtent - prefix);
-    const first = sectionAt(ecs, run.segmentIds[0]!)!;
+    const first = segmentAt(ecs, run.segmentIds[0]!)!;
     Segment.runExtent.set(first, nextExtent);
 }
 
@@ -2375,7 +2417,7 @@ export interface SegmentSnapshot {
 /** capture a section (both kinds' payloads — one is empty). a force point carries its
  *  easing tag, so a convert/structural-op undo restores it. */
 export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot {
-    const eid = sectionAt(ecs, sectionId);
+    const eid = segmentAt(ecs, sectionId);
     if (eid === null) throw new Error(`snapshotSection: no section ${sectionId}`);
     return {
         id: sectionId,
@@ -2386,7 +2428,7 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
         runStation: Segment.runStation.get(eid),
         runExtent: Segment.runExtent.get(eid),
         nodes: nodeSnapshot(ecs, sectionId),
-        points: sectionForces(ecs, sectionId).map((p) => ({
+        points: segmentForces(ecs, sectionId).map((p) => ({
             id: p.id,
             s: p.s,
             g: p.g,
@@ -2401,10 +2443,10 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
  *  order, points by id, so eids recycle but identities don't. Strips are untouched
  *  (track-global, outside this snapshot's identity). */
 export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
-    const eid = sectionAt(ecs, snap.id);
+    const eid = segmentAt(ecs, snap.id);
     if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
     for (const h of sectionHandles(ecs, snap.id)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, snap.id)) ecs.destroy(p.eid);
+    for (const p of segmentForces(ecs, snap.id)) ecs.destroy(p.eid);
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
@@ -2437,7 +2479,7 @@ export function snapshotRun(ecs: State, segmentId: number): RunSnapshot {
 /** restore one run without replacing any surviving member entity. Missing members alone respawn. */
 export function restoreRun(ecs: State, snap: RunSnapshot): void {
     for (const member of snap.members) {
-        let eid = sectionAt(ecs, member.id);
+        let eid = segmentAt(ecs, member.id);
         if (eid === null) {
             bumpOrders(ecs, member.order, 1);
             spawnSection(
@@ -2450,7 +2492,7 @@ export function restoreRun(ecs: State, snap: RunSnapshot): void {
                 member.runStation,
                 member.runExtent,
             );
-            eid = sectionAt(ecs, member.id)!;
+            eid = segmentAt(ecs, member.id)!;
         }
         restoreSegment(ecs, {
             ...member,
@@ -2649,7 +2691,7 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     const info = sectionInfo.get(sectionId);
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Force);
     const extent = defaultForceExtent();
     Section.length.set(eid, extent); // reset to the default extent, not inherited
@@ -2661,7 +2703,7 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
  *  `resetSection`'s geo-held reset. */
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
     addNode(ecs, sectionId, 0, 0);
@@ -2678,7 +2720,7 @@ export function convertSection(ecs: State, sectionId: number): void {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
     if (!run) return;
     for (const id of run.segmentIds) {
-        const eid = sectionAt(ecs, id)!;
+        const eid = segmentAt(ecs, id)!;
         if (run.kind === SectionKind.Geo) resetToForce(ecs, eid, id);
         else resetToGeo(ecs, eid, id);
     }
@@ -2695,7 +2737,7 @@ export function resetSection(ecs: State, sectionId: number): void {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
     if (!run) return;
     for (const id of run.segmentIds) {
-        const eid = sectionAt(ecs, id)!;
+        const eid = segmentAt(ecs, id)!;
         if (run.kind === SectionKind.Geo) resetToGeo(ecs, eid, id);
         else resetToForce(ecs, eid, id);
     }
@@ -2801,9 +2843,9 @@ export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce)
     if (!run) throw new Error(`applyConvert: no section ${sectionId}`);
     setSectionLength(ecs, sectionId, solved.length);
     const members = run.segmentIds.map((id) => {
-        const eid = sectionAt(ecs, id)!;
+        const eid = segmentAt(ecs, id)!;
         for (const h of sectionHandles(ecs, id)) ecs.destroy(h);
-        for (const p of sectionForces(ecs, id)) ecs.destroy(p.eid);
+        for (const p of segmentForces(ecs, id)) ecs.destroy(p.eid);
         Section.kind.set(eid, SectionKind.Force);
         return { id, length: Section.length.get(eid) };
     });
@@ -2849,9 +2891,9 @@ export function applyConvertGeo(
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
     if (!run) throw new Error(`applyConvertGeo: no section ${sectionId}`);
     for (const id of run.segmentIds) {
-        const eid = sectionAt(ecs, id)!;
+        const eid = segmentAt(ecs, id)!;
         for (const h of sectionHandles(ecs, id)) ecs.destroy(h);
-        for (const p of sectionForces(ecs, id)) ecs.destroy(p.eid);
+        for (const p of segmentForces(ecs, id)) ecs.destroy(p.eid);
         Section.kind.set(eid, SectionKind.Geo);
         Section.length.set(eid, 0);
         if (id !== run.segmentIds[0]) {
@@ -3002,18 +3044,18 @@ export function trackDs(ecs: State): number {
 /** delete the complete evaluator run containing `segmentId`. */
 export function deleteRun(ecs: State, segmentId: number): boolean {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(segmentId));
-    if (!run || run.segmentIds.length >= sections(ecs).length) return false;
+    if (!run || sections(ecs).length <= 1) return false;
     for (const id of [...run.segmentIds].reverse()) deleteSectionMember(ecs, id);
     return true;
 }
 
 function deleteSectionMember(ecs: State, sectionId: number): boolean {
-    const secEid = sectionAt(ecs, sectionId);
+    const secEid = segmentAt(ecs, sectionId);
     if (secEid === null) return false;
-    if (sections(ecs).length <= 1) return false; // keep at least one section
+    if (segments(ecs).length <= 1) return false; // keep at least one physical member
     const order = Section.order.get(secEid);
     for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
+    for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     ecs.destroy(secEid);
     provenance.delete(sectionId);
     bumpOrders(ecs, order + 1, -1);
@@ -3128,7 +3170,7 @@ export function forceDense(
         const offset = stations[i]!;
         const land =
             bakeLanding !== null && bakeLanding.section === segmentId ? bakeLanding.g : null;
-        for (const p of sectionForces(ecs, segmentId)) {
+        for (const p of segmentForces(ecs, segmentId)) {
             points.push({
                 s: offset + p.s,
                 g: land?.(p.id) ?? p.g,
