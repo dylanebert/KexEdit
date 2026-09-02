@@ -341,6 +341,7 @@ export interface ForceUnionRun<T = number> {
 export function forceStationUnion<T>(
     runId: SegmentId,
     extent: number,
+    runEntry: ForceStation<T> | undefined,
     points: readonly ForceStation<T>[],
     allocateId: (memberIndex: number) => SegmentId,
 ): ForceUnionRun<T> {
@@ -350,16 +351,14 @@ export function forceStationUnion<T>(
     for (const point of sorted)
         if (!Number.isFinite(point.station) || point.station < 0 || point.station > extent)
             throw new RangeError("force station is outside the run");
-    let start: ForceStation<T> | undefined;
+    if (runEntry !== undefined && runEntry.station !== 0)
+        throw new RangeError("run entry force boundary must be at station zero");
     let cursor = 0;
     let first = true;
     const members: ForceUnionMember<T>[] = [];
     for (const point of sorted) {
-        if (point.station === 0) {
-            if (start) throw new RangeError("force boundaries must own positive duration");
-            start = point;
-            continue;
-        }
+        if (point.station === 0)
+            throw new RangeError("station-zero force boundary must use the explicit run entry");
         const duration = point.station - cursor;
         if (!(duration > 0)) throw new RangeError("force boundaries must own positive duration");
         members.push({
@@ -386,7 +385,7 @@ export function forceStationUnion<T>(
         id: runId,
         extent,
         stations: [...members.map((m) => m.entryStation), extent],
-        start,
+        start: runEntry,
         members,
     };
 }

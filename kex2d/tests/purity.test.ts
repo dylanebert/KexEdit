@@ -60,6 +60,7 @@ const srcRoot = join(import.meta.dir, "..", "src");
 
 const AUTHORED_COMPONENTS = [
     "Track",
+    "Segment",
     "Section",
     "Handle",
     "Force",
@@ -394,6 +395,7 @@ describe("authored-component writer census — no second write path", () => {
         // The migrated force value/easing owner must remain in the census rather than
         // letting the force-authoring arm pass vacuously on station-only `Force` writes.
         expect(AUTHORED_COMPONENTS).toContain("ForceBoundary");
+        expect(AUTHORED_COMPONENTS).toContain("Segment");
         // `controls.ts`'s keyboard-nudge writes `Handle.pos` inline inside
         // `beginMove`…`commit`.
         expect(sites.some((s) => s.file === "controls.ts" && s.line === 1556 && s.gestured)).toBe(
