@@ -4942,10 +4942,9 @@ test("App.svelte Convert/Pin listener routes through activeKind, not editor.sect
         (document.activeElement as HTMLElement)?.blur?.();
     });
     await page.keyboard.press("d");
-    // wait for the async conversion to complete (if it fired), then check the kind.
-    // The conversion runs in a worker and may take up to ~2s for a simple profile.
-    // Use frames() (not waitForTimeout) per the harness lint rule.
-    await frames(page, 120); // ~2s at 60fps
+    // Let the event loop settle before checking the durable kind. The fixed active-kind guard
+    // returns synchronously; a stale pre-fix conversion would still be observable here.
+    await frames(page, 1);
     expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
 });
 
