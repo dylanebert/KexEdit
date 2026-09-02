@@ -1590,7 +1590,7 @@ test("viewport multiselect flow", async ({ page, boot }) => {
     // the camera alone. The idle wheel after release is the positive control: the same event at the
     // same place, which MUST zoom, so a guard that merely killed the wheel outright can't pass the
     // pair (it is also what proves the mid-gesture tick was reaching this surface at all). The
-    // timeline half of the one rule rides the timeline multiselect flow. Mutation: drop the
+    // timeline half of the one rule rides the retained timeline gesture heirs flow. Mutation: drop the
     // `editor.dragging` early-return in `controls.ts` `onWheel` → the held camera moves → red
     // (proven against that build: zoom 51.857 → 81.328 under the held marquee). ──
     const cam = () => kexCall(page, "cam");

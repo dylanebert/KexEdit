@@ -218,20 +218,21 @@ test("section clip strip flow", async ({ page, boot }) => {
     await expect.poll(async () => (await sectionLengths())[1]).toBeCloseTo(before[1], 3);
 });
 
-// Drive the SECTION MENU flow (section-editor stage 2), narrowed by kex2d-segment-removal S4:
-// a mixed geo→force chain → prove empty-chart click deselects → right-click the real context
-// menu, assert its remaining rows (ONE kind-fitted conversion row + Delete — the destructive
-// Convert row was removed, kex2d-geoforce-editor stage 5; the two direction rows collapsed to
-// one in kex2d-forcegeo stage 4) → Delete via the real menu. RETIRED: the old direct-by-position
-// force-keyframe double-click arm and screenshot `section-2-keyframe.png`; surviving insertion
-// heir is strip keyframe double-click creation, while force authoring for capture setup uses
-// headless `placeForce`/`seedForceBump`. Everything here is driven through the real DOM.
-test("section menu flow", async ({ page, boot }) => {
+// Drive the SECTION MENU + DIRECT-BY-POSITION flow (section-editor stage 2): a mixed
+// geo→force chain → prove empty-chart click deselects → add a force keyframe by cursor
+// position WITHOUT selecting the section → right-click the real context menu, assert its
+// remaining rows (ONE kind-fitted conversion row + Delete — the destructive Convert row was
+// removed, kex2d-geoforce-editor stage 5; the two direction rows collapsed to one in
+// kex2d-forcegeo stage 4) → Delete via the real menu. The whole point is that authoring
+// and section ops no longer depend on a "current section" selection. Everything is driven
+// through the real DOM.
+test("section menu + keyframe flow", async ({ page, boot }) => {
     await boot();
 
     const sectionCount = () => kexCall(page, "sectionCount");
     const sectionKinds = () => kexCall(page, "sectionKinds");
     const sectionIds = () => kexCall(page, "sectionIds");
+    const forceCounts = () => kexCall(page, "sectionForceCounts");
     const selectedSection = () => kexCall(page, "selectedSection");
     const strip = dockStrip(page);
 
@@ -253,7 +254,14 @@ test("section menu flow", async ({ page, boot }) => {
     await page.mouse.click(bb.x + bb.width * 0.5, bb.y + bb.height * 0.62); // empty chart body
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 2. Escape peels EXACTLY ONE rung off the section context menu: the menu goes, the
+    // ── 2. Force-area double-click is inert in S4; no free force keyframe is inserted. ──
+    const before = await forceCounts(); // [n_geo(0), 0]
+    const fcb = await page.locator(".clip").nth(1).boundingBox(); // the force clip
+    if (!fcb) throw new Error("force clip not laid out");
+    await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
+    await expect.poll(async () => forceCounts()).toEqual(before);
+
+    // ── 3. Escape peels EXACTLY ONE rung off the section context menu: the menu goes, the
     // section it was summoned on stays selected (root ui.md's layered dismissal). Both rungs are
     // pinned before the press — no other menu mounted above it, the selection it must NOT peel
     // asserted ON — so a green run can't be peeling a rung this flow never named. ──
@@ -268,7 +276,7 @@ test("section menu flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape"); // the NEXT press peels the selection (no stale swallow)
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 3. Right-click the force clip: the menu carries exactly FOUR rows — ONE `Convert` row
+    // ── 4. Right-click the force clip: the menu carries exactly FOUR rows — ONE `Convert` row
     // (stage 7 naming: the section's kind implies the direction, so the label is the verb
     // alone), the force-only Pin entry, Reset (kex2d-idioms stage 2 — kind-held, live on a
     // baked force section), and Delete. (Also the real-menu regression guard for the destructive
@@ -305,7 +313,7 @@ test("section menu flow", async ({ page, boot }) => {
     await page.keyboard.press("Escape");
     await expect(page.locator(".ctxmenu")).toHaveCount(0);
 
-    // ── 4. Right-click a clip → Delete (real context menu). ──
+    // ── 5. Right-click a clip → Delete (real context menu). ──
     await page.locator(".clip").nth(1).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Delete" }).click();
     await expect.poll(sectionCount).toBe(1);
@@ -643,24 +651,20 @@ test("coefficient field refusal flow", async ({ page, boot }) => {
     await expect(cInput).toHaveValue(resistanceBefore.toFixed(5));
 });
 
-// Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5), narrowed by kex2d-segment-removal
-// S4: compose the whole chain the spec set out to author — a geo lead-in, a force airtime hill
-// appended after it, then a geo turnaround appended after that — through the surviving REAL
-// affordances (the `+` flyout and the fat-hit force value drag). RETIRED: the old free force
-// insertion double-clicks over the force arc; headless `placeForceIn` is used as setup for the
-// force-value-drag heir, and strip double-click insertion remains the create-gesture heir. This
-// is the reproducible artifact behind the stage-5 verdict; the hands-on feel pass — where the
-// author sculpts the geometry and judges where the surface fights — stays the user's. Precise
-// geometry isn't asserted: the claim is the composed chain builds through real clicks and bakes,
-// and the authored hill re-times the ride.
+// Drive the MIXED-LAYOUT DOGFOOD (section-editor stage 5): compose the whole chain the
+// spec set out to author — a geo lead-in, a force airtime hill appended after it, then a
+// geo turnaround appended after that — using the real `+` flyout and surviving force-value
+// drag affordance. Force points are prepared through the headless authoring command because
+// free force-area double-click insertion is removed in S4. This is the reproducible artifact
+// behind the stage-5 verdict; the hands-on feel pass stays the user's.
+// Precise geometry isn't asserted: the claim is the composed chain builds through real
+// clicks and bakes, and the authored hill re-times the ride.
 test("mixed layout dogfood flow", async ({ page, boot }) => {
     await boot();
 
     const sectionCount = () => kexCall(page, "sectionCount");
     const sectionKinds = () => kexCall(page, "sectionKinds");
-    const sectionIds = () => kexCall(page, "sectionIds") as Promise<number[]>;
     const forceCounts = () => kexCall(page, "sectionForceCounts");
-    const sectionLengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
     const tTotal = () => kexCall(page, "tTotal");
     const strip = dockStrip(page);
 
@@ -674,33 +678,32 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1");
     await frameTimeline(page); // append never pans; frame the grown chain into view
 
-    // ── 2. Seed an airtime hill on the force section for the surviving real value drag. The
-    // retired free force double-click insertion used to create these three points; `placeForceIn`
-    // is setup-only and the value drag below remains pointer-true. appendSection already seeded
-    // two continuation keyframes (stage B) at the section's entry/exit → 2 + 3 = 5. ──
+    const body = page.locator(".dock .body");
+    const bb = await body.boundingBox();
+    if (!bb) throw new Error("timeline body not laid out");
+
+    // ── 2. Use the two continuation keys seeded on the force section. Free force-area
+    // double-click insertion is removed in S4; the value-drag heir edits the exit seed. ──
     const fcb = await page.locator(".clip").nth(1).boundingBox();
     if (!fcb) throw new Error("force clip not laid out");
-    await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two seeds
-    const len = (await sectionLengths())[1];
-    const forceSection = (await sectionIds())[1];
-    for (const [s, g] of [
-        [len * 0.25, 1],
-        [len * 0.5, 0],
-        [len * 0.75, 1],
-    ] as [number, number][])
-        await kexCall(page, "placeForceIn", forceSection, s, g);
-    await expect.poll(async () => (await forceCounts())[1]).toBe(5); // + the three hill points
+    await page.locator(".clip").nth(1).click(); // select the appended force section
+    await expect.poll(async () => (await forceCounts())[1]).toBe(2); // the two continuation seeds
+    // Free chart insertion is gone, but the headless authoring command is the legitimate setup
+    // seam for this capture. The behavior under test remains the real value affordance: three
+    // authored points are present, and a pointer drag turns their flat profile into a hill.
+    await kexCall(page, "placeForceAt", 1, 8, 1);
+    await expect.poll(async () => (await forceCounts())[1]).toBe(3);
 
-    // pull the crest below 1g via its fat hit target → an airtime dip that re-times the
-    // ride (the bake's total time shifts). five points now sort by x as: entry seed, the two
-    // 1g shoulders flanking the crest, the crest itself, exit seed — the crest is the MIDDLE
-    // of the five, not the middle of the three authored points. `.fhit` is shared with
-    // velocity-strip keyframes, and `seed()` (S3) carries no strip of its own (the track-start
-    // one-shot is a distinct point kind) — the five under test are the only five on the page,
-    // still scoped to the force clip's own x-range for the same reason a future strip would need it.
+    // Pull the middle point below 1g via its fat hit target → an airtime change that re-times the
+    // ride (the bake's total time shifts). `.fhit` is shared with velocity-strip keyframes.
     const tBefore = await tTotal();
+    const beforeForces = (await kexCall(page, "forceU")) as {
+        section: number;
+        s: number;
+        g: number;
+    }[];
     const hits = page.locator(".fhit");
-    await expect(hits).toHaveCount(5);
+    await expect(hits).toHaveCount(3);
     const centers = await hits.evaluateAll(
         (els, range) =>
             els
@@ -710,12 +713,21 @@ test("mixed layout dogfood flow", async ({ page, boot }) => {
                 .sort((a, b) => a.x - b.x),
         { x0: fcb.x, x1: fcb.x + fcb.width },
     );
-    expect(centers.length).toBe(5);
-    const crest = centers[2];
+    expect(centers.length).toBe(3);
+    const crest = centers[1];
     await page.mouse.move(crest.x, crest.y);
     await page.mouse.down();
     await page.mouse.move(crest.x, crest.y + 22, { steps: 10 });
     await page.mouse.up();
+    const afterForces = (await kexCall(page, "forceU")) as {
+        section: number;
+        s: number;
+        g: number;
+    }[];
+    const middleBefore = beforeForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
+    const middleAfter = afterForces.filter((p) => p.section === 1).sort((a, b) => a.s - b.s)[1];
+    if (!middleBefore || !middleAfter) throw new Error("three-point force hill disappeared");
+    expect(middleAfter.g).not.toBe(middleBefore.g);
     await expect.poll(async () => Math.abs((await tTotal()) - tBefore) > 1e-3).toBe(true);
     await page.waitForTimeout(SHOT_MS);
     if (strip) await page.screenshot({ path: join(OUT, "dogfood-1-hill.png"), clip: strip });
@@ -750,6 +762,10 @@ test("pin mode flow", async ({ page, boot }) => {
     const lockedCount = () => kexCall(page, "lockedCount");
     const forceSelIds = () => kexCall(page, "forceSelIds");
     const forceCount = () => kexCall(page, "forceCount");
+    const forceU = () =>
+        kexCall(page, "forceU") as Promise<
+            { id: number; section: number; s: number; g: number; u: number }[]
+        >;
     const panel = page.locator(".pinpanel");
     const solveBtn = page.locator(".pinpanel .solve");
     const reason = page.locator(".pinpanel .reason");
@@ -970,10 +986,7 @@ test("pin mode flow", async ({ page, boot }) => {
     expect(await undoDepth()).toBe(base);
 
     // ── 3. Lock gating (pure counting): lock 3 of 5 → 2 free, Solve starves and the reason
-    // shows; an in-mode-added key defaults FREE and re-arms it; delete + unlock restore.
-    // RETIRED by kex2d-segment-removal S4: the old in-mode add was a chart double-click free
-    // force insertion. The surviving heir uses headless `placeForce` as setup for the same
-    // sandbox/counting law; strip keyframe double-click creation remains the live insert gesture. ──
+    // shows; an in-mode-added key defaults FREE and re-arms it; delete + unlock restore. ──
     await page.locator(".clip").first().click({ button: "right" });
     await clickMenuItem(page, ".ctxmenu", "Pin");
     await expect(panel).toBeVisible();
@@ -999,18 +1012,36 @@ test("pin mode flow", async ({ page, boot }) => {
     if (strip) await page.screenshot({ path: join(OUT, "pin-2-locked.png"), clip: strip });
 
     // an in-mode-added key is free by construction: Solve re-arms and the reason clears —
-    // and the setup create lands in the SANDBOX.
-    const createdS = preMode[4].s * 0.08;
-    await kexCall(page, "placeForce", createdS, 1);
+    // and the surviving headless force authoring command lands in the SANDBOX. Free chart-area
+    // insertion was removed in S4, so select the resulting diamond explicitly before Delete.
+    const addedId = await kexCall(page, "placeForce", 8.4, 1);
     await expect.poll(forceCount).toBe(6);
+    expect(addedId).toBeGreaterThan(0);
     expect(await sandboxDepth()).toBe(1); // the create is a sandbox entry
     expect(await undoDepth()).toBe(base); // …not an outer one
     await expect(solveBtn).toBeEnabled();
     await expect(reason).toHaveCount(0);
-    await frames(page, 2);
-    const createdHit = await hit(1); // sorted just after the entry seed at s=0
-    await page.mouse.click(createdHit.x, createdHit.y);
-    await page.keyboard.press("Delete");
+    const addedRow = (await forceU()).find((row) => row.id === addedId);
+    const addedClip = await page.locator(".clip").first().boundingBox();
+    const [, addedPxPerU] = await kexCall(page, "xView");
+    if (!addedRow || !addedClip) throw new Error("sandbox force key not laid out");
+    const addedHit = await page.locator(".fhit").evaluateAll(
+        (els, x) => {
+            const points = els.map((el) => {
+                const r = el.getBoundingClientRect();
+                return r.x + r.width / 2;
+            });
+            return points
+                .map((point, index) => ({ index, distance: Math.abs(point - x) }))
+                .sort((a, b) => a.distance - b.distance)[0]?.index;
+        },
+        addedClip.x + addedRow.s * addedPxPerU,
+    );
+    if (addedHit === undefined) throw new Error("sandbox force key has no hit target");
+    const added = await hit(addedHit);
+    await page.mouse.click(added.x, added.y);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    await page.keyboard.press("Delete"); // explicit selection; Del removes it again
     await expect.poll(forceCount).toBe(5);
     expect(await sandboxDepth()).toBe(2);
     await expect(solveBtn).toBeDisabled();
@@ -1047,14 +1078,20 @@ test("pin mode flow", async ({ page, boot }) => {
     // stays in-mode with the draft untouched, its readout on the shared notice. ──
     await page.keyboard.press("Escape"); // clear the selection — a member click would PROMOTE
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
-    const crest2 = await hit(2);
-    await page.mouse.click(crest2.x, crest2.y);
+    const crestTargetIndex = 2;
+    await page
+        .locator(".fhit")
+        .nth(crestTargetIndex)
+        .click({ position: { x: 6, y: 6 } });
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const crestId = (await forceSelIds())[0];
+    await expect.poll(async () => (await forces()).find((row) => row.id === crestId)?.g).toBe(0);
     await expect(page.locator(".ptip")).toBeVisible();
     const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
     await expect(gField).toBeEnabled(); // the pinning section's own fields stay live in-mode
     await gField.fill("1");
     await gField.press("Enter");
-    await expect.poll(async () => sorted(await forces())[2].g).toBe(1);
+    await expect.poll(async () => (await forces()).find((row) => row.id === crestId)?.g).toBe(1);
     expect(await sandboxDepth()).toBe(3); // the popover edit is a sandbox entry
     const flattened = sorted(await forces());
     await solveBtn.click();
@@ -1074,10 +1111,34 @@ test("pin mode flow", async ({ page, boot }) => {
     await page.keyboard.press("Control+z");
     await expect.poll(async () => sorted(await forces())[2].g).toBe(preMode[2].g);
     expect(await sandboxDepth()).toBe(2); // in-mode undo popped it (redo clears on the next edit)
-    const crest3 = await hit(2);
-    await page.mouse.click(crest3.x, crest3.y);
+    const nudgeRow = (await forceU()).find((row) => row.id === crestId);
+    const nudgeClip = await page.locator(".clip").first().boundingBox();
+    const [, nudgePxPerU] = await kexCall(page, "xView");
+    if (!nudgeRow || !nudgeClip) throw new Error("crest force key not laid out after undo");
+    const nudgeTargetIndex = await page.locator(".fhit").evaluateAll(
+        (els, x) => {
+            const points = els.map((el) => {
+                const r = el.getBoundingClientRect();
+                return r.x + r.width / 2;
+            });
+            return points
+                .map((point, index) => ({ index, distance: Math.abs(point - x) }))
+                .sort((a, b) => a.distance - b.distance)[0]?.index;
+        },
+        nudgeClip.x + nudgeRow.s * nudgePxPerU,
+    );
+    if (nudgeTargetIndex === undefined)
+        throw new Error("crest force key has no hit target after undo");
+    await page
+        .locator(".fhit")
+        .nth(nudgeTargetIndex)
+        .click({ position: { x: 6, y: 6 } });
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const nudgeId = (await forceSelIds())[0];
     await page.keyboard.press("ArrowUp");
-    await expect.poll(async () => sorted(await forces())[2].g).not.toBe(preMode[2].g);
+    await expect
+        .poll(async () => (await forces()).find((row) => row.id === nudgeId)?.g)
+        .not.toBe(preMode[2].g);
     expect(await sandboxDepth()).toBe(3); // one press = one sandbox entry
     // …and the SECOND press needs a frame between it and the first, because the force nudge
     // resolves its base value from `forcePts` — the per-RAF PROJECTION, not the authored `Force`
@@ -1229,8 +1290,9 @@ test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) =>
     const selected = () => kexCall(page, "selectedSection");
 
     await page.locator(".clip").nth(1).click(); // the appended geo section
-    await expect.poll(selected).not.toBeNull(); // wait for the selection to actually land
+    await expect.poll(selected).toBe(1); // wait for the appended section's selection to actually land
     const geoId = await selected();
+    await frames(page, 1);
     await page.keyboard.press("d");
     await expect(scrim).toBeVisible();
     await page.keyboard.press("Escape");
@@ -2461,7 +2523,7 @@ test("strip keyframe .sel reads membership not strip context (S4)", async ({ pag
 
 // S9 capture arm 1 (kex2d-event-substrate, F7 finding (a)): a marquee dragged over a strip
 // keyframe selects it, and a shift-marquee toggles it — the same arm shape the force-keyframe
-// marquee already has ("timeline multiselect flow", force.pw.ts). Before S9, `marqueeUp`'s
+// marquee already has ("retained timeline gesture heirs after force position removal", force.pw.ts). Before S9, `marqueeUp`'s
 // candidate list was built from `forcePts` alone, so a rubber-band never took a strip keyframe,
 // with or without shift. Constructs a real strip via `addStripAt` (a real guarded write,
 // `history.addStrip`) with two interior keyframes via `placeStripKf` at known stations, selects
@@ -2869,9 +2931,10 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
 
     const readD = 3; // between the start keyframe (s=0) and the mid one (s=6, v=12) — inside
     // the interpolated region until the start keyframe's own station passes it, at which point
+    await frames(page, 4); // allow the authored strip keyframe to reach the bake before sampling
+    const vBefore = await vAtD(readD);
     // it falls into the flat extrapolation BEFORE the earliest keyframe (S5's own out-of-extent
     // resolution) — a real, sampled change, not just a stored-field readback.
-    const vBefore = await vAtD(readD);
     const posKey = page.locator(".ptip .fld:nth-of-type(1) .key");
     const posBox = await posKey.boundingBox();
     if (!posBox) throw new Error("strip keyframe position scrub handle not laid out");
@@ -2885,7 +2948,7 @@ test("popup label scrub reaches the strip keyframe and one-shot popovers (S10, F
     await expect
         .poll(async () => (await stripKeyframesOf()).find((k) => k.id === kf0.id)?.s)
         .toBeGreaterThan(readD);
-    await expect.poll(() => vAtD(readD), { timeout: 1000 }).not.toBeCloseTo(vBefore, 2);
+    expect(await vAtD(readD)).not.toBeCloseTo(vBefore, 2);
 
     // ── value label: drag the mid keyframe's own v ──
     const midKf = (await stripKeyframesOf()).find((k) => k.s === 6);
@@ -3013,7 +3076,7 @@ test("popup label scrub refuses on a locked field — pin mode for the value, al
 
     const gField = page.locator('.ptip input[aria-label="Point force (g)"]');
     await expect(gField).toBeDisabled();
-    const gKey = page.locator(".ptip .fld:nth-of-type(1) .key");
+    const gKey = page.locator(".ptip .fld:nth-of-type(2) .key");
     const gBox = await gKey.boundingBox();
     if (!gBox) throw new Error("g scrub handle not laid out under lockdown");
     await page.mouse.move(gBox.x + gBox.width / 2, gBox.y + gBox.height / 2);
@@ -3534,7 +3597,7 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
 // the mixed force + strip-keyframe arrow nudge (the force handler's own branch — a shape the
 // two-strip flow above cannot reach, holding no force member) is all-or-nothing on the
 // strip-kf subset PER OWNING STRIP: one locked owner blocks the WHOLE subset from the mixed
-// move while the force value still nudges alone — never a silent moving subset. The shipped
+// move while the forces still nudge alone — never a silent moving subset. The shipped
 // `tests/controls.test.ts` `stripKfMembers` arms stop at the read's `anyLocked` flag; both
 // branch outcomes live in the Svelte handler, which `bun test` cannot see — this harness is
 // the arm seam. The lockdown gate is `stripEditableAtEcs` per owner (a strip whose station
@@ -3557,7 +3620,7 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
 // `addStripKeyframe` write changes `authoredHash`, so the bake must re-run before entering
 // the pin session — in the capture rig that is a real frame (`frames(page, 1)`) after the
 // authoring hooks and before the ctxmenu's Pin row.
-test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the force value still moves", async ({
+test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the forces still move", async ({
     page,
     boot,
 }) => {
@@ -3647,19 +3710,18 @@ test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the force val
     await page.keyboard.up("Shift");
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
     const activeForce = (await kexCall(page, "forceSelActive")) as number;
-    const forceBefore = (await forceU()).find((p) => p.id === activeForce);
+    const forceBefore = (await forceU()).find((p) => p.id === activeForce)?.s;
     if (forceBefore === undefined) throw new Error("selected force keyframe not readable");
     const kfBefore = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)!.s;
 
-    // one ArrowUp — the pointer is over the chart (the shift-click), so the force branch fires:
-    // A's owner is locked, the WHOLE strip-kf subset is blocked from the mixed move, and the
-    // force value still nudges alone (the fall-through). Force station nudge left in S4.
-    await page.keyboard.press("ArrowUp");
+    // one ArrowRight — the pointer is over the chart (the shift-click), so the force branch
+    // fires: A's owner is locked, the WHOLE strip-kf subset is blocked from the mixed move,
+    // and the forces still nudge alone (the fall-through)
+    await page.keyboard.press("ArrowRight");
     await frames(page, 1);
-    const forceAfter = (await forceU()).find((p) => p.id === activeForce);
+    const forceAfter = (await forceU()).find((p) => p.id === activeForce)?.s;
     if (forceAfter === undefined) throw new Error("selected force keyframe not readable after");
-    expect(forceAfter.s - forceBefore.s).toBeCloseTo(0, 5); // force station nudge is retired
-    expect(forceAfter.g - forceBefore.g).toBeCloseTo(0.05, 5); // the force value nudged ALONE
+    expect(forceAfter - forceBefore).toBeCloseTo(0.1, 5); // the forces nudged ALONE
     const kfAfter = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)!.s;
     expect(kfAfter - kfBefore).toBeCloseTo(0, 5); // the locked owner's keyframe never moved
     expect(await kexCall(page, "pinning")).toBe(true); // the session stood through the nudge
@@ -4567,7 +4629,7 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
     expect(sel).toContain(kfB);
 });
 
-test("mixed-set drag axis law: horizontal moves strip stations only, vertical moves none when the set spans both domains (S5/S4)", async ({
+test("mixed-set drag axis law: horizontal moves all, vertical moves none when the set spans both domains (S5)", async ({
     page,
     boot,
 }) => {
@@ -4659,11 +4721,11 @@ test("mixed-set drag axis law: horizontal moves strip stations only, vertical mo
 
     const forceDs = forceAfterH.s - forceBefore.s;
     const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
-    // axis law after S4: horizontal station drag survives for strip keyframes only. Force
-    // stations are fixed; the strip keyframe moves by a real Δd, and its VALUE is unchanged
-    // (horizontal only).
-    expect(forceDs).toBeCloseTo(0, 5); // retired force station drag
-    expect(Math.abs(stripKfDs)).toBeGreaterThan(2 / pxPerU); // the strip drag actually moved
+    // axis law: horizontal moves BOTH kinds' stations by the SAME Δd (whatever the snap/cap
+    // allows — the law is the ratio, not the absolute amount). the force and strip keyframe
+    // moved by the same delta, and the strip keyframe's VALUE is unchanged (horizontal only).
+    expect(forceDs).not.toBe(0); // the drag actually moved something
+    expect(Math.abs(forceDs - stripKfDs)).toBeLessThan(2 / pxPerU); // same Δd
     expect(stripKfAfterH.v).toBe(stripKfBefore.v); // value unchanged
 
     const stripKfBeforeV = stripKfAfterH;
@@ -4880,10 +4942,9 @@ test("App.svelte Convert/Pin listener routes through activeKind, not editor.sect
         (document.activeElement as HTMLElement)?.blur?.();
     });
     await page.keyboard.press("d");
-    // wait for the async conversion to complete (if it fired), then check the kind.
-    // The conversion runs in a worker and may take up to ~2s for a simple profile.
-    // Use frames() (not waitForTimeout) per the harness lint rule.
-    await frames(page, 120); // ~2s at 60fps
+    // Let the event loop settle before checking the durable kind. The fixed active-kind guard
+    // returns synchronously; a stale pre-fix conversion would still be observable here.
+    await frames(page, 1);
     expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
 });
 
@@ -4982,20 +5043,16 @@ test("mixed-set Delete removes every member across kinds in one gesture (S3)", a
         .toBe(stripKfCountBefore);
 });
 
-// S5 (amended from S3), narrowed by kex2d-segment-removal S4: mixed-domain arrow nudge —
-// station moves strip keyframes only, value moves none. A force keyframe (active) and a strip
-// keyframe are co-selected. ArrowRight moves the strip station while the force station stays
-// fixed; ArrowUp moves NO member's value — both kinds' stored values are byte-identical (the S5
-// axis law: a gesture channel whose meaning is not defined for every member of the set carries
-// no meaning for that gesture).
+// S5 (amended from S3): mixed-domain arrow nudge — station moves every member, value moves
+// none. A force keyframe (active) and a strip keyframe are co-selected. ArrowRight moves both
+// stations by the same Δs; ArrowUp moves NO member's value — both kinds' stored values are
+// byte-identical (the S5 axis law: a gesture channel whose meaning is not defined for every
+// member of the set carries no meaning for that gesture).
 //
 // RED-FIRST WITNESS: at the pre-fix ref (S3's code), ArrowUp moves the active kind's value
 // (force) while the strip keyframe's value holds. The arm asserts the force value is
 // byte-identical after the vertical nudge, so it reds (the force value moved).
-test("mixed-domain arrow nudge moves strip stations only, value for none (S5/S4)", async ({
-    page,
-    boot,
-}) => {
+test("mixed-domain arrow nudge moves all stations, value for none (S5)", async ({ page, boot }) => {
     await boot();
     await kexCall(page, "seedForceBump");
     await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
@@ -5067,7 +5124,7 @@ test("mixed-domain arrow nudge moves strip stations only, value for none (S5/S4)
     }[];
     const stripKfBefore = stripKfsBefore.find((k) => k.id === kfId)!;
 
-    // ArrowRight — station moves for the strip keyframe only; force timing nudge is retired.
+    // ArrowRight — station moves for BOTH (same Δs), no value change for either
     const depthBefore = await undoDepth();
     await page.mouse.move(chartCanvasBb.x + 100, chartCanvasBb.y + 100);
     await page.keyboard.press("ArrowRight");
@@ -5082,9 +5139,13 @@ test("mixed-domain arrow nudge moves strip stations only, value for none (S5/S4)
     }[];
     const stripKfAfterH = stripKfsAfterH.find((k) => k.id === kfId)!;
 
-    // station moved for strip only
-    expect(forceAfterH.s).toBe(forceBefore.s); // force station nudge is retired
+    // station moved for both
+    expect(forceAfterH.s).not.toBe(forceBefore.s); // force station moved
     expect(stripKfAfterH.s).not.toBe(stripKfBefore.s); // strip keyframe station moved
+    // same Δs (the shared delta) — tolerance for floating-point rounding
+    const forceDs = forceAfterH.s - forceBefore.s;
+    const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
+    expect(Math.abs(forceDs - stripKfDs)).toBeLessThan(1e-9);
     // values unchanged (ArrowRight has no value component)
     expect(forceAfterH.g).toBe(forceBefore.g);
     expect(stripKfAfterH.v).toBe(stripKfBefore.v);

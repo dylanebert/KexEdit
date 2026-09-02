@@ -1115,10 +1115,11 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   lens is the only reason any of it reads there. The chart
   draws the baked F_n curve + **section boundary guides**
   (dashed verticals); the **ruler** is the scrub zone; wheel zooms, shift+wheel pans; a **navigator**
-  minimap pans/zooms. The chart is a **whole-track force-authoring surface**: it draws every force
-  section's points (`forcePts`), and a double-click over a force section's arc adds a point there —
-  authoring is **by cursor position**, no "active section" (an empty-chart click deselects). Both a
-  keyframe drag and the extent trim freeze the view (`yGrow`/`xGrow` edge-scroll past the chart edge,
+  minimap pans/zooms. The chart is a **whole-track force surface**: it draws every force
+  section's points (`forcePts`), while free force-area insertion is intentionally absent in S4 —
+  force edits retain selection, value dragging, easing, and the headless authoring command. An
+  empty-chart click deselects. Both a keyframe drag and the extent trim freeze the view
+  (`yGrow`/`xGrow` edge-scroll past the chart edge,
   resume on release). Conventions: `kexedit/.claude/rules/editor-ui.md`. Takes `ecs`; routes edits
   through `history`.
 - `menu.ts` + `menus.ts` + `Menu.svelte` — the menu substrate, in three parts. `menu.ts` holds the
@@ -1356,10 +1357,10 @@ branch is unsatisfiable by construction and owes a unit or capture arm instead.
 **The general law — a `.svelte` module has no importable export, so handlers are reachable
 only from capture flows — is `kex2d-harness.md`'s (Flow-authoring laws); revise it there.** The
 substrate specifics: `marqueeUp`, `keyframeDown`, and the keyboard handler are the unreachable
-handlers here (recorded at `tests/menu.test.ts:1530`), driven by real force-keyframe drags in
-`harness/force.pw.ts` and real strip-keyframe drags in `harness/section.pw.ts` (whose
-force-keyframe flows create/delete by menu and cursor position, never drag one); this
-substrate's parity arm is a capture flow whose red-first witness deletes the *handler's* own
+handlers here (recorded at `tests/menu.test.ts:1530`), driven by real force-keyframe value drags in
+`harness/force.pw.ts` and real strip-keyframe drags in `harness/section.pw.ts` (force-area insertion
+is absent in S4; headless `force-*` authoring remains); this substrate's parity arm is a capture
+flow whose red-first witness deletes the *handler's* own
 branch, never the helper it calls.
 
 **A test touching a structural op re-resolves its sections by stable `order`/`id`, never by a
