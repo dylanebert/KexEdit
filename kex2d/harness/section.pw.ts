@@ -3620,7 +3620,7 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
 // `addStripKeyframe` write changes `authoredHash`, so the bake must re-run before entering
 // the pin session — in the capture rig that is a real frame (`frames(page, 1)`) after the
 // authoring hooks and before the ctxmenu's Pin row.
-test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the forces still move", async ({
+test("pin-session lockdown blocks mixed nudge and force-originated drag strip-kf subset", async ({
     page,
     boot,
 }) => {
