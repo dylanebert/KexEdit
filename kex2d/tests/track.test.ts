@@ -48,6 +48,7 @@ import {
     Force,
     forceEase,
     forceMarkers,
+    forcePointState,
     forceSample,
     Handle,
     handleAt,
@@ -96,6 +97,7 @@ import {
     setTrackResistance,
     snapshotAll,
     snapshotSection,
+    spliceRunMembers,
     stampProvenance,
     stickyLen,
     toGlobal,
@@ -152,11 +154,39 @@ test("run restore preserves surviving member entities and respawns only absent i
 
     Section.length.set(firstEid, 4);
     ecs.destroy(secondEid);
+    const surplus = createSection(ecs, 2, SectionKind.Force, 3);
+    Segment.run.set(segmentAt(ecs, surplus)!, first);
+    Segment.runStation.set(segmentAt(ecs, surplus)!, 20);
+    Segment.runExtent.set(segmentAt(ecs, surplus)!, 23);
     restoreRun(ecs, snap);
 
     expect(sectionAt(ecs, first)).toBe(firstEid);
     expect(segmentAt(ecs, second)).not.toBeNull();
+    expect(segmentAt(ecs, surplus)).toBeNull();
     expect(snapshotRun(ecs, first)).toEqual(snap);
+});
+
+test("raw-column run splice splits boundary members and preserves trimmed orphans", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 10);
+    const following = createSection(ecs, 1, SectionKind.Geo, 7);
+    const entry = createForcePoint(ecs, run, 0, 1);
+    const boundary = createForcePoint(ecs, run, 4, 2);
+    const orphan = createForcePoint(ecs, run, 12, 3);
+
+    spliceRunMembers(ecs, run);
+
+    const snap = snapshotRun(ecs, run);
+    expect(snap.stations).toEqual([0, 4, 10]);
+    expect(snap.members.map((member) => member.length)).toEqual([4, 6]);
+    expect(snap.members.map((member) => member.order)).toEqual([0, 1]);
+    expect(Section.order.get(segmentAt(ecs, following)!)).toBe(2);
+    expect(forcePointState(ecs, entry)).toMatchObject({ section: run, s: 0 });
+    expect(forcePointState(ecs, boundary)).toMatchObject({ section: run, s: 4 });
+    expect(forcePointState(ecs, orphan)).toMatchObject({ section: run, s: 12 });
+    expect(sectionForces(ecs, run).map((point) => point.s)).toEqual([0, 4, 12]);
+    expect(Segment.runEntryForce.get(segmentAt(ecs, run)!)).toBe(entry + 1);
 });
 
 test("run conversion applies solved force stations across ordered members", () => {

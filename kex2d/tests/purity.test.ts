@@ -58,6 +58,20 @@ import { describe, expect, test } from "bun:test";
 
 const srcRoot = join(import.meta.dir, "..", "src");
 
+test("spliceRunMembers mutation phase has no projection-backed read", () => {
+    const source = readFileSync(join(srcRoot, "track.ts"), "utf8");
+    const start = source.indexOf("export function spliceRunMembers");
+    const firstMutation = source.indexOf("// First mutation:", start);
+    const lastMutation = source.indexOf("refreshRunEntryForce(ecs, runId);", firstMutation);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(firstMutation).toBeGreaterThan(start);
+    expect(lastMutation).toBeGreaterThan(firstMutation);
+    const transaction = source.slice(firstMutation, lastMutation);
+    expect(transaction).not.toContain("rebuildRunProjection");
+    expect(transaction).not.toContain("sections(");
+    expect(transaction).not.toContain("sectionAt(");
+});
+
 const AUTHORED_COMPONENTS = [
     "Track",
     "Segment",
