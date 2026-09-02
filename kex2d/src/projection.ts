@@ -1,5 +1,5 @@
 import type { State } from "@dylanebert/shallot";
-import { Segment } from "./track";
+import { Force, ForceBoundary, Segment } from "./track";
 
 /** @plumbing — canonical structural row consumed by evaluator adapters. */
 export interface SegmentProjectionRow {
@@ -44,6 +44,30 @@ export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
         runs.push({ ...segment, id: runId, segmentIds: [segment.id] });
     }
     return runs;
+}
+
+/** @plumbing — evaluator-compatible force row derived from split station/boundary ownership. */
+export interface ForceProjectionRow {
+    eid: number;
+    segment: number;
+    id: number;
+    s: number;
+    g: number;
+    ease: number;
+}
+
+/** @plumbing — reconstruct prior evaluator input without making the compatibility row an owner. */
+export function rebuildForceProjection(ecs: State): ForceProjectionRow[] {
+    const rows = [...ecs.query([Force, ForceBoundary])].map((eid) => ({
+        eid,
+        segment: Force.segment.get(eid),
+        id: Force.id.get(eid),
+        s: Force.s.get(eid),
+        g: ForceBoundary.g.get(eid),
+        ease: ForceBoundary.ease.get(eid),
+    }));
+    rows.sort((a, b) => a.segment - b.segment || a.s - b.s || a.id - b.id);
+    return rows;
 }
 
 /** @temporary S7 — legacy evaluator vocabulary; never an authored owner. */

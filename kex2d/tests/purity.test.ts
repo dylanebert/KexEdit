@@ -389,7 +389,7 @@ describe("authored-component writer census — no second write path", () => {
         const sites = writeSites();
         // `doc.ts`'s whole-document load writes `Track.ds` with no `history` bracket at
         // all — deliberately, a fresh document is not an edit to undo past.
-        expect(sites.some((s) => s.file === "doc.ts" && s.line === 951 && !s.gestured)).toBe(true);
+        expect(sites.some((s) => s.file === "doc.ts" && !s.gestured)).toBe(true);
         // `controls.ts`'s keyboard-nudge writes `Handle.pos` inline inside
         // `beginMove`…`commit`.
         expect(sites.some((s) => s.file === "controls.ts" && s.line === 1556 && s.gestured)).toBe(

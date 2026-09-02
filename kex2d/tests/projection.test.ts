@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
+import { Easing } from "../src/profile";
 import {
+    rebuildForceProjection,
     rebuildRunProjection,
     rebuildSectionProjection,
     rebuildSegmentProjection,
@@ -12,11 +14,14 @@ import {
     createSection,
     createTrack,
     Force,
+    ForceBoundary,
     Handle,
     sectionForces,
     sectionHandles,
     Segment,
     SectionKind,
+    setForceEase,
+    setForcePoint,
     setSectionLength,
     TrackStart,
 } from "../src/track";
@@ -69,6 +74,23 @@ test("canonical structural identity owns track start and stable payload membersh
     const point = sectionForces(ecs, force).find((row) => row.id === pointId)!;
     expect(Handle.segment.get(handle)).toBe(geo);
     expect(Force.segment.get(point.eid)).toBe(force);
+});
+
+test("force compatibility rows derive value and easing from the boundary owner", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const segment = createSection(ecs, 0, SectionKind.Force, 20);
+    const id = createForcePoint(ecs, segment, 7, 2, Easing.Linear);
+    const eid = sectionForces(ecs, segment)[0]!.eid;
+
+    expect(rebuildForceProjection(ecs)).toEqual([
+        { eid, segment, id, s: 7, g: 2, ease: Easing.Linear },
+    ]);
+    setForcePoint(ecs, id, 8, 3);
+    setForceEase(ecs, id, Easing.Quintic);
+    expect(ForceBoundary.g.get(eid)).toBe(3);
+    expect(ForceBoundary.ease.get(eid)).toBe(Easing.Quintic);
+    expect(rebuildForceProjection(ecs)[0]).toMatchObject({ s: 8, g: 3, ease: Easing.Quintic });
 });
 
 test("a segment-only extent edit invalidates the authored bake hash", () => {

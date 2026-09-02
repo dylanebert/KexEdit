@@ -86,11 +86,17 @@ export interface DocNode {
     tangent?: DocGeoTangent;
 }
 
-export interface DocPoint {
-    id: number;
-    s: number;
+export interface DocForceBoundary {
     g: number;
     ease: number;
+}
+
+export interface DocPoint {
+    id: number;
+    /** Station ownership remains on the force point until S2b3. */
+    s: number;
+    /** The value and leading-key easing are authored by the terminating boundary. */
+    boundary: DocForceBoundary;
 }
 
 export interface DocSegment {
@@ -157,8 +163,7 @@ function toDocSegment(s: SectionSnapshot): DocSegment {
             .map((p) => ({
                 id: p.id,
                 s: p.s,
-                g: p.g,
-                ease: p.ease,
+                boundary: { g: p.g, ease: p.ease },
             })),
     };
 }
@@ -238,8 +243,8 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
         points: s.points.map((p) => ({
             id: p.id,
             s: p.s,
-            g: p.g,
-            ease: p.ease as Easing,
+            g: p.boundary.g,
+            ease: p.boundary.ease as Easing,
         })),
     };
 }
@@ -464,14 +469,16 @@ function validateNode(v: unknown, path: string): DocNode {
 function validatePoint(v: unknown, path: string): DocPoint {
     if (!isPlainObject(v)) fail(`${path} is not an object`);
     if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
-    for (const k of ["s", "g"] as const) {
-        if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
-    }
+    if (!isFiniteNumber(v.s)) fail(`${path}.s is missing or not a finite number`);
+    if (!isPlainObject(v.boundary)) fail(`${path}.boundary is missing or not an object`);
+    if (!isFiniteNumber(v.boundary.g)) fail(`${path}.boundary.g is missing or not a finite number`);
     if (
-        !isInt(v.ease) ||
-        (v.ease !== Easing.Linear && v.ease !== Easing.Cubic && v.ease !== Easing.Quintic)
+        !isInt(v.boundary.ease) ||
+        (v.boundary.ease !== Easing.Linear &&
+            v.boundary.ease !== Easing.Cubic &&
+            v.boundary.ease !== Easing.Quintic)
     )
-        fail(`${path}.ease is missing or not a valid Easing (0, 1, or 2)`);
+        fail(`${path}.boundary.ease is missing or not a valid Easing (0, 1, or 2)`);
     // a v2 force keyframe carries no `tangent` key at all (`kex2d-segment-removal` S3) — the
     // migration seam strips a v1 file's own before this validator ever sees it, so a `tangent`
     // key surviving to here is malformed (hand-edited, or a mis-stamped version), not a
@@ -481,8 +488,7 @@ function validatePoint(v: unknown, path: string): DocPoint {
     return {
         id: v.id as number,
         s: v.s as number,
-        g: v.g as number,
-        ease: v.ease as number,
+        boundary: { g: v.boundary.g as number, ease: v.boundary.ease as number },
     };
 }
 
@@ -830,10 +836,22 @@ function dropForceTangent(doc: Record<string, unknown>): Record<string, unknown>
     return { ...doc, version: 2, sections };
 }
 
-/** v2 → unstable v3 is deliberately 1:1: only the canonical chain's wire name changes. */
+/** v2 → unstable v3 moves force value/easing into their boundary owner while retaining
+ * the force point's station as a separate authored datum until S2b3. */
 function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknown> {
     const { sections, ...rest } = doc;
-    return { ...rest, version: 3, segments: sections };
+    const segments = Array.isArray(sections)
+        ? sections.map((section) => {
+              if (!isPlainObject(section) || !Array.isArray(section.points)) return section;
+              const points = section.points.map((point) => {
+                  if (!isPlainObject(point)) return point;
+                  const { g, ease, ...station } = point;
+                  return { ...station, boundary: { g, ease } };
+              });
+              return { ...section, points };
+          })
+        : sections;
+    return { ...rest, version: 3, segments };
 }
 
 /** a single forward migration step: takes a raw doc at some version and returns one it stamps at
