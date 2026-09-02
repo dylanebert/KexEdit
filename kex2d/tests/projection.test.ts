@@ -15,6 +15,7 @@ import {
     createTrack,
     Force,
     ForceBoundary,
+    forceDense,
     Handle,
     materializeRunForceClamps,
     sectionForces,
@@ -49,11 +50,19 @@ test("run rows start row-identical and merge contiguous canonical segments by st
     const second = createSection(ecs, 1, SectionKind.Force, 8);
 
     expect(rebuildRunProjection(ecs)).toEqual(
-        rebuildSegmentProjection(ecs).map((row) => ({ ...row, segmentIds: [row.id] })),
+        rebuildSegmentProjection(ecs).map((row) => ({
+            ...row,
+            segmentIds: [row.id],
+            stations: [0, row.length],
+        })),
     );
 
-    const secondEid = rebuildSegmentProjection(ecs).find((row) => row.id === second)!.eid;
+    const projected = rebuildSegmentProjection(ecs);
+    const firstEid = projected.find((row) => row.id === first)!.eid;
+    const secondEid = projected.find((row) => row.id === second)!.eid;
     Segment.run.set(secondEid, first);
+    Segment.runStation.set(secondEid, 12);
+    Segment.runExtent.set(firstEid, 20);
     expect(rebuildRunProjection(ecs)).toEqual([
         {
             eid: rebuildSegmentProjection(ecs)[0]!.eid,
@@ -62,6 +71,7 @@ test("run rows start row-identical and merge contiguous canonical segments by st
             kind: SectionKind.Force,
             length: 20,
             segmentIds: [first, second],
+            stations: [0, 12, 20],
         },
     ]);
 });
@@ -141,6 +151,54 @@ test("run-edge clamp materialization is bit-exact over the force boundary corpus
         const after = forceProfile(materializeRunForceClamps(points, length), step);
         expect(new Uint32Array(after.buffer), name).toEqual(new Uint32Array(before.buffer));
     }
+});
+
+test("conserved f32-hostile frame keeps gathered stations, step, and dense profile bit-exact", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const extent = Math.fround(63.13367462158203);
+    const stations = [0, Math.fround(8.469388961791992), Math.fround(62.8066291809082), extent];
+    const ids = stations
+        .slice(0, -1)
+        .map((station, order) =>
+            createSection(
+                ecs,
+                order,
+                SectionKind.Force,
+                Math.fround(stations[order + 1]! - station),
+            ),
+        );
+    const projected = rebuildSegmentProjection(ecs);
+    projected.forEach((row, i) => {
+        Segment.run.set(row.eid, ids[0]!);
+        Segment.runStation.set(row.eid, stations[i]!);
+    });
+    Segment.runExtent.set(projected[0]!.eid, extent);
+    createForcePoint(ecs, ids[0]!, 1.1, 2, Easing.Cubic);
+    createForcePoint(ecs, ids[1]!, 20.2, -1, Easing.Quintic);
+    createForcePoint(ecs, ids[2]!, 0.17, 4, Easing.Linear);
+
+    const run = rebuildRunProjection(ecs)[0]!;
+    expect(run.stations).toEqual(stations);
+    expect(run.length).toBe(extent);
+    const step = resolveStep(run.length, 0.5);
+    expect(step).toEqual(resolveStep(extent, 0.5));
+    const expectedPoints: ForcePoint[] = [
+        { s: stations[0]! + 1.1, g: 2, ease: Easing.Cubic },
+        { s: stations[1]! + 20.2, g: -1, ease: Easing.Quintic },
+        { s: stations[2]! + 0.17, g: 4, ease: Easing.Linear },
+    ];
+    const expected = forceProfile(materializeRunForceClamps(expectedPoints, extent), step);
+    const actual = forceDense(ecs, run.segmentIds, run.stations, run.length, step);
+    expect(new Uint32Array(actual.buffer)).toEqual(new Uint32Array(expected.buffer));
+
+    // Relevant perturbation proof: reconstructing entries from independently rounded durations
+    // moves the third gathered station and therefore at least one dense f32 sample.
+    const reconstructed = [0];
+    for (const row of projected.slice(0, -1))
+        reconstructed.push(Math.fround(reconstructed.at(-1)! + row.length));
+    const perturbed = forceDense(ecs, run.segmentIds, reconstructed, run.length, step);
+    expect(new Uint32Array(perturbed.buffer)).not.toEqual(new Uint32Array(expected.buffer));
 });
 
 test("run content hashes retain the single-member cardinality floor", () => {

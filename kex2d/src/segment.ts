@@ -315,19 +315,22 @@ export interface ForceStation<T = number> {
     readonly value: T;
 }
 
-/** One canonical member produced by force-station union. `localStation` is the
- * derived compatibility Force.s column: the member extent on a terminating row. */
+/** One canonical member produced by force-station union. `entryStation` is conserved;
+ * `duration` and `localStation` are compatibility projections between adjacent stations. */
 export interface ForceUnionMember<T = number> {
     id: SegmentId;
+    readonly entryStation: number;
     duration: number;
     localStation: number;
     boundary?: ForceStation<T>;
 }
 
-/** The conserved run extent is deliberately separate from rounded member durations. */
+/** The ordered station vector is the conserved run frame. Its last entry is the extent;
+ * member durations must never be used to reconstruct any entry or the terminal station. */
 export interface ForceUnionRun<T = number> {
     readonly id: SegmentId;
     readonly extent: number;
+    readonly stations: readonly number[];
     readonly start?: ForceStation<T>;
     members: ForceUnionMember<T>[];
 }
@@ -339,7 +342,7 @@ export function forceStationUnion<T>(
     runId: SegmentId,
     extent: number,
     points: readonly ForceStation<T>[],
-    allocateId: () => SegmentId,
+    allocateId: (memberIndex: number) => SegmentId,
 ): ForceUnionRun<T> {
     if (!Number.isFinite(extent) || extent <= 0)
         throw new RangeError("run extent must be positive");
@@ -360,7 +363,8 @@ export function forceStationUnion<T>(
         const duration = point.station - cursor;
         if (!(duration > 0)) throw new RangeError("force boundaries must own positive duration");
         members.push({
-            id: first ? runId : allocateId(),
+            id: first ? runId : allocateId(members.length),
+            entryStation: cursor,
             duration,
             localStation: duration,
             boundary: point,
@@ -370,12 +374,21 @@ export function forceStationUnion<T>(
     }
     if (cursor < extent) {
         members.push({
-            id: first ? runId : allocateId(),
+            id: first ? runId : allocateId(members.length),
+            entryStation: cursor,
             duration: extent - cursor,
             localStation: 0,
         });
     }
-    return { id: runId, extent, start, members };
+    // Allocation is deterministic by contract: exactly one callback in canonical member order
+    // for every member after the run-id member, with its final zero-based member index.
+    return {
+        id: runId,
+        extent,
+        stations: [...members.map((m) => m.entryStation), extent],
+        start,
+        members,
+    };
 }
 
 /** Project canonical members back to the exact run-nested, station-shaped v3 arm. */

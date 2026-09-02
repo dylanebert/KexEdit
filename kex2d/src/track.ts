@@ -85,6 +85,10 @@ export const Segment = {
     length: sparse(f32),
     /** @temporary S3–S7 — stable evaluator payload partition, seeded from section identity. */
     run: sparse(u32),
+    /** @temporary S3–S7 — this member's conserved entry station in its evaluator run. */
+    runStation: sparse(f32),
+    /** @temporary S3–S7 — conserved run extent; authoritative on the run's first member. */
+    runExtent: sparse(f32),
 };
 
 /** Canonical predecessor-less boundary for segment zero. Channel payload ownership moves
@@ -1485,16 +1489,16 @@ export function forceMarkers(ecs: State): ForceMarker[] {
     const out = bakeOut.get(trackEid);
     if (!s || !out) return res;
     const last = Math.max(0, Track.count.get(trackEid) - 1);
-    const byId = new Map(segments(ecs).map((segment) => [segment.id, segment]));
     for (const run of rebuildRunProjection(ecs)) {
         if (run.kind !== SectionKind.Force) continue;
         const info = runInfo.get(run.id);
         if (!info) continue;
-        let offset = 0;
-        for (const segmentId of run.segmentIds) {
-            const segment = byId.get(segmentId)!;
+        for (let member = 0; member < run.segmentIds.length; member++) {
+            const segmentId = run.segmentIds[member]!;
+            const offset = run.stations[member]!;
+            const memberExtent = run.stations[member + 1]! - offset;
             for (const p of sectionForces(ecs, segmentId)) {
-                if (p.s > segment.length) continue;
+                if (p.s > memberExtent) continue;
                 const addr = forceSample(out, info, last, offset + p.s);
                 if (!addr) continue;
                 const j = Math.min(addr.index + 1, last);
@@ -1505,7 +1509,6 @@ export function forceMarkers(ecs: State): ForceMarker[] {
                     y: s.posY[addr.index] + addr.frac * (s.posY[j] - s.posY[addr.index]),
                 });
             }
-            offset += segment.length;
         }
     }
     return res;
@@ -1527,6 +1530,8 @@ export function createSection(
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
     Segment.run.set(eid, id);
+    Segment.runStation.set(eid, 0);
+    Segment.runExtent.set(eid, length);
     return id;
 }
 
@@ -1547,6 +1552,8 @@ function spawnSection(
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
     Segment.run.set(eid, id);
+    Segment.runStation.set(eid, 0);
+    Segment.runExtent.set(eid, length);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -2191,8 +2198,12 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
     if (!run) return;
     const terminal = run.segmentIds[run.segmentIds.length - 1]!;
     const eid = sectionAt(ecs, terminal)!;
-    const prefix = run.length - Section.length.get(eid);
-    Section.length.set(eid, Math.max(minRunForceExtent(ecs, id) - prefix, length - prefix));
+    const terminalIndex = run.segmentIds.length - 1;
+    const prefix = run.stations[terminalIndex]!;
+    const nextExtent = Math.max(minRunForceExtent(ecs, id), length);
+    Section.length.set(eid, nextExtent - prefix);
+    const first = sectionAt(ecs, run.segmentIds[0]!)!;
+    Segment.runExtent.set(first, nextExtent);
 }
 
 // ── track initial speed (v0, S3: derived from the track-start one-shot) ─────────────
@@ -3071,16 +3082,17 @@ export function materializeRunForceClamps(
  *  RESOLVED {@link Step} (its own callers, `forcePayload`/`forceBake`, each conform through
  *  {@link resolveStep} before calling here) — `forceProfile` requires the pair as one value, so
  *  this is a consumer of an already-conformed step, never a second pairing of its own. */
-function forceDense(
+export function forceDense(
     ecs: State,
     segmentIds: readonly number[],
-    lengths: readonly number[],
+    stations: readonly number[],
+    runLength: number,
     step: Step,
 ): Float32Array {
     const points: ForcePoint[] = [];
-    let offset = 0;
     for (let i = 0; i < segmentIds.length; i++) {
         const segmentId = segmentIds[i];
+        const offset = stations[i]!;
         const land =
             bakeLanding !== null && bakeLanding.section === segmentId ? bakeLanding.g : null;
         for (const p of sectionForces(ecs, segmentId)) {
@@ -3090,12 +3102,10 @@ function forceDense(
                 ease: ForceBoundary.ease.get(p.eid) as Easing,
             });
         }
-        offset += lengths[i];
     }
     // The run is the old evaluator payload boundary. Materialize its two clamps so
     // a keyless run holds DEFAULT_G and interior-only keys cannot borrow a value
     // from an adjacent run. Exact splits inside the run remain invisible.
-    const runLength = lengths.reduce((sum, length) => sum + length, 0);
     return forceProfile(materializeRunForceClamps(points, runLength), step);
 }
 
@@ -3107,7 +3117,7 @@ function forceDense(
 function forcePayload(
     ecs: State,
     segmentIds: readonly number[],
-    lengths: readonly number[],
+    stations: readonly number[],
     length: number,
     step: number,
     offset: number,
@@ -3115,7 +3125,7 @@ function forcePayload(
     const resolved = resolveStep(length, step);
     return {
         kind: "force",
-        fN: forceDense(ecs, segmentIds, lengths, resolved),
+        fN: forceDense(ecs, segmentIds, stations, length, resolved),
         step: resolved,
         strips: stripsForStep(ecs, offset, resolved),
     };
@@ -3162,14 +3172,12 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     if (!info) throw new Error(`forceBake: no bake for section ${sectionId}`);
     if (run.kind !== SectionKind.Force)
         throw new Error(`forceBake: section ${sectionId} is not force`);
-    const byId = new Map(segments(ecs).map((segment) => [segment.id, segment]));
-    const lengths = run.segmentIds.map((id) => byId.get(id)!.length);
     const length = run.length;
     const step = trackDs(ecs);
     // conform once (the pairing seam) so the dense profile's σ grid and evalForce's march
     // below agree on the same exact step, exactly what `forcePayload` does for the live bake.
     const resolved = resolveStep(length, step);
-    const dense = forceDense(ecs, run.segmentIds, lengths, resolved);
+    const dense = forceDense(ecs, run.segmentIds, run.stations, length, resolved);
     const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
     // a truncated dense array no longer matches `resolved.edges`, so evalForce's own length
     // check would throw on the clipped prefix — thread a step whose `edges` matches what's
@@ -3413,14 +3421,7 @@ function bake(
     const payloads = runs.map((run, i) =>
         run.kind === SectionKind.Geo
             ? geoPayload(ecs, run.segmentIds[0], ds, windows[i].offset)
-            : forcePayload(
-                  ecs,
-                  run.segmentIds,
-                  run.segments.map((segment) => segment.length),
-                  run.length,
-                  ds,
-                  windows[i].offset,
-              ),
+            : forcePayload(ecs, run.segmentIds, run.stations, run.length, ds, windows[i].offset),
     );
     runInfo.clear();
     // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
