@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { Easing } from "../src/profile";
+import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import {
     rebuildForceProjection,
     rebuildRunProjection,
@@ -16,6 +16,7 @@ import {
     Force,
     ForceBoundary,
     Handle,
+    materializeRunForceClamps,
     sectionForces,
     sectionHandles,
     Segment,
@@ -91,6 +92,52 @@ test("force compatibility rows derive value and easing from the boundary owner",
     expect(ForceBoundary.g.get(eid)).toBe(3);
     expect(ForceBoundary.ease.get(eid)).toBe(Easing.Quintic);
     expect(rebuildForceProjection(ecs)[0]).toMatchObject({ s: 8, g: 3, ease: Easing.Quintic });
+});
+
+test("run-edge clamp materialization is bit-exact over the force boundary corpus", () => {
+    const length = 20;
+    const step = resolveStep(length, 0.37);
+    const cases: Array<{ name: string; points: ForcePoint[] }> = [
+        { name: "keyless", points: [] },
+        { name: "single start", points: [{ s: 0, g: 2, ease: Easing.Cubic }] },
+        { name: "single interior", points: [{ s: 7, g: -1, ease: Easing.Quintic }] },
+        { name: "single terminal", points: [{ s: length, g: 3, ease: Easing.Linear }] },
+        {
+            name: "two key",
+            points: [
+                { s: 3, g: -2, ease: Easing.Cubic },
+                { s: 16, g: 4, ease: Easing.Quintic },
+            ],
+        },
+        {
+            name: "adjacent key",
+            points: [
+                { s: 8, g: 0, ease: Easing.Linear },
+                { s: 8.37, g: 5, ease: Easing.Cubic },
+            ],
+        },
+        {
+            name: "sub-MIN_FORCE_LEN spacing",
+            points: [
+                { s: 9, g: -3, ease: Easing.Quintic },
+                { s: 9.000001, g: 6, ease: Easing.Linear },
+            ],
+        },
+        ...([Easing.Linear, Easing.Cubic, Easing.Quintic] as const).map((ease) => ({
+            name: `easing ${Easing[ease]}`,
+            points: [
+                { s: 2, g: -1, ease },
+                { s: 11, g: 4, ease: Easing.Linear },
+                { s: 18, g: 0, ease: Easing.Linear },
+            ],
+        })),
+    ];
+
+    for (const { name, points } of cases) {
+        const before = forceProfile(points, step);
+        const after = forceProfile(materializeRunForceClamps(points, length), step);
+        expect(new Uint32Array(after.buffer), name).toEqual(new Uint32Array(before.buffer));
+    }
 });
 
 test("a segment-only extent edit invalidates the authored bake hash", () => {

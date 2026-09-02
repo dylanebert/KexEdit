@@ -2960,6 +2960,23 @@ function geoPayload(ecs: State, sectionId: number, ds: number, offset: number): 
     };
 }
 
+/** Materialize an evaluator run's held edge values without changing its sampled profile.
+ * The returned copy makes the payload boundary explicit: an empty run holds `DEFAULT_G`, while
+ * an interior-only profile owns its own first/last values instead of borrowing across a run. */
+export function materializeRunForceClamps(
+    points: readonly ForcePoint[],
+    runLength: number,
+): ForcePoint[] {
+    const clamped = points.slice();
+    const startG = sampleForce(points, 0);
+    const endG = sampleForce(points, runLength);
+    if (clamped.length === 0 || clamped[0].s > 0)
+        clamped.unshift({ s: 0, g: startG, ease: Easing.Linear });
+    if (clamped.length === 1 || clamped[clamped.length - 1].s < runLength)
+        clamped.push({ s: runLength, g: endG, ease: Easing.Linear });
+    return clamped;
+}
+
 /** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its
  *  extent — the one place a section's keyframes become the substrate's input. Takes the
  *  RESOLVED {@link Step} (its own callers, `forcePayload`/`forceBake`, each conform through
@@ -2990,13 +3007,7 @@ function forceDense(
     // a keyless run holds DEFAULT_G and interior-only keys cannot borrow a value
     // from an adjacent run. Exact splits inside the run remain invisible.
     const runLength = lengths.reduce((sum, length) => sum + length, 0);
-    const startG = sampleForce(points, 0);
-    const endG = sampleForce(points, runLength);
-    if (points.length === 0 || points[0].s > 0)
-        points.unshift({ s: 0, g: startG, ease: Easing.Linear });
-    if (points.length === 1 || points[points.length - 1].s < runLength)
-        points.push({ s: runLength, g: endG, ease: Easing.Linear });
-    return forceProfile(points, step);
+    return forceProfile(materializeRunForceClamps(points, runLength), step);
 }
 
 /** a force section's payload: its dense profile + the step it bakes at (its own or the
