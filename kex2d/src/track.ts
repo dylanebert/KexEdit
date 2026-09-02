@@ -1556,6 +1556,9 @@ export function createSection(
     Segment.run.set(eid, id);
     Segment.runStation.set(eid, 0);
     Segment.runExtent.set(eid, length);
+    // Sparse columns are shared by entity index across State instances. A recycled section eid
+    // must not inherit another state's published run-entry pointer.
+    Segment.runEntryForce.set(eid, 0);
     return id;
 }
 
@@ -1581,6 +1584,7 @@ function spawnSection(
     Segment.run.set(eid, run);
     Segment.runStation.set(eid, runStation);
     Segment.runExtent.set(eid, runExtent);
+    Segment.runEntryForce.set(eid, 0);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -1990,37 +1994,70 @@ function refreshRunEntryForce(ecs: State, runId: number): void {
     Segment.runEntryForce.set(member, entry === undefined ? 0 : entry.id + 1);
 }
 
+/** The identity policy for a gesture-level run splice. Raw force lifecycle and conversion writers
+ * deliberately do not call this host. */
+export type RunSpliceIntent = "create" | "delete" | "move" | "rebuild";
+
 /** @temporary S3–S7 — atomically rewrite one force run's canonical members from raw columns.
  * Planning completes before the first write. The mutation phase never consults a projection:
  * chain order, ownership, conserved stations, compatibility extents, and the entry pointer become
  * visible together. Keys beyond the conserved extent are non-destructive-trim orphans; they stay
  * on the zero-station entry member while retaining their raw station verbatim. */
-export function spliceRunMembers(ecs: State, runId: number): void {
+export function spliceRunMembers(
+    ecs: State,
+    runId: number,
+    intent: RunSpliceIntent = "rebuild",
+): void {
     const before = runMembers(ecs, runId);
     if (before.length === 0) throw new Error(`spliceRunMembers: no run ${runId}`);
     const first = before[0]!;
     const extent = Segment.runExtent.get(first.eid) || Section.length.get(first.eid);
-    const encodedEntry = Segment.runEntryForce.get(first.eid);
-    const entryId = encodedEntry === 0 ? null : encodedEntry - 1;
     const rawPoints = before.flatMap((member) =>
         segmentForces(ecs, member.id).map((point) => ({
             point,
             station: Segment.runStation.get(member.eid) + point.s,
         })),
     );
-    const entry = entryId === null ? undefined : rawPoints.find((row) => row.point.id === entryId);
-    const interior = rawPoints
-        .filter((row) => row.point.id !== entryId && row.station <= extent)
-        .map((row) => ({ id: row.point.id, station: row.station, value: row.point.id }));
-    const orphans = rawPoints.filter((row) => row.point.id !== entryId && row.station > extent);
+    // Entry is classified from this transaction's raw plan. The published pointer is an output,
+    // so creating the first station-zero key cannot depend on yesterday's pointer.
+    const entry = rawPoints.find((row) => row.station === 0);
+    const entryId = entry?.point.id ?? null;
+    // Geo runs legitimately have zero compatibility extent. Force gestures on them are refused by
+    // their callers; the host nevertheless remains total and preserves every raw row verbatim.
+    if (!(extent > 0)) {
+        refreshRunEntryForce(ecs, runId);
+        return;
+    }
+    const interior = [
+        ...new Map(
+            rawPoints
+                .filter((row) => row.station > 0 && row.station <= extent)
+                .map((row) => [row.station, row] as const),
+        ).values(),
+    ].map((row) => ({ id: row.point.id, station: row.station, value: row.point.id }));
+    const orphans = rawPoints.filter((row) => row.station > extent);
     const union = forceStationUnion(
         runId,
         extent,
         entry === undefined ? undefined : { id: entry.point.id, station: 0, value: entry.point.id },
         interior,
-        (index) => before[index]?.id ?? nextSectionId++,
+        () => runId, // provisional only; operation intent assigns stable identities below
     );
     if (union.members.length === 0) throw new Error(`spliceRunMembers: empty run ${runId}`);
+
+    // The pure union allocates positionally; live gestures instead preserve identity by intent.
+    // Create/delete retain intervals whose entry station survives, while move retains both adjacent
+    // members by position. Only a genuinely new split member receives a new id.
+    const oldByStation = new Map(
+        before.map((member) => [Segment.runStation.get(member.eid), member.id]),
+    );
+    const positional = before.map((member) => member.id);
+    for (let i = 0; i < union.members.length; i++) {
+        const member = union.members[i]!;
+        if (i === 0) member.id = runId;
+        else if (intent === "move" && positional[i] !== undefined) member.id = positional[i]!;
+        else member.id = oldByStation.get(member.entryStation) ?? nextSectionId++;
+    }
 
     const allBefore = segments(ecs);
     const runSet = new Set(before.map((member) => member.id));
@@ -2325,7 +2362,7 @@ export function setForcePoint(ecs: State, id: number, s: number, g: number): voi
     if (lands)
         Force.s.set(eid, s - (run?.stations[run.segmentIds.indexOf(Force.section.get(eid))] ?? 0));
     ForceBoundary.g.set(eid, g);
-    if (lands && run) refreshRunEntryForce(ecs, run.id);
+    if (lands && run) spliceRunMembers(ecs, run.id, "move");
 }
 
 /** write a force point's full state back — position and easing tag (the gesture
@@ -2659,17 +2696,20 @@ export function restoreRun(ecs: State, snap: RunSnapshot): void {
             runExtent: snap.stations.at(-1)!,
         });
     }
+    // Cardinality-changing undo/redo can otherwise leave holes in the global order.
+    const chain = [...ecs.query([Segment])].sort(
+        (a, b) => Segment.order.get(a) - Segment.order.get(b),
+    );
+    for (let order = 0; order < chain.length; order++) Section.order.set(chain[order]!, order);
+    refreshRunEntryForce(ecs, snap.id);
 }
 
 /** a run content token is the ordered concatenation of its members' content. */
 export function runToken(ecs: State, segmentId: number): string {
     const snap = snapshotRun(ecs, segmentId);
-    return snap.members
-        .map((member) => {
-            const row = sections(ecs).find((candidate) => candidate.id === member.id)!;
-            return sectionContentHash(ecs, row);
-        })
-        .join("|");
+    const row = sections(ecs).find((candidate) => candidate.id === snap.id);
+    if (!row) throw new Error(`runToken: no run ${snap.id}`);
+    return sectionContentHash(ecs, row);
 }
 
 /** @temporary S7 — legacy single-member compatibility names. */
@@ -2718,14 +2758,19 @@ const provenance = new Map<number, Provenance>();
  *  f32-exact reproduction on an unchanged upstream). No-ops when the section hasn't baked yet
  *  (no `sectionInfo` entry to read an anchor from, or no live `Section` row) — there is nothing
  *  yet to certify a later reverse-invoke against. */
-export function stampProvenance(ecs: State, sectionId: number, payload: SegmentSnapshot): void {
+export function stampProvenance(
+    ecs: State,
+    sectionId: number,
+    payload: SegmentSnapshot,
+    runPayload: RunSnapshot = snapshotRun(ecs, sectionId),
+): void {
     const info = sectionInfo.get(sectionId);
     if (info === undefined) return;
     const row = sections(ecs).find((s) => s.id === sectionId);
     if (row === undefined) return;
     provenance.set(sectionId, {
         payload,
-        runPayload: snapshotRun(ecs, sectionId),
+        runPayload,
         token: sectionToken(ecs, row),
         entry: { x: info.entry.x, y: info.entry.y, theta: info.entry.theta, v: info.entry.v },
     });
@@ -2894,11 +2939,17 @@ export function convertSection(ecs: State, sectionId: number): void {
 export function resetSection(ecs: State, sectionId: number): void {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
     if (!run) return;
-    for (const id of run.segmentIds) {
-        const eid = segmentAt(ecs, id)!;
-        if (run.kind === SectionKind.Geo) resetToGeo(ecs, eid, id);
-        else resetToForce(ecs, eid, id);
+    if (run.kind === SectionKind.Force) {
+        // Reset is still a raw lifecycle writer: collapse to the run entry without consulting the
+        // splice host, then seed creation-state keys once rather than once per derived member.
+        for (const id of run.segmentIds)
+            for (const point of segmentForces(ecs, id)) ecs.destroy(point.eid);
+        const first = run.segmentIds[0]!;
+        resetToForce(ecs, segmentAt(ecs, first)!, first);
+        refreshRunEntryForce(ecs, run.id);
+        return;
     }
+    for (const id of run.segmentIds) resetToGeo(ecs, segmentAt(ecs, id)!, id);
 }
 
 /** whether the section menu's Reset row may fire: exactly ONE section, and — force only — a
@@ -3168,7 +3219,7 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
  *  reads its one `Distance` slot, being position-authored in either domain). returns the id. */
 export function appendSection(ecs: State, kind: SectionKind): number {
     const secs = sections(ecs);
-    const order = secs.length;
+    const order = segments(ecs).length;
     const len = kind === SectionKind.Force ? stickyLen(kind, trackDomain(ecs)) : stickyLen(kind);
     const id = createSection(ecs, order, kind, kind === SectionKind.Force ? len : 0);
     if (kind === SectionKind.Geo) {
@@ -3552,7 +3603,28 @@ export function consultProvenance(
     if (!row) return undefined;
     if (sectionToken(ecs, row) !== prov.token) return undefined;
     if (!entryExact(entry, prov.entry)) return undefined;
-    return prov.payload;
+    const payload =
+        prov.payload.kind === SectionKind.Force
+            ? {
+                  ...prov.payload,
+                  points: prov.runPayload.members.flatMap((member) =>
+                      member.points.map((point) => ({
+                          ...point,
+                          s: member.runStation + point.s,
+                      })),
+                  ),
+              }
+            : { ...prov.payload };
+    provenanceRestoreRuns.set(payload, prov.runPayload);
+    return payload;
+}
+
+const provenanceRestoreRuns = new WeakMap<SectionSnapshot, RunSnapshot>();
+
+/** Internal history bridge: conversion façades retain their single-record result while an exact
+ * reverse restore recovers the complete pre-solve run partition. */
+export function provenanceRestoreRun(payload: SectionSnapshot): RunSnapshot | undefined {
+    return provenanceRestoreRuns.get(payload);
 }
 
 /** the bake gate's input reading for the whole authored track, computed from the LIVE authored
