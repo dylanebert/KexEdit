@@ -1535,7 +1535,7 @@ describe("force easing + seeding (stage B)", () => {
         const seeded = snapshotAll(state);
 
         undo(h, state);
-        expect(sections(state).length).toBe(before.sections.length); // the section is gone
+        expect(sections(state).length).toBe(before.segments.length); // the section is gone
         expect(snapshotAll(state)).toEqual(before);
 
         redo(h, state);

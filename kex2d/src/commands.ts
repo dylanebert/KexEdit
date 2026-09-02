@@ -142,6 +142,21 @@ export interface ConvertSectionOp {
     section: number;
 }
 
+export interface AppendSegmentOp {
+    type: "append-segment";
+    kind: SectionKind;
+}
+
+export interface DeleteSegmentOp {
+    type: "delete-segment";
+    segment: number;
+}
+
+export interface ConvertSegmentOp {
+    type: "convert-segment";
+    segment: number;
+}
+
 // ── geo nodes ──────────────────────────────────────────────────────────────────────────
 
 export interface NodeAddOp {
@@ -233,6 +248,12 @@ export interface SectionLengthOp {
     length: number;
 }
 
+export interface SegmentExtentOp {
+    type: "segment-extent";
+    segment: number;
+    extent: number;
+}
+
 export interface StartSpeedOp {
     type: "start-speed";
     value: number;
@@ -257,6 +278,9 @@ export type Op =
     | AppendSectionOp
     | DeleteSectionOp
     | ConvertSectionOp
+    | AppendSegmentOp
+    | DeleteSegmentOp
+    | ConvertSegmentOp
     | NodeAddOp
     | NodeMoveOp
     | NodeDeleteOp
@@ -270,6 +294,7 @@ export type Op =
     | StripKeyframeMoveOp
     | StripKeyframeDeleteOp
     | SectionLengthOp
+    | SegmentExtentOp
     | StartSpeedOp
     | FrictionOp
     | ResistanceOp
@@ -281,7 +306,8 @@ export type Op =
 export function applyOp(ecs: State, h: History, op: Op): OpResult {
     switch (op.type) {
         // `Timeline.svelte`'s `toggleAppend`: `selectSection(appendSection(history, ecs, kind))`.
-        case "append-section": {
+        case "append-section":
+        case "append-segment": {
             const id = appendSectionH(h, ecs, op.kind);
             return ok(id);
         }
@@ -305,6 +331,25 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             if (sectionAt(ecs, op.section) === null)
                 return refused("sectionNotFound", `no section with id ${op.section}`);
             convertSectionH(h, ecs, op.section);
+            return ok();
+        }
+
+        case "delete-segment": {
+            if (sectionAt(ecs, op.segment) === null)
+                return refused("segmentNotFound", `no segment with id ${op.segment}`);
+            if (sections(ecs).length <= 1)
+                return refused(
+                    "lastSegment",
+                    "refusing to delete the track's only remaining segment",
+                );
+            removeSectionH(h, ecs, op.segment);
+            return ok();
+        }
+
+        case "convert-segment": {
+            if (sectionAt(ecs, op.segment) === null)
+                return refused("segmentNotFound", `no segment with id ${op.segment}`);
+            convertSectionH(h, ecs, op.segment);
             return ok();
         }
 
@@ -576,6 +621,15 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
                 return refused("sectionNotFound", `no section with id ${op.section}`);
             beginLength(ecs, op.section);
             setSectionLength(ecs, op.section, op.length);
+            commit(h);
+            return ok();
+        }
+
+        case "segment-extent": {
+            if (sectionAt(ecs, op.segment) === null)
+                return refused("segmentNotFound", `no segment with id ${op.segment}`);
+            beginLength(ecs, op.segment);
+            setSectionLength(ecs, op.segment, op.extent);
             commit(h);
             return ok();
         }

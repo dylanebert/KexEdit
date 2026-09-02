@@ -556,6 +556,73 @@ describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", ()
     });
 });
 
+describe("frozen v2 migration corpus", () => {
+    const valid = [
+        "cli/circular-arc.kex",
+        "cli/double-hump.kex",
+        "cli/full-loop.kex",
+        "cli/hill-auto.kex",
+        "cli/hill-explicit.kex",
+        "cli/loop-explicit.kex",
+        "cli/parabola-hill.kex",
+        "cli/s-curve.kex",
+        "cli/straight-fillet.kex",
+        "cli/valley-explicit.kex",
+        "hill-explicit-golden.kex",
+    ];
+
+    for (const name of valid) {
+        test(`${name}: v2 migrates once and canonical v3 is a fixed point`, async () => {
+            const text = await Bun.file(new URL(`./fixtures/v2/${name}`, import.meta.url)).text();
+            expect(JSON.parse(text).version).toBe(2);
+            const state = new State();
+            state.addSystem(BakeSystem);
+            loadDocument(state, text);
+            state.step(0);
+            const authored = snapshotAll(state);
+            const canonical = saveDocument(state);
+            expect(JSON.parse(canonical).version).toBe(CURRENT_VERSION);
+            expect(serializeDocument(parseDocument(canonical))).toBe(canonical);
+
+            loadDocument(state, canonical);
+            state.step(0);
+            expect(snapshotAll(state)).toEqual(authored);
+            expect(saveDocument(state)).toBe(canonical);
+        });
+    }
+
+    test("all 26 pre-S2 fixtures are frozen, with the malformed corpus byte-identical", async () => {
+        const malformed = [
+            "duplicateId-red.kex",
+            "duplicateSectionOrder-red.kex",
+            "emptyTrack-red.kex",
+            "minExtentFloor-red.kex",
+            "minForceExtent-red.kex",
+            "minNodeFloor-red.kex",
+            "minStartSpeed-red.kex",
+            "nodeZeroOrigin-red.kex",
+            "sectionKind-red.kex",
+            "stationTaken-red.kex",
+            "stripKeyframeTaken-red.kex",
+            "stripOverlapped-red.kex",
+            "valid-green.kex",
+            "validCoefficient-red.kex",
+            "validStripValue-red.kex",
+        ];
+        expect(valid.length + malformed.length).toBe(26);
+        for (const name of malformed) {
+            const frozen = await Bun.file(
+                new URL(`./fixtures/v2/invariants/${name}`, import.meta.url),
+            ).text();
+            const live = await Bun.file(
+                new URL(`./fixtures/invariants/${name}`, import.meta.url),
+            ).text();
+            expect(frozen).toBe(live);
+            expect(JSON.parse(frozen).version).toBeLessThanOrEqual(2);
+        }
+    });
+});
+
 describe("saveDocument / loadDocument on a no-op cycle", () => {
     test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
         const { state, eid } = flatTrack();

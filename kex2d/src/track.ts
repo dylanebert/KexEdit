@@ -106,8 +106,12 @@ export const Section = Segment;
  *  from `theta` via the arc rule). when it isn't Auto, `tin`/`tout` hold the
  *  explicit in/out tangent vectors (section-local, absolute) the bake honors in
  *  place of the arc rule — the summoned inner layer (`Aligned` / `Free`). */
+const handleSegment = sparse(u32);
 export const Handle = {
-    section: sparse(u32),
+    /** Stable canonical segment id. */
+    segment: handleSegment,
+    /** @temporary S7 — legacy section-facing membership projection. */
+    section: handleSegment,
     order: sparse(u32),
     sample: sparse(u32),
     pos: sparse(vec2),
@@ -161,8 +165,12 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
  *  NAMED (`profile.ts`'s derived-flat-tangent shape); explicit per-keyframe force
  *  handles left with `kex2d-segment-removal` S3 (`ForceTangent`, the stored
  *  `Force.tin`/`tout` offsets, and the Custom provenance they implied). */
+const forceSegment = sparse(u32);
 export const Force = {
-    section: sparse(u32),
+    /** Stable canonical segment id. */
+    segment: forceSegment,
+    /** @temporary S7 — legacy section-facing membership projection. */
+    section: forceSegment,
     id: sparse(u32),
     s: sparse(f32),
     g: sparse(f32),
@@ -1275,7 +1283,7 @@ export interface SectionRow {
 
 /** every section, sorted by chain order — the sequence the bake threads and the
  *  UI walks. */
-export function sections(ecs: State): SectionRow[] {
+export function segments(ecs: State): SectionRow[] {
     const rows: SectionRow[] = [];
     for (const eid of ecs.query([Section])) {
         rows.push({
@@ -1290,13 +1298,19 @@ export function sections(ecs: State): SectionRow[] {
     return rows;
 }
 
-/** resolve a section by its stable id to its eid, or null. */
-export function sectionAt(ecs: State, id: number): number | null {
-    for (const eid of ecs.query([Section])) {
-        if (Section.id.get(eid) === id) return eid;
+/** @temporary S7 — legacy section reader projected from the canonical segment chain. */
+export const sections = segments;
+
+/** resolve a canonical segment by its stable id to its eid, or null. */
+export function segmentAt(ecs: State, id: number): number | null {
+    for (const eid of ecs.query([Segment])) {
+        if (Segment.id.get(eid) === id) return eid;
     }
     return null;
 }
+
+/** @temporary S7 — legacy section lookup projected from stable segment identity. */
+export const sectionAt = segmentAt;
 
 /** a section's place on the track-global arclength axis: the distance `d` at the section's
  *  entry (the cumulative baked arclength of every upstream section) and its own baked
@@ -2272,7 +2286,7 @@ export function setTrackDomain(ecs: State, domain: Domain): void {
  *  this before/after so undo is byte-identical. Carries no strips: strips are
  *  track-global and span-blind (Locked decision, S2) — a section's own convert/reset/
  *  structural op never touches them, so they are outside this snapshot's own identity. */
-export interface SectionSnapshot {
+export interface SegmentSnapshot {
     id: number;
     order: number;
     kind: SectionKind;
@@ -2288,7 +2302,7 @@ export interface SectionSnapshot {
 
 /** capture a section (both kinds' payloads — one is empty). a force point carries its
  *  easing tag, so a convert/structural-op undo restores it. */
-export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot {
+export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot {
     const eid = sectionAt(ecs, sectionId);
     if (eid === null) throw new Error(`snapshotSection: no section ${sectionId}`);
     return {
@@ -2311,7 +2325,7 @@ export function snapshotSection(ecs: State, sectionId: number): SectionSnapshot 
  *  is assumed to exist (its order/kind/length are rewritten); nodes respawn by
  *  order, points by id, so eids recycle but identities don't. Strips are untouched
  *  (track-global, outside this snapshot's identity). */
-export function restoreSection(ecs: State, snap: SectionSnapshot): void {
+export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     const eid = sectionAt(ecs, snap.id);
     if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
     for (const h of sectionHandles(ecs, snap.id)) ecs.destroy(h);
@@ -2322,6 +2336,13 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
 }
+
+/** @temporary S7 — legacy structural snapshot names projected from canonical segments. */
+export type SectionSnapshot = SegmentSnapshot;
+/** @temporary S7 */
+export const snapshotSection = snapshotSegment;
+/** @temporary S7 */
+export const restoreSection = restoreSegment;
 
 // ── provenance sidecar (kex2d-provenance) ──────────────────────────────────────
 
@@ -2340,7 +2361,7 @@ export function restoreSection(ecs: State, snap: SectionSnapshot): void {
  *  this by folding `Track.ds` into the token — that would only convert benign restores into fits
  *  (kex2d-provenance close-out). */
 export interface Provenance {
-    payload: SectionSnapshot;
+    payload: SegmentSnapshot;
     token: string;
     entry: Entry;
 }
@@ -2360,7 +2381,7 @@ const provenance = new Map<number, Provenance>();
  *  f32-exact reproduction on an unchanged upstream). No-ops when the section hasn't baked yet
  *  (no `sectionInfo` entry to read an anchor from, or no live `Section` row) — there is nothing
  *  yet to certify a later reverse-invoke against. */
-export function stampProvenance(ecs: State, sectionId: number, payload: SectionSnapshot): void {
+export function stampProvenance(ecs: State, sectionId: number, payload: SegmentSnapshot): void {
     const info = sectionInfo.get(sectionId);
     if (info === undefined) return;
     const row = sections(ecs).find((s) => s.id === sectionId);
@@ -2743,15 +2764,15 @@ function snapshotOneShot(ecs: State): OneShotSnapshot[] {
  *  byte-identical (respawns the stored f32 verbatim), which is what makes the ops safely
  *  reversible. */
 export interface TrackSnapshot {
-    sections: SectionSnapshot[];
+    segments: SegmentSnapshot[];
     strips: StripSnapshot[];
     oneShot: OneShotSnapshot[];
 }
 
-/** capture the whole track. */
+/** capture the whole track through the canonical segment surface. */
 export function snapshotAll(ecs: State): TrackSnapshot {
     return {
-        sections: sections(ecs).map((s) => snapshotSection(ecs, s.id)),
+        segments: segments(ecs).map((s) => snapshotSegment(ecs, s.id)),
         strips: snapshotStrips(ecs),
         oneShot: snapshotOneShot(ecs),
     };
@@ -2765,7 +2786,7 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
     for (const e of [...ecs.query([Strip])]) ecs.destroy(e);
     for (const e of [...ecs.query([StripKeyframe])]) ecs.destroy(e);
     for (const e of [...ecs.query([OneShot])]) ecs.destroy(e);
-    for (const s of snap.sections) {
+    for (const s of snap.segments) {
         spawnSection(ecs, s.id, s.order, s.kind, s.length);
         for (const n of s.nodes) spawnNode(ecs, s.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of s.points) spawnForce(ecs, s.id, p.id, p.s, p.g, p.ease);
@@ -3395,3 +3416,9 @@ export const TrackPlugin: Plugin = {
     },
     systems: [BakeSystem],
 };
+
+/** Canonical structural writer surface; section names remain temporary compatibility aliases. */
+export const createSegment = createSection;
+export const appendSegment = appendSection;
+export const deleteSegment = deleteSection;
+export const setSegmentExtent = setSectionLength;

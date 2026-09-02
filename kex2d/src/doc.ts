@@ -200,7 +200,7 @@ export function docFromEcs(ecs: State): Kex2dDocument {
     return {
         version: CURRENT_VERSION,
         track,
-        segments: snap.sections
+        segments: snap.segments
             .slice()
             .sort((a, b) => a.order - b.order)
             .map(toDocSegment),
@@ -249,7 +249,7 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
  *  (`restoreAll` never touches the `Track` component itself). */
 export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
     return {
-        sections: doc.segments.map(fromDocSegment),
+        segments: doc.segments.map(fromDocSegment),
         strips: doc.strips.map((st) => ({
             id: st.id,
             start: st.start,
@@ -937,7 +937,7 @@ export function loadDocument(ecs: State, text: string): void {
     const hadTrack = trackEntity(ecs) !== null;
     const rollbackSnap: TrackSnapshot = hadTrack
         ? snapshotAll(ecs)
-        : { sections: [], strips: [], oneShot: [] };
+        : { segments: [], strips: [], oneShot: [] };
     let trackEid = trackEntity(ecs);
     const rollbackScalars = trackEid === null ? null : readTrackScalars(trackEid);
 
