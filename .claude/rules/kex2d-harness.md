@@ -222,7 +222,9 @@ job is to summon a person rather than to fail a run.
   machines would compare hosts, not trees. **That shared path is also now a shared write target
   across every worktree on the host, and `appendRun` takes no lock**. The premise that makes that
   safe is the GPU bridge being one machine-level seat, so captures on this host never overlap at
-  all — **not** "one capture at a time per port" (Iteration discipline, above), which deliberately
+  all. Before invoking capture, follow the Kex workspace entry contract's GPU-bridge sentence
+  (`AGENTS.md`); its one-at-a-time and no-host-kill constraints are the authority — **not** "one
+  capture at a time per port" (Iteration discipline, above), which deliberately
   *permits* a second session on another port and would put two sanctioned writers on this one file.
   Nothing enforces either. A concurrent writer would tear a line, and `parseHistory` throws loud on
   the resulting malformed line for every consumer, not just the racing pair — which is correct

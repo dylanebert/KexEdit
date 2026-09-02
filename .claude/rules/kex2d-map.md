@@ -593,8 +593,7 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   covering station 0). Components: `Track`
   (`count`, `ds`, `domain`, `friction`, `resistance`), `Section` (`id` stable,
   `order`, `kind` `SectionKind.Geo`/`Force`, `length` = force extent), `Handle` (`section`, per-section
-  `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`,
-  `tmode`/`tin`/`tout` the explicit-tangent columns),
+  `order`, `sample`, section-local `pos`/`theta`), `Force` (`section`, `id` stable, `s` local, `g`),
   `Strip` (`id` stable, `start`/`end`/`value` — the velocity-strip span, TRACK-GLOBAL arclength, no
   `section` field, § Velocity strips), `StripKeyframe` (`strip`, `id` stable, `s`/`v` — also
   track-global — the strip's keyframed velocity curve).
@@ -635,8 +634,10 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   `setForcePoint`; extent `sectionLengthState`/`setSectionLength`. `stationTaken` is the
   one-property-one-station guard `setForcePoint` reads (`editor-ui.md` Keyframe conventions):
   section-scoped, exact at the stored f32 width, self-excluding; a taken station drops the `s`
-  write and keeps the `g` write, so a drag skips the occupied slot instead of stacking on it. The
-  restore writers (`spawnForce`/`restoreForcePoint`) bypass it, so an already-coincident pair
+  write and keeps the `g` write, so a drag skips the occupied slot instead of stacking on it.
+  `keyframeRoom`'s pure force arm is reserved for the segment-authoring unit's re-homed station
+  write; the interim Timeline has no production caller for that arm. The restore writers
+  (`spawnForce`/`restoreForcePoint`) bypass `stationTaken`, so an already-coincident pair
   round-trips undo byte-identical. Where a keyframe lands on the
   baked track: `forceSample` (a stored native-axis `s` → flat sample index + fraction, walked over
   the bake's own tables within the section's published range — per-edge `out.ds` on Distance, the

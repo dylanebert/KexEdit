@@ -385,11 +385,8 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok();
         }
 
-        // `Timeline.svelte`'s `chartCreate`: `createForce(history, ecs, c.id, s, sampleForce(...))` — no
-        // setter guard of its own (`createForcePoint` writes unconditionally); the command layer
-        // adds the existence check the UI gets for free by only ever offering a live section,
-        // plus the kind check the UI gets for free by only ever offering a Force section
-        // (finding 1's own sweep: `node-add`'s twin gap on the force side).
+        // This headless command is the only surviving force-point producer. It owns the
+        // existence and kind guards because `createForcePoint` writes unconditionally.
         case "force-create": {
             const secEid = sectionAt(ecs, op.section);
             if (secEid === null)
