@@ -58,7 +58,8 @@ import {
  *  load; a v1 file's geo tangents (`DocNode.tangent`) are untouched, a structurally distinct key
  *  on a distinct entity. migrations stay cheap by design (one function per version step, applied
  *  in sequence). */
-export const CURRENT_VERSION = 2;
+/** Unstable while the segment authoring data stages S2a–S2c are in flight. */
+export const CURRENT_VERSION = 3;
 
 // ── wire types (post-parse, post-migration — always shaped exactly like this) ────────────────
 
@@ -92,7 +93,7 @@ export interface DocPoint {
     ease: number;
 }
 
-export interface DocSection {
+export interface DocSegment {
     id: number;
     order: number;
     kind: number;
@@ -123,7 +124,7 @@ export interface DocOneShot {
 export interface Kex2dDocument {
     version: number;
     track: DocTrack;
-    sections: DocSection[];
+    segments: DocSegment[];
     strips: DocStrip[];
     oneShot: DocOneShot[];
 }
@@ -134,7 +135,7 @@ function toDocTangent(t: Tangent | undefined): DocGeoTangent | undefined {
     return t ? { mode: t.mode, inX: t.inX, inY: t.inY, outX: t.outX, outY: t.outY } : undefined;
 }
 
-function toDocSection(s: SectionSnapshot): DocSection {
+function toDocSegment(s: SectionSnapshot): DocSegment {
     return {
         id: s.id,
         order: s.order,
@@ -199,10 +200,10 @@ export function docFromEcs(ecs: State): Kex2dDocument {
     return {
         version: CURRENT_VERSION,
         track,
-        sections: snap.sections
+        segments: snap.sections
             .slice()
             .sort((a, b) => a.order - b.order)
-            .map(toDocSection),
+            .map(toDocSegment),
         strips: snap.strips
             .slice()
             .sort((a, b) => a.id - b.id)
@@ -219,7 +220,7 @@ function fromDocTangent(t: DocGeoTangent | undefined): Tangent | undefined {
         : undefined;
 }
 
-function fromDocSection(s: DocSection): SectionSnapshot {
+function fromDocSegment(s: DocSegment): SectionSnapshot {
     return {
         id: s.id,
         order: s.order,
@@ -248,7 +249,7 @@ function fromDocSection(s: DocSection): SectionSnapshot {
  *  (`restoreAll` never touches the `Track` component itself). */
 export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
     return {
-        sections: doc.sections.map(fromDocSection),
+        sections: doc.segments.map(fromDocSegment),
         strips: doc.strips.map((st) => ({
             id: st.id,
             start: st.start,
@@ -325,7 +326,7 @@ function emitBlockArray(indent: string, blocks: string[]): string {
 /** one section, rendered at LOCAL indent 0 (its own `{` has none; its fields sit two spaces
  *  in) — `emitBlockArray` re-indents the whole block uniformly when it's embedded, so the
  *  local nesting here only has to be internally consistent. */
-function renderSection(sec: DocSection): string {
+function renderSection(sec: DocSegment): string {
     return [
         "{",
         `  "id": ${sec.id},`,
@@ -359,7 +360,7 @@ export function serializeDocument(doc: Kex2dDocument): string {
         "{",
         `  "version": ${doc.version},`,
         `  "track": ${emitFlat(doc.track)},`,
-        `  "sections": ${emitBlockArray("  ", doc.sections.map(renderSection))},`,
+        `  "segments": ${emitBlockArray("  ", doc.segments.map(renderSection))},`,
         `  "strips": ${emitBlockArray("  ", doc.strips.map(renderStrip))},`,
         `  "oneShot": ${emitFlatArray("  ", doc.oneShot)}`,
         "}",
@@ -485,8 +486,8 @@ function validatePoint(v: unknown, path: string): DocPoint {
     };
 }
 
-function validateSection(v: unknown, i: number): DocSection {
-    const path = `sections[${i}]`;
+function validateSegment(v: unknown, i: number): DocSegment {
+    const path = `segments[${i}]`;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
     if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
     if (!isInt(v.order)) fail(`${path}.order is missing or not an integer`);
@@ -559,14 +560,14 @@ function validateTrack(v: unknown): DocTrack {
 function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     if (!isInt(raw.version)) fail("version is missing or not an integer");
     const track = validateTrack(raw.track);
-    if (!Array.isArray(raw.sections)) fail("sections is missing or not an array");
+    if (!Array.isArray(raw.segments)) fail("segments is missing or not an array");
     if (!Array.isArray(raw.strips)) fail("strips is missing or not an array");
     if (!Array.isArray(raw.oneShot)) fail("oneShot is missing or not an array");
     if (raw.oneShot.length > 1) fail("oneShot carries more than one entry (at most one may exist)");
     return {
         version: raw.version as number,
         track,
-        sections: raw.sections.map((s, i) => validateSection(s, i)),
+        segments: raw.segments.map((s, i) => validateSegment(s, i)),
         strips: raw.strips.map((s, i) => validateStrip(s, i)),
         oneShot: raw.oneShot.map((o, i) => validateOneShot(o, i)),
     };
@@ -609,11 +610,11 @@ function checkDuplicateIds(doc: Kex2dDocument): Refusal[] {
     };
     check(
         "sections",
-        doc.sections.map((s) => s.id),
+        doc.segments.map((s) => s.id),
     );
     check(
         "force points",
-        doc.sections.flatMap((s) => s.points.map((p) => p.id)),
+        doc.segments.flatMap((s) => s.points.map((p) => p.id)),
     );
     check(
         "strips",
@@ -633,14 +634,14 @@ function checkDuplicateIds(doc: Kex2dDocument): Refusal[] {
 export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
     const refusals: Refusal[] = checkDuplicateIds(doc);
 
-    if (doc.sections.length === 0)
+    if (doc.segments.length === 0)
         refusals.push({
             guard: "emptyTrack",
             message: "a document must contain at least one section",
         });
 
     const orders = new Set<number>();
-    for (const s of doc.sections) {
+    for (const s of doc.segments) {
         if (orders.has(s.order))
             refusals.push({
                 guard: "duplicateSectionOrder",
@@ -649,7 +650,7 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
         orders.add(s.order);
     }
 
-    for (const s of doc.sections) {
+    for (const s of doc.segments) {
         if (s.kind === SectionKind.Geo) {
             if (s.points.length > 0)
                 refusals.push({
@@ -821,14 +822,18 @@ function dropForceTangent(doc: Record<string, unknown>): Record<string, unknown>
         const points = s.points.map((p) => {
             if (!isPlainObject(p) || !("tangent" in p)) return p;
             const rest: Record<string, unknown> = {};
-            for (const [k, val] of Object.entries(p)) {
-                if (k !== "tangent") rest[k] = val;
-            }
+            for (const [k, val] of Object.entries(p)) if (k !== "tangent") rest[k] = val;
             return rest;
         });
         return { ...s, points };
     });
     return { ...doc, version: 2, sections };
+}
+
+/** v2 → unstable v3 is deliberately 1:1: only the canonical chain's wire name changes. */
+function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknown> {
+    const { sections, ...rest } = doc;
+    return { ...rest, version: 3, segments: sections };
 }
 
 /** a single forward migration step: takes a raw doc at some version and returns one it stamps at
@@ -840,6 +845,7 @@ export type MigrationStep = (doc: Record<string, unknown>) => Record<string, unk
  *  rewrite. */
 const migrations: Record<number, MigrationStep> = {
     1: dropForceTangent,
+    2: sectionsToSegments,
 };
 
 /** walk a raw parsed object forward from its declared `version` to `CURRENT_VERSION`, one
@@ -963,8 +969,8 @@ export function loadDocument(ecs: State, text: string): void {
     }
 
     reserveIds({
-        section: doc.sections.map((s) => s.id),
-        force: doc.sections.flatMap((s) => s.points.map((p) => p.id)),
+        section: doc.segments.map((s) => s.id),
+        force: doc.segments.flatMap((s) => s.points.map((p) => p.id)),
         strip: doc.strips.map((st) => st.id),
         stripKeyframe: doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
         oneShot: doc.oneShot.map((o) => o.id),

@@ -77,12 +77,19 @@ export const Track = {
  *  removed, `kex2d-correctness-fixes` stage 5) — there is no per-section step to carry.
  *  a section's entry anchor is derived (the prior section's exit, or `START` for the
  *  first); it is never stored. */
-export const Section = {
+export const Segment = {
     id: sparse(u32),
     order: sparse(u32),
     kind: sparse(u32),
     length: sparse(f32),
 };
+
+/** Canonical predecessor-less boundary for segment zero. Channel payload ownership moves
+ * here in later data stages; S2a establishes its stable structural identity. */
+export const TrackStart = { id: sparse(u32) };
+
+/** @temporary S7 — section-facing readers are a compatibility projection over Segment. */
+export const Section = Segment;
 
 /** a node on a geo section. `section` is the owning section's stable id. `order`
  *  is the node's position within that section (0 = the section entry, pinned at
@@ -1224,6 +1231,8 @@ export function setStickyLen(
 export function createTrack(ecs: State): number {
     const trackEid = ecs.create();
     ecs.add(trackEid, Track);
+    ecs.add(trackEid, TrackStart);
+    TrackStart.id.set(trackEid, 0);
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
     Track.domain.set(trackEid, Domain.Distance);

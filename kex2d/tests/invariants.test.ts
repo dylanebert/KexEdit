@@ -89,7 +89,13 @@ describe("document-boundary invariant validation: the shared green fixture", () 
         const state = new State();
         state.addSystem(BakeSystem);
         loadDocument(state, text);
-        expect(saveDocument(state)).toBe(text);
+        const migrated = saveDocument(state);
+        expect(JSON.parse(migrated).version).toBe(3);
+        expect(JSON.parse(migrated).segments).toBeArray();
+        const state2 = new State();
+        state2.addSystem(BakeSystem);
+        loadDocument(state2, migrated);
+        expect(saveDocument(state2)).toBe(migrated);
     });
 });
 
