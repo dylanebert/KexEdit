@@ -1544,6 +1544,9 @@ function spawnSection(
     order: number,
     kind: SectionKind,
     length: number,
+    run: number,
+    runStation: number,
+    runExtent: number,
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Section);
@@ -1551,9 +1554,9 @@ function spawnSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
-    Segment.run.set(eid, id);
-    Segment.runStation.set(eid, 0);
-    Segment.runExtent.set(eid, length);
+    Segment.run.set(eid, run);
+    Segment.runStation.set(eid, runStation);
+    Segment.runExtent.set(eid, runExtent);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -2355,6 +2358,11 @@ export interface SegmentSnapshot {
     order: number;
     kind: SectionKind;
     length: number;
+    /** Temporary evaluator-run identity and the member's conserved run-local entry station. */
+    run: number;
+    runStation: number;
+    /** The conserved run extent (identical on every member of the run). */
+    runExtent: number;
     nodes: NodeState[];
     points: {
         id: number;
@@ -2374,6 +2382,9 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
         order: Section.order.get(eid),
         kind: Section.kind.get(eid) as SectionKind,
         length: Section.length.get(eid),
+        run: Segment.run.get(eid),
+        runStation: Segment.runStation.get(eid),
+        runExtent: Segment.runExtent.get(eid),
         nodes: nodeSnapshot(ecs, sectionId),
         points: sectionForces(ecs, sectionId).map((p) => ({
             id: p.id,
@@ -2397,6 +2408,9 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
     Section.length.set(eid, snap.length);
+    Segment.run.set(eid, snap.run);
+    Segment.runStation.set(eid, snap.runStation);
+    Segment.runExtent.set(eid, snap.runExtent);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
 }
@@ -2404,6 +2418,8 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
 /** ordered, run-local structural capture. It deliberately carries no track-global state. */
 export interface RunSnapshot {
     id: number;
+    /** Ordered conserved station vector, including zero and the terminal extent. */
+    stations: number[];
     members: SegmentSnapshot[];
 }
 
@@ -2411,7 +2427,11 @@ export interface RunSnapshot {
 export function snapshotRun(ecs: State, segmentId: number): RunSnapshot {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(segmentId));
     if (!run) throw new Error(`snapshotRun: no segment ${segmentId}`);
-    return { id: run.id, members: run.segmentIds.map((id) => snapshotSegment(ecs, id)) };
+    return {
+        id: run.id,
+        stations: [...run.stations],
+        members: run.segmentIds.map((id) => snapshotSegment(ecs, id)),
+    };
 }
 
 /** restore one run without replacing any surviving member entity. Missing members alone respawn. */
@@ -2420,11 +2440,24 @@ export function restoreRun(ecs: State, snap: RunSnapshot): void {
         let eid = sectionAt(ecs, member.id);
         if (eid === null) {
             bumpOrders(ecs, member.order, 1);
-            spawnSection(ecs, member.id, member.order, member.kind, member.length);
+            spawnSection(
+                ecs,
+                member.id,
+                member.order,
+                member.kind,
+                member.length,
+                snap.id,
+                member.runStation,
+                member.runExtent,
+            );
             eid = sectionAt(ecs, member.id)!;
         }
-        Segment.run.set(eid, snap.id);
-        restoreSegment(ecs, member);
+        restoreSegment(ecs, {
+            ...member,
+            run: snap.id,
+            runStation: snap.stations[snap.members.indexOf(member)]!,
+            runExtent: snap.stations.at(-1)!,
+        });
     }
 }
 
@@ -2914,7 +2947,7 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
     for (const e of [...ecs.query([StripKeyframe])]) ecs.destroy(e);
     for (const e of [...ecs.query([OneShot])]) ecs.destroy(e);
     for (const s of snap.segments) {
-        spawnSection(ecs, s.id, s.order, s.kind, s.length);
+        spawnSection(ecs, s.id, s.order, s.kind, s.length, s.run, s.runStation, s.runExtent);
         for (const n of s.nodes) spawnNode(ecs, s.id, n.order, n.x, n.y, n.theta, n.tangent);
         for (const p of s.points) spawnForce(ecs, s.id, p.id, p.s, p.g, p.ease);
     }

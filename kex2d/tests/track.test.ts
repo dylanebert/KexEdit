@@ -142,6 +142,9 @@ test("run restore preserves surviving member entities and respawns only absent i
     const second = createSection(ecs, 1, SectionKind.Force, 8);
     const rows = sections(ecs);
     Segment.run.set(rows[1]!.eid, first);
+    Segment.runStation.set(rows[1]!.eid, 12);
+    Segment.runExtent.set(rows[0]!.eid, 20);
+    Segment.runExtent.set(rows[1]!.eid, 20);
     const firstEid = rows[0]!.eid;
     const secondEid = rows[1]!.eid;
     const snap = snapshotRun(ecs, second);
@@ -1462,6 +1465,9 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             order: 0,
             kind: SectionKind.Geo,
             length: 0,
+            run: sec,
+            runStation: 0,
+            runExtent: 0,
             nodes: [],
             points: [],
         });
@@ -2079,7 +2085,7 @@ describe("section reset (kex2d-idioms stage 2)", () => {
         const got = snapshotSection(state, b);
         expect(got.kind).toBe(SectionKind.Force);
         // byte-identical to the convert's own seed modulo the minted stable ids.
-        const strip = (s: typeof got) => ({
+        const strip = ({ run, runStation, runExtent, ...s }: typeof got) => ({
             ...s,
             points: s.points.map(({ id: _, ...rest }) => rest),
         });
