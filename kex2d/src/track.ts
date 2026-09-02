@@ -12,6 +12,7 @@ import {
     type Step,
 } from "./profile";
 import { rebuildRunProjection } from "./projection";
+import { forceStationUnion } from "./segment";
 import {
     chain,
     Domain,
@@ -1989,6 +1990,100 @@ function refreshRunEntryForce(ecs: State, runId: number): void {
     Segment.runEntryForce.set(member, entry === undefined ? 0 : entry.id + 1);
 }
 
+/** @temporary S3–S7 — atomically rewrite one force run's canonical members from raw columns.
+ * Planning completes before the first write. The mutation phase never consults a projection:
+ * chain order, ownership, conserved stations, compatibility extents, and the entry pointer become
+ * visible together. Keys beyond the conserved extent are non-destructive-trim orphans; they stay
+ * on the zero-station entry member while retaining their raw station verbatim. */
+export function spliceRunMembers(ecs: State, runId: number): void {
+    const before = runMembers(ecs, runId);
+    if (before.length === 0) throw new Error(`spliceRunMembers: no run ${runId}`);
+    const first = before[0]!;
+    const extent = Segment.runExtent.get(first.eid) || Section.length.get(first.eid);
+    const encodedEntry = Segment.runEntryForce.get(first.eid);
+    const entryId = encodedEntry === 0 ? null : encodedEntry - 1;
+    const rawPoints = before.flatMap((member) =>
+        segmentForces(ecs, member.id).map((point) => ({
+            point,
+            station: Segment.runStation.get(member.eid) + point.s,
+        })),
+    );
+    const entry = entryId === null ? undefined : rawPoints.find((row) => row.point.id === entryId);
+    const interior = rawPoints
+        .filter((row) => row.point.id !== entryId && row.station <= extent)
+        .map((row) => ({ id: row.point.id, station: row.station, value: row.point.id }));
+    const orphans = rawPoints.filter((row) => row.point.id !== entryId && row.station > extent);
+    const union = forceStationUnion(
+        runId,
+        extent,
+        entry === undefined ? undefined : { id: entry.point.id, station: 0, value: entry.point.id },
+        interior,
+        (index) => before[index]?.id ?? nextSectionId++,
+    );
+    if (union.members.length === 0) throw new Error(`spliceRunMembers: empty run ${runId}`);
+
+    const allBefore = segments(ecs);
+    const runSet = new Set(before.map((member) => member.id));
+    const insertion = allBefore.findIndex((row) => runSet.has(row.id));
+    const kind = Section.kind.get(first.eid) as SectionKind;
+    const desiredIds = new Set(union.members.map((member) => Number(member.id)));
+    const pointOwner = new Map<number, { segment: number; s: number }>();
+    if (entryId !== null) pointOwner.set(entryId, { segment: Number(union.members[0]!.id), s: 0 });
+    for (const member of union.members)
+        if (member.boundary)
+            pointOwner.set(member.boundary.value, {
+                segment: Number(member.id),
+                s: member.localStation,
+            });
+    // Orphans remain on the entry member: its zero station keeps both the raw Force.s mirror and
+    // the run-nested save projection byte-stable across a trim and subsequent member union.
+    const orphanHost = Number(union.members[0]!.id);
+    for (const orphan of orphans)
+        pointOwner.set(orphan.point.id, { segment: orphanHost, s: orphan.station });
+
+    // First mutation: all writes below use only the completed plan above and raw columns.
+    for (const member of union.members) {
+        if (segmentAt(ecs, Number(member.id)) === null)
+            spawnSection(
+                ecs,
+                Number(member.id),
+                0,
+                kind,
+                member.duration,
+                runId,
+                member.entryStation,
+                extent,
+            );
+    }
+    for (const row of rawPoints) {
+        const owner = pointOwner.get(row.point.id);
+        if (!owner) continue;
+        Force.section.set(row.point.eid, owner.segment);
+        Force.s.set(row.point.eid, owner.s);
+    }
+    for (const member of before) {
+        if (desiredIds.has(member.id)) continue;
+        for (const handle of sectionHandles(ecs, member.id)) ecs.destroy(handle);
+        ecs.destroy(member.eid);
+    }
+    for (const member of union.members) {
+        const eid = segmentAt(ecs, Number(member.id))!;
+        Segment.run.set(eid, runId);
+        Segment.runStation.set(eid, member.entryStation);
+        Segment.runExtent.set(eid, extent);
+        Section.kind.set(eid, kind);
+        Section.length.set(eid, member.duration);
+        Segment.runEntryForce.set(eid, 0);
+    }
+    const replacement = union.members.map((member) => Number(member.id));
+    const chain = allBefore.filter((row) => !runSet.has(row.id)).map((row) => row.id);
+    chain.splice(insertion, 0, ...replacement);
+    for (let order = 0; order < chain.length; order++)
+        Section.order.set(segmentAt(ecs, chain[order]!)!, order);
+    // Last mutation: publish the named entry address only after every other column is coherent.
+    refreshRunEntryForce(ecs, runId);
+}
+
 /** @temporary S3–S7 — named access to the one existing run-entry boundary datum. */
 export const RunEntryForceBoundary = {
     g(ecs: State, runId: number): number | undefined {
@@ -2531,8 +2626,16 @@ export function snapshotRun(ecs: State, segmentId: number): RunSnapshot {
     };
 }
 
-/** restore one run without replacing any surviving member entity. Missing members alone respawn. */
+/** restore one run without replacing any surviving member entity. Missing members alone respawn;
+ * only surplus identities currently belonging to this same run may be destroyed. */
 export function restoreRun(ecs: State, snap: RunSnapshot): void {
+    const wanted = new Set(snap.members.map((member) => member.id));
+    for (const surplus of runMembers(ecs, snap.id)) {
+        if (wanted.has(surplus.id)) continue;
+        for (const handle of sectionHandles(ecs, surplus.id)) ecs.destroy(handle);
+        for (const point of segmentForces(ecs, surplus.id)) ecs.destroy(point.eid);
+        ecs.destroy(surplus.eid);
+    }
     for (const member of snap.members) {
         let eid = segmentAt(ecs, member.id);
         if (eid === null) {
