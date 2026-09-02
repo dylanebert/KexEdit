@@ -24,6 +24,9 @@ import {
     setForceEase,
     setForcePoint,
     setSectionLength,
+    runToken,
+    sectionToken,
+    sections,
     TrackStart,
 } from "../src/track";
 
@@ -138,6 +141,14 @@ test("run-edge clamp materialization is bit-exact over the force boundary corpus
         const after = forceProfile(materializeRunForceClamps(points, length), step);
         expect(new Uint32Array(after.buffer), name).toEqual(new Uint32Array(before.buffer));
     }
+});
+
+test("run content hashes retain the single-member cardinality floor", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const id = createSection(ecs, 0, SectionKind.Force, 20);
+    createForcePoint(ecs, id, 4, 2, Easing.Quintic);
+    expect(runToken(ecs, id)).toBe(sectionToken(ecs, sections(ecs)[0]!));
 });
 
 test("a segment-only extent edit invalidates the authored bake hash", () => {

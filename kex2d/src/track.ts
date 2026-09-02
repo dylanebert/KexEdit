@@ -1223,6 +1223,17 @@ export function minForceExtent(_domain: Domain = Domain.Distance): number {
     return MIN_FORCE_LEN;
 }
 
+/** minimum legal authored extent for the evaluator run containing `segmentId`. */
+export function minRunForceExtent(
+    ecs: State,
+    segmentId: number,
+    domain: Domain = trackDomain(ecs),
+): number {
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(segmentId));
+    if (!run) throw new Error(`minRunForceExtent: no segment ${segmentId}`);
+    return minForceExtent(domain);
+}
+
 /** the session's sticky append length — what a freshly APPENDED piece starts at, echoing the
  *  last length the author committed by hand. Each kind's length is its own authoring quantum:
  *  a **force** section's is its extent (the clip's right-edge trim), a **geo** section's is the
@@ -2176,9 +2187,12 @@ export function sectionLengthState(ecs: State, id: number): SectionLengthState |
  *  domain's minimum (`minForceExtent`) — the end-handle drag + gesture restore. re-bakes on
  *  the next tick (the extent is in the bake hash). */
 export function setSectionLength(ecs: State, id: number, length: number): void {
-    const eid = sectionAt(ecs, id);
-    if (eid === null) return;
-    Section.length.set(eid, Math.max(minForceExtent(trackDomain(ecs)), length));
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(id));
+    if (!run) return;
+    const terminal = run.segmentIds[run.segmentIds.length - 1]!;
+    const eid = sectionAt(ecs, terminal)!;
+    const prefix = run.length - Section.length.get(eid);
+    Section.length.set(eid, Math.max(minRunForceExtent(ecs, id) - prefix, length - prefix));
 }
 
 // ── track initial speed (v0, S3: derived from the track-start one-shot) ─────────────
@@ -2376,7 +2390,45 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
 }
 
-/** @temporary S7 — legacy structural snapshot names projected from canonical segments. */
+/** ordered, run-local structural capture. It deliberately carries no track-global state. */
+export interface RunSnapshot {
+    id: number;
+    members: SegmentSnapshot[];
+}
+
+/** capture the complete evaluator run containing `segmentId`, in canonical member order. */
+export function snapshotRun(ecs: State, segmentId: number): RunSnapshot {
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(segmentId));
+    if (!run) throw new Error(`snapshotRun: no segment ${segmentId}`);
+    return { id: run.id, members: run.segmentIds.map((id) => snapshotSegment(ecs, id)) };
+}
+
+/** restore one run without replacing any surviving member entity. Missing members alone respawn. */
+export function restoreRun(ecs: State, snap: RunSnapshot): void {
+    for (const member of snap.members) {
+        let eid = sectionAt(ecs, member.id);
+        if (eid === null) {
+            bumpOrders(ecs, member.order, 1);
+            spawnSection(ecs, member.id, member.order, member.kind, member.length);
+            eid = sectionAt(ecs, member.id)!;
+        }
+        Segment.run.set(eid, snap.id);
+        restoreSegment(ecs, member);
+    }
+}
+
+/** a run content token is the ordered concatenation of its members' content. */
+export function runToken(ecs: State, segmentId: number): string {
+    const snap = snapshotRun(ecs, segmentId);
+    return snap.members
+        .map((member) => {
+            const row = sections(ecs).find((candidate) => candidate.id === member.id)!;
+            return sectionContentHash(ecs, row);
+        })
+        .join("|");
+}
+
+/** @temporary S7 — legacy single-member compatibility names. */
 export type SectionSnapshot = SegmentSnapshot;
 /** @temporary S7 */
 export const snapshotSection = snapshotSegment;
@@ -2400,7 +2452,9 @@ export const restoreSection = restoreSegment;
  *  this by folding `Track.ds` into the token — that would only convert benign restores into fits
  *  (kex2d-provenance close-out). */
 export interface Provenance {
+    /** @temporary S6 compatibility payload for conversion façades. */
     payload: SegmentSnapshot;
+    runPayload: RunSnapshot;
     token: string;
     entry: Entry;
 }
@@ -2427,6 +2481,7 @@ export function stampProvenance(ecs: State, sectionId: number, payload: SegmentS
     if (row === undefined) return;
     provenance.set(sectionId, {
         payload,
+        runPayload: snapshotRun(ecs, sectionId),
         token: sectionToken(ecs, row),
         entry: { x: info.entry.x, y: info.entry.y, theta: info.entry.theta, v: info.entry.v },
     });
@@ -2576,10 +2631,13 @@ function resetToGeo(ecs: State, eid: number, sectionId: number): void {
  *  makes it safe, so there's no confirmation. does not itself record history —
  *  `history.convertSection` wraps it. */
 export function convertSection(ecs: State, sectionId: number): void {
-    const eid = sectionAt(ecs, sectionId);
-    if (eid === null) return;
-    if (Section.kind.get(eid) === SectionKind.Geo) resetToForce(ecs, eid, sectionId);
-    else resetToGeo(ecs, eid, sectionId);
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
+    if (!run) return;
+    for (const id of run.segmentIds) {
+        const eid = sectionAt(ecs, id)!;
+        if (run.kind === SectionKind.Geo) resetToForce(ecs, eid, id);
+        else resetToGeo(ecs, eid, id);
+    }
 }
 
 /** destructively reset a section to its OWN kind's default — `convertSection`'s bodies with
@@ -2590,10 +2648,13 @@ export function convertSection(ecs: State, sectionId: number): void {
  *  stamps nor consults the provenance sidecar. does not itself record history —
  *  `history.resetSection` wraps it. */
 export function resetSection(ecs: State, sectionId: number): void {
-    const eid = sectionAt(ecs, sectionId);
-    if (eid === null) return;
-    if (Section.kind.get(eid) === SectionKind.Geo) resetToGeo(ecs, eid, sectionId);
-    else resetToForce(ecs, eid, sectionId);
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
+    if (!run) return;
+    for (const id of run.segmentIds) {
+        const eid = sectionAt(ecs, id)!;
+        if (run.kind === SectionKind.Geo) resetToGeo(ecs, eid, id);
+        else resetToForce(ecs, eid, id);
+    }
 }
 
 /** whether the section menu's Reset row may fire: exactly ONE section, and — force only — a
@@ -2692,13 +2753,25 @@ export interface SolvedForce {
  *  section's own convert never reaches them, so the old S5 entry-speed-preservation wrapper
  *  this function used is retired: there is no strip to lose). */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
-    const eid = sectionAt(ecs, sectionId);
-    if (eid === null) throw new Error(`applyConvert: no section ${sectionId}`);
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    Section.kind.set(eid, SectionKind.Force);
-    Section.length.set(eid, solved.length);
-    for (const p of solved.points) createForcePoint(ecs, sectionId, p.s, p.g);
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
+    if (!run) throw new Error(`applyConvert: no section ${sectionId}`);
+    setSectionLength(ecs, sectionId, solved.length);
+    const members = run.segmentIds.map((id) => {
+        const eid = sectionAt(ecs, id)!;
+        for (const h of sectionHandles(ecs, id)) ecs.destroy(h);
+        for (const p of sectionForces(ecs, id)) ecs.destroy(p.eid);
+        Section.kind.set(eid, SectionKind.Force);
+        return { id, length: Section.length.get(eid) };
+    });
+    let offset = 0;
+    for (const member of members) {
+        const end = offset + member.length;
+        for (const point of solved.points) {
+            if (point.s >= offset && (point.s < end || member === members[members.length - 1]))
+                createForcePoint(ecs, member.id, point.s - offset, point.g);
+        }
+        offset = end;
+    }
 }
 
 /** an invoked force→geo fit's authored output: the sparse Auto node chain `geofit` emitted, in
@@ -2729,21 +2802,25 @@ export function applyConvertGeo(
     solved: SolvedGeo,
     entry: Entry,
 ): void {
-    const eid = sectionAt(ecs, sectionId);
-    if (eid === null) throw new Error(`applyConvertGeo: no section ${sectionId}`);
-    // both row kinds go, mirroring `applyConvert`: a force section carries no nodes, so the
-    // handle sweep is defensive parity, not a live path — and the template is what a reader
-    // checks this against. Strips are untouched (`applyConvert`'s own S2 note).
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
-    for (const p of sectionForces(ecs, sectionId)) ecs.destroy(p.eid);
-    Section.kind.set(eid, SectionKind.Geo);
-    Section.length.set(eid, 0);
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
+    if (!run) throw new Error(`applyConvertGeo: no section ${sectionId}`);
+    for (const id of run.segmentIds) {
+        const eid = sectionAt(ecs, id)!;
+        for (const h of sectionHandles(ecs, id)) ecs.destroy(h);
+        for (const p of sectionForces(ecs, id)) ecs.destroy(p.eid);
+        Section.kind.set(eid, SectionKind.Geo);
+        Section.length.set(eid, 0);
+        if (id !== run.segmentIds[0]) {
+            spawnNode(ecs, id, 0, 0, 0, 0);
+            spawnNode(ecs, id, 1, EXTEND_DIST, 0, 0);
+        }
+    }
+    const first = run.segmentIds[0]!;
     solved.nodes.forEach((n, i) => {
-        if (i === 0) {
-            spawnNode(ecs, sectionId, 0, 0, 0, 0);
-        } else {
+        if (i === 0) spawnNode(ecs, first, 0, 0, 0, 0);
+        else {
             const local = localize(entry, n);
-            spawnNode(ecs, sectionId, i, local.x, local.y, local.theta);
+            spawnNode(ecs, first, i, local.x, local.y, local.theta);
         }
     });
 }
@@ -2878,7 +2955,15 @@ export function trackDs(ecs: State): number {
  *  span-blind, so deleting the section under a span leaves its stored rows in place —
  *  the next bake's in-pass window resolution drives whatever now occupies that global
  *  window. */
-export function deleteSection(ecs: State, sectionId: number): boolean {
+/** delete the complete evaluator run containing `segmentId`. */
+export function deleteRun(ecs: State, segmentId: number): boolean {
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(segmentId));
+    if (!run || run.segmentIds.length >= sections(ecs).length) return false;
+    for (const id of [...run.segmentIds].reverse()) deleteSectionMember(ecs, id);
+    return true;
+}
+
+function deleteSectionMember(ecs: State, sectionId: number): boolean {
     const secEid = sectionAt(ecs, sectionId);
     if (secEid === null) return false;
     if (sections(ecs).length <= 1) return false; // keep at least one section
@@ -2889,6 +2974,10 @@ export function deleteSection(ecs: State, sectionId: number): boolean {
     provenance.delete(sectionId);
     bumpOrders(ecs, order + 1, -1);
     return true;
+}
+
+export function deleteSection(ecs: State, sectionId: number): boolean {
+    return deleteRun(ecs, sectionId);
 }
 
 function seed(ecs: State): void {
@@ -3186,7 +3275,7 @@ function bakeHash(ecs: State, trackEid: number, secs: SectionRow[]): string {
  *  in what "unchanged since the stamp" means. Deliberately excludes the track-global `Track.ds`
  *  too (`Provenance`'s doc has the why — a ds change is benign, not a certification gap). */
 export function sectionToken(ecs: State, sec: SectionRow): string {
-    return sectionContentHash(ecs, sec);
+    return runToken(ecs, sec.id);
 }
 
 /** f32-exact entry-anchor equality — the provenance consult's other half (`sectionToken` is the

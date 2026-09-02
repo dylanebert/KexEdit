@@ -87,6 +87,9 @@ import {
     removeTrailingHandle,
     resetTangent,
     sameNodes,
+    Section,
+    Segment,
+    sectionAt,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -123,6 +126,33 @@ function nodes(): { state: State; eid: number; sec: number } {
     addNode(state, sec, EXTEND_DIST, 0);
     return { state, eid, sec };
 }
+
+test("multi-member run conversion and delete history preserve member identities", () => {
+    const state = new State();
+    createTrack(state);
+    const first = createSection(state, 0, SectionKind.Force, 12);
+    const second = createSection(state, 1, SectionKind.Force, 8);
+    const survivor = createSection(state, 2, SectionKind.Geo, 0);
+    const firstEid = sectionAt(state, first)!;
+    const secondEid = sectionAt(state, second)!;
+    Segment.run.set(secondEid, first);
+    const h = createHistory();
+
+    convertSection(h, state, second);
+    expect(Section.kind.get(firstEid)).toBe(SectionKind.Geo);
+    expect(Section.kind.get(secondEid)).toBe(SectionKind.Geo);
+    undo(h, state);
+    expect(sectionAt(state, first)).toBe(firstEid);
+    expect(sectionAt(state, second)).toBe(secondEid);
+
+    expect(removeSections(h, state, [first])).toBe(true);
+    expect(sectionAt(state, first)).toBeNull();
+    expect(sectionAt(state, second)).toBeNull();
+    expect(sectionAt(state, survivor)).not.toBeNull();
+    undo(h, state);
+    expect(sectionAt(state, first)).not.toBeNull();
+    expect(sectionAt(state, second)).not.toBeNull();
+});
 
 // kex2d-provenance stage 1: a solve landing stamps provenance off `sectionInfo.entry`, which only
 // exists once `BakeSystem` has run — unlike the bare `nodes()` seed above (history mutates the ECS
