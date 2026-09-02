@@ -54,6 +54,8 @@ import {
     lastHandle,
     nextForce,
     reheadOnDrag,
+    runExtentOf,
+    runIdOf,
     Section,
     SectionKind,
     sectionAt,
@@ -466,12 +468,8 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             // `setForcePoint` reads it the same way (`Force.section.get(eid)`), mirrored here
             // rather than widening `track.ts`'s export surface for one field read.
             const section = Force.section.get(eid);
-            const secEid = sectionAt(ecs, section);
-            // `secEid` is null only if the force point outlived its own section — an invariant
-            // `convertSection`/`resetSection` (`track.ts`) hold structurally (finding 1's own
-            // sweep) — so this floor never actually engages; kept rather than a non-null
-            // assertion so an invariant break degrades to "unclamped" instead of a thrown error.
-            const len = secEid === null ? Number.POSITIVE_INFINITY : Section.length.get(secEid);
+            const len =
+                runExtentOf(ecs, runIdOf(ecs, section) ?? section) ?? Number.POSITIVE_INFINITY;
             const s = Math.min(Math.max(op.s, 0), len);
             const refusals: Refusal[] = [];
             if (stationTaken(ecs, section, s, op.id))

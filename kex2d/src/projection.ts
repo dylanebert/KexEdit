@@ -20,6 +20,12 @@ export function rebuildSegmentProjection(ecs: State): SegmentProjectionRow[] {
         length: Segment.length.get(eid),
     }));
     rows.sort((a, b) => a.order - b.order);
+    for (let index = 0; index < rows.length; index++) {
+        if (rows[index]!.order !== index)
+            throw new Error(
+                `segment order must be a contiguous bijection onto 0..${rows.length - 1}`,
+            );
+    }
     return rows;
 }
 
@@ -36,6 +42,7 @@ export interface RunProjectionRow extends SegmentProjectionRow {
 export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
     const segments = rebuildSegmentProjection(ecs);
     const runs: RunProjectionRow[] = [];
+    const seen = new Set<number>();
     for (const segment of segments) {
         const runId = Segment.run.get(segment.eid);
         const entry = Segment.runStation.get(segment.eid);
@@ -46,6 +53,8 @@ export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
             prior.stations.push(entry);
             continue;
         }
+        if (seen.has(runId)) throw new Error(`run ${runId} is not contiguous`);
+        seen.add(runId);
         runs.push({
             ...segment,
             id: runId,
@@ -91,8 +100,7 @@ export function rebuildForceProjection(ecs: State): ForceProjectionRow[] {
 }
 
 /** @temporary S7 — legacy evaluator vocabulary; never an authored owner. */
-export type SectionProjectionRow = SegmentProjectionRow;
+export type SectionProjectionRow = RunProjectionRow;
 
-/** @temporary S7 — section readers eagerly see the canonical columns, so rebuilding is pure
- * and has no stale interval after a structural writer. */
-export const rebuildSectionProjection = rebuildSegmentProjection;
+/** @temporary S7 — authored-section readers expose exactly one row per total run. */
+export const rebuildSectionProjection = rebuildRunProjection;

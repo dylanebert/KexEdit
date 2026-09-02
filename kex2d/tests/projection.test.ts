@@ -31,15 +31,15 @@ import {
     TrackStart,
 } from "../src/track";
 
-test("section compatibility rows are a pure projection of canonical segments", () => {
+test("section compatibility rows are a pure projection of total runs", () => {
     const ecs = new State();
     createTrack(ecs);
     const first = createSection(ecs, 0, SectionKind.Force, 20);
     createSection(ecs, 1, SectionKind.Geo, 0);
-    expect(rebuildSectionProjection(ecs)).toEqual(rebuildSegmentProjection(ecs));
+    expect(rebuildSectionProjection(ecs)).toEqual(rebuildRunProjection(ecs));
 
     setSectionLength(ecs, first, 31);
-    expect(rebuildSectionProjection(ecs)).toEqual(rebuildSegmentProjection(ecs));
+    expect(rebuildSectionProjection(ecs)).toEqual(rebuildRunProjection(ecs));
     expect(rebuildSegmentProjection(ecs)[0]?.length).toBe(31);
 });
 

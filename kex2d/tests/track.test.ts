@@ -70,6 +70,7 @@ import {
     samples,
     Section,
     sectionAt,
+    segmentAt,
     SectionKind,
     sectionForces,
     sectionHandles,
@@ -154,7 +155,7 @@ test("run restore preserves surviving member entities and respawns only absent i
     restoreRun(ecs, snap);
 
     expect(sectionAt(ecs, first)).toBe(firstEid);
-    expect(sectionAt(ecs, second)).not.toBeNull();
+    expect(segmentAt(ecs, second)).not.toBeNull();
     expect(snapshotRun(ecs, first)).toEqual(snap);
 });
 
@@ -163,8 +164,8 @@ test("run conversion applies solved force stations across ordered members", () =
     createTrack(ecs);
     const first = createSection(ecs, 0, SectionKind.Geo, 12);
     const second = createSection(ecs, 1, SectionKind.Geo, 8);
-    Segment.run.set(sectionAt(ecs, second)!, first);
-    Segment.runStation.set(sectionAt(ecs, second)!, 12);
+    Segment.run.set(segmentAt(ecs, second)!, first);
+    Segment.runStation.set(segmentAt(ecs, second)!, 12);
     Segment.runExtent.set(sectionAt(ecs, first)!, 20);
     applyConvert(ecs, second, {
         length: 25,
@@ -173,9 +174,8 @@ test("run conversion applies solved force stations across ordered members", () =
             { s: 20, g: 3 },
         ],
     });
-    expect(sectionForces(ecs, first).map((point) => point.s)).toEqual([5]);
-    expect(sectionForces(ecs, second).map((point) => point.s)).toEqual([8]);
-    expect(Section.length.get(sectionAt(ecs, second)!)).toBe(13);
+    expect(sectionForces(ecs, first).map((point) => point.s)).toEqual([5, 20]);
+    expect(Section.length.get(segmentAt(ecs, second)!)).toBe(13);
 });
 
 test("run extent resize moves only the terminal member", () => {
@@ -183,12 +183,12 @@ test("run extent resize moves only the terminal member", () => {
     createTrack(ecs);
     const first = createSection(ecs, 0, SectionKind.Force, 12);
     const second = createSection(ecs, 1, SectionKind.Force, 8);
-    Segment.run.set(sectionAt(ecs, second)!, first);
-    Segment.runStation.set(sectionAt(ecs, second)!, 12);
+    Segment.run.set(segmentAt(ecs, second)!, first);
+    Segment.runStation.set(segmentAt(ecs, second)!, 12);
     Segment.runExtent.set(sectionAt(ecs, first)!, 20);
     setSectionLength(ecs, first, 25);
     expect(Section.length.get(sectionAt(ecs, first)!)).toBe(12);
-    expect(Section.length.get(sectionAt(ecs, second)!)).toBe(13);
+    expect(Section.length.get(segmentAt(ecs, second)!)).toBe(13);
 });
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
