@@ -3725,7 +3725,11 @@ test("pin-session lockdown blocks mixed nudge and force-originated drag strip-kf
     const beforePointerA = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)?.s;
     const beforePointerB = (await stripKeyframesOf(stripB)).find((k) => k.id === kfB)?.s;
     const beforePointerForce = (await forceU()).find((p) => p.id === activeForce)?.s;
-    if (beforePointerA === undefined || beforePointerB === undefined || beforePointerForce === undefined)
+    if (
+        beforePointerA === undefined ||
+        beforePointerB === undefined ||
+        beforePointerForce === undefined
+    )
         throw new Error("mixed pointer baseline is incomplete");
     await page.mouse.click(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
     await page.mouse.move(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
@@ -3740,7 +3744,11 @@ test("pin-session lockdown blocks mixed nudge and force-originated drag strip-kf
     const afterPointerA = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)?.s;
     const afterPointerForce = (await forceU()).find((p) => p.id === activeForce)?.s;
     const afterPointerB = (await stripKeyframesOf(stripB)).find((k) => k.id === kfB)?.s;
-    if (afterPointerA === undefined || afterPointerB === undefined || afterPointerForce === undefined)
+    if (
+        afterPointerA === undefined ||
+        afterPointerB === undefined ||
+        afterPointerForce === undefined
+    )
         throw new Error("mixed pointer result is incomplete");
     expect(afterPointerA).toBeCloseTo(beforePointerA, 5);
     expect(afterPointerB).toBeGreaterThan(beforePointerB);

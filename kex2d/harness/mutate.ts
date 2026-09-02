@@ -161,8 +161,8 @@ const PAIRS: Pair[] = [
                 new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
             {
-                old: "        for (const m of capturedStripMembers)\n            allMembers.push({\n                id: m.id, kind: \"strip\" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),",
-                new: "        for (const m of [pt])\n            allMembers.push({ // MUTATED: multi-member drag set collapsed to the clicked one\n                id: m.id, kind: \"strip\" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),",
+                old: '        for (const m of capturedStripMembers)\n            allMembers.push({\n                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),',
+                new: '        for (const m of [pt])\n            allMembers.push({ // MUTATED: multi-member drag set collapsed to the clicked one\n                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),',
             },
         ],
     },
