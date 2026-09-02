@@ -89,6 +89,8 @@ export const Segment = {
     runStation: sparse(f32),
     /** @temporary S3–S7 — conserved run extent; authoritative on the run's first member. */
     runExtent: sparse(f32),
+    /** @temporary S3–S7 — encoded stable id of the run-entry force point, on the first member. */
+    runEntryForce: sparse(u32),
 };
 
 /** Canonical predecessor-less boundary for segment zero. Channel payload ownership moves
@@ -1966,6 +1968,47 @@ export interface ForceRow {
     g: number;
 }
 
+function runMembers(ecs: State, runId: number): Array<{ eid: number; id: number; order: number }> {
+    const rows = [...ecs.query([Segment])]
+        .filter((eid) => Segment.run.get(eid) === runId)
+        .map((eid) => ({ eid, id: Segment.id.get(eid), order: Segment.order.get(eid) }));
+    rows.sort((a, b) => a.order - b.order);
+    return rows;
+}
+
+function entryMember(ecs: State, runId: number): number | null {
+    return runMembers(ecs, runId)[0]?.eid ?? null;
+}
+
+function refreshRunEntryForce(ecs: State, runId: number): void {
+    const member = entryMember(ecs, runId);
+    if (member === null) return;
+    const segmentId = Segment.id.get(member);
+    const entry = segmentForces(ecs, segmentId).find((row) => row.s === 0);
+    // Stable force ids include zero, so the sparse zero sentinel stores id + 1.
+    Segment.runEntryForce.set(member, entry === undefined ? 0 : entry.id + 1);
+}
+
+/** @temporary S3–S7 — named access to the one existing run-entry boundary datum. */
+export const RunEntryForceBoundary = {
+    g(ecs: State, runId: number): number | undefined {
+        const member = entryMember(ecs, runId);
+        if (member === null) return undefined;
+        const encoded = Segment.runEntryForce.get(member);
+        if (encoded === 0) return undefined;
+        const eid = forceAt(ecs, encoded - 1);
+        return eid === null ? undefined : ForceBoundary.g.get(eid);
+    },
+    ease(ecs: State, runId: number): Easing | undefined {
+        const member = entryMember(ecs, runId);
+        if (member === null) return undefined;
+        const encoded = Segment.runEntryForce.get(member);
+        if (encoded === 0) return undefined;
+        const eid = forceAt(ecs, encoded - 1);
+        return eid === null ? undefined : (ForceBoundary.ease.get(eid) as Easing);
+    },
+};
+
 function segmentForces(ecs: State, segmentId: number): ForceRow[] {
     const rows: ForceRow[] = [];
     for (const eid of ecs.query([Force])) {
@@ -1984,13 +2027,13 @@ function segmentForces(ecs: State, segmentId: number): ForceRow[] {
 
 /** every force point in a run, gathered at its conserved run-local station. */
 export function sectionForces(ecs: State, sectionId: number): ForceRow[] {
-    const run = rebuildRunProjection(ecs).find((row) => row.id === sectionId);
-    if (!run) return [];
-    const rows = run.segmentIds.flatMap((segmentId, index) =>
-        segmentForces(ecs, segmentId).map((row) => ({
+    const members = runMembers(ecs, sectionId);
+    if (members.length === 0) return [];
+    const rows = members.flatMap((member) =>
+        segmentForces(ecs, member.id).map((row) => ({
             ...row,
-            section: run.id,
-            s: run.stations[index]! + row.s,
+            section: sectionId,
+            s: Segment.runStation.get(member.eid) + row.s,
         })),
     );
     rows.sort((a, b) => a.s - b.s || a.id - b.id);
@@ -2036,6 +2079,8 @@ export function createForcePoint(
     Force.s.set(eid, s);
     ForceBoundary.g.set(eid, g);
     ForceBoundary.ease.set(eid, ease);
+    const segment = segmentAt(ecs, sectionId);
+    if (segment !== null) refreshRunEntryForce(ecs, Segment.run.get(segment));
     return id;
 }
 
@@ -2058,12 +2103,18 @@ export function spawnForce(
     Force.s.set(eid, s);
     ForceBoundary.g.set(eid, g);
     ForceBoundary.ease.set(eid, ease);
+    const segment = segmentAt(ecs, sectionId);
+    if (segment !== null) refreshRunEntryForce(ecs, Segment.run.get(segment));
 }
 
 /** destroy a force point by stable id (no-op if already gone). */
 export function destroyForce(ecs: State, id: number): void {
     const eid = forceAt(ecs, id);
-    if (eid !== null) ecs.destroy(eid);
+    if (eid === null) return;
+    const segment = segmentAt(ecs, Force.segment.get(eid));
+    const runId = segment === null ? null : Segment.run.get(segment);
+    ecs.destroy(eid);
+    if (runId !== null) refreshRunEntryForce(ecs, runId);
 }
 
 /** a force point's undoable state, keyed by stable id: its position (`s`/`g`) and its easing
@@ -2179,6 +2230,7 @@ export function setForcePoint(ecs: State, id: number, s: number, g: number): voi
     if (lands)
         Force.s.set(eid, s - (run?.stations[run.segmentIds.indexOf(Force.section.get(eid))] ?? 0));
     ForceBoundary.g.set(eid, g);
+    if (lands && run) refreshRunEntryForce(ecs, run.id);
 }
 
 /** write a force point's full state back — position and easing tag (the gesture
@@ -2189,6 +2241,8 @@ export function restoreForcePoint(ecs: State, st: ForcePointState): void {
     Force.s.set(eid, st.s);
     ForceBoundary.g.set(eid, st.g);
     ForceBoundary.ease.set(eid, st.ease);
+    const segment = segmentAt(ecs, Force.segment.get(eid));
+    if (segment !== null) refreshRunEntryForce(ecs, Segment.run.get(segment));
 }
 
 /** a force keyframe's easing tag by stable id (default `Easing.Cubic`). */
@@ -2455,6 +2509,7 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     Segment.runExtent.set(eid, snap.runExtent);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
+    refreshRunEntryForce(ecs, snap.run);
 }
 
 /** ordered, run-local structural capture. It deliberately carries no track-global state. */
@@ -3165,16 +3220,22 @@ export function forceDense(
     step: Step,
 ): Float32Array {
     const points: ForcePoint[] = [];
+    const runId = segmentIds[0];
+    const entryG = runId === undefined ? undefined : RunEntryForceBoundary.g(ecs, runId);
+    const entryEase = runId === undefined ? undefined : RunEntryForceBoundary.ease(ecs, runId);
     for (let i = 0; i < segmentIds.length; i++) {
         const segmentId = segmentIds[i];
         const offset = stations[i]!;
         const land =
             bakeLanding !== null && bakeLanding.section === segmentId ? bakeLanding.g : null;
         for (const p of segmentForces(ecs, segmentId)) {
+            const entry = offset === 0 && p.s === 0;
             points.push({
                 s: offset + p.s,
-                g: land?.(p.id) ?? p.g,
-                ease: ForceBoundary.ease.get(p.eid) as Easing,
+                g: land?.(p.id) ?? (entry ? (entryG ?? p.g) : p.g),
+                ease: entry
+                    ? (entryEase ?? (ForceBoundary.ease.get(p.eid) as Easing))
+                    : (ForceBoundary.ease.get(p.eid) as Easing),
             });
         }
     }

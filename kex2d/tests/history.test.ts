@@ -85,6 +85,7 @@ import {
     readProvenance,
     reheadOnDrag,
     removeTrailingHandle,
+    RunEntryForceBoundary,
     resetTangent,
     sameNodes,
     Section,
@@ -288,6 +289,21 @@ test("a no-move node click records nothing", () => {
 });
 
 // ── force points — addressed by stable `id`, the same undo substrate ──
+
+test("run-entry force address survives create/delete undo and redo", () => {
+    const { state, sec } = nodes();
+    const h = createHistory();
+    const id = createForce(h, state, sec, 0, 2);
+    expect(RunEntryForceBoundary.g(state, sec)).toBe(2);
+    undo(h, state);
+    expect(RunEntryForceBoundary.g(state, sec)).toBeUndefined();
+    redo(h, state);
+    expect(RunEntryForceBoundary.g(state, sec)).toBe(2);
+    deleteForces(h, state, [id]);
+    expect(RunEntryForceBoundary.g(state, sec)).toBeUndefined();
+    undo(h, state);
+    expect(RunEntryForceBoundary.g(state, sec)).toBe(2);
+});
 
 test("createForce: undo removes the point, redo re-spawns it verbatim", () => {
     const { state, sec } = nodes();

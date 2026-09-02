@@ -1,6 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
+import * as projection from "../src/projection";
 import {
     rebuildForceProjection,
     rebuildRunProjection,
@@ -18,6 +19,7 @@ import {
     forceDense,
     Handle,
     materializeRunForceClamps,
+    RunEntryForceBoundary,
     sectionForces,
     sectionHandles,
     Segment,
@@ -105,6 +107,45 @@ test("force compatibility rows derive value and easing from the boundary owner",
     expect(ForceBoundary.g.get(eid)).toBe(3);
     expect(ForceBoundary.ease.get(eid)).toBe(Easing.Quintic);
     expect(rebuildForceProjection(ecs)[0]).toMatchObject({ s: 8, g: 3, ease: Easing.Quintic });
+});
+
+test("named run-entry boundary follows the existing force row through its lifecycle", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 20);
+    expect(RunEntryForceBoundary.g(ecs, run)).toBeUndefined();
+    const id = createForcePoint(ecs, run, 0, 2, Easing.Linear);
+    expect(RunEntryForceBoundary.g(ecs, run)).toBe(2);
+    expect(RunEntryForceBoundary.ease(ecs, run)).toBe(Easing.Linear);
+    setForcePoint(ecs, id, 3, 4);
+    expect(RunEntryForceBoundary.g(ecs, run)).toBeUndefined();
+    setForcePoint(ecs, id, 0, 5);
+    setForceEase(ecs, id, Easing.Quintic);
+    expect(RunEntryForceBoundary.g(ecs, run)).toBe(5);
+    expect(RunEntryForceBoundary.ease(ecs, run)).toBe(Easing.Quintic);
+});
+
+test("multi-run dense and section-force reads never rebuild the run projection", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const first = createSection(ecs, 0, SectionKind.Force, 20);
+    const second = createSection(ecs, 1, SectionKind.Force, 12);
+    createForcePoint(ecs, first, 0, 2, Easing.Linear);
+    createForcePoint(ecs, first, 10, -1, Easing.Cubic);
+    createForcePoint(ecs, second, 0, 3, Easing.Quintic);
+    createForcePoint(ecs, second, 8, 1, Easing.Linear);
+    const rebuild = spyOn(projection, "rebuildRunProjection");
+    try {
+        const a = forceDense(ecs, [first], [0, 20], 20, resolveStep(20, 0.5));
+        const b = forceDense(ecs, [second], [0, 12], 12, resolveStep(12, 0.5));
+        expect(a.length).toBeGreaterThan(0);
+        expect(b.length).toBeGreaterThan(0);
+        expect(sectionForces(ecs, first).map((row) => row.s)).toEqual([0, 10]);
+        expect(sectionForces(ecs, second).map((row) => row.s)).toEqual([0, 8]);
+        expect(rebuild).toHaveBeenCalledTimes(0);
+    } finally {
+        rebuild.mockRestore();
+    }
 });
 
 test("run-edge clamp materialization is bit-exact over the force boundary corpus", () => {

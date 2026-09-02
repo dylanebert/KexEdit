@@ -7,8 +7,8 @@ describe("force station union", () => {
         const got = forceStationUnion(
             7,
             10,
+            { id: 40, station: 0, value: 1 },
             [
-                { id: 40, station: 0, value: 1 },
                 { id: 41, station: 2.5, value: 2 },
                 { id: 42, station: 9, value: 3 },
                 { id: 43, station: 10, value: 4 },
@@ -28,6 +28,7 @@ describe("force station union", () => {
         const run = forceStationUnion(
             7,
             Math.fround(10.1),
+            undefined,
             [
                 { id: 1, station: 3.3, value: 2 },
                 { id: 2, station: 7.7, value: 3 },
@@ -46,6 +47,7 @@ describe("force station union", () => {
             forceStationUnion(
                 1,
                 10,
+                undefined,
                 [
                     { id: 1, station: 4, value: 1 },
                     { id: 2, station: 4, value: 2 },
