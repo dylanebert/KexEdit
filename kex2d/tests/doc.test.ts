@@ -335,7 +335,7 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        delete doc.sections[0].nodes[0].theta;
+        delete doc.segments[0].nodes[0].theta;
         const bad = JSON.stringify(doc);
 
         expect(() => loadDocument(state, bad)).toThrow(/nodes\[0\]\.theta/);
@@ -371,7 +371,7 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        doc.sections[0].points[0].ease = 999;
+        doc.segments[0].points[0].ease = 999;
         const bad = JSON.stringify(doc);
 
         expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.ease/);
@@ -396,7 +396,7 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        doc.sections[0].nodes[1].tangent.mode = 0; // 0 (Auto) is never a valid EXPLICIT tangent
+        doc.segments[0].nodes[1].tangent.mode = 0; // 0 (Auto) is never a valid EXPLICIT tangent
         const bad = JSON.stringify(doc);
 
         expect(() => loadDocument(state, bad)).toThrow(/tangent\.mode/);
@@ -447,6 +447,8 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
 
         const doc = JSON.parse(saveDocument(state));
         doc.version = 1;
+        doc.sections = doc.segments;
+        delete doc.segments;
         // the pre-S3 explicit-handle shape: a mode + one stored (Δs, Δg) offset.
         doc.sections[1].points[1].tangent = { mode: TangentMode.Free, out: { ds: 3, dg: -0.5 } };
         return { text: JSON.stringify(doc), geoTangent };
@@ -456,9 +458,9 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
         const { text, geoTangent } = v1TextWithForceTangent();
         const doc = parseDocument(text);
 
-        const forcePoint = doc.sections[1].points[1] as unknown as Record<string, unknown>;
+        const forcePoint = doc.segments[1].points[1] as unknown as Record<string, unknown>;
         expect("tangent" in forcePoint).toBe(false);
-        expect(doc.sections[0].nodes[1].tangent).toEqual(geoTangent);
+        expect(doc.segments[0].nodes[1].tangent).toEqual(geoTangent);
     });
 
     test("loading a v1 file with a force-tangent key stamps v2 and stabilizes on re-save", () => {
@@ -467,7 +469,7 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
         state.addSystem(BakeSystem);
         loadDocument(state, text);
         const v2Text = saveDocument(state);
-        expect(JSON.parse(v2Text).version).toBe(2);
+        expect(JSON.parse(v2Text).version).toBe(CURRENT_VERSION);
 
         // load→save stabilizes: the migrated form is a fixed point, not a one-time transform.
         const state2 = new State();
@@ -482,7 +484,7 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
         state.addSystem(BakeSystem);
         loadDocument(state, text);
         const doc = JSON.parse(saveDocument(state));
-        for (const section of doc.sections) {
+        for (const section of doc.segments) {
             for (const point of section.points) expect("tangent" in point).toBe(false);
         }
     });
@@ -495,7 +497,7 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
         expect(doc.version).toBe(CURRENT_VERSION);
-        doc.sections[1].points[0].tangent = { mode: TangentMode.Free };
+        doc.segments[1].points[0].tangent = { mode: TangentMode.Free };
         const bad = JSON.stringify(doc);
 
         expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.tangent/);
@@ -551,6 +553,73 @@ describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", ()
         const a = scenarioTrack(s);
         a.state.step(0);
         expect(bBaked).toEqual(bakedArrays(a.eid));
+    });
+});
+
+describe("frozen v2 migration corpus", () => {
+    const valid = [
+        "cli/circular-arc.kex",
+        "cli/double-hump.kex",
+        "cli/full-loop.kex",
+        "cli/hill-auto.kex",
+        "cli/hill-explicit.kex",
+        "cli/loop-explicit.kex",
+        "cli/parabola-hill.kex",
+        "cli/s-curve.kex",
+        "cli/straight-fillet.kex",
+        "cli/valley-explicit.kex",
+        "hill-explicit-golden.kex",
+    ];
+
+    for (const name of valid) {
+        test(`${name}: v2 migrates once and canonical v3 is a fixed point`, async () => {
+            const text = await Bun.file(new URL(`./fixtures/v2/${name}`, import.meta.url)).text();
+            expect(JSON.parse(text).version).toBe(2);
+            const state = new State();
+            state.addSystem(BakeSystem);
+            loadDocument(state, text);
+            state.step(0);
+            const authored = snapshotAll(state);
+            const canonical = saveDocument(state);
+            expect(JSON.parse(canonical).version).toBe(CURRENT_VERSION);
+            expect(serializeDocument(parseDocument(canonical))).toBe(canonical);
+
+            loadDocument(state, canonical);
+            state.step(0);
+            expect(snapshotAll(state)).toEqual(authored);
+            expect(saveDocument(state)).toBe(canonical);
+        });
+    }
+
+    test("all 26 pre-S2 fixtures are frozen, with the malformed corpus byte-identical", async () => {
+        const malformed = [
+            "duplicateId-red.kex",
+            "duplicateSectionOrder-red.kex",
+            "emptyTrack-red.kex",
+            "minExtentFloor-red.kex",
+            "minForceExtent-red.kex",
+            "minNodeFloor-red.kex",
+            "minStartSpeed-red.kex",
+            "nodeZeroOrigin-red.kex",
+            "sectionKind-red.kex",
+            "stationTaken-red.kex",
+            "stripKeyframeTaken-red.kex",
+            "stripOverlapped-red.kex",
+            "valid-green.kex",
+            "validCoefficient-red.kex",
+            "validStripValue-red.kex",
+        ];
+        expect(valid.length + malformed.length).toBe(26);
+        for (const name of malformed) {
+            const frozen = await Bun.file(
+                new URL(`./fixtures/v2/invariants/${name}`, import.meta.url),
+            ).text();
+            const live = await Bun.file(
+                new URL(`./fixtures/invariants/${name}`, import.meta.url),
+            ).text();
+            expect(frozen).toBe(live);
+            expect(JSON.parse(frozen).version).toBeLessThanOrEqual(2);
+        }
     });
 });
 

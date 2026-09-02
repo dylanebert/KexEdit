@@ -136,7 +136,7 @@ describe("new: seeds a fresh document", () => {
             expect(created.exitCode).toBe(0);
             expect(existsSync(path)).toBe(true);
             const doc = parseDocument(readFileSync(path, "utf8"));
-            expect(doc.sections.length).toBeGreaterThan(0);
+            expect(doc.segments.length).toBeGreaterThan(0);
 
             const clobber = await dispatch(["new", path]);
             expect(clobber.exitCode).toBe(1);

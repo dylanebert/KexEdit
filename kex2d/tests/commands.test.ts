@@ -99,10 +99,10 @@ function buildTemplateText(): string {
 const TEMPLATE_TEXT = buildTemplateText();
 const TEMPLATE = parseDocument(TEMPLATE_TEXT);
 
-const GEO = TEMPLATE.sections.find((s) => s.kind === SectionKind.Geo)?.id;
-const FORCE_SEC = TEMPLATE.sections.find((s) => s.kind === SectionKind.Force)?.id;
+const GEO = TEMPLATE.segments.find((s) => s.kind === SectionKind.Geo)?.id;
+const FORCE_SEC = TEMPLATE.segments.find((s) => s.kind === SectionKind.Force)?.id;
 if (GEO === undefined || FORCE_SEC === undefined) throw new Error("template: missing a section");
-const forceSecDoc = TEMPLATE.sections.find((s) => s.id === FORCE_SEC);
+const forceSecDoc = TEMPLATE.segments.find((s) => s.id === FORCE_SEC);
 if (!forceSecDoc) throw new Error("template: force section vanished");
 const FORCE_LEN = forceSecDoc.length; // 30 — the clamp domain finding 2's boundary test drives past
 const FP0 = forceSecDoc.points.find((p) => p.s === 0)?.id;

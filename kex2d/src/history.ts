@@ -1132,3 +1132,8 @@ export function removeSections(h: History, ecs: State, ids: readonly number[]): 
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
 }
+
+/** Canonical structural history surface. */
+export const appendSegment = appendSection;
+export const removeSegment = removeSection;
+export const removeSegments = removeSections;
