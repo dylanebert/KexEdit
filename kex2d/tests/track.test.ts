@@ -44,6 +44,7 @@ import {
     exitWorld,
     extend,
     forceBake,
+    Force,
     forceEase,
     forceMarkers,
     forceSample,
@@ -70,6 +71,8 @@ import {
     sectionForces,
     sectionHandles,
     sectionInfo,
+    runInfo,
+    Segment,
     sectionResettable,
     sections,
     sectionSolvable,
@@ -148,6 +151,44 @@ function track(): { state: State; eid: number; sec: number } {
 }
 
 describe("BakeSystem", () => {
+    test("two canonical force segments in one run reproduce the unsplit evaluator payload byte-for-byte", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const eid = createTrack(state);
+        const first = createSection(state, 0, SectionKind.Force, 20);
+        createForcePoint(state, first, 0, 1);
+        createForcePoint(state, first, 10, 2);
+        createForcePoint(state, first, 20, 1);
+        state.step(0);
+        const sample = samples.get(eid)!;
+        const baked = bakeOut.get(eid)!;
+        const count = Track.count.get(eid);
+        const expected = {
+            x: sample.posX.slice(0, count),
+            y: sample.posY.slice(0, count),
+            fN: baked.fN.slice(0, count - 1),
+            ds: baked.ds.slice(0, count - 1),
+            info: { ...sectionInfo.get(first)! },
+        };
+
+        const second = createSection(state, 1, SectionKind.Force, 10);
+        const secondEid = sectionAt(state, second)!;
+        Segment.run.set(secondEid, first);
+        Section.length.set(sectionAt(state, first)!, 10);
+        for (const point of sectionForces(state, first)) {
+            if (point.s < 10) continue;
+            Force.segment.set(point.eid, second);
+            Force.s.set(point.eid, point.s - 10);
+        }
+        state.step(0);
+
+        expect(sample.posX.slice(0, count)).toEqual(expected.x);
+        expect(sample.posY.slice(0, count)).toEqual(expected.y);
+        expect(baked.fN.slice(0, count - 1)).toEqual(expected.fN);
+        expect(baked.ds.slice(0, count - 1)).toEqual(expected.ds);
+        expect(runInfo.get(first)).toEqual(expected.info);
+    });
+
     test("a flat horizontal chain bakes to 1g and is fully feasible", () => {
         const { state, eid } = track();
         state.step(0);
