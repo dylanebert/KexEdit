@@ -371,10 +371,10 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        doc.segments[0].points[0].ease = 999;
+        doc.segments[0].points[0].boundary.ease = 999;
         const bad = JSON.stringify(doc);
 
-        expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.ease/);
+        expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.boundary\.ease/);
         expect(snapshotAll(state)).toEqual(before);
         expect(trackEntity(state)).toBe(eid);
     });
@@ -448,6 +448,13 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
         const doc = JSON.parse(saveDocument(state));
         doc.version = 1;
         doc.sections = doc.segments;
+        // Reconstruct the historical flat v1 point shape before exercising both migrations.
+        for (const section of doc.sections) {
+            section.points = section.points.map((p: Record<string, unknown>) => {
+                const boundary = p.boundary as { g: number; ease: number };
+                return { id: p.id, s: p.s, g: boundary.g, ease: boundary.ease };
+            });
+        }
         delete doc.segments;
         // the pre-S3 explicit-handle shape: a mode + one stored (Δs, Δg) offset.
         doc.sections[1].points[1].tangent = { mode: TangentMode.Free, out: { ds: 3, dg: -0.5 } };

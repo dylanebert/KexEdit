@@ -169,6 +169,13 @@ function writeTangent(eid: number, tan: Tangent | undefined): void {
  *  handles left with `kex2d-segment-removal` S3 (`ForceTangent`, the stored
  *  `Force.tin`/`tout` offsets, and the Custom provenance they implied). */
 const forceSegment = sparse(u32);
+/** Authored value at a force station's terminating boundary.  Stations remain on
+ * `Force.s` until S2b3 unions them into the segment chain; value and leading-key
+ * easing have one boundary owner now. */
+export const ForceBoundary = {
+    g: sparse(f32),
+    ease: sparse(u32),
+};
 export const Force = {
     /** Stable canonical segment id. */
     segment: forceSegment,
@@ -176,8 +183,10 @@ export const Force = {
     section: forceSegment,
     id: sparse(u32),
     s: sparse(f32),
-    g: sparse(f32),
-    ease: sparse(u32),
+    /** @temporary S7 — compatibility reads; authored by ForceBoundary. */
+    g: ForceBoundary.g,
+    /** @temporary S7 — compatibility reads; authored by ForceBoundary. */
+    ease: ForceBoundary.ease,
 };
 
 /** the easing tag a fresh force keyframe gets — the FVD++/Planet-Coaster S-transition
@@ -1965,12 +1974,13 @@ export function createForcePoint(
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Force);
+    ecs.add(eid, ForceBoundary);
     const id = allocForceId();
     Force.section.set(eid, sectionId);
     Force.id.set(eid, id);
     Force.s.set(eid, s);
-    Force.g.set(eid, g);
-    Force.ease.set(eid, ease);
+    ForceBoundary.g.set(eid, g);
+    ForceBoundary.ease.set(eid, ease);
     return id;
 }
 
@@ -1987,11 +1997,12 @@ export function spawnForce(
 ): void {
     const eid = ecs.create();
     ecs.add(eid, Force);
+    ecs.add(eid, ForceBoundary);
     Force.section.set(eid, sectionId);
     Force.id.set(eid, id);
     Force.s.set(eid, s);
-    Force.g.set(eid, g);
-    Force.ease.set(eid, ease);
+    ForceBoundary.g.set(eid, g);
+    ForceBoundary.ease.set(eid, ease);
 }
 
 /** destroy a force point by stable id (no-op if already gone). */
@@ -2107,7 +2118,7 @@ export function setForcePoint(ecs: State, id: number, s: number, g: number): voi
     if (eid === null) return;
     const lands = !stationTaken(ecs, Force.section.get(eid), s, id);
     if (lands) Force.s.set(eid, s);
-    Force.g.set(eid, g);
+    ForceBoundary.g.set(eid, g);
 }
 
 /** write a force point's full state back — position and easing tag (the gesture
@@ -2116,8 +2127,8 @@ export function restoreForcePoint(ecs: State, st: ForcePointState): void {
     const eid = forceAt(ecs, st.id);
     if (eid === null) return;
     Force.s.set(eid, st.s);
-    Force.g.set(eid, st.g);
-    Force.ease.set(eid, st.ease);
+    ForceBoundary.g.set(eid, st.g);
+    ForceBoundary.ease.set(eid, st.ease);
 }
 
 /** a force keyframe's easing tag by stable id (default `Easing.Cubic`). */
@@ -2131,8 +2142,8 @@ export function forceEase(ecs: State, id: number): Easing {
 export function setForceEase(ecs: State, id: number, ease: Easing): void {
     const eid = forceAt(ecs, id);
     if (eid === null) return;
-    if (Force.ease.get(eid) === ease) return; // the tag it already carries: nothing written
-    Force.ease.set(eid, ease);
+    if (ForceBoundary.ease.get(eid) === ease) return; // the tag it already carries: nothing written
+    ForceBoundary.ease.set(eid, ease);
 }
 
 /** the next force keyframe after `id` in its own section (ascending s), or null when
@@ -2949,6 +2960,23 @@ function geoPayload(ecs: State, sectionId: number, ds: number, offset: number): 
     };
 }
 
+/** Materialize an evaluator run's held edge values without changing its sampled profile.
+ * The returned copy makes the payload boundary explicit: an empty run holds `DEFAULT_G`, while
+ * an interior-only profile owns its own first/last values instead of borrowing across a run. */
+export function materializeRunForceClamps(
+    points: readonly ForcePoint[],
+    runLength: number,
+): ForcePoint[] {
+    const clamped = points.slice();
+    const startG = sampleForce(points, 0);
+    const endG = sampleForce(points, runLength);
+    if (clamped.length === 0 || clamped[0].s > 0)
+        clamped.unshift({ s: 0, g: startG, ease: Easing.Linear });
+    if (clamped.length === 1 || clamped[clamped.length - 1].s < runLength)
+        clamped.push({ s: runLength, g: endG, ease: Easing.Linear });
+    return clamped;
+}
+
 /** a force section's authored points gathered into the dense per-edge F_n(σ) profile over its
  *  extent — the one place a section's keyframes become the substrate's input. Takes the
  *  RESOLVED {@link Step} (its own callers, `forcePayload`/`forceBake`, each conform through
@@ -2970,12 +2998,16 @@ function forceDense(
             points.push({
                 s: offset + p.s,
                 g: land?.(p.id) ?? p.g,
-                ease: Force.ease.get(p.eid) as Easing,
+                ease: ForceBoundary.ease.get(p.eid) as Easing,
             });
         }
         offset += lengths[i];
     }
-    return forceProfile(points, step);
+    // The run is the old evaluator payload boundary. Materialize its two clamps so
+    // a keyless run holds DEFAULT_G and interior-only keys cannot borrow a value
+    // from an adjacent run. Exact splits inside the run remain invisible.
+    const runLength = lengths.reduce((sum, length) => sum + length, 0);
+    return forceProfile(materializeRunForceClamps(points, runLength), step);
 }
 
 /** a force section's payload: its dense profile + the step it bakes at (its own or the
