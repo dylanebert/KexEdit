@@ -4902,6 +4902,62 @@ test("mixed-family vertical drag writes no values and paints no snap hint", asyn
     await page.mouse.up();
 });
 
+// The velocity floor is reachable through the existing strip-keyframe authoring helper. A drag
+// from that floor toward the visible 0 m/s baseline resolves a real landmark guide, but the setter
+// clamps the proposed value back to the captured floor. The guide must follow the stored write, not
+// the pre-clamp delta.
+test("floor-clamped strip keyframe no-op paints no value snap hint", async ({ page, boot }) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const floor = 0.01; // V_FLOOR, the strip-keyframe setter's authoring floor
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.2, len * 0.9, 4)) as number;
+    if (stripId === null) throw new Error("strip creation failed (overlap?)");
+    const floorId = (await kexCall(page, "placeStripKf", stripId, len * 0.55, floor)) as number;
+    const stripKeyframesOf = () =>
+        kexCall(page, "stripKeyframesOf", stripId) as Promise<
+            { id: number; s: number; v: number }[]
+        >;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+
+    let floorPoint: { id: number; x: number; y: number } | undefined;
+    await expect
+        .poll(async () => {
+            floorPoint = (await stripKfPx()).find((p) => p.id === floorId);
+            return floorPoint !== undefined;
+        })
+        .toBe(true);
+    if (!floorPoint) throw new Error("floor keyframe has no chart position");
+    await page.mouse.click(floorPoint.x, floorPoint.y);
+    await expect.poll(async () => kexCall(page, "stripKfSelIds")).toEqual([floorId]);
+
+    const axes = (await kexCall(page, "valueAxes")) as {
+        vRange: [number, number];
+    };
+    const dockBb = await page.locator(".dock .body").boundingBox();
+    if (!dockBb) throw new Error("timeline body not laid out");
+    const chartTop = dockBb.y + CHART_TOP;
+    const chartBot = dockBb.y + dockBb.height - CHART_BOT_PAD;
+    const baselineY =
+        chartTop +
+        (1 - (0 - axes.vRange[0]) / (axes.vRange[1] - axes.vRange[0])) * (chartBot - chartTop);
+    const before = (await stripKeyframesOf()).find((k) => k.id === floorId)!;
+    expect(before.v).toBe(floor);
+
+    await page.mouse.move(floorPoint.x, floorPoint.y);
+    await page.mouse.down();
+    await page.mouse.move(floorPoint.x, baselineY, { steps: 10 });
+    await expect
+        .poll(async () => (await stripKeyframesOf()).find((k) => k.id === floorId)!.v)
+        .toBe(floor);
+    await expect(page.locator(".snapguide")).toHaveCount(0);
+    await page.mouse.up();
+});
+
 // S5 arm (b): a multi-select WITHIN one domain still moves every member's value, so the
 // constraint reads off set composition, not off the mixed case having disabled the channel
 // outright. Two force keyframes co-selected, vertical drag — both values move.

@@ -1463,11 +1463,13 @@ function applyKeyframeDrag(): void {
     for (const m of dragKfMembers) {
         const dsApplied = result.station.delta * m.dsScale;
         const dvApplied = result.value.delta * m.dvScale;
-        result.station.wrote ||= dsApplied !== 0;
-        result.value.wrote ||= dvApplied !== 0;
-        const s = m.s0 + dsApplied;
-        const v = m.v0 + dvApplied;
-        m.setter(ecs, m.id, s, m.floor !== null ? Math.max(m.floor, v) : v);
+        const final = {
+            s: m.s0 + dsApplied,
+            v: m.floor !== null ? Math.max(m.floor, m.v0 + dvApplied) : m.v0 + dvApplied,
+        };
+        m.setter(ecs, m.id, final.s, final.v);
+        result.station.wrote ||= final.s !== m.s0;
+        result.value.wrote ||= final.v !== m.v0;
     }
     snapX = result.station.wrote ? result.station.guide : null;
     snapY = result.value.wrote ? result.value.guide : null;
