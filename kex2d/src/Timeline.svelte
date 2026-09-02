@@ -1442,16 +1442,35 @@ function applyKeyframeDrag(): void {
     const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room
     const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);
     if (dsWrite !== ds) snapX = null; // the cap engaged: the snap guide would point past it
+    // The applied result is the single authority for both the write and its feedback. A resolved
+    // axis delta is only applied when a captured member carries that axis; guides are published
+    // after the same scaled deltas have been applied, so a constrained channel cannot advertise a
+    // snap it never wrote (including a zero-delta direction-intent magnet).
+    interface AppliedAxis {
+        delta: number;
+        guide: number | null;
+        wrote: boolean;
+    }
+    const result: { station: AppliedAxis; value: AppliedAxis } = {
+        station: { delta: dsWrite, guide: dsWrite === 0 ? null : snapX, wrote: false },
+        value: { delta: dv, guide: dv === 0 ? null : snapY, wrote: false },
+    };
     // S4/S5 axis law: horizontal (Δd) writes only members whose station axis survives (strip
     // keyframes); force stations remain fixed. vertical (Δv) moves only the active kind's
     // members in a single-domain set, and no member's value when the set spans both keyframe
     // domains. Each member carries its own axis scales, setter, and floor, so the shared write
     // loop remains one path for both kinds.
     for (const m of dragKfMembers) {
-        const s = m.s0 + dsWrite * m.dsScale;
-        const v = m.v0 + dv * m.dvScale;
+        const dsApplied = result.station.delta * m.dsScale;
+        const dvApplied = result.value.delta * m.dvScale;
+        result.station.wrote ||= dsApplied !== 0;
+        result.value.wrote ||= dvApplied !== 0;
+        const s = m.s0 + dsApplied;
+        const v = m.v0 + dvApplied;
         m.setter(ecs, m.id, s, m.floor !== null ? Math.max(m.floor, v) : v);
     }
+    snapX = result.station.wrote ? result.station.guide : null;
+    snapY = result.value.wrote ? result.value.guide : null;
 }
 // Escape updates this component-local hit-surface guard synchronously; the selected-point
 // projection follows the editor singleton only on the next RAF.

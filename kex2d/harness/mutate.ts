@@ -302,8 +302,8 @@ const PAIRS: Pair[] = [
         flow: "mixed-set drag axis law: horizontal moves strip stations only, vertical moves none when the set spans both domains (S5/S4)",
         mutations: [
             {
-                old: "        const v = m.v0 + dv * m.dvScale;",
-                new: "        const v = m.v0 + dv; // MUTATED: axis law disabled — vertical moves all kinds",
+                old: "        const dvApplied = result.value.delta * m.dvScale;",
+                new: "        const dvApplied = result.value.delta; // MUTATED: axis law disabled — vertical moves all kinds",
             },
         ],
     },

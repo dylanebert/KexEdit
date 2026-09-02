@@ -4819,6 +4819,89 @@ test("mixed-set drag axis law: horizontal moves strip stations only, vertical mo
     expect(stripKfAfterV.s).toBe(stripKfBeforeV.s); // station unchanged (vertical only)
 });
 
+// S4 repair: a real mixed-family vertical drag has no applied value channel. Its values stay
+// unchanged, and because the snap hint must come from the same applied result as the write, it
+// must not paint either axis guide while the gesture is live. This is deliberately a focused
+// pointer arm rather than a source assertion: the gesture reaches the shared drag path and reads
+// the rendered guide painter while pointer capture is active.
+test("mixed-family vertical drag writes no values and paints no snap hint", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect.poll(async () => kexCall(page, "forceCount")).toBe(5);
+    await frameTimeline(page);
+
+    const forceSelIds = () => kexCall(page, "forceSelIds") as Promise<number[]>;
+    const stripKfSelIds = () => kexCall(page, "stripKfSelIds") as Promise<number[]>;
+    const stripKfPx = () =>
+        kexCall(page, "stripKfPx") as Promise<{ id: number; x: number; y: number }[]>;
+    const sectionForces = () =>
+        kexCall(page, "forces") as Promise<{ id: number; s: number; g: number }[]>;
+    const stripKeyframesOf = (id: number) => kexCall(page, "stripKeyframesOf", id);
+
+    const len = ((await kexCall(page, "sectionLengths")) as number[])[0];
+    const stripId = (await kexCall(page, "addStripAt", len * 0.3, len * 0.9, 4)) as number;
+    if (stripId === null) throw new Error("strip creation failed (overlap?)");
+    const kfId = (await kexCall(page, "placeStripKf", stripId, len * 0.6, 6)) as number;
+
+    const bandBb = await page.locator(".hbandzone").boundingBox();
+    const chartBb = await page.locator("canvas.chart").boundingBox();
+    if (!bandBb || !chartBb) throw new Error("layout not ready");
+    const stripPx = (
+        (await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]
+    ).find((s) => s.id === stripId);
+    if (!stripPx) throw new Error("created strip has no band px");
+    await page.mouse.click(chartBb.x + (stripPx.x0 + stripPx.x1) / 2, bandBb.y + bandBb.height / 2);
+
+    const forceHit = page.locator(".fhit").first();
+    const forceBox = await forceHit.boundingBox();
+    if (!forceBox) throw new Error("force diamond not laid out");
+    await page.mouse.click(forceBox.x + forceBox.width / 2, forceBox.y + forceBox.height / 2);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+    const forceId = (await forceSelIds())[0];
+
+    let points: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            points = await stripKfPx();
+            return points.some((p) => p.id === kfId) && points.some((p) => p.id !== kfId);
+        })
+        .toBe(true);
+    const start = points.find((p) => p.id === kfId)!;
+    const target = points.find((p) => p.id !== kfId)!;
+    await page.keyboard.down("Shift");
+    await page.mouse.click(start.x, start.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
+    await expect.poll(async () => (await forceSelIds()).length).toBe(1);
+
+    const forceBefore = (await sectionForces()).find((p) => p.id === forceId)!;
+    const stripBefore = (
+        (await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[]
+    ).find((p) => p.id === kfId)!;
+
+    // Move vertically onto another strip keyframe's value landmark. The x coordinate is held
+    // exactly at the grabbed station, so this is a genuine vertical mixed-family gesture.
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x, target.y, { steps: 10 });
+    await expect
+        .poll(async () => (await sectionForces()).find((p) => p.id === forceId)!.g)
+        .toBe(forceBefore.g);
+    await expect
+        .poll(
+            async () =>
+                ((await stripKeyframesOf(stripId)) as { id: number; s: number; v: number }[]).find(
+                    (p) => p.id === kfId,
+                )!.v,
+        )
+        .toBe(stripBefore.v);
+    await expect(page.locator(".snapguide")).toHaveCount(0);
+    await page.mouse.up();
+});
+
 // S5 arm (b): a multi-select WITHIN one domain still moves every member's value, so the
 // constraint reads off set composition, not off the mixed case having disabled the channel
 // outright. Two force keyframes co-selected, vertical drag — both values move.
