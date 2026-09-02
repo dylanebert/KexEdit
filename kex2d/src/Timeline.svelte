@@ -1352,7 +1352,6 @@ let dragKfMembers: {
     kind: KfKind;
     s0: number;
     v0: number;
-    section: number;
     ownerId: number; // section id for force, strip id for strip-kf (for overlap cap)
     setter: (ecs: State, id: number, s: number, v: number) => void;
     floor: number | null;
@@ -1487,10 +1486,8 @@ interface KfDesc {
     ) => void;
     activate: (id: number) => void;
     setter: (ecs: State, id: number, s: number, v: number) => void;
-    // Keyframe kind owns selection and station landmarks; the value axis owns value projection,
-    // snapping, storage floor, displayed view, and edge-growth cap. `station` narrows the shared
-    // gesture without duplicating its selection/value path.
-    station: boolean;
+    // The value axis owns value projection, snapping, storage floor, displayed view, and edge-growth
+    // cap; selection and station behavior stay in the shared gesture path below.
     axis: ValueAxis;
 }
 // Value-axis behavior is shared by every gesture that edits a channel. Keyframe descriptors
@@ -1547,7 +1544,6 @@ const forceKfDesc: KfDesc = {
     selectMany: selectForces,
     activate: activateForce,
     setter: setForcePoint,
-    station: false,
     axis: forceValueAxis,
 };
 const stripKfDesc: KfDesc = {
@@ -1596,7 +1592,6 @@ const stripKfDesc: KfDesc = {
     },
     activate: activateStripKf,
     setter: setStripKeyframe,
-    station: true,
     axis: velocityValueAxis,
 };
 function kfDesc(kind: KfKind): KfDesc {
@@ -1702,6 +1697,12 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     const forceIds = forceDesc.sel.ids;
     const stripIds = stripDesc.sel.ids;
     const mixed = forceIds.size > 0 && stripIds.size > 0;
+    // A force-originated mixed drag can retain a strip keyframe selected before pin mode opened.
+    // Only that origin filters captured strip members through the existing lockdown predicate, so
+    // the shared station write cannot bypass the strip's editability boundary.
+    const capturedStripMembers = stripDesc.pts().filter(
+        (m) => stripIds.has(m.id) && (kind !== "force" || stripEditableAt(m.s)),
+    );
     const allMembers: typeof dragKfMembers = [];
     if (kind === "force") {
         // active kind: full selection (or just the clicked point if single)
@@ -1710,27 +1711,25 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         for (const m of members)
             allMembers.push({
                 id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
-                section: m.section, ownerId: m.section, setter: forceDesc.setter,
+                ownerId: m.section, setter: forceDesc.setter,
                 floor: forceDesc.axis.floor, dsScale: 0, dvScale: mixed ? 0 : 1,
             });
         // other kind: strip station dragging survives; its value axis is inactive in this
         // force-originated mixed gesture.
 
-        if (stripIds.size > 0) {
-            for (const m of stripDesc.pts().filter((m) => stripIds.has(m.id)))
+        if (capturedStripMembers.length > 0) {
+            for (const m of capturedStripMembers)
                 allMembers.push({
                     id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
-                    section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
+                    ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
                     floor: stripDesc.axis.floor, dsScale: 1, dvScale: 0,
                 });
         }
     } else {
-        const set = stripIds;
-        const members = set.size > 1 ? stripDesc.pts().filter((m) => set.has(m.id)) : [pt];
-        for (const m of members)
+        for (const m of capturedStripMembers)
             allMembers.push({
                 id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
-                section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
+                ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
                 floor: stripDesc.axis.floor, dsScale: 1, dvScale: mixed ? 0 : 1,
             });
         // other kind: force station dragging is retired, and its value axis is inactive in this
@@ -1740,7 +1739,7 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             for (const m of forceDesc.pts().filter((m) => forceIds.has(m.id)))
                 allMembers.push({
                     id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
-                    section: m.section, ownerId: m.section, setter: forceDesc.setter,
+                    ownerId: m.section, setter: forceDesc.setter,
                     floor: forceDesc.axis.floor, dsScale: 0, dvScale: 0,
                 });
         }

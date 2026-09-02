@@ -3657,16 +3657,18 @@ test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the forces st
     const stripB = (await kexCall(page, "addStripAt", L0 * 0.3, L0 * 0.9, 3)) as number;
     if (stripA === null || stripB === null) throw new Error("strip creation refused (overlap?)");
     const kfA = (await kexCall(page, "placeStripKf", stripA, L0 + L1 * 0.5, 1)) as number;
+    const kfB = (await kexCall(page, "placeStripKf", stripB, L0 * 0.6, 3)) as number;
 
     await frameTimeline(page);
     let kfPx: { id: number; x: number; y: number }[] = [];
     await expect
         .poll(async () => {
             kfPx = await stripKfPx();
-            return kfPx.some((k) => k.id === kfA);
+            return kfPx.some((k) => k.id === kfA) && kfPx.some((k) => k.id === kfB);
         })
         .toBe(true);
     const pxA = kfPx.find((k) => k.id === kfA)!;
+    const pxB = kfPx.find((k) => k.id === kfB)!;
     await frames(page, 1); // the strip authoring changed the bake — re-run it before the session
 
     // pin section 0 (the Pin row's own force-section guard: seedForceBump made it one) —
@@ -3685,20 +3687,11 @@ test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the forces st
     await expect.poll(async () => (await stripKfSelIds()).includes(kfA)).toBe(true);
     await expect.poll(async () => (await stripSelIds()).includes(stripA)).toBe(true);
 
-    // strip B into the set LAST — it becomes the ACTIVE strip (`kindActiveId("strip")`'s
-    // fallback answers the last strip member), the very owner the pre-fix gate read: B sits
-    // in the editable pinning section, so the stub's active-strip gate passes while A is
-    // locked. B carries no authored keyframe; its band shift-click is a pure membership add.
-    const chartCanvasBb = await page.locator("canvas.chart").boundingBox();
-    const bandBb = await page.locator(".hbandzone").boundingBox();
-    if (!chartCanvasBb || !bandBb) throw new Error("chart / band not laid out");
-    const spB = ((await kexCall(page, "stripPx")) as { id: number; x0: number; x1: number }[]).find(
-        (s) => s.id === stripB,
-    );
-    if (!spB) throw new Error("strip B has no band px");
-    await page.keyboard.down("Shift");
-    await page.mouse.click(chartCanvasBb.x + (spB.x0 + spB.x1) / 2, bandBb.y + bandBb.height / 2);
-    await page.keyboard.up("Shift");
+    // strip B into the set LAST — its interior keyframe joins the cross-kind set while B remains
+    // in the editable pinning section. A and B are deliberately on distinct value bands, so the
+    // shift-marquee catches B's interior diamond without catching either seeded boundary.
+    await marqueeDrag(page, pxB.x - 8, pxB.y - 12, pxB.x + 8, pxB.y + 12, true);
+    await expect.poll(async () => (await stripKfSelIds()).includes(kfB)).toBe(true);
     await expect.poll(async () => (await stripSelIds()).includes(stripB)).toBe(true);
 
     // a section-0 force keyframe shift-clicked into the set LAST — the ACTIVE member is the
@@ -3725,6 +3718,33 @@ test("pin-session lockdown blocks a mixed nudge's strip-kf subset, the forces st
     const kfAfter = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)!.s;
     expect(kfAfter - kfBefore).toBeCloseTo(0, 5); // the locked owner's keyframe never moved
     expect(await kexCall(page, "pinning")).toBe(true); // the session stood through the nudge
+
+    // Pointer arm: re-press the already-selected force diamond without Shift to promote it active,
+    // then drag from that force origin. The locked A member must stay put while editable B moves;
+    // this is the capture witness for the force-originated station-write lockdown gate.
+    const beforePointerA = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)?.s;
+    const beforePointerB = (await stripKeyframesOf(stripB)).find((k) => k.id === kfB)?.s;
+    const beforePointerForce = (await forceU()).find((p) => p.id === activeForce)?.s;
+    if (beforePointerA === undefined || beforePointerB === undefined || beforePointerForce === undefined)
+        throw new Error("mixed pointer baseline is incomplete");
+    await page.mouse.click(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
+    await page.mouse.move(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(forceHit.x + forceHit.width / 2 + 20, forceHit.y + forceHit.height / 2, {
+        steps: 10,
+    });
+    await page.mouse.up();
+    await expect
+        .poll(async () => (await stripKeyframesOf(stripB)).find((k) => k.id === kfB)?.s)
+        .toBeGreaterThan(beforePointerB);
+    const afterPointerA = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)?.s;
+    const afterPointerForce = (await forceU()).find((p) => p.id === activeForce)?.s;
+    const afterPointerB = (await stripKeyframesOf(stripB)).find((k) => k.id === kfB)?.s;
+    if (afterPointerA === undefined || afterPointerB === undefined || afterPointerForce === undefined)
+        throw new Error("mixed pointer result is incomplete");
+    expect(afterPointerA).toBeCloseTo(beforePointerA, 5);
+    expect(afterPointerB).toBeGreaterThan(beforePointerB);
+    expect(afterPointerForce).toBeCloseTo(beforePointerForce, 5);
 });
 
 // S1 capture arm (B3): strip-keyframe SNAP. `applyKeyframeDrag`'s s-axis snap resolves through
@@ -4761,9 +4781,14 @@ test("mixed-set drag axis law: horizontal moves strip stations only, vertical mo
 
     const stripKfBeforeV = stripAfterAnchor;
     // re-locate the strip keyframe for the vertical drag
-    const skDrag2 = await stripKfPx();
+    let skDrag2: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            skDrag2 = await stripKfPx();
+            return skDrag2.some((k) => k.id === kfId);
+        })
+        .toBe(true);
     const skDragPt2 = skDrag2.find((k) => k.id === kfId)!;
-    if (!skDragPt2) throw new Error("strip keyframe not projected after force-originated drag");
     await page.mouse.move(skDragPt2.x, skDragPt2.y);
     await page.mouse.down();
     await page.mouse.move(skDragPt2.x, skDragPt2.y + 30, { steps: 10 });
@@ -4974,9 +4999,9 @@ test("App.svelte Convert/Pin listener routes through activeKind, not editor.sect
         (document.activeElement as HTMLElement)?.blur?.();
     });
     await page.keyboard.press("d");
-    // A stale pre-fix conversion runs in a worker; let its ~2 s budget elapse before reading the
-    // durable kind.
-    await frames(page, 120);
+    // This fixed generous wait clears the measured ~2.03 s worst-case async conversion. It is not
+    // a conversion-time bound and does not add another bridge.
+    await frames(page, 180);
     expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
 });
 
