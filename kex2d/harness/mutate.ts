@@ -221,8 +221,8 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe overlap refusal",
         mutations: [
             {
-                old: '    const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room\n    const dsWrite = kind === "strip" ? (dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped)) : 0;',
-                new: '    const dsWrite = kind === "strip" ? ds : 0; // MUTATED: strip Δd cap disabled — raw delta lands unbounded',
+                old: "    const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);",
+                new: "    const dsWrite = ds; // MUTATED: strip Δd cap disabled — raw delta lands unbounded",
             },
         ],
     },

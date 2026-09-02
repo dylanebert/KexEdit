@@ -4629,7 +4629,7 @@ test("marquee over two different strips' keyframes takes both (S2)", async ({ pa
     expect(sel).toContain(kfB);
 });
 
-test("mixed-set drag axis law: horizontal moves all, vertical moves none when the set spans both domains (S5)", async ({
+test("mixed-set drag axis law: horizontal moves strip stations only, vertical moves none when the set spans both domains (S5/S4)", async ({
     page,
     boot,
 }) => {
@@ -4721,11 +4721,10 @@ test("mixed-set drag axis law: horizontal moves all, vertical moves none when th
 
     const forceDs = forceAfterH.s - forceBefore.s;
     const stripKfDs = stripKfAfterH.s - stripKfBefore.s;
-    // axis law: horizontal moves BOTH kinds' stations by the SAME Δd (whatever the snap/cap
-    // allows — the law is the ratio, not the absolute amount). the force and strip keyframe
-    // moved by the same delta, and the strip keyframe's VALUE is unchanged (horizontal only).
-    expect(forceDs).not.toBe(0); // the drag actually moved something
-    expect(Math.abs(forceDs - stripKfDs)).toBeLessThan(2 / pxPerU); // same Δd
+    // S4 removes the force position axis, so a strip-originated mixed drag moves only the
+    // strip station. The strip VALUE remains unchanged because this is a horizontal drag.
+    expect(forceDs).toBeCloseTo(0, 5); // force station is fixed
+    expect(Math.abs(stripKfDs)).toBeGreaterThan(2 / pxPerU); // surviving strip station moved
     expect(stripKfAfterH.v).toBe(stripKfBefore.v); // value unchanged
 
     const stripKfBeforeV = stripKfAfterH;

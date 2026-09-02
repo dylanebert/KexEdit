@@ -1358,6 +1358,7 @@ let dragKfMembers: {
     ownerId: number; // section id for force, strip id for strip-kf (for overlap cap)
     setter: (ecs: State, id: number, s: number, v: number) => void;
     floor: number | null;
+    dsScale: number; // 1 for strip station drags, 0 for force keyframes (S4)
     dvScale: number; // 1 for the active kind in a single-domain set, 0 otherwise (S5 axis law)
 }[] = [];
 let dragKfMemberSet: Set<number> = new Set();
@@ -1427,6 +1428,10 @@ function applyKeyframeDrag(): void {
     const dir: 1 | -1 = ds < 0 ? -1 : 1;
     let cap = Infinity;
     for (const m of dragKfMembers) {
+        // Force keyframes retain selection and value dragging, but their station axis is not a
+        // live pointer gesture in S4. They must not participate in the strip overlap cap either:
+        // a mixed drag's cap is determined only by members whose station will actually be written.
+        if (m.dsScale === 0) continue;
         const room = keyframeRoom(
             ecs,
             m.kind,
@@ -1440,13 +1445,13 @@ function applyKeyframeDrag(): void {
     const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room
     const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);
     if (dsWrite !== ds) snapX = null; // the cap engaged: the snap guide would point past it
-    // S5 axis law: horizontal (Δd) moves EVERY member's stored station; vertical (Δv) moves
-    // only the active kind's members in a single-domain set, and no member's value when the
-    // set spans both keyframe domains. each member carries its own `dvScale` (1 for the active
-    // kind in a single-domain set, 0 otherwise) and its own `setter`/`floor`, set at drag start
-    // — so this write loop has no per-kind branch at the drag site.
+    // S4/S5 axis law: horizontal (Δd) writes only members whose station axis survives (strip
+    // keyframes); force stations remain fixed. vertical (Δv) moves only the active kind's
+    // members in a single-domain set, and no member's value when the set spans both keyframe
+    // domains. Each member carries its own axis scales, setter, and floor, so the shared write
+    // loop remains one path for both kinds.
     for (const m of dragKfMembers) {
-        const s = m.s0 + dsWrite;
+        const s = m.s0 + dsWrite * m.dsScale;
         const v = m.v0 + dv * m.dvScale;
         m.setter(ecs, m.id, s, m.floor !== null ? Math.max(m.floor, v) : v);
     }
@@ -1708,15 +1713,17 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             allMembers.push({
                 id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
                 section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                floor: forceDesc.axis.floor, dvScale: mixed ? 0 : 1,
+                floor: forceDesc.axis.floor, dsScale: 0, dvScale: mixed ? 0 : 1,
             });
-        // other kind: its selected members move in s only (dvScale 0)
+        // other kind: strip station dragging survives; its value axis is inactive in this
+        // force-originated mixed gesture.
+
         if (stripIds.size > 0) {
             for (const m of stripDesc.pts().filter((m) => stripIds.has(m.id)))
                 allMembers.push({
                     id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
                     section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                    floor: stripDesc.axis.floor, dvScale: 0,
+                    floor: stripDesc.axis.floor, dsScale: 1, dvScale: 0,
                 });
         }
     } else {
@@ -1726,15 +1733,17 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
             allMembers.push({
                 id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
                 section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                floor: stripDesc.axis.floor, dvScale: mixed ? 0 : 1,
+                floor: stripDesc.axis.floor, dsScale: 1, dvScale: mixed ? 0 : 1,
             });
-        // other kind: its selected members move in s only (dvScale 0)
+        // other kind: force station dragging is retired, and its value axis is inactive in this
+        // strip-originated mixed gesture.
+
         if (forceIds.size > 0) {
             for (const m of forceDesc.pts().filter((m) => forceIds.has(m.id)))
                 allMembers.push({
                     id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
                     section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                    floor: forceDesc.axis.floor, dvScale: 0,
+                    floor: forceDesc.axis.floor, dsScale: 0, dvScale: 0,
                 });
         }
     }
