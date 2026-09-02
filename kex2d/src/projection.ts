@@ -26,23 +26,35 @@ export function rebuildSegmentProjection(ecs: State): SegmentProjectionRow[] {
 /** @temporary S3–S7 — one stable evaluator payload over contiguous canonical segments. */
 export interface RunProjectionRow extends SegmentProjectionRow {
     segmentIds: number[];
+    /** @temporary S3–S7 — conserved run-local boundary stations, including entry zero. */
+    stations: number[];
 }
 
-/** @temporary S3–S7 — derive the evaluator partition from canonical segment order. */
+/** @temporary S3–S7 — derive the evaluator partition from canonical segment order.
+ * The conserved station frame is authoritative: member lengths are compatibility data and
+ * must never be accumulated to reconstruct either an interior station or the run extent. */
 export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
     const segments = rebuildSegmentProjection(ecs);
     const runs: RunProjectionRow[] = [];
     for (const segment of segments) {
         const runId = Segment.run.get(segment.eid);
+        const entry = Segment.runStation.get(segment.eid);
         const prior = runs[runs.length - 1];
         if (prior && prior.id === runId) {
             if (prior.kind !== segment.kind) throw new Error(`run ${runId} crosses segment kinds`);
-            prior.length += segment.length;
             prior.segmentIds.push(segment.id);
+            prior.stations.push(entry);
             continue;
         }
-        runs.push({ ...segment, id: runId, segmentIds: [segment.id] });
+        runs.push({
+            ...segment,
+            id: runId,
+            length: Segment.runExtent.get(segment.eid) || segment.length,
+            segmentIds: [segment.id],
+            stations: [entry],
+        });
     }
+    for (const run of runs) run.stations.push(run.length);
     return runs;
 }
 
@@ -58,6 +70,9 @@ export interface ForceProjectionRow {
 
 /** @plumbing — reconstruct prior evaluator input without making the compatibility row an owner. */
 export function rebuildForceProjection(ecs: State): ForceProjectionRow[] {
+    const chainOrder = new Map(
+        rebuildSegmentProjection(ecs).map((segment, index) => [segment.id, index]),
+    );
     const rows = [...ecs.query([Force, ForceBoundary])].map((eid) => ({
         eid,
         segment: Force.segment.get(eid),
@@ -66,7 +81,12 @@ export function rebuildForceProjection(ecs: State): ForceProjectionRow[] {
         g: ForceBoundary.g.get(eid),
         ease: ForceBoundary.ease.get(eid),
     }));
-    rows.sort((a, b) => a.segment - b.segment || a.s - b.s || a.id - b.id);
+    rows.sort(
+        (a, b) =>
+            (chainOrder.get(a.segment) ?? Infinity) - (chainOrder.get(b.segment) ?? Infinity) ||
+            a.s - b.s ||
+            a.id - b.id,
+    );
     return rows;
 }
 

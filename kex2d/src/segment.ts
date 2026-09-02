@@ -307,3 +307,100 @@ export function allowedSelectionActions(_ids: readonly SegmentId[]): SelectionAc
 export function isMultiSelection(ids: readonly SegmentId[]): boolean {
     return ids.length > 1;
 }
+
+/** A station-shaped force key at the temporary run wire boundary. */
+export interface ForceStation<T = number> {
+    readonly id: SegmentId;
+    readonly station: number;
+    readonly value: T;
+}
+
+/** One canonical member produced by force-station union. `entryStation` is conserved;
+ * `duration` and `localStation` are compatibility projections between adjacent stations. */
+export interface ForceUnionMember<T = number> {
+    id: SegmentId;
+    readonly entryStation: number;
+    duration: number;
+    localStation: number;
+    boundary?: ForceStation<T>;
+}
+
+/** The ordered station vector is the conserved run frame. Its last entry is the extent;
+ * member durations must never be used to reconstruct any entry or the terminal station. */
+export interface ForceUnionRun<T = number> {
+    readonly id: SegmentId;
+    readonly extent: number;
+    readonly stations: readonly number[];
+    readonly start?: ForceStation<T>;
+    members: ForceUnionMember<T>[];
+}
+
+/** Union positive-duration force-key stations into canonical members. A key at zero
+ * is the predecessor-less start boundary; each later key terminates one member. The
+ * terminal member is the residual against the conserved compatibility extent. */
+export function forceStationUnion<T>(
+    runId: SegmentId,
+    extent: number,
+    points: readonly ForceStation<T>[],
+    allocateId: (memberIndex: number) => SegmentId,
+): ForceUnionRun<T> {
+    if (!Number.isFinite(extent) || extent <= 0)
+        throw new RangeError("run extent must be positive");
+    const sorted = [...points].sort((a, b) => a.station - b.station);
+    for (const point of sorted)
+        if (!Number.isFinite(point.station) || point.station < 0 || point.station > extent)
+            throw new RangeError("force station is outside the run");
+    let start: ForceStation<T> | undefined;
+    let cursor = 0;
+    let first = true;
+    const members: ForceUnionMember<T>[] = [];
+    for (const point of sorted) {
+        if (point.station === 0) {
+            if (start) throw new RangeError("force boundaries must own positive duration");
+            start = point;
+            continue;
+        }
+        const duration = point.station - cursor;
+        if (!(duration > 0)) throw new RangeError("force boundaries must own positive duration");
+        members.push({
+            id: first ? runId : allocateId(members.length),
+            entryStation: cursor,
+            duration,
+            localStation: duration,
+            boundary: point,
+        });
+        first = false;
+        cursor = point.station;
+    }
+    if (cursor < extent) {
+        members.push({
+            id: first ? runId : allocateId(members.length),
+            entryStation: cursor,
+            duration: extent - cursor,
+            localStation: 0,
+        });
+    }
+    // Allocation is deterministic by contract: exactly one callback in canonical member order
+    // for every member after the run-id member, with its final zero-based member index.
+    return {
+        id: runId,
+        extent,
+        stations: [...members.map((m) => m.entryStation), extent],
+        start,
+        members,
+    };
+}
+
+/** Project canonical members back to the exact run-nested, station-shaped v3 arm. */
+export function projectForceRun<T>(run: ForceUnionRun<T>): {
+    id: SegmentId;
+    extent: number;
+    points: ForceStation<T>[];
+} {
+    const points: ForceStation<T>[] = [];
+    if (run.start) points.push(run.start);
+    // The wire station retained on the boundary is authoritative. Re-summing independently
+    // rounded f32 member durations would drift and is expressly not the conserved quantity.
+    for (const member of run.members) if (member.boundary) points.push(member.boundary);
+    return { id: run.id, extent: run.extent, points };
+}

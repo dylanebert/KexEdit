@@ -161,6 +161,8 @@ test("run conversion applies solved force stations across ordered members", () =
     const first = createSection(ecs, 0, SectionKind.Geo, 12);
     const second = createSection(ecs, 1, SectionKind.Geo, 8);
     Segment.run.set(sectionAt(ecs, second)!, first);
+    Segment.runStation.set(sectionAt(ecs, second)!, 12);
+    Segment.runExtent.set(sectionAt(ecs, first)!, 20);
     applyConvert(ecs, second, {
         length: 25,
         points: [
@@ -179,6 +181,8 @@ test("run extent resize moves only the terminal member", () => {
     const first = createSection(ecs, 0, SectionKind.Force, 12);
     const second = createSection(ecs, 1, SectionKind.Force, 8);
     Segment.run.set(sectionAt(ecs, second)!, first);
+    Segment.runStation.set(sectionAt(ecs, second)!, 12);
+    Segment.runExtent.set(sectionAt(ecs, first)!, 20);
     setSectionLength(ecs, first, 25);
     expect(Section.length.get(sectionAt(ecs, first)!)).toBe(12);
     expect(Section.length.get(sectionAt(ecs, second)!)).toBe(13);
@@ -226,6 +230,8 @@ describe("BakeSystem", () => {
         const second = createSection(state, 1, SectionKind.Force, 10);
         const secondEid = sectionAt(state, second)!;
         Segment.run.set(secondEid, first);
+        Segment.runStation.set(secondEid, 10);
+        Segment.runExtent.set(sectionAt(state, first)!, 20);
         Section.length.set(sectionAt(state, first)!, 10);
         for (const point of sectionForces(state, first)) {
             if (point.s < 10) continue;
