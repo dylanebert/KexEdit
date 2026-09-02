@@ -63,7 +63,6 @@ import {
     cancel,
     commit,
     commitLength,
-    createForce,
     deleteOneShot,
     deleteStrips,
     history,
