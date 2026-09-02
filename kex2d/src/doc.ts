@@ -99,13 +99,24 @@ export interface DocPoint {
     boundary: DocForceBoundary;
 }
 
+export interface DocRunMember {
+    station: number;
+    kind: number;
+    nodes: DocNode[];
+    points: DocPoint[];
+}
+
 export interface DocSegment {
+    /** Run identity. The first synthesized member deliberately reuses it. */
     id: number;
     order: number;
     kind: number;
+    /** Conserved run extent. */
     length: number;
     nodes: DocNode[];
     points: DocPoint[];
+    /** Present only for a multi-member run, preserving current single-member bytes. */
+    members?: DocRunMember[];
 }
 
 export interface DocStripKeyframe {
@@ -205,10 +216,39 @@ export function docFromEcs(ecs: State): Kex2dDocument {
     return {
         version: CURRENT_VERSION,
         track,
-        segments: snap.segments
-            .slice()
-            .sort((a, b) => a.order - b.order)
-            .map(toDocSegment),
+        segments: (() => {
+            const ordered = snap.segments.slice().sort((a, b) => a.order - b.order);
+            const groups = new Map<number, typeof ordered>();
+            for (const member of ordered) {
+                const group = groups.get(member.run) ?? [];
+                group.push(member);
+                groups.set(member.run, group);
+            }
+            return [...groups.values()].map((members) => {
+                if (members.length === 1) return toDocSegment(members[0]!);
+                const first = members[0]!;
+                return {
+                    id: first.run,
+                    order: first.order,
+                    kind: first.kind,
+                    length: first.runExtent,
+                    nodes: [],
+                    points: [],
+                    members: members.map((member) => {
+                        const payload = toDocSegment(member);
+                        return {
+                            station: member.runStation,
+                            kind: payload.kind,
+                            nodes: payload.nodes,
+                            points: payload.points.map((point) => ({
+                                ...point,
+                                s: member.runStation + point.s,
+                            })),
+                        };
+                    }),
+                };
+            });
+        })(),
         strips: snap.strips
             .slice()
             .sort((a, b) => a.id - b.id)
@@ -231,6 +271,9 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
         order: s.order,
         kind: s.kind as SectionKind,
         length: s.length,
+        run: s.id,
+        runStation: 0,
+        runExtent: s.length,
         nodes: s.nodes.map(
             (n): NodeState => ({
                 order: n.order,
@@ -253,8 +296,32 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
  *  `TrackSnapshot` shape — the four `Track` scalars are applied separately by the caller
  *  (`restoreAll` never touches the `Track` component itself). */
 export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
+    const maxWireId = Math.max(-1, ...doc.segments.map((run) => run.id));
+    let nextMemberId = maxWireId + 1;
+    const segments = doc.segments.flatMap((run) => {
+        if (!run.members) return [fromDocSegment(run)];
+        return run.members
+            .map((member, index) => {
+                const station = member.station;
+                const end = run.members![index + 1]?.station ?? run.length;
+                return fromDocSegment({
+                    id: index === 0 ? run.id : nextMemberId++,
+                    order: run.order + index,
+                    kind: member.kind,
+                    length: Math.fround(end - station),
+                    nodes: member.nodes,
+                    points: member.points.map((point) => ({ ...point, s: point.s - station })),
+                });
+            })
+            .map((member, index) => ({
+                ...member,
+                run: run.id,
+                runStation: run.members![index]!.station,
+                runExtent: run.length,
+            }));
+    });
     return {
-        segments: doc.segments.map(fromDocSegment),
+        segments,
         strips: doc.strips.map((st) => ({
             id: st.id,
             start: st.start,
@@ -339,7 +406,8 @@ function renderSection(sec: DocSegment): string {
         `  "kind": ${sec.kind},`,
         `  "length": ${emitFlat(sec.length)},`,
         `  "nodes": ${emitFlatArray("  ", sec.nodes)},`,
-        `  "points": ${emitFlatArray("  ", sec.points)}`,
+        `  "points": ${emitFlatArray("  ", sec.points)}${sec.members ? "," : ""}`,
+        ...(sec.members ? [`  "members": ${emitFlatArray("  ", sec.members)}`] : []),
         "}",
     ].join("\n");
 }
@@ -502,6 +570,30 @@ function validateSegment(v: unknown, i: number): DocSegment {
     if (!isFiniteNumber(v.length)) fail(`${path}.length is missing or not a finite number`);
     if (!Array.isArray(v.nodes)) fail(`${path}.nodes is missing or not an array`);
     if (!Array.isArray(v.points)) fail(`${path}.points is missing or not an array`);
+    let members: DocRunMember[] | undefined;
+    if (v.members !== undefined) {
+        if (!Array.isArray(v.members) || v.members.length < 2)
+            fail(`${path}.members must be an array with at least two entries`);
+        members = v.members.map((member, j) => {
+            const memberPath = `${path}.members[${j}]`;
+            if (!isPlainObject(member)) fail(`${memberPath} is not an object`);
+            if (!isFiniteNumber(member.station))
+                fail(`${memberPath}.station is missing or not finite`);
+            if (
+                !isInt(member.kind) ||
+                (member.kind !== SectionKind.Geo && member.kind !== SectionKind.Force)
+            )
+                fail(`${memberPath}.kind is missing or invalid`);
+            if (!Array.isArray(member.nodes) || !Array.isArray(member.points))
+                fail(`${memberPath} payload arrays are missing`);
+            return {
+                station: member.station as number,
+                kind: member.kind as number,
+                nodes: member.nodes.map((n, k) => validateNode(n, `${memberPath}.nodes[${k}]`)),
+                points: member.points.map((p, k) => validatePoint(p, `${memberPath}.points[${k}]`)),
+            };
+        });
+    }
     return {
         id: v.id as number,
         order: v.order as number,
@@ -509,6 +601,7 @@ function validateSegment(v: unknown, i: number): DocSegment {
         length: v.length as number,
         nodes: v.nodes.map((n, j) => validateNode(n, `${path}.nodes[${j}]`)),
         points: v.points.map((p, j) => validatePoint(p, `${path}.points[${j}]`)),
+        members,
     };
 }
 
@@ -942,7 +1035,19 @@ export function loadDocument(ecs: State, text: string): void {
     const docRefusals = checkDocInvariants(doc);
     if (docRefusals.length > 0) failSemantics(docRefusals);
 
+    // Reserve every identity carried by the wire before deterministic member synthesis.
+    reserveIds({
+        section: doc.segments.map((s) => s.id),
+        force: doc.segments.flatMap((s) => [
+            ...s.points.map((p) => p.id),
+            ...(s.members ?? []).flatMap((m) => m.points.map((p) => p.id)),
+        ]),
+        strip: doc.strips.map((st) => st.id),
+        stripKeyframe: doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
+        oneShot: doc.oneShot.map((o) => o.id),
+    });
     const snap = docToTrackSnapshot(doc);
+    reserveIds({ section: snap.segments.map((s) => s.id) });
 
     // the geometry half (`stripOverlapped`/`stripCoversOneEdge`) needs a REAL ecs to resolve a
     // section's chord length against — but it must be run in-place on THIS `ecs`, never a
@@ -985,14 +1090,6 @@ export function loadDocument(ecs: State, text: string): void {
         }
         failSemantics(geomRefusals);
     }
-
-    reserveIds({
-        section: doc.segments.map((s) => s.id),
-        force: doc.segments.flatMap((s) => s.points.map((p) => p.id)),
-        strip: doc.strips.map((st) => st.id),
-        stripKeyframe: doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
-        oneShot: doc.oneShot.map((o) => o.id),
-    });
 
     history.undo.length = 0;
     history.redo.length = 0;

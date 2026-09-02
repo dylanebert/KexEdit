@@ -630,6 +630,44 @@ describe("frozen v2 migration corpus", () => {
     });
 });
 
+describe("run-nested unstable-v3 wire", () => {
+    test("load → save → load preserves synthesized ids and the multi-member run snapshot", () => {
+        const wire = serializeDocument({
+            version: CURRENT_VERSION,
+            track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
+            segments: [
+                {
+                    id: 41,
+                    order: 0,
+                    kind: SectionKind.Force,
+                    length: 30,
+                    nodes: [],
+                    points: [],
+                    members: [
+                        { station: 0, kind: SectionKind.Force, nodes: [], points: [] },
+                        { station: 11.25, kind: SectionKind.Force, nodes: [], points: [] },
+                    ],
+                },
+            ],
+            strips: [],
+            oneShot: [],
+        });
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, wire);
+        const first = snapshotAll(state);
+        expect(first.segments.map((s) => s.id)).toEqual([41, 42]);
+        expect(first.segments.map((s) => [s.run, s.runStation, s.runExtent])).toEqual([
+            [41, 0, 30],
+            [41, 11.25, 30],
+        ]);
+        const canonical = saveDocument(state);
+        loadDocument(state, canonical);
+        expect(snapshotAll(state)).toEqual(first);
+        expect(saveDocument(state)).toBe(canonical);
+    });
+});
+
 describe("saveDocument / loadDocument on a no-op cycle", () => {
     test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
         const { state, eid } = flatTrack();
