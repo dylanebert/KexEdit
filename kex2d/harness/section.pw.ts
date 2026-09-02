@@ -4697,9 +4697,15 @@ test("mixed-set drag axis law: horizontal moves strip stations only, vertical mo
     await expect.poll(async () => (await stripKfSelIds()).length).toBe(1);
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
 
-    // re-locate the strip keyframe after the shift-click (the active member is now the
-    // strip keyframe — the last toggled-in member). drag from the strip keyframe's position.
-    const skDrag = await stripKfPx();
+    // Re-locate the strip keyframe after the shift-click. It is the active member (the last
+    // toggled-in member), so the drag starts at its current projection.
+    let skDrag: { id: number; x: number; y: number }[] = [];
+    await expect
+        .poll(async () => {
+            skDrag = await stripKfPx();
+            return skDrag.some((k) => k.id === kfId);
+        })
+        .toBe(true);
     const skDragPt = skDrag.find((k) => k.id === kfId)!;
     const [, pxPerU] = (await kexCall(page, "xView")) as [number, number];
     const dragDs = 5;
@@ -4727,10 +4733,37 @@ test("mixed-set drag axis law: horizontal moves strip stations only, vertical mo
     expect(Math.abs(stripKfDs)).toBeGreaterThan(2 / pxPerU); // surviving strip station moved
     expect(stripKfAfterH.v).toBe(stripKfBefore.v); // value unchanged
 
-    const stripKfBeforeV = stripKfAfterH;
+    // Repeat the same mixed-set station drag from the FORCE diamond. The strip member supplies
+    // the station anchor and snap targets; the force member's own station remains fixed.
+    const forceBeforeAnchor = forceAfterH;
+    const stripBeforeAnchor = stripKfAfterH;
+    const forceAnchor = await forceCenter();
+    const [, forceAnchorPxPerU] = (await kexCall(page, "xView")) as [number, number];
+    const forceAnchorDragPx = dragDs * forceAnchorPxPerU;
+    await page.mouse.move(forceAnchor.x, forceAnchor.y);
+    await page.mouse.down();
+    await page.mouse.move(forceAnchor.x + forceAnchorDragPx, forceAnchor.y, { steps: 10 });
+    await page.mouse.up();
+
+    const forceAfterAnchor = (await sectionForces()).find((f) => f.id === forceId)!;
+    const stripAfterAnchor = (
+        (await stripKeyframesOf(stripId)) as {
+            id: number;
+            s: number;
+            v: number;
+        }[]
+    ).find((k) => k.id === kfId)!;
+    expect(forceAfterAnchor.s).toBe(forceBeforeAnchor.s); // force station stays fixed
+    expect(Math.abs(stripAfterAnchor.s - stripBeforeAnchor.s)).toBeGreaterThan(
+        2 / forceAnchorPxPerU,
+    ); // strip station moves from a force-originated drag
+    expect(stripAfterAnchor.v).toBe(stripBeforeAnchor.v); // value unchanged
+
+    const stripKfBeforeV = stripAfterAnchor;
     // re-locate the strip keyframe for the vertical drag
     const skDrag2 = await stripKfPx();
     const skDragPt2 = skDrag2.find((k) => k.id === kfId)!;
+    if (!skDragPt2) throw new Error("strip keyframe not projected after force-originated drag");
     await page.mouse.move(skDragPt2.x, skDragPt2.y);
     await page.mouse.down();
     await page.mouse.move(skDragPt2.x, skDragPt2.y + 30, { steps: 10 });
@@ -4749,7 +4782,7 @@ test("mixed-set drag axis law: horizontal moves strip stations only, vertical mo
     // a gesture channel whose meaning is not defined for every member carries no meaning for
     // that gesture. both kinds' values are byte-identical; station is unchanged (vertical only).
     expect(stripKfAfterV.v).toBe(stripKfBeforeV.v); // strip value byte-identical — no move
-    expect(forceAfterV.g).toBe(forceAfterH.g); // force value byte-identical — no move
+    expect(forceAfterV.g).toBe(forceAfterAnchor.g); // force value byte-identical — no move
     expect(stripKfAfterV.s).toBe(stripKfBeforeV.s); // station unchanged (vertical only)
 });
 
@@ -4941,9 +4974,9 @@ test("App.svelte Convert/Pin listener routes through activeKind, not editor.sect
         (document.activeElement as HTMLElement)?.blur?.();
     });
     await page.keyboard.press("d");
-    // Let the event loop settle before checking the durable kind. The fixed active-kind guard
-    // returns synchronously; a stale pre-fix conversion would still be observable here.
-    await frames(page, 1);
+    // A stale pre-fix conversion runs in a worker; let its ~2 s budget elapse before reading the
+    // durable kind.
+    await frames(page, 120);
     expect(await kexCall(page, "sectionKinds")).toEqual(kindsBefore);
 });
 

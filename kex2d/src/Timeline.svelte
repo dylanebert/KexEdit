@@ -1334,9 +1334,7 @@ let dragKf: { kind: KfKind; id: number } | null = $state(null); // the ANCHOR ke
 // this metres store, S6). `dOf` is identity in Distance, so a return-to-grab-pixel drag still
 // writes its start value back bit-exactly there.
 let dragKfU0 = 0;
-let dragKfStartD = 0; // the ANCHOR's section entry in arclength -- the WRITE base
-let dragKfSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
-let dragKfStrip = -1; // the ANCHOR's strip id (strip kind only — for overlap check scope)
+let dragKfStrip = -1; // the station anchor's strip id (strip kind only — for overlap check scope)
 let dragKfCx = 0; // last cursor, canvas-local px
 let dragKfCy = 0;
 // the press ordinate is separate from the live cursor ordinate: both are clamped through the
@@ -1368,12 +1366,12 @@ function applyKeyframeDrag(): void {
     const axis = kfDesc(kind).axis;
     // both axes clamp the cursor to the chart
     const cx = clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w));
-    // The strip keyframe retains station dragging. Force timing is intentionally inert in this
-    // interim editor; its value axis remains live below.
-    const canMoveStation = kfDesc(kind).station;
-    let sAnchor = canMoveStation
-        ? dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0))
-        : dragKfS0;
+    // The station anchor is selected from the captured set, not from the active diamond: force
+    // timing is inert, but a mixed drag still moves its strip members by the pointer's station
+    // delta. This keeps the strip's own station and owner as the snapping basis in either order.
+    const hasStation = dragKfMembers.some((m) => m.dsScale === 1);
+    const deltaD = dOf(uAtPx(cx)) - dOf(dragKfU0);
+    let sAnchor = dragKfS0 + deltaD;
     // v-axis: kind-specific mapping. Preserve the authored value at the press point, then apply
     // only the pointer delta. The separate clamped press ordinate keeps an off-center grab's
     // cursor offset while making a horizontal move an exact zero value delta.
@@ -1383,19 +1381,19 @@ function applyKeyframeDrag(): void {
     snapX = null;
     snapY = null;
     const active = snapActive(dragKfMod);
-    // s-axis snap remains a strip-keyframe behavior. Force keyframes have no position-axis
-    // gesture, so they neither resolve station targets nor publish an x guide.
-    if (canMoveStation) {
-        const uAnchor = uOf(dragKfStartD + sAnchor);
+    // s-axis snap is resolved from the captured strip member. Force keyframes have no position
+    // gesture, but a mixed drag still resolves its shared station delta through the strip anchor.
+    if (hasStation) {
+        const uAnchor = uOf(sAnchor);
         const targets = stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });
-        const startPx = uToPx(clamped, uOf(dragKfStartD + dragKfS0));
+        const startPx = uToPx(clamped, uOf(dragKfS0));
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
         if (r.guide !== null) {
-            sAnchor = r.guide === startPx ? dragKfS0 : dOf(r.value) - dragKfStartD;
+            sAnchor = r.guide === startPx ? dragKfS0 : dOf(r.value);
             snapX = r.guide;
         } else {
-            sAnchor = dOf(r.value) - dragKfStartD;
+            sAnchor = dOf(r.value);
         }
     }
     // v-axis snap — same `snapAxis` call, kind-specific targets and grid
@@ -1415,7 +1413,7 @@ function applyKeyframeDrag(): void {
     }
     // shared delta — no rigid group clamp against a container bound (S5, F2): the whole
     // set moves by the SAME Δs regardless of any member's own strip/segment extent.
-    const ds = sAnchor - dragKfS0;
+    const ds = hasStation ? sAnchor - dragKfS0 : 0;
     const dv = vAnchor - dragKfV0;
     // Δd-cap overlap refusal (S5b, Locked decision), applied to the BLOCK: `keyframeRoom`
     // reads each member's own directional room to the nearest sibling station NOT in the
@@ -1748,11 +1746,15 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         }
     }
     dragKfMembers = allMembers;
-    dragKfS0 = pt.s;
+    // Station motion belongs to strip members only. In a mixed set the active force diamond is
+    // therefore not the x-axis anchor: choose the active strip when present, otherwise the first
+    // captured strip member, so both drag origins preserve the strip's own snap basis.
+    const stationMember =
+        (kind === "strip" ? allMembers.find((m) => m.kind === "strip" && m.id === pt.id) : undefined) ??
+        allMembers.find((m) => m.dsScale === 1);
+    dragKfS0 = stationMember?.s0 ?? 0;
     dragKfV0 = desc.axis.val(pt);
-    dragKfStartD = pt.startD;
-    dragKfSection = pt.section;
-    dragKfStrip = kind === "force" ? -1 : (pt as StripKfPt).strip;
+    dragKfStrip = stationMember?.ownerId ?? -1;
     // common drag setup
     dragKfMemberSet = new Set(dragKfMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
