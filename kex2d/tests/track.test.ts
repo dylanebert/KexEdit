@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
     addNode,
+    applyConvert,
     allStrips,
     appendSection,
     authoredHash,
@@ -64,6 +65,8 @@ import {
     sameNodes,
     restoreAll,
     restoreSection,
+    restoreRun,
+    snapshotRun,
     samples,
     Section,
     sectionAt,
@@ -131,6 +134,55 @@ import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, type Tangent, TangentMode } from "../src/spline";
 import { GOLDEN } from "./helpers/golden";
+
+test("run restore preserves surviving member entities and respawns only absent identities", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const first = createSection(ecs, 0, SectionKind.Force, 12);
+    const second = createSection(ecs, 1, SectionKind.Force, 8);
+    const rows = sections(ecs);
+    Segment.run.set(rows[1]!.eid, first);
+    const firstEid = rows[0]!.eid;
+    const secondEid = rows[1]!.eid;
+    const snap = snapshotRun(ecs, second);
+
+    Section.length.set(firstEid, 4);
+    ecs.destroy(secondEid);
+    restoreRun(ecs, snap);
+
+    expect(sectionAt(ecs, first)).toBe(firstEid);
+    expect(sectionAt(ecs, second)).not.toBeNull();
+    expect(snapshotRun(ecs, first)).toEqual(snap);
+});
+
+test("run conversion applies solved force stations across ordered members", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const first = createSection(ecs, 0, SectionKind.Geo, 12);
+    const second = createSection(ecs, 1, SectionKind.Geo, 8);
+    Segment.run.set(sectionAt(ecs, second)!, first);
+    applyConvert(ecs, second, {
+        length: 25,
+        points: [
+            { s: 5, g: 2 },
+            { s: 20, g: 3 },
+        ],
+    });
+    expect(sectionForces(ecs, first).map((point) => point.s)).toEqual([5]);
+    expect(sectionForces(ecs, second).map((point) => point.s)).toEqual([8]);
+    expect(Section.length.get(sectionAt(ecs, second)!)).toBe(13);
+});
+
+test("run extent resize moves only the terminal member", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const first = createSection(ecs, 0, SectionKind.Force, 12);
+    const second = createSection(ecs, 1, SectionKind.Force, 8);
+    Segment.run.set(sectionAt(ecs, second)!, first);
+    setSectionLength(ecs, first, 25);
+    expect(Section.length.get(sectionAt(ecs, first)!)).toBe(12);
+    expect(Section.length.get(sectionAt(ecs, second)!)).toBe(13);
+});
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
 // computeTime, syncs each geo node's sample index, and records the per-section

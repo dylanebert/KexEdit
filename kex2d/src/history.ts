@@ -19,7 +19,7 @@ import {
     appendSection as appendSectionTrack,
     convertSection as flipSectionKind,
     createForcePoint,
-    deleteSection as deleteSectionTrack,
+    deleteRun,
     destroyForce,
     extend,
     type ForcePointState,
@@ -37,6 +37,7 @@ import {
     restoreForcePoint,
     restoreNodes,
     restoreSection,
+    restoreRun,
     sameForcePoint,
     sameNodes,
     SectionKind,
@@ -52,6 +53,7 @@ import {
     setStickyLen,
     snapshotAll,
     snapshotSection,
+    snapshotRun,
     stampProvenance,
     type SolvedForce,
     type SolvedGeo,
@@ -936,10 +938,10 @@ export function beginResistance(trackEid: number): void {
  *  byte-identical — what makes destructive conversion safe without a confirm dialog. */
 export function convertSection(h: History, ecs: State, section: number): void {
     const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     flipSectionKind(ecs, section);
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const after = snapshotRun(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
 /** reset a section to its own kind's default (the flat two-node seed / the two continuation
@@ -948,10 +950,10 @@ export function convertSection(h: History, ecs: State, section: number): void {
  *  that replaces a confirm dialog (the Reset idiom law, editor-ui.md Menus). */
 export function resetSection(h: History, ecs: State, section: number): void {
     const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     resetSectionKind(ecs, section);
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const after = snapshotRun(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
 /** land an invoked solve's document write as one undoable entry — the `snapshotSection` pair the
@@ -972,11 +974,12 @@ function landSolve(
     stamp: boolean,
 ): void {
     const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     apply();
-    const after = snapshotSection(ecs, section);
-    if (stamp) stampProvenance(ecs, section, before);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const after = snapshotRun(ecs, section);
+    if (stamp)
+        stampProvenance(ecs, section, before.members.find((member) => member.id === section)!);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
 /** land an invoked geo→force solve on a section (`geoforce.convertGeo` drives it) as one
@@ -1022,13 +1025,13 @@ export function solvePin(
     mode: { enter(): void; exit(): void },
 ): void {
     const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     for (const w of writes) {
         const st = forcePointState(ecs, w.id);
         if (st) setForcePoint(ecs, w.id, st.s, w.g);
     }
     mode.exit();
-    const after = snapshotSection(ecs, section);
+    const after = snapshotRun(ecs, section);
     // recordOuter, structurally: the landing is the ONE outer entry a mode ever produces, and
     // it must land outer even if a redirect were still (or again) live — never by the accident
     // of `mode.exit()` having run first.
@@ -1036,11 +1039,11 @@ export function solvePin(
         h,
         {
             apply: () => {
-                restoreSection(ecs, after);
+                restoreRun(ecs, after);
                 mode.exit();
             },
             reverse: () => {
-                restoreSection(ecs, before);
+                restoreRun(ecs, before);
                 mode.enter();
             },
         },
@@ -1065,10 +1068,11 @@ export function restoreProvenance(
     payload: SectionSnapshot,
 ): void {
     const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
-    restoreSection(ecs, { ...payload, order: before.order });
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const before = snapshotRun(ecs, section);
+    const current = before.members.find((member) => member.id === section)!;
+    restoreSection(ecs, { ...payload, order: current.order });
+    const after = snapshotRun(ecs, section);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
 // ── track domain (view) ─────────────────────────────────────────────────────────
@@ -1108,10 +1112,13 @@ export function appendSection(h: History, ecs: State, kind: SectionKind): number
  *  last remaining section. returns true when deleted. */
 export function removeSection(h: History, ecs: State, section: number): boolean {
     const pre = selHook?.snapshot(ecs); // the section being deleted — its stable id survives regardless
-    const before = snapshotAll(ecs);
-    if (!deleteSectionTrack(ecs, section)) return false;
-    const after = snapshotAll(ecs);
-    record(h, restoreCommand(ecs, before, after, restoreAll), pre);
+    const before = snapshotRun(ecs, section);
+    if (!deleteRun(ecs, section)) return false;
+    record(
+        h,
+        { apply: () => void deleteRun(ecs, before.id), reverse: () => restoreRun(ecs, before) },
+        pre,
+    );
     return true;
 }
 
@@ -1127,7 +1134,7 @@ export function removeSections(h: History, ecs: State, ids: readonly number[]): 
     if (targets.size === 0 || targets.size >= sections(ecs).length) return false;
     const pre = selHook?.snapshot(ecs);
     const before = snapshotAll(ecs);
-    for (const id of targets) deleteSectionTrack(ecs, id);
+    for (const id of targets) deleteRun(ecs, id);
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
