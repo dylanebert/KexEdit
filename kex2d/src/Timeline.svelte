@@ -78,7 +78,6 @@ import { convertDomain, convertFailed, pickable } from "./domain";
 import { Domain } from "./section";
 import {
     clampView,
-    creationTargets,
     dToU,
     fmt,
     frameAll,
@@ -607,9 +606,9 @@ const pyPerG = $derived.by((): number => {
 // ── force authoring: points on the curve, the keyframe idiom ──
 // filled diamonds at (s, g), authored INPUT (not optimization targets), so no drop-line
 // and no driving/driven. the chart is a WHOLE-TRACK view: it draws every force section's
-// points at once, and authoring is by cursor position — a double-click over a force
-// section's arc adds a point there (no section pre-selection). all edits route through
-// `history`. force points are authored section-local (s from the section entry, arclength
+// points at once. Free force insertion is removed in S4; surviving force edits are selection,
+// value dragging, easing, and the headless authoring command. all edits route through `history`.
+// force points are authored section-local (s from the section entry, arclength
 // ALWAYS — S6), so a point's chart position is its GLOBAL arclength projected onto the
 // chart's own axis (`uOf`), identity in Distance and through the live s↔t table in Time.
 //
@@ -1224,27 +1223,15 @@ let snapY: number | null = $state(null); // an active g-axis snap: horizontal gu
 // moving magnet — the playhead. no ruler ticks: they're the zoom-dependent 1-2-5 raster,
 // display not content. the caller excludes the dragged point and picks whether its own
 // moving edge (the track end) is a target.
-// `sameSection` names the dragged anchor's own section: its keys are dropped from the pool
-// because a station one of them occupies is a landing the Δd cap holds short of
-// (`track.keyframeRoom`, S5b), and a gesture never snaps to a target it can't reach (editor-ui.md Snapping — the same law
-// that keeps the extent trim off its own moving edge). Keys in OTHER sections stay: a boundary
-// coincidence is legal and is exactly what a cut plants, so they remain reachable landmarks.
-function sTargets(opts: {
-    exclude?: Set<number>;
-    sameSection?: number | null;
-    playhead: boolean;
-    trackEnd: boolean;
-}): number[] {
+// The ruler scrub is the only surviving caller: it snaps to section boundaries, the track end,
+// and other force points, plus a parked playhead. Keyframe-only exclusion parameters left with the
+// retired force station drag would now describe behavior that has no caller.
+function sTargets(opts: { playhead: boolean; trackEnd: boolean }): number[] {
     const v = clamped;
     const out: number[] = [uToPx(v, 0)];
     for (const b of bounds) out.push(uToPx(v, b));
     if (opts.trackEnd) out.push(uToPx(v, uTotal));
-    for (const p of forcePts) {
-        if (opts.exclude?.has(p.id)) continue;
-        if (opts.sameSection != null && p.section === opts.sameSection) continue;
-        out.push(uToPx(v, p.u));
-    }
-    // the cart rides in arclength, so the playhead is the one landmark here that projects.
+    for (const p of forcePts) out.push(uToPx(v, p.u));
     if (opts.playhead && paused && cartS !== null) out.push(uToPx(v, uOf(cartS)));
     return out;
 }
@@ -1293,11 +1280,9 @@ function chartU(e: MouseEvent): number {
     return clamp(uAtPx(e.clientX - rect.left), 0, uTotal);
 }
 
-// double-click the chart drops a force point at that s, in whatever force section the
-// cursor is over (resolved on the chart's native axis — no section pre-selection), ON the authored
-// profile (g = the profile's value there — the DAW/AE envelope-insertion identity: a
-// new point never bends the curve, and drags from a known start). over a geo section
-// (or empty), it's a no-op.
+// double-click the chart creates a velocity keyframe on a strip's authored curve. Force
+// keyframes are authored by the surviving headless command surface until segment authoring
+// supplies their boundary gesture; a force-area double-click is inert.
 function chartCreate(e: MouseEvent): void {
     let u = chartU(e);
     // T2: if the double-click is over a strip's extent, create a velocity keyframe on
@@ -1321,38 +1306,16 @@ function chartCreate(e: MouseEvent): void {
             return;
         }
     }
-    // snap the placement through the same landmark resolver the drags use (toggle, Ctrl/Cmd
-    // bypass, and SNAP_PX all apply) — the AE insert-at-CTI idiom — before resolving the value.
-    // creation targets exclude force points (an occupied s is degenerate) but keep boundaries,
-    // origin, track end, and the parked playhead. no guide flash: a double-click has no gesture
-    // to clear one, and the resolver's guide is a drag-lifetime affordance.
-    if (snapActive(e.ctrlKey || e.metaKey)) {
-        const targets = creationTargets(
-            clamped,
-            bounds,
-            uTotal,
-            paused && cartS !== null ? uOf(cartS) : null,
-        );
-        const hit = snap(uToPx(clamped, u), targets);
-        if (hit !== null) u = clamp(pxToU(clamped, hit), 0, uTotal);
-    }
-    const c = clips.find((x) => x.kind === SectionKind.Force && u >= x.u0 && u <= x.u1);
-    if (!c) return; // not over a force section
-    // the lockdown (kex2d-optimize-mode stage 5): in-mode, keys are added only on the
-    // pinning section (the sanctioned way to create give) — other sections are read-only.
-    if (!sectionEditable(editor.pinning, c.id)) return;
-    // value = the authored profile at the SNAPPED section-local s (insert-on-curve: the new
-    // point never bends the curve), so both position and value derive from the snapped place.
-    // `u` is the chart's own axis (seconds-scaled in Time view); `dOf` (the live table -- a
-    // create has no gesture to freeze one) projects it back to the arclength the store holds.
-    const s = clamp(dOf(u) - c.s0, 0, c.len);
-    selectForce(createForce(history, ecs, c.id, s, sampleForce(sectionForces(ecs, c.id), s)));
+    // No force insertion arm remains in this shared handler. Force keyframes stay selectable
+    // and value-draggable here; placement is reserved for the segment-authoring unit.
+    return;
 }
 
 // ── keyframe drag (unified: force and strip keyframes ride ONE code path — S1's substrate law).
-// drag a diamond in both axes (horizontal = s, vertical = g or v), one undo entry. the
-// last cursor position is kept in canvas space so the per-frame edge-grow (the yView/vView
-// effect's drag branch) can re-map it through a grown axis. Shift is a no-op on a keyframe
+// drag a diamond's value axis (force: vertical g; strip: horizontal s and vertical v), one undo
+// entry. Force horizontal timing is inert in S4. The last cursor position is kept in canvas space
+// so the per-frame edge-grow (the yView/vView effect's drag branch) can re-map it through a grown
+// axis. Shift is a no-op on a keyframe
 // drag: the per-axis gesture-start magnet is the "change just one axis" affordance, so a
 // dominant-axis lock is redundant here.
 // `KfKind` itself lives in `kf-hit.ts`, imported above: the hit classifier is typed over the
@@ -1371,9 +1334,7 @@ let dragKf: { kind: KfKind; id: number } | null = $state(null); // the ANCHOR ke
 // this metres store, S6). `dOf` is identity in Distance, so a return-to-grab-pixel drag still
 // writes its start value back bit-exactly there.
 let dragKfU0 = 0;
-let dragKfStartD = 0; // the ANCHOR's section entry in arclength -- the WRITE base
-let dragKfSection = -1; // the ANCHOR's section — the scope its own keys are unreachable within
-let dragKfStrip = -1; // the ANCHOR's strip id (strip kind only — for overlap check scope)
+let dragKfStrip = -1; // the station anchor's strip id (strip kind only — for overlap check scope)
 let dragKfCx = 0; // last cursor, canvas-local px
 let dragKfCy = 0;
 // the press ordinate is separate from the live cursor ordinate: both are clamped through the
@@ -1391,10 +1352,10 @@ let dragKfMembers: {
     kind: KfKind;
     s0: number;
     v0: number;
-    section: number;
     ownerId: number; // section id for force, strip id for strip-kf (for overlap cap)
     setter: (ecs: State, id: number, s: number, v: number) => void;
     floor: number | null;
+    dsScale: number; // 1 for strip station drags, 0 for force keyframes (S4)
     dvScale: number; // 1 for the active kind in a single-domain set, 0 otherwise (S5 axis law)
 }[] = [];
 let dragKfMemberSet: Set<number> = new Set();
@@ -1404,12 +1365,12 @@ function applyKeyframeDrag(): void {
     const axis = kfDesc(kind).axis;
     // both axes clamp the cursor to the chart
     const cx = clamp(dragKfCx, LEFT_GUT, Math.max(LEFT_GUT, w));
-    // s-axis: same projection for both kinds (arclength through the gesture-frozen table).
-    // NO extent clamp (S5, F2): a keyframe grab never snaps back into its strip/segment
-    // window — the container bound retired everywhere along this one shared path, both
-    // kinds, so a keyframe left outside its container by a resize stays exactly where the
-    // cursor puts it.
-    let sAnchor = dragKfS0 + (dOf(uAtPx(cx)) - dOf(dragKfU0));
+    // The station anchor is selected from the captured set, not from the active diamond: force
+    // timing is inert, but a mixed drag still moves its strip members by the pointer's station
+    // delta. This keeps the strip's own station and owner as the snapping basis in either order.
+    const hasStation = dragKfMembers.some((m) => m.dsScale === 1);
+    const deltaD = dOf(uAtPx(cx)) - dOf(dragKfU0);
+    let sAnchor = dragKfS0 + deltaD;
     // v-axis: kind-specific mapping. Preserve the authored value at the press point, then apply
     // only the pointer delta. The separate clamped press ordinate keeps an off-center grab's
     // cursor offset while making a horizontal move an exact zero value delta.
@@ -1419,20 +1380,19 @@ function applyKeyframeDrag(): void {
     snapX = null;
     snapY = null;
     const active = snapActive(dragKfMod);
-    // s-axis snap — same `snapAxis` call for both kinds, kind-specific targets
-    {
-        const uAnchor = uOf(dragKfStartD + sAnchor);
-        const targets = kind === "force"
-            ? sTargets({ exclude: dragKfMemberSet, sameSection: dragKfSection, playhead: true, trackEnd: true })
-            : stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });
-        const startPx = uToPx(clamped, uOf(dragKfStartD + dragKfS0));
+    // s-axis snap is resolved from the captured strip member. Force keyframes have no position
+    // gesture, but a mixed drag still resolves its shared station delta through the strip anchor.
+    if (hasStation) {
+        const uAnchor = uOf(sAnchor);
+        const targets = stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });
+        const startPx = uToPx(clamped, uOf(dragKfS0));
         const r = snapAxis(active, uToPx(clamped, uAnchor), uAnchor, targets, GRID, (px) =>
             pxToU(clamped, px), startPx);
         if (r.guide !== null) {
-            sAnchor = r.guide === startPx ? dragKfS0 : dOf(r.value) - dragKfStartD;
+            sAnchor = r.guide === startPx ? dragKfS0 : dOf(r.value);
             snapX = r.guide;
         } else {
-            sAnchor = dOf(r.value) - dragKfStartD;
+            sAnchor = dOf(r.value);
         }
     }
     // v-axis snap — same `snapAxis` call, kind-specific targets and grid
@@ -1452,7 +1412,7 @@ function applyKeyframeDrag(): void {
     }
     // shared delta — no rigid group clamp against a container bound (S5, F2): the whole
     // set moves by the SAME Δs regardless of any member's own strip/segment extent.
-    const ds = sAnchor - dragKfS0;
+    const ds = hasStation ? sAnchor - dragKfS0 : 0;
     const dv = vAnchor - dragKfV0;
     // Δd-cap overlap refusal (S5b, Locked decision), applied to the BLOCK: `keyframeRoom`
     // reads each member's own directional room to the nearest sibling station NOT in the
@@ -1465,6 +1425,10 @@ function applyKeyframeDrag(): void {
     const dir: 1 | -1 = ds < 0 ? -1 : 1;
     let cap = Infinity;
     for (const m of dragKfMembers) {
+        // Force keyframes retain selection and value dragging, but their station axis is not a
+        // live pointer gesture in S4. They must not participate in the strip overlap cap either:
+        // a mixed drag's cap is determined only by members whose station will actually be written.
+        if (m.dsScale === 0) continue;
         const room = keyframeRoom(
             ecs,
             m.kind,
@@ -1478,16 +1442,37 @@ function applyKeyframeDrag(): void {
     const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room
     const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);
     if (dsWrite !== ds) snapX = null; // the cap engaged: the snap guide would point past it
-    // S5 axis law: horizontal (Δd) moves EVERY member's stored station; vertical (Δv) moves
-    // only the active kind's members in a single-domain set, and no member's value when the
-    // set spans both keyframe domains. each member carries its own `dvScale` (1 for the active
-    // kind in a single-domain set, 0 otherwise) and its own `setter`/`floor`, set at drag start
-    // — so this write loop has no per-kind branch at the drag site.
-    for (const m of dragKfMembers) {
-        const s = m.s0 + dsWrite;
-        const v = m.v0 + dv * m.dvScale;
-        m.setter(ecs, m.id, s, m.floor !== null ? Math.max(m.floor, v) : v);
+    // The applied result is the single authority for both the write and its feedback. A resolved
+    // axis delta is only applied when a captured member carries that axis; guides are published
+    // after the same scaled deltas have been applied, so a constrained channel cannot advertise a
+    // snap it never wrote (including a zero-delta direction-intent magnet).
+    interface AppliedAxis {
+        delta: number;
+        guide: number | null;
+        wrote: boolean;
     }
+    const result: { station: AppliedAxis; value: AppliedAxis } = {
+        station: { delta: dsWrite, guide: dsWrite === 0 ? null : snapX, wrote: false },
+        value: { delta: dv, guide: dv === 0 ? null : snapY, wrote: false },
+    };
+    // S4/S5 axis law: horizontal (Δd) writes only members whose station axis survives (strip
+    // keyframes); force stations remain fixed. vertical (Δv) moves only the active kind's
+    // members in a single-domain set, and no member's value when the set spans both keyframe
+    // domains. Each member carries its own axis scales, setter, and floor, so the shared write
+    // loop remains one path for both kinds.
+    for (const m of dragKfMembers) {
+        const dsApplied = result.station.delta * m.dsScale;
+        const dvApplied = result.value.delta * m.dvScale;
+        const final = {
+            s: m.s0 + dsApplied,
+            v: m.floor !== null ? Math.max(m.floor, m.v0 + dvApplied) : m.v0 + dvApplied,
+        };
+        m.setter(ecs, m.id, final.s, final.v);
+        result.station.wrote ||= final.s !== m.s0;
+        result.value.wrote ||= final.v !== m.v0;
+    }
+    snapX = result.station.wrote ? result.station.guide : null;
+    snapY = result.value.wrote ? result.value.guide : null;
 }
 // Escape updates this component-local hit-surface guard synchronously; the selected-point
 // projection follows the editor singleton only on the next RAF.
@@ -1522,8 +1507,8 @@ interface KfDesc {
     ) => void;
     activate: (id: number) => void;
     setter: (ecs: State, id: number, s: number, v: number) => void;
-    // Keyframe kind owns selection and station landmarks; the value axis owns value projection,
-    // snapping, storage floor, displayed view, fitted target, and edge-growth cap.
+    // The value axis owns value projection, snapping, storage floor, displayed view, and edge-growth
+    // cap; selection and station behavior stay in the shared gesture path below.
     axis: ValueAxis;
 }
 // Value-axis behavior is shared by every gesture that edits a channel. Keyframe descriptors
@@ -1677,8 +1662,8 @@ $effect(() => {
 });
 // the unified keyframe pointerdown — both force and strip keyframes ride this one path (S1;
 // S9 closes F7 by routing the selection grammar itself through `kfDesc` too, not just the
-// drag). No clamp domain (S5, F2): a grabbed keyframe drags freely past its strip/segment
-// extent, both kinds, through this one shared path.
+// drag). Strip timing remains free past its strip extent (S5, F2); force timing is intentionally
+// inert in S4 while both kinds retain shared selection and value dragging.
 function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): void {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -1733,6 +1718,12 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
     const forceIds = forceDesc.sel.ids;
     const stripIds = stripDesc.sel.ids;
     const mixed = forceIds.size > 0 && stripIds.size > 0;
+    // A force-originated mixed drag can retain a strip keyframe selected before pin mode opened.
+    // Only that origin filters captured strip members through the existing lockdown predicate, so
+    // the shared station write cannot bypass the strip's editability boundary.
+    const capturedStripMembers = stripDesc.pts().filter(
+        (m) => stripIds.has(m.id) && (kind !== "force" || stripEditableAt(m.s)),
+    );
     const allMembers: typeof dragKfMembers = [];
     if (kind === "force") {
         // active kind: full selection (or just the clicked point if single)
@@ -1741,43 +1732,49 @@ function keyframeDown(e: PointerEvent, kind: KfKind, pt: ForcePt | StripKfPt): v
         for (const m of members)
             allMembers.push({
                 id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
-                section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                floor: forceDesc.axis.floor, dvScale: mixed ? 0 : 1,
+                ownerId: m.section, setter: forceDesc.setter,
+                floor: forceDesc.axis.floor, dsScale: 0, dvScale: mixed ? 0 : 1,
             });
-        // other kind: its selected members move in s only (dvScale 0)
-        if (stripIds.size > 0) {
-            for (const m of stripDesc.pts().filter((m) => stripIds.has(m.id)))
+        // other kind: strip station dragging survives; its value axis is inactive in this
+        // force-originated mixed gesture.
+
+        if (capturedStripMembers.length > 0) {
+            for (const m of capturedStripMembers)
                 allMembers.push({
                     id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
-                    section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                    floor: stripDesc.axis.floor, dvScale: 0,
+                    ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
+                    floor: stripDesc.axis.floor, dsScale: 1, dvScale: 0,
                 });
         }
     } else {
-        const set = stripIds;
-        const members = set.size > 1 ? stripDesc.pts().filter((m) => set.has(m.id)) : [pt];
-        for (const m of members)
+        for (const m of capturedStripMembers)
             allMembers.push({
                 id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),
-                section: m.section, ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
-                floor: stripDesc.axis.floor, dvScale: mixed ? 0 : 1,
+                ownerId: (m as StripKfPt).strip, setter: stripDesc.setter,
+                floor: stripDesc.axis.floor, dsScale: 1, dvScale: mixed ? 0 : 1,
             });
-        // other kind: its selected members move in s only (dvScale 0)
+        // other kind: force station dragging is retired, and its value axis is inactive in this
+        // strip-originated mixed gesture.
+
         if (forceIds.size > 0) {
             for (const m of forceDesc.pts().filter((m) => forceIds.has(m.id)))
                 allMembers.push({
                     id: m.id, kind: "force" as KfKind, s0: m.s, v0: forceDesc.axis.val(m),
-                    section: m.section, ownerId: m.section, setter: forceDesc.setter,
-                    floor: forceDesc.axis.floor, dvScale: 0,
+                    ownerId: m.section, setter: forceDesc.setter,
+                    floor: forceDesc.axis.floor, dsScale: 0, dvScale: 0,
                 });
         }
     }
     dragKfMembers = allMembers;
-    dragKfS0 = pt.s;
+    // Station motion belongs to strip members only. In a mixed set the active force diamond is
+    // therefore not the x-axis anchor: choose the active strip when present, otherwise the first
+    // captured strip member, so both drag origins preserve the strip's own snap basis.
+    const stationMember =
+        (kind === "strip" ? allMembers.find((m) => m.kind === "strip" && m.id === pt.id) : undefined) ??
+        allMembers.find((m) => m.dsScale === 1);
+    dragKfS0 = stationMember?.s0 ?? 0;
     dragKfV0 = desc.axis.val(pt);
-    dragKfStartD = pt.startD;
-    dragKfSection = pt.section;
-    dragKfStrip = kind === "force" ? -1 : (pt as StripKfPt).strip;
+    dragKfStrip = stationMember?.ownerId ?? -1;
     // common drag setup
     dragKfMemberSet = new Set(dragKfMembers.map((m) => m.id));
     const rect = canvas.getBoundingClientRect();
@@ -4371,10 +4368,10 @@ onMount(() => {
                     aria-valuenow={Math.round(uOf(cartS ?? 0) * 100) / 100}
                 />
             {/if}
-            <!-- the chart is the force-authoring surface (whole-track): double-click over
-                 a force section's arc drops a point at that (s, g); a bare click on empty
-                 chart deselects. authoring is by cursor position — no section selection
-                 needed. the diamonds sit above it. -->
+            <!-- the chart is the shared keyframe surface: strip double-click creates a strip
+                 keyframe; force diamonds remain selectable and value-draggable, while force
+                 insertion is reserved for segment authoring. a bare click on empty chart
+                 deselects. the diamonds sit above it. -->
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="chartzone"
@@ -5384,8 +5381,8 @@ onMount(() => {
         paint-order: stroke;
     }
 
-    /* the whole-track force-authoring chart surface: double-click places a point, a bare
-       click clears the selection. default cursor (the diamonds carry their own move cursor). */
+    /* the whole-track force surface: a bare click clears the selection. Force insertion is
+       intentionally absent; the diamonds carry their own move cursor. */
     .chartzone {
         fill: transparent;
         pointer-events: all;

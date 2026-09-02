@@ -329,6 +329,12 @@ if (import.meta.env.DEV) {
         convert: (): void => convertSection(history, ecs, sec()),
         // author a force point at (s, g) — the "place a point on the curve" step.
         placeForce: (s: number, g: number): number => createForce(history, ecs, sec(), s, g),
+        // setup twin for mixed-layout captures: address a force section by chain index rather than
+        // the legacy section-0 convenience above. This is not a GUI authoring path.
+        placeForceAt: (i: number, s: number, g: number): number => {
+            const id = sections(ecs)[i]?.id;
+            return id === undefined ? -1 : createForce(history, ecs, id, s, g);
+        },
         // author a strip keyframe at (s, v) on the given strip — the freshness arm's synchronous
         // create, mirroring `placeForce`'s shape so the arm can create and read in one evaluate.
         placeStripKf: (stripId: number, s: number, v: number): number =>

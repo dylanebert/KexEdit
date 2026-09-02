@@ -125,8 +125,8 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe snap landing",
         mutations: [
             {
-                old: "            : stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });",
-                new: "            : []; // MUTATED: strip s-axis snap targets killed",
+                old: "        const targets = stripKfSTargets({ exclude: dragKfMemberSet, sameStrip: dragKfStrip, playhead: true, trackEnd: true });",
+                new: "        const targets: number[] = []; // MUTATED: strip s-axis snap targets killed",
             },
             {
                 old: "            axis.targets(dragKfMemberSet),",
@@ -161,8 +161,8 @@ const PAIRS: Pair[] = [
                 new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
             },
             {
-                old: "        const members = set.size > 1 ? stripDesc.pts().filter((m) => set.has(m.id)) : [pt];",
-                new: "        const members = [pt]; // MUTATED: multi-member drag set collapsed to the clicked one",
+                old: '        for (const m of capturedStripMembers)\n            allMembers.push({\n                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),',
+                new: '        for (const m of [pt])\n            allMembers.push({ // MUTATED: multi-member drag set collapsed to the clicked one\n                id: m.id, kind: "strip" as KfKind, s0: m.s, v0: stripDesc.axis.val(m),',
             },
         ],
     },
@@ -221,8 +221,8 @@ const PAIRS: Pair[] = [
         flow: "strip keyframe overlap refusal",
         mutations: [
             {
-                old: "    const capped = Math.max(0, cap - OVERLAP_CAP_EPS); // hold STRICTLY short of the room\n    const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);",
-                new: "    const dsWrite = ds; // MUTATED: Δd cap disabled — the raw delta lands unbounded",
+                old: "    const dsWrite = dir > 0 ? Math.min(ds, capped) : Math.max(ds, -capped);",
+                new: "    const dsWrite = ds; // MUTATED: strip Δd cap disabled — raw delta lands unbounded",
             },
         ],
     },
@@ -293,16 +293,17 @@ const PAIRS: Pair[] = [
         ],
     },
     {
-        // S5 (kex2d-selection-substrate): `applyKeyframeDrag`'s `dvScale` axis law — when the
-        // set spans both keyframe domains, vertical moves no member's value. Mutating `dvScale`
-        // to 1 for all members makes the vertical drag move both kinds' values (the axis law
-        // violation).
+        // S5 (kex2d-selection-substrate), kept after kex2d-segment-removal S4: `applyKeyframeDrag`'s
+        // `dvScale` axis law — when the set spans both keyframe domains, vertical moves no member's
+        // value. The retired force station-drag half left this flow; strip station drag is the
+        // horizontal heir. Mutating `dvScale` to 1 for all members makes the vertical drag move both
+        // kinds' values (the axis law violation).
         name: "axis-law-dv-scale",
-        flow: "mixed-set drag axis law: horizontal moves all, vertical moves none when the set spans both domains (S5)",
+        flow: "mixed-set drag axis law: horizontal moves strip stations only, vertical moves none when the set spans both domains (S5/S4)",
         mutations: [
             {
-                old: "        const v = m.v0 + dv * m.dvScale;",
-                new: "        const v = m.v0 + dv; // MUTATED: axis law disabled — vertical moves all kinds",
+                old: "        const dvApplied = result.value.delta * m.dvScale;",
+                new: "        const dvApplied = result.value.delta; // MUTATED: axis law disabled — vertical moves all kinds",
             },
         ],
     },
