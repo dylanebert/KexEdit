@@ -77,6 +77,7 @@ import {
     sectionHandles,
     sectionInfo,
     runInfo,
+    RunEntryForceBoundary,
     Segment,
     sectionResettable,
     sections,
@@ -187,6 +188,21 @@ test("raw-column run splice splits boundary members and preserves trimmed orphan
     expect(forcePointState(ecs, orphan)).toMatchObject({ section: run, s: 12 });
     expect(sectionForces(ecs, run).map((point) => point.s)).toEqual([0, 4, 12]);
     expect(Segment.runEntryForce.get(segmentAt(ecs, run)!)).toBe(entry + 1);
+});
+
+test("section creation clears a recycled cross-State run-entry pointer", () => {
+    const first = new State();
+    createTrack(first);
+    const runA = createSection(first, 0, SectionKind.Force, 10);
+    createForcePoint(first, runA, 0, 3);
+    expect(RunEntryForceBoundary.g(first, runA)).toBe(3);
+
+    const second = new State();
+    createTrack(second);
+    const runB = createSection(second, 0, SectionKind.Geo, 0);
+    expect(RunEntryForceBoundary.g(second, runB)).toBeUndefined();
+    spliceRunMembers(second, runB);
+    expect(snapshotRun(second, runB).members).toHaveLength(1);
 });
 
 test("run conversion applies solved force stations across ordered members", () => {

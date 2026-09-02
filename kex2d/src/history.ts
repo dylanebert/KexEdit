@@ -30,6 +30,7 @@ import {
     type NodeState,
     nextForce,
     nodeSnapshot,
+    provenanceRestoreRun,
     removeTrailingHandle,
     resetSection as resetSectionKind,
     resetNode,
@@ -54,10 +55,11 @@ import {
     snapshotAll,
     snapshotSection,
     snapshotRun,
+    spliceRunMembers,
     stampProvenance,
+    type RunSnapshot,
     type SolvedForce,
     type SolvedGeo,
-    spawnForce,
     spawnStrip,
     createStrip as createStripTrack,
     destroyStrip,
@@ -434,20 +436,14 @@ export function setTangentModes(
 
 // ── force points ─────────────────────────────────────────────────────────────
 
-/** author a force point on a section at `(s, g)`, recording an undoable add. the id
- *  is allocated once; undo destroys by it and redo re-spawns verbatim. returns the
- *  new point's stable id. */
+/** Author one force boundary as an id-stable member insertion. */
 export function createForce(h: History, ecs: State, section: number, s: number, g: number): number {
     const pre = selHook?.snapshot(ecs);
+    const before = snapshotRun(ecs, section);
     const id = createForcePoint(ecs, section, s, g);
-    record(
-        h,
-        {
-            apply: () => spawnForce(ecs, section, id, s, g),
-            reverse: () => destroyForce(ecs, id),
-        },
-        pre,
-    );
+    spliceRunMembers(ecs, before.id, "create");
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
     return id;
 }
 
@@ -463,20 +459,22 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
         if (st) sts.push(st);
     }
     if (sts.length === 0) return;
-    const drop = (): void => {
-        for (const st of sts) destroyForce(ecs, st.id);
+    const runs = new Map<number, { before: RunSnapshot; stations: number[] }>();
+    for (const st of sts) {
+        const snap = snapshotRun(ecs, st.section);
+        const member = snap.members.find((row) => row.id === st.section)!;
+        const row = runs.get(snap.id) ?? { before: snap, stations: [] };
+        row.stations.push(member.runStation + st.s);
+        runs.set(snap.id, row);
+    }
+    for (const st of sts) destroyForce(ecs, st.id);
+    for (const run of runs.keys()) spliceRunMembers(ecs, run, "delete");
+    const after = [...runs.keys()].map((run) => snapshotRun(ecs, run));
+    const before = [...runs.values()].map((row) => row.before);
+    const restore = (snaps: RunSnapshot[]): void => {
+        for (const snap of snaps) restoreRun(ecs, snap);
     };
-    drop();
-    record(
-        h,
-        {
-            apply: drop,
-            reverse: () => {
-                for (const st of sts) spawnForce(ecs, st.section, st.id, st.s, st.g, st.ease);
-            },
-        },
-        pre,
-    );
+    record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
 }
 
 /** open a gesture on a force-point drag (or an inline field edit), snapshotting the
@@ -484,11 +482,7 @@ export function deleteForces(h: History, ecs: State, ids: readonly number[]): vo
  *  {@link sameForcePoint}, field-wise over the whole snapshot — exhaustive by type, so the next
  *  column added to `ForcePointState` can't be silently dropped from the comparison. */
 export function beginForceMove(ecs: State, id: number): void {
-    begin(
-        () => forcePointState(ecs, id),
-        (st: ForcePointState) => restoreForcePoint(ecs, st),
-        sameForcePoint,
-    );
+    beginForceMoves(ecs, [id]);
 }
 
 /** open a gesture on a MULTI force-point move (the shared-delta bulk drag / arrow-nudge),
@@ -499,18 +493,19 @@ export function beginForceMove(ecs: State, id: number): void {
 export function beginForceMoves(ecs: State, ids: readonly number[]): void {
     begin(
         () => {
-            const sts: ForcePointState[] = [];
+            const runs = new Map<number, RunSnapshot>();
             for (const id of ids) {
                 const st = forcePointState(ecs, id);
-                if (st) sts.push(st);
+                if (!st) continue;
+                const snap = snapshotRun(ecs, st.section);
+                runs.set(snap.id, snap);
             }
-            return sts.length ? sts : undefined;
+            return runs.size ? [...runs.values()] : undefined;
         },
-        (sts: ForcePointState[]) => {
-            for (const st of sts) restoreForcePoint(ecs, st);
+        (snaps: RunSnapshot[]) => {
+            for (const snap of snaps) restoreRun(ecs, snap);
         },
-        (a: ForcePointState[], b: ForcePointState[]) =>
-            a.length === b.length && a.every((s, i) => sameForcePoint(s, b[i])),
+        (a: RunSnapshot[], b: RunSnapshot[]) => JSON.stringify(a) === JSON.stringify(b),
     );
 }
 
@@ -978,7 +973,12 @@ function landSolve(
     apply();
     const after = snapshotRun(ecs, section);
     if (stamp)
-        stampProvenance(ecs, section, before.members.find((member) => member.id === section)!);
+        stampProvenance(
+            ecs,
+            section,
+            before.members.find((member) => member.id === section) ?? before.members[0]!,
+            before,
+        );
     record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
@@ -1069,9 +1069,19 @@ export function restoreProvenance(
 ): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotRun(ecs, section);
-    const current = before.members.find((member) => member.id === section)!;
-    restoreSection(ecs, { ...payload, order: current.order });
-    const after = snapshotRun(ecs, section);
+    const exact = provenanceRestoreRun(payload);
+    if (exact) restoreRun(ecs, exact);
+    else {
+        const current =
+            before.members.find((member) => member.id === section) ?? before.members[0]!;
+        const restored = { ...payload, id: before.id, order: current.order };
+        restoreRun(ecs, {
+            id: before.id,
+            stations: [0, restored.runExtent],
+            members: [restored],
+        });
+    }
+    const after = snapshotRun(ecs, before.id);
     record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
