@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { applyOp, type OpResult } from "../src/commands";
+import { applyForceSegmentOp, applyOp, type OpResult } from "../src/commands";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import {
     addStrip,
@@ -43,6 +43,7 @@ import {
     reheadOnDrag,
     SectionKind,
     sectionForces,
+    snapshotRun,
     setForcePoint,
     setOneShotValue,
     setSectionLength,
@@ -165,6 +166,40 @@ function expectSameDoc(
     else expect(docB).toBe(docA);
     return { result, a, b };
 }
+
+describe("canonical force segment commands conserve the run extent", () => {
+    function expectFrame(state: State, stations: number[]): void {
+        const run = snapshotRun(state, FORCE_SEC!);
+        expect(run.stations.at(-1)).toBe(FORCE_LEN);
+        expect(run.stations).toEqual(stations);
+        expect(run.members).toHaveLength(stations.length - 1);
+        for (let i = 0; i < run.members.length; i++) {
+            const end = i + 1 === stations.length - 1 ? FORCE_LEN : stations[i + 1]!;
+            expect(Math.fround(run.members[i]!.length)).toBe(Math.fround(end - stations[i]!));
+        }
+    }
+
+    test("create → delete → move changes only edited stations while extent stays bit-identical", () => {
+        const state = fixture();
+        const h = createHistory();
+        expectFrame(state, [0, FORCE_LEN]);
+
+        const created = applyForceSegmentOp(state, h, {
+            type: "force-create",
+            section: FORCE_SEC,
+            s: 3.3,
+            g: 2,
+        });
+        expect(created.id).toBeNumber();
+        expectFrame(state, [0, 3.3, 20, FORCE_LEN]);
+
+        applyForceSegmentOp(state, h, { type: "force-delete", ids: [created.id as number] });
+        expectFrame(state, [0, 20, FORCE_LEN]);
+
+        applyForceSegmentOp(state, h, { type: "force-move", id: FP20, s: 7.7, g: 2.5 });
+        expectFrame(state, [0, 7.7, FORCE_LEN]);
+    });
+});
 
 describe("commands: differential arm — command layer vs. direct setter calls", () => {
     test("append-section", () => {

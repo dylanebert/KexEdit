@@ -24,7 +24,14 @@
 
 import { existsSync } from "node:fs";
 import { State } from "@dylanebert/shallot";
-import { applyOp, type Op, type OpResult, type Refusal } from "./commands";
+import {
+    applyForceSegmentOp,
+    applyOp,
+    isForceSegmentOp,
+    type Op,
+    type OpResult,
+    type Refusal,
+} from "./commands";
 import {
     loadDocument,
     parseDocument,
@@ -216,7 +223,9 @@ async function cmdEdit(file: string, opsText: string): Promise<CliResult> {
             continue;
         }
         try {
-            const result = applyOp(state, h, op as Op);
+            const result = isForceSegmentOp(op)
+                ? applyForceSegmentOp(state, h, op)
+                : applyOp(state, h, op as Op);
             results.push(result);
             if (result.refusals.length > 0) anyRefusal = true;
         } catch (e) {
