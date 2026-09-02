@@ -8,6 +8,13 @@ import { applyOp, type Op } from "../src/commands";
 import { dispatch } from "../src/cli";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { createHistory } from "../src/history";
+import {
+    createForcePoint,
+    createSection,
+    createTrack,
+    SectionKind,
+    snapshotRun,
+} from "../src/track";
 
 // the CLI's own suite: round-trip byte-identity over the committed
 // `.kex` fixture corpus (`tests/fixtures/cli/`, minted by `tests/mint-cli-fixtures.ts` from
@@ -312,6 +319,48 @@ describe("edit: no second write path — a CLI-edited file reopened equals the o
             }
         });
     }
+
+    test("force create/move/ease/delete use the canonical segment surface", async () => {
+        setup();
+        try {
+            const state = new State();
+            createTrack(state);
+            const run = createSection(state, 0, SectionKind.Force, 10.1);
+            const entry = createForcePoint(state, run, 0, 1);
+            const terminal = createForcePoint(state, run, 7.7, 1);
+            const path = join(workdir, "force.kex");
+            writeFileSync(path, saveDocument(state));
+
+            const create = await dispatch([
+                "edit",
+                path,
+                "--ops",
+                JSON.stringify({ type: "force-create", section: run, s: 3.3, g: 2 }),
+            ]);
+            const created = JSON.parse(create.stdout).results[0].id as number;
+            expect(create.exitCode).toBe(0);
+
+            const edit = await dispatch([
+                "edit",
+                path,
+                "--ops",
+                JSON.stringify([
+                    { type: "force-ease", ids: [entry], ease: 2 },
+                    { type: "force-delete", ids: [created] },
+                    { type: "force-move", id: terminal, s: 4.4, g: 1.5 },
+                ]),
+            ]);
+            expect(edit.exitCode).toBe(0);
+
+            const reopened = new State();
+            loadDocument(reopened, readFileSync(path, "utf8"));
+            const snap = snapshotRun(reopened, run);
+            expect(snap.stations.at(-1)).toBe(10.1);
+            expect(snap.stations).toEqual([0, 4.4, 10.1]);
+        } finally {
+            teardown();
+        }
+    });
 
     test("ops read from stdin when --ops is absent", async () => {
         setup();

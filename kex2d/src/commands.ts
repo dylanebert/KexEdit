@@ -302,6 +302,79 @@ export type Op =
     | ResistanceOp
     | DomainOp;
 
+export type ForceSegmentOp = ForceCreateOp | ForceMoveOp | ForceDeleteOp | ForceEaseOp;
+
+export function isForceSegmentOp(op: { type: string }): op is ForceSegmentOp {
+    return (
+        op.type === "force-create" ||
+        op.type === "force-move" ||
+        op.type === "force-delete" ||
+        op.type === "force-ease"
+    );
+}
+
+/** Apply one force authoring verb through the canonical segment gestures. */
+export function applyForceSegmentOp(ecs: State, h: History, op: ForceSegmentOp): OpResult {
+    switch (op.type) {
+        case "force-create": {
+            const secEid = sectionAt(ecs, op.section);
+            if (secEid === null)
+                return refused("sectionNotFound", `no section with id ${op.section}`);
+            if (Section.kind.get(secEid) !== SectionKind.Force)
+                return {
+                    applied: false,
+                    refusals: [
+                        sectionKindRefusal(op.section, SectionKind.Force, "create a force point"),
+                    ],
+                };
+            return ok(createForce(h, ecs, op.section, op.s, op.g));
+        }
+        case "force-move": {
+            const eid = forceAt(ecs, op.id);
+            if (eid === null) return refused("forceNotFound", `no force point with id ${op.id}`);
+            const section = Force.section.get(eid);
+            const len =
+                runExtentOf(ecs, runIdOf(ecs, section) ?? section) ?? Number.POSITIVE_INFINITY;
+            const s = Math.min(Math.max(op.s, 0), len);
+            const refusals: Refusal[] = [];
+            if (stationTaken(ecs, section, s, op.id))
+                refusals.push({
+                    guard: "stationTaken",
+                    message: `station ${s} is already held by another force point on this section; g still lands`,
+                });
+            beginForceMove(ecs, op.id);
+            setForcePoint(ecs, op.id, s, op.g);
+            commit(h);
+            return { applied: true, refusals };
+        }
+        case "force-delete": {
+            const found = op.ids.some((id) => forcePointState(ecs, id) !== undefined);
+            if (!found) return refused("notFound", "none of the given force-point ids exist");
+            deleteForces(h, ecs, op.ids);
+            return ok();
+        }
+        case "force-ease": {
+            const refusals: Refusal[] = [];
+            for (const id of op.ids) {
+                if (forceAt(ecs, id) === null) {
+                    refusals.push({
+                        guard: "forceNotFound",
+                        message: `no force point with id ${id}`,
+                    });
+                    continue;
+                }
+                if (nextForce(ecs, id) === null)
+                    refusals.push({
+                        guard: "terminalKeyframe",
+                        message: `force point ${id} governs no following segment; its easing cannot be set`,
+                    });
+            }
+            setForcesEase(h, ecs, op.ids, op.ease);
+            return { applied: true, refusals };
+        }
+    }
+}
+
 /** apply one op to `ecs`, recording through `h` — the one dispatcher every op family routes
  *  through. every branch below cites the exact UI call site it reproduces, so a diff to either
  *  side is a diff a reviewer can compare directly. */
@@ -432,87 +505,11 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             return ok();
         }
 
-        // This headless command is the only surviving force-point producer. It owns the
-        // existence and kind guards because `createForcePoint` writes unconditionally.
-        case "force-create": {
-            const secEid = sectionAt(ecs, op.section);
-            if (secEid === null)
-                return refused("sectionNotFound", `no section with id ${op.section}`);
-            if (Section.kind.get(secEid) !== SectionKind.Force)
-                return {
-                    applied: false,
-                    refusals: [
-                        sectionKindRefusal(op.section, SectionKind.Force, "create a force point"),
-                    ],
-                };
-            const id = createForce(h, ecs, op.section, op.s, op.g);
-            return ok(id);
-        }
-
-        // `Timeline.svelte`'s `kfFieldEdit`: `beginForceMove(ecs, p.id); setForcePoint(ecs, p.id,
-        // clamp(s, 0, p.len), v); commit(history);` — the typed s/v field's own gesture, which
-        // clamps `s` into the section's own extent `[0, p.len]` (`p.len` = `Section.length`,
-        // `ForcePt`'s own docblock). This
-        // is the gesture this op mirrors, not the diamond DRAG (`keyframeDown`'s own "No clamp
-        // domain… a grabbed keyframe drags freely past its strip/segment extent" — a second,
-        // deliberately unclamped UI gesture on the same setter). Finding 2 (adversarial round 1): this branch called `setForcePoint` with
-        // `op.s` unclamped, silently reproducing the drag's reach rather than the field's — out
-        // of UI-reachable space for a "move" op with no drag semantics of its own.
-        // `setForcePoint` refuses the `s` write alone when `stationTaken` (`track.ts:2122`),
-        // landing `g` regardless — read the guard first, against the CLAMPED `s` (the value that
-        // actually lands), so a refusal is named even though the write still (partially) applies.
-        case "force-move": {
-            const eid = forceAt(ecs, op.id);
-            if (eid === null) return refused("forceNotFound", `no force point with id ${op.id}`);
-            // `Force.section` isn't exported as a bare read helper — `track.ts`'s own
-            // `setForcePoint` reads it the same way (`Force.section.get(eid)`), mirrored here
-            // rather than widening `track.ts`'s export surface for one field read.
-            const section = Force.section.get(eid);
-            const len =
-                runExtentOf(ecs, runIdOf(ecs, section) ?? section) ?? Number.POSITIVE_INFINITY;
-            const s = Math.min(Math.max(op.s, 0), len);
-            const refusals: Refusal[] = [];
-            if (stationTaken(ecs, section, s, op.id))
-                refusals.push({
-                    guard: "stationTaken",
-                    message: `station ${s} is already held by another force point on this section; g still lands`,
-                });
-            beginForceMove(ecs, op.id);
-            setForcePoint(ecs, op.id, s, op.g);
-            commit(h);
-            return { applied: true, refusals };
-        }
-
-        // `Timeline.svelte`'s `stripMenuItems`'s `remove` action: `deleteStrips` — this op's
-        // force-point twin, `deleteForces`.
-        case "force-delete": {
-            const found = op.ids.some((id) => forcePointState(ecs, id) !== undefined);
-            if (!found) return refused("notFound", "none of the given force-point ids exist");
-            deleteForces(h, ecs, op.ids);
-            return ok();
-        }
-
-        // `setForcesEase` (`history.ts`) skips a terminal keyframe (governs no following
-        // segment) silently — read that guard first per id so a refusal names it.
-        case "force-ease": {
-            const refusals: Refusal[] = [];
-            for (const id of op.ids) {
-                if (forceAt(ecs, id) === null) {
-                    refusals.push({
-                        guard: "forceNotFound",
-                        message: `no force point with id ${id}`,
-                    });
-                    continue;
-                }
-                if (nextForce(ecs, id) === null)
-                    refusals.push({
-                        guard: "terminalKeyframe",
-                        message: `force point ${id} governs no following segment; its easing cannot be set`,
-                    });
-            }
-            setForcesEase(h, ecs, op.ids, op.ease);
-            return { applied: true, refusals };
-        }
+        case "force-create":
+        case "force-move":
+        case "force-delete":
+        case "force-ease":
+            return applyForceSegmentOp(ecs, h, op);
 
         // `Timeline.svelte`'s `createStripAt`: `addStrip(history, ecs, extent.start, extent.end, value)` —
         // `track.createStrip` itself reads all three guards before writing anything, so a
