@@ -23,6 +23,29 @@ export function rebuildSegmentProjection(ecs: State): SegmentProjectionRow[] {
     return rows;
 }
 
+/** @temporary S3–S7 — one stable evaluator payload over contiguous canonical segments. */
+export interface RunProjectionRow extends SegmentProjectionRow {
+    segmentIds: number[];
+}
+
+/** @temporary S3–S7 — derive the evaluator partition from canonical segment order. */
+export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
+    const segments = rebuildSegmentProjection(ecs);
+    const runs: RunProjectionRow[] = [];
+    for (const segment of segments) {
+        const runId = Segment.run.get(segment.eid);
+        const prior = runs[runs.length - 1];
+        if (prior && prior.id === runId) {
+            if (prior.kind !== segment.kind) throw new Error(`run ${runId} crosses segment kinds`);
+            prior.length += segment.length;
+            prior.segmentIds.push(segment.id);
+            continue;
+        }
+        runs.push({ ...segment, id: runId, segmentIds: [segment.id] });
+    }
+    return runs;
+}
+
 /** @temporary S7 — legacy evaluator vocabulary; never an authored owner. */
 export type SectionProjectionRow = SegmentProjectionRow;
 

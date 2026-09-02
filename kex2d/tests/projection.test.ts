@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { rebuildSectionProjection, rebuildSegmentProjection } from "../src/projection";
+import {
+    rebuildRunProjection,
+    rebuildSectionProjection,
+    rebuildSegmentProjection,
+} from "../src/projection";
 import {
     addNode,
     authoredHash,
@@ -11,6 +15,7 @@ import {
     Handle,
     sectionForces,
     sectionHandles,
+    Segment,
     SectionKind,
     setSectionLength,
     TrackStart,
@@ -26,6 +31,30 @@ test("section compatibility rows are a pure projection of canonical segments", (
     setSectionLength(ecs, first, 31);
     expect(rebuildSectionProjection(ecs)).toEqual(rebuildSegmentProjection(ecs));
     expect(rebuildSegmentProjection(ecs)[0]?.length).toBe(31);
+});
+
+test("run rows start row-identical and merge contiguous canonical segments by stable identity", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const first = createSection(ecs, 0, SectionKind.Force, 12);
+    const second = createSection(ecs, 1, SectionKind.Force, 8);
+
+    expect(rebuildRunProjection(ecs)).toEqual(
+        rebuildSegmentProjection(ecs).map((row) => ({ ...row, segmentIds: [row.id] })),
+    );
+
+    const secondEid = rebuildSegmentProjection(ecs).find((row) => row.id === second)!.eid;
+    Segment.run.set(secondEid, first);
+    expect(rebuildRunProjection(ecs)).toEqual([
+        {
+            eid: rebuildSegmentProjection(ecs)[0]!.eid,
+            id: first,
+            order: 0,
+            kind: SectionKind.Force,
+            length: 20,
+            segmentIds: [first, second],
+        },
+    ]);
 });
 
 test("canonical structural identity owns track start and stable payload membership", () => {

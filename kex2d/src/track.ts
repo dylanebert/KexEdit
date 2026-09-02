@@ -11,6 +11,7 @@ import {
     sampleForce,
     type Step,
 } from "./profile";
+import { rebuildRunProjection } from "./projection";
 import {
     chain,
     Domain,
@@ -82,6 +83,8 @@ export const Segment = {
     order: sparse(u32),
     kind: sparse(u32),
     length: sparse(f32),
+    /** @temporary S3–S7 — stable evaluator payload partition, seeded from section identity. */
+    run: sparse(u32),
 };
 
 /** Canonical predecessor-less boundary for segment zero. Channel payload ownership moves
@@ -365,16 +368,31 @@ export interface SectionWindow {
 
 const EMPTY_DS = new Float32Array(0);
 
-export function sectionWindows(ecs: State, secs: SectionRow[] = sections(ecs)): SectionWindow[] {
+export function sectionWindows(ecs: State, secs?: SectionRow[]): SectionWindow[] {
+    const rows =
+        secs ??
+        rebuildRunProjection(ecs).map((run) => ({
+            eid: run.eid,
+            id: run.id,
+            order: run.order,
+            kind: run.kind as SectionKind,
+            length: run.length,
+        }));
     const out: SectionWindow[] = [];
     let cum = 0;
-    for (const sec of secs) {
-        const edge = sectionEdgeDs(ecs, sec.id);
+    for (const row of rows) {
+        let edge: { ds: ArrayLike<number>; edges: number } | null;
+        if (row.kind === SectionKind.Force) {
+            const step = resolveStep(row.length, trackDs(ecs));
+            edge = { ds: new Float32Array(step.edges).fill(step.ds), edges: step.edges };
+        } else {
+            edge = sectionEdgeDs(ecs, row.id);
+        }
         const ds = edge?.ds ?? EMPTY_DS;
         const edges = edge?.edges ?? 0;
         let len = 0;
         for (let i = 0; i < edges; i++) len += ds[i];
-        out.push({ id: sec.id, offset: cum, ds, edges, len });
+        out.push({ id: row.id, offset: cum, ds, edges, len });
         cum += len;
     }
     return out;
@@ -1113,6 +1131,9 @@ export interface SectionInfo {
 
 export const sectionInfo = new Map<number, SectionInfo>();
 
+/** @temporary S3–S7 — evaluator metadata keyed by stable run identity. */
+export const runInfo = new Map<number, SectionInfo>();
+
 export const MAX_SAMPLES = 4096;
 
 /** the track's nominal sampling step (m) — what every section bakes at. */
@@ -1346,8 +1367,8 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
     const last = Math.max(0, Track.count.get(eid) - 1);
     const res: SectionSpan[] = [];
     let cum = 0;
-    for (const sec of sections(ecs)) {
-        const info = sectionInfo.get(sec.id);
+    for (const run of rebuildRunProjection(ecs)) {
+        const info = runInfo.get(run.id);
         if (!info) continue;
         const offset = cum;
         // clamped to the PUBLISHED buffer: a section placed past the sample budget has a range
@@ -1355,7 +1376,7 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         // span downstream of it. Its extent reads 0 there — which is what it has on the bake —
         // so the strip and the guides describe the baked prefix honestly.
         for (let i = info.startSample; i < Math.min(info.endSample, last); i++) cum += out.ds[i];
-        res.push({ id: sec.id, offset, len: cum - offset });
+        res.push({ id: run.id, offset, len: cum - offset });
     }
     return res;
 }
@@ -1444,22 +1465,27 @@ export function forceMarkers(ecs: State): ForceMarker[] {
     const out = bakeOut.get(trackEid);
     if (!s || !out) return res;
     const last = Math.max(0, Track.count.get(trackEid) - 1);
-    for (const sec of sections(ecs)) {
-        if (sec.kind !== SectionKind.Force) continue;
-        const info = sectionInfo.get(sec.id);
+    const byId = new Map(segments(ecs).map((segment) => [segment.id, segment]));
+    for (const run of rebuildRunProjection(ecs)) {
+        if (run.kind !== SectionKind.Force) continue;
+        const info = runInfo.get(run.id);
         if (!info) continue;
-        for (const p of sectionForces(ecs, sec.id)) {
-            if (p.s > sec.length) continue; // trimmed past the extent: no track position
-            // `p.s` is arclength always (S6): `forceSample` has one table now, no `time` branch.
-            const addr = forceSample(out, info, last, p.s);
-            if (!addr) continue;
-            const j = Math.min(addr.index + 1, last);
-            res.push({
-                id: p.id,
-                section: sec.id,
-                x: s.posX[addr.index] + addr.frac * (s.posX[j] - s.posX[addr.index]),
-                y: s.posY[addr.index] + addr.frac * (s.posY[j] - s.posY[addr.index]),
-            });
+        let offset = 0;
+        for (const segmentId of run.segmentIds) {
+            const segment = byId.get(segmentId)!;
+            for (const p of sectionForces(ecs, segmentId)) {
+                if (p.s > segment.length) continue;
+                const addr = forceSample(out, info, last, offset + p.s);
+                if (!addr) continue;
+                const j = Math.min(addr.index + 1, last);
+                res.push({
+                    id: p.id,
+                    section: segmentId,
+                    x: s.posX[addr.index] + addr.frac * (s.posX[j] - s.posX[addr.index]),
+                    y: s.posY[addr.index] + addr.frac * (s.posY[j] - s.posY[addr.index]),
+                });
+            }
+            offset += segment.length;
         }
     }
     return res;
@@ -1480,6 +1506,7 @@ export function createSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
+    Segment.run.set(eid, id);
     return id;
 }
 
@@ -1499,6 +1526,7 @@ function spawnSection(
     Section.order.set(eid, order);
     Section.kind.set(eid, kind);
     Section.length.set(eid, length);
+    Segment.run.set(eid, id);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -2926,16 +2954,27 @@ function geoPayload(ecs: State, sectionId: number, ds: number, offset: number): 
  *  RESOLVED {@link Step} (its own callers, `forcePayload`/`forceBake`, each conform through
  *  {@link resolveStep} before calling here) — `forceProfile` requires the pair as one value, so
  *  this is a consumer of an already-conformed step, never a second pairing of its own. */
-function forceDense(ecs: State, sectionId: number, step: Step): Float32Array {
-    // the landing display override (stage 4): while a paced landing covers this section, a
-    // covered keyframe reads the landing's interpolated g instead of its authored one — the
-    // whole display (curve, geometry, markers, cart) rides the same substitution.
-    const land = bakeLanding !== null && bakeLanding.section === sectionId ? bakeLanding.g : null;
-    const points: ForcePoint[] = sectionForces(ecs, sectionId).map((p) => ({
-        s: p.s,
-        g: land?.(p.id) ?? p.g,
-        ease: Force.ease.get(p.eid) as Easing,
-    }));
+function forceDense(
+    ecs: State,
+    segmentIds: readonly number[],
+    lengths: readonly number[],
+    step: Step,
+): Float32Array {
+    const points: ForcePoint[] = [];
+    let offset = 0;
+    for (let i = 0; i < segmentIds.length; i++) {
+        const segmentId = segmentIds[i];
+        const land =
+            bakeLanding !== null && bakeLanding.section === segmentId ? bakeLanding.g : null;
+        for (const p of sectionForces(ecs, segmentId)) {
+            points.push({
+                s: offset + p.s,
+                g: land?.(p.id) ?? p.g,
+                ease: Force.ease.get(p.eid) as Easing,
+            });
+        }
+        offset += lengths[i];
+    }
     return forceProfile(points, step);
 }
 
@@ -2946,7 +2985,8 @@ function forceDense(ecs: State, sectionId: number, step: Step): Float32Array {
  *  in `chain`) always agree on the same exact pair — the pairing seam, applied once, here. */
 function forcePayload(
     ecs: State,
-    sectionId: number,
+    segmentIds: readonly number[],
+    lengths: readonly number[],
     length: number,
     step: number,
     offset: number,
@@ -2954,7 +2994,7 @@ function forcePayload(
     const resolved = resolveStep(length, step);
     return {
         kind: "force",
-        fN: forceDense(ecs, sectionId, resolved),
+        fN: forceDense(ecs, segmentIds, lengths, resolved),
         step: resolved,
         strips: stripsForStep(ecs, offset, resolved),
     };
@@ -2995,18 +3035,20 @@ export function stripsForStep(ecs: State, offset: number, step: Step): StripSpec
  *  the buffer end), so what's on screen is the prefix. clipping the dense profile to the same
  *  budget is what makes the fit's input that prefix rather than a longer shape nothing draws. */
 export function forceBake(ecs: State, sectionId: number): GeofitBake {
-    const eid = sectionAt(ecs, sectionId);
-    if (eid === null) throw new Error(`forceBake: no section ${sectionId}`);
-    const info = sectionInfo.get(sectionId);
+    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
+    if (!run) throw new Error(`forceBake: no section ${sectionId}`);
+    const info = runInfo.get(run.id);
     if (!info) throw new Error(`forceBake: no bake for section ${sectionId}`);
-    if (Section.kind.get(eid) !== SectionKind.Force)
+    if (run.kind !== SectionKind.Force)
         throw new Error(`forceBake: section ${sectionId} is not force`);
-    const length = Section.length.get(eid);
+    const byId = new Map(segments(ecs).map((segment) => [segment.id, segment]));
+    const lengths = run.segmentIds.map((id) => byId.get(id)!.length);
+    const length = run.length;
     const step = trackDs(ecs);
     // conform once (the pairing seam) so the dense profile's σ grid and evalForce's march
     // below agree on the same exact step, exactly what `forcePayload` does for the live bake.
     const resolved = resolveStep(length, step);
-    const dense = forceDense(ecs, sectionId, resolved);
+    const dense = forceDense(ecs, run.segmentIds, lengths, resolved);
     const avail = Math.max(1, MAX_SAMPLES - 1 - info.startSample);
     // a truncated dense array no longer matches `resolved.edges`, so evalForce's own length
     // check would throw on the clipped prefix — thread a step whose `edges` matches what's
@@ -3018,7 +3060,7 @@ export function forceBake(ecs: State, sectionId: number): GeofitBake {
     // step, then clamped to the clipped edge count — a strip past the clipped prefix has no
     // track position, the same non-destructive-trim law `forceMarkers` already applies to a
     // keyframe past its section's baked span.
-    const offset = sectionWindows(ecs).find((w) => w.id === sectionId)?.offset ?? 0;
+    const offset = sectionWindows(ecs).find((w) => w.id === run.id)?.offset ?? 0;
     const strips = stripsForStep(ecs, offset, resolved)?.map((s) => ({
         start: Math.min(s.start, clippedStep.edges),
         end: Math.min(s.end, clippedStep.edges),
@@ -3202,7 +3244,13 @@ function computeTime(out: BakeOut, count: number): void {
  *  syncs each geo node's global sample index, and records `sectionInfo` (entry,
  *  range, arclength, orphan cutoff) the drag/render read. skips (keeps the prior
  *  bake) when a geo section is below its two-node floor or the chain degenerates. */
-function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: SectionRow[]): void {
+function bake(
+    ecs: State,
+    trackEid: number,
+    s: Samples,
+    out: BakeOut,
+    segments: SectionRow[],
+): void {
     const ds = Track.ds.get(trackEid);
     const v0 = entrySpeed(ecs);
     const start = startEntry(v0);
@@ -3211,22 +3259,49 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
 
     // a geo section needs ≥2 nodes to bake; if any is short, keep the prior bake
     // rather than half-render the chain.
-    for (const sec of secs) {
-        if (sec.kind === SectionKind.Geo && sectionHandles(ecs, sec.id).length < 2) return;
+    for (const segment of segments) {
+        if (segment.kind === SectionKind.Geo && sectionHandles(ecs, segment.id).length < 2) return;
     }
 
-    // each section's track-global entry offset, computed PURELY from the live document
-    // (chord sums / authored extents — `sectionWindows`) before any payload is built, per
-    // the locked contract: "section i's window is [offset_i, offset_i + len_i) with
-    // offset_i the cumulative arclength the chain pass has already computed." Offsets are
-    // strip-independent (a section's own resolved extent never depends on a velocity
-    // strip), so this single pre-pass is exact — no fixed-point iteration needed.
-    const windows = sectionWindows(ecs, secs);
-    const payloads = secs.map((sec, i) =>
-        sec.kind === SectionKind.Geo
-            ? geoPayload(ecs, sec.id, ds, windows[i].offset)
-            : forcePayload(ecs, sec.id, sec.length, ds, windows[i].offset),
+    const byId = new Map(segments.map((segment) => [segment.id, segment]));
+    const runs = rebuildRunProjection(ecs).map((run) => ({
+        ...run,
+        kind: run.kind as SectionKind,
+        segments: run.segmentIds.map((id) => byId.get(id)!),
+    }));
+    const windows: SectionWindow[] = [];
+    let runOffset = 0;
+    for (const run of runs) {
+        const edge =
+            run.kind === SectionKind.Force
+                ? (() => {
+                      const step = resolveStep(run.length, ds);
+                      return {
+                          ds: new Float32Array(step.edges).fill(step.ds),
+                          edges: step.edges,
+                      };
+                  })()
+                : sectionEdgeDs(ecs, run.segmentIds[0]);
+        const runDs = edge?.ds ?? EMPTY_DS;
+        const edges = edge?.edges ?? 0;
+        let len = 0;
+        for (let i = 0; i < edges; i++) len += runDs[i];
+        windows.push({ id: run.id, offset: runOffset, ds: runDs, edges, len });
+        runOffset += len;
+    }
+    const payloads = runs.map((run, i) =>
+        run.kind === SectionKind.Geo
+            ? geoPayload(ecs, run.segmentIds[0], ds, windows[i].offset)
+            : forcePayload(
+                  ecs,
+                  run.segmentIds,
+                  run.segments.map((segment) => segment.length),
+                  run.length,
+                  ds,
+                  windows[i].offset,
+              ),
     );
+    runInfo.clear();
     // the downstream freeze (stage 7): with a live freeze on a non-terminal section, the chain
     // runs in TWO parts — start..pinning live, downstream seeded at the FROZEN entry — so
     // downstream holds its mode-entry placement while the pinning exit wanders. one part
@@ -3235,8 +3310,8 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     // frozen entry after the mode close released `bakeFreeze`, so the frozen gap closes
     // continuously with the interpolated exit instead of snapping at the close.
     const fz = bakeFreeze ?? bakeLanding;
-    const fzIdx = fz === null ? -1 : secs.findIndex((sec) => sec.id === fz.section);
-    const split = fzIdx >= 0 && fzIdx < secs.length - 1 ? fzIdx + 1 : -1;
+    const fzIdx = fz === null ? -1 : runs.findIndex((run) => run.segmentIds.includes(fz.section));
+    const split = fzIdx >= 0 && fzIdx < runs.length - 1 ? fzIdx + 1 : -1;
 
     // `chain` keeps counting edges past the sample budget (a force section's own extent/step can ask
     // for more than the flat SoA has left at its place in the chain, and those writes land past the
@@ -3278,13 +3353,15 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
             // stale info lies, an empty range degrades honestly (consumers reject it like any
             // past-budget section). `fz.entry` is exact for the first downstream section and
             // the best available stand-in for later ones — nothing baked to say otherwise.
-            for (let k = split; k < secs.length; k++) {
-                sectionInfo.set(secs[k].id, {
+            for (let k = split; k < runs.length; k++) {
+                const empty = {
                     entry: fz.entry,
                     startSample: countA,
                     endSample: countA,
                     bakedNodes: 0,
-                });
+                };
+                runInfo.set(runs[k].id, empty);
+                for (const id of runs[k].segmentIds) sectionInfo.set(id, empty);
             }
         }
     }
@@ -3294,23 +3371,26 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
     let truncatedAny = false;
     for (const p of parts) {
         for (let k = 0; k < p.c.results.length; k++) {
-            const sk = p.at + k; // the section's global index
+            const sk = p.at + k;
             const r = p.c.results[k];
             const range = p.c.ranges[k];
             const entry = k === 0 ? p.entry : p.c.exits[k - 1];
+            const run = runs[sk];
 
-            if (secs[sk].kind === SectionKind.Geo) {
-                const hs = sectionHandles(ecs, secs[sk].id);
+            if (run.kind === SectionKind.Geo) {
+                const hs = sectionHandles(ecs, run.segmentIds[0]);
                 for (let n = 0; n < r.offsets.length; n++) {
                     Handle.sample.set(hs[n], range.start + r.offsets[n] + p.offset);
                 }
             }
-            sectionInfo.set(secs[sk].id, {
+            const info = {
                 entry,
                 startSample: range.start + p.offset,
                 endSample: range.end + p.offset,
                 bakedNodes: r.offsets.length,
-            });
+            };
+            runInfo.set(run.id, info);
+            for (const id of run.segmentIds) sectionInfo.set(id, info);
             if (r.truncated) truncatedAny = true;
         }
     }
@@ -3336,7 +3416,7 @@ function bake(ecs: State, trackEid: number, s: Samples, out: BakeOut, secs: Sect
         out.ds[gi] = 0;
         out.fN[gi] = gi > 0 ? out.fN[gi - 1] : DEFAULT_G;
     }
-    out.hash = bakeHash(ecs, trackEid, secs);
+    out.hash = bakeHash(ecs, trackEid, segments);
     Track.count.set(trackEid, count);
     computeTime(out, count);
 }
