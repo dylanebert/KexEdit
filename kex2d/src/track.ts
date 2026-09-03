@@ -506,6 +506,7 @@ export function createStrip(ecs: State, start: number, end: number, value: numbe
     Strip.value.set(eid, value);
     createStripKeyframe(ecs, id, start, value);
     createStripKeyframe(ecs, id, end, value);
+    refreshVelocityRunMembers(ecs);
     return id;
 }
 
@@ -526,6 +527,7 @@ export function spawnStrip(
     Strip.start.set(eid, start);
     Strip.end.set(eid, end);
     Strip.value.set(eid, value);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** destroy a velocity strip by stable id (no-op if already gone). Also destroys
@@ -534,6 +536,7 @@ export function destroyStrip(ecs: State, id: number): void {
     const eid = stripAt(ecs, id);
     if (eid !== null) ecs.destroy(eid);
     destroyStripKeyframes(ecs, id);
+    refreshVelocityRunMembers(ecs);
 }
 
 // ── the track-start one-shot (S3, Locked decision: "one-shot events are a structurally
@@ -689,6 +692,7 @@ export function restoreStrip(ecs: State, st: StripState): void {
         StripKeyframe.s.set(kfEid, k.s);
         StripKeyframe.v.set(kfEid, k.v);
     }
+    refreshVelocityRunMembers(ecs);
 }
 
 /** write a strip's `start`/`end`/`value` (live drag preview + gesture restore) — the
@@ -716,6 +720,7 @@ export function setStrip(ecs: State, id: number, start: number, end: number, val
         Strip.end.set(eid, end);
     }
     if (validStripValue(value)) Strip.value.set(eid, value);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** whether a typed strip value is one the field may commit — finite and STRICTLY positive (a
@@ -869,6 +874,7 @@ export function spawnStripKeyframe(
     StripKeyframe.id.set(eid, id);
     StripKeyframe.s.set(eid, s);
     StripKeyframe.v.set(eid, v);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** destroy a strip keyframe by stable id (no-op if already gone). Also destroys all
@@ -876,6 +882,7 @@ export function spawnStripKeyframe(
 export function destroyStripKeyframe(ecs: State, id: number): void {
     const eid = stripKeyframeAt(ecs, id);
     if (eid !== null) ecs.destroy(eid);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** destroy all keyframes on a strip (called when the strip is destroyed). */
@@ -975,6 +982,7 @@ export function setStripKeyframe(ecs: State, id: number, s: number, v: number): 
     const lands = !stripKeyframeTaken(ecs, stripId, s, id);
     if (lands) StripKeyframe.s.set(eid, s);
     StripKeyframe.v.set(eid, v);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** write a strip keyframe's full state back — position and value, direct, bypassing
@@ -994,6 +1002,7 @@ export function restoreStripKeyframe(ecs: State, st: StripKeyframeState): void {
     if (eid === null) return;
     StripKeyframe.s.set(eid, st.s);
     StripKeyframe.v.set(eid, st.v);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** convert a section's authored strips from its own domain coordinate into the kernel's
@@ -2113,6 +2122,11 @@ function refreshRunEntryForce(ecs: State, runId: number): void {
  * deliberately do not call this host. */
 export type RunSpliceIntent = "create" | "delete" | "move" | "rebuild";
 
+function allocateSectionId(ecs: State): number {
+    while (segmentAt(ecs, nextSectionId) !== null) nextSectionId++;
+    return nextSectionId++;
+}
+
 /** @temporary S3–S7 — atomically rewrite one force run's canonical members from raw columns.
  * Planning completes before the first write. The mutation phase never consults a projection:
  * chain order, ownership, conserved stations, compatibility extents, and the entry pointer become
@@ -2143,13 +2157,29 @@ export function spliceRunMembers(
         refreshRunEntryForce(ecs, runId);
         return;
     }
-    const interior = [
-        ...new Map(
-            rawPoints
-                .filter((row) => row.station > 0 && row.station <= extent)
-                .map((row) => [row.station, row] as const),
-        ).values(),
-    ].map((row) => ({ id: row.point.id, station: row.station, value: row.point.id }));
+    const forceStations = new Map(
+        rawPoints
+            .filter((row) => row.station > 0 && row.station <= extent)
+            .map((row) => [row.station, row.point.id] as const),
+    );
+    const window = sectionWindows(ecs).find((row) => row.id === runId);
+    const velocityStations = new Set<number>();
+    if (window) {
+        for (const strip of allStrips(ecs)) {
+            velocityStations.add(strip.start - window.offset);
+            velocityStations.add(strip.end - window.offset);
+            for (const keyframe of stripKeyframes(ecs, strip.id))
+                velocityStations.add(keyframe.s - window.offset);
+        }
+    }
+    const interior = [...new Set([...forceStations.keys(), ...velocityStations])]
+        .filter((station) => station > 0 && station <= extent)
+        .sort((a, b) => a - b)
+        .map((station) => ({
+            id: forceStations.get(station) ?? -1,
+            station,
+            value: forceStations.get(station),
+        }));
     const orphans = rawPoints.filter((row) => row.station > extent);
     const union = forceStationUnion(
         runId,
@@ -2171,7 +2201,7 @@ export function spliceRunMembers(
         const member = union.members[i]!;
         if (i === 0) member.id = runId;
         else if (intent === "move" && positional[i] !== undefined) member.id = positional[i]!;
-        else member.id = oldByStation.get(member.entryStation) ?? nextSectionId++;
+        else member.id = oldByStation.get(member.entryStation) ?? allocateSectionId(ecs);
     }
 
     const allBefore = segments(ecs);
@@ -2182,7 +2212,7 @@ export function spliceRunMembers(
     const pointOwner = new Map<number, { segment: number; s: number }>();
     if (entryId !== null) pointOwner.set(entryId, { segment: Number(union.members[0]!.id), s: 0 });
     for (const member of union.members)
-        if (member.boundary)
+        if (member.boundary?.value !== undefined)
             pointOwner.set(member.boundary.value, {
                 segment: Number(member.id),
                 s: member.localStation,
@@ -2234,6 +2264,23 @@ export function spliceRunMembers(
         Section.order.set(segmentAt(ecs, chain[order]!)!, order);
     // Last mutation: publish the named entry address only after every other column is coherent.
     refreshRunEntryForce(ecs, runId);
+}
+
+/** Rebuild force-run members at every authored velocity station. Geo runs remain untouched until
+ * exact curve subdivision lands in S2d3. */
+export function refreshVelocityRunMembers(ecs: State): void {
+    const forceRuns = rebuildRunProjection(ecs)
+        .filter((run) => run.kind === SectionKind.Force)
+        .map((run) => run.id);
+    for (const runId of forceRuns) spliceRunMembers(ecs, runId, "rebuild");
+    reserveIds({ section: segments(ecs).map((segment) => segment.id) });
+}
+
+/** Capture every force run whose structure can be changed by a track-global velocity station. */
+export function snapshotVelocityRuns(ecs: State): RunSnapshot[] {
+    return rebuildRunProjection(ecs)
+        .filter((run) => run.kind === SectionKind.Force)
+        .map((run) => snapshotRun(ecs, run.id));
 }
 
 /** @temporary S3–S7 — named access to the one existing run-entry boundary datum. */
@@ -2473,11 +2520,13 @@ export function setForcePoint(ecs: State, id: number, s: number, g: number): voi
         row.segmentIds.includes(Force.section.get(eid)),
     );
     const runId = run?.id ?? Force.section.get(eid);
+    const memberOffset = run?.stations[run.segmentIds.indexOf(Force.section.get(eid))] ?? 0;
+    const priorStation = memberOffset + Force.s.get(eid);
     const lands = !stationTaken(ecs, runId, s, id);
-    if (lands)
-        Force.s.set(eid, s - (run?.stations[run.segmentIds.indexOf(Force.section.get(eid))] ?? 0));
+    if (lands) Force.s.set(eid, s - memberOffset);
     ForceBoundary.g.set(eid, g);
-    if (lands && run) spliceRunMembers(ecs, run.id, "move");
+    if (lands && run)
+        spliceRunMembers(ecs, run.id, priorStation === 0 || s === 0 ? "rebuild" : "move");
 }
 
 /** write a force point's full state back — position and easing tag (the gesture
@@ -3537,11 +3586,10 @@ export function forceDense(
     const runId = segmentIds[0];
     const entryG = runId === undefined ? undefined : RunEntryForceBoundary.g(ecs, runId);
     const entryEase = runId === undefined ? undefined : RunEntryForceBoundary.ease(ecs, runId);
+    const land = bakeLanding !== null && bakeLanding.section === runId ? bakeLanding.g : null;
     for (let i = 0; i < segmentIds.length; i++) {
-        const segmentId = segmentIds[i];
+        const segmentId = segmentIds[i]!;
         const offset = stations[i]!;
-        const land =
-            bakeLanding !== null && bakeLanding.section === segmentId ? bakeLanding.g : null;
         for (const p of segmentForces(ecs, segmentId)) {
             const entry = offset === 0 && p.s === 0;
             points.push({

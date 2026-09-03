@@ -58,6 +58,7 @@ import {
     MAX_SAMPLES,
     MIN_FORCE_LEN,
     readProvenance,
+    refreshVelocityRunMembers,
     reheadOnDrag,
     removeTrailingHandle,
     nodeSnapshot,
@@ -270,6 +271,33 @@ test("raw-column run splice splits boundary members and preserves trimmed orphan
     expect(forcePointState(ecs, orphan)).toMatchObject({ section: run, s: 12 });
     expect(sectionForces(ecs, run).map((point) => point.s)).toEqual([0, 4, 12]);
     expect(Segment.runEntryForce.get(segmentAt(ecs, run)!)).toBe(entry + 1);
+});
+
+test("velocity-only stations split a force run without creating force boundaries", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 10);
+    createForcePoint(ecs, run, 0, 1);
+    createForcePoint(ecs, run, 10, 2);
+    const strip = createStrip(ecs, 3, 7, 8)!;
+    createStripKeyframe(ecs, strip, 5, 9);
+    refreshVelocityRunMembers(ecs);
+
+    const snap = snapshotRun(ecs, run);
+    expect(snap.stations).toEqual([0, 3, 5, 7, 10]);
+    expect(snap.members).toHaveLength(4);
+    expect(sectionForces(ecs, run).map(({ s, g }) => [s, g])).toEqual([
+        [0, 1],
+        [10, 2],
+    ]);
+    expect(stripsForStep(ecs, 0, { edges: 10, ds: 1 })).toEqual([
+        {
+            start: 3,
+            end: 7,
+            value: 8,
+            values: new Float32Array([64, 72.25, 81, 72.25]),
+        },
+    ]);
 });
 
 test("section creation clears a recycled cross-State run-entry pointer", () => {
