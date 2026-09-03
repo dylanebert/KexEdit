@@ -100,6 +100,7 @@ import {
     setTrackResistance,
     snapshotAll,
     snapshotSection,
+    spliceGeoMembers,
     spliceRunMembers,
     stampProvenance,
     stickyLen,
@@ -201,10 +202,12 @@ test("geo member boundary address and run restore preserve endpoint and explicit
     const tip = addNode(ecs, run, 12, 3);
     const tangent = { mode: TangentMode.Free, inX: 2, inY: 1, outX: 4, outY: -1 };
     setTangent(ecs, run, 2, tangent);
+    spliceGeoMembers(ecs, run);
     const snap = snapshotRun(ecs, run);
 
-    expect(Segment.geoEndNode.get(segmentAt(ecs, run)!)).toBe(tip + 1);
-    expect(GeoMemberBoundary.node(ecs, run)).toEqual({
+    const terminal = snapshotRun(ecs, run).members[1]!.id;
+    expect(Segment.geoEndNode.get(segmentAt(ecs, terminal)!)).toBe(tip + 1);
+    expect(GeoMemberBoundary.node(ecs, terminal)).toEqual({
         order: 2,
         x: 12,
         y: 3,
@@ -215,7 +218,7 @@ test("geo member boundary address and run restore preserve endpoint and explicit
     removeTrailingHandle(ecs, run);
     restoreRun(ecs, snap);
     expect(snapshotRun(ecs, run)).toEqual(snap);
-    expect(GeoMemberBoundary.node(ecs, run)?.tangent).toEqual(tangent);
+    expect(GeoMemberBoundary.node(ecs, terminal)?.tangent).toEqual(tangent);
 });
 
 test("run restore preserves surviving member entities and respawns only absent identities", () => {

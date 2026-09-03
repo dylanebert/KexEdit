@@ -37,7 +37,6 @@ import {
     restoreAll,
     restoreForcePoint,
     restoreNodes,
-    restoreSection,
     restoreRun,
     sameForcePoint,
     sameNodes,
@@ -53,7 +52,6 @@ import {
     setSectionLength,
     setStickyLen,
     snapshotAll,
-    snapshotSection,
     snapshotRun,
     spliceRunMembers,
     stampProvenance,
@@ -280,10 +278,10 @@ function restoreCommand<S>(
  *  before/after rather than just the added node. returns the new node's eid. */
 export function extendTrack(h: History, ecs: State, section: number): number {
     const pre = selHook?.snapshot(ecs);
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     const eid = extend(ecs, section);
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
     return eid;
 }
 
@@ -293,10 +291,10 @@ export function extendTrack(h: History, ecs: State, section: number): number {
  *  trimmed node's tangent). no-op below the two-node floor (records nothing, returns false). */
 export function trimTrack(h: History, ecs: State, section: number): boolean {
     const pre = selHook?.snapshot(ecs); // the tip being trimmed — captured before it's destroyed
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     if (!removeTrailingHandle(ecs, section)) return false;
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
     return true;
 }
 
@@ -360,15 +358,15 @@ export function beginMoves(ecs: State, sections: readonly number[]): void {
  *  was removed. returns true when at least one node was trimmed. */
 export function trimSuffix(h: History, ecs: State, section: number, k: number): boolean {
     const pre = selHook?.snapshot(ecs); // the selected SET — captured before any node is destroyed
-    const before = snapshotSection(ecs, section);
+    const before = snapshotRun(ecs, section);
     let removed = 0;
     for (let i = 0; i < k; i++) {
         if (!removeTrailingHandle(ecs, section)) break;
         removed++;
     }
     if (removed === 0) return false;
-    const after = snapshotSection(ecs, section);
-    record(h, restoreCommand(ecs, before, after, restoreSection), pre);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
     return true;
 }
 

@@ -106,7 +106,9 @@ import {
     setStrip,
     setStripKeyframe,
     setTangent,
+    snapshotRun,
     snapshotSection,
+    spliceGeoMembers,
     stampProvenance,
     stickyLen,
     stripKeyframes,
@@ -646,19 +648,20 @@ test("convert geo→force undoes byte-identical to the shaped geo track", () => 
 test("resetSection on a geo section is ONE entry and undoes byte-identical", () => {
     const { state, sec } = nodes();
     addNode(state, sec, 40, 6); // shape it: a third off-axis node
+    spliceGeoMembers(state, sec);
     const h = createHistory();
-    const before = snapshotSection(state, sec);
+    const before = snapshotRun(state, sec);
 
     resetSection(h, state, sec);
     expect(h.undo.length).toBe(1);
     expect(sectionHandles(state, sec).length).toBe(2); // the flat two-node seed
-    const seeded = snapshotSection(state, sec);
-    expect(seeded.kind).toBe(SectionKind.Geo); // the kind held
+    const seeded = snapshotRun(state, sec);
+    expect(seeded.members[0]!.kind).toBe(SectionKind.Geo); // the kind held
 
     undo(h, state);
-    expect(snapshotSection(state, sec)).toEqual(before); // byte-identical restore
+    expect(snapshotRun(state, sec)).toEqual(before); // byte-identical restore
     redo(h, state);
-    expect(snapshotSection(state, sec)).toEqual(seeded); // and forward again
+    expect(snapshotRun(state, sec)).toEqual(seeded); // and forward again
 });
 
 test("resetSection on a force section is ONE entry and undoes byte-identical", () => {

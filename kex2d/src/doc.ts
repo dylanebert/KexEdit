@@ -44,6 +44,7 @@ import {
     stripOverlapped,
     type StripSnapshot,
     snapshotAll,
+    spliceGeoMembers,
     Track,
     trackEntity,
     type TrackSnapshot,
@@ -1109,6 +1110,9 @@ export function loadDocument(ecs: State, text: string): void {
     else Track.count.set(trackEid, 0);
 
     restoreAll(ecs, snap);
+    for (const run of doc.segments) {
+        if (run.kind === SectionKind.Geo) spliceGeoMembers(ecs, run.id);
+    }
     Track.ds.set(trackEid, doc.track.ds);
     Track.domain.set(trackEid, doc.track.domain);
     Track.friction.set(trackEid, doc.track.friction);

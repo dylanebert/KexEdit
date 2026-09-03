@@ -16,6 +16,7 @@ import {
     sectionHandles,
     sectionInfo,
     SectionKind,
+    runExtentOf,
     type TrackSnapshot,
     setTrackDomain,
     setTrackFriction,
@@ -101,7 +102,7 @@ describe("convertGeo", () => {
         if (secEid === null) throw new Error("section missing");
         expect(Section.kind.get(secEid)).toBe(SectionKind.Force);
         // the solve's realized extent, exactly — not the destructive convert's default extent.
-        expect(Section.length.get(secEid)).toBe(result.length);
+        expect(runExtentOf(state, sec)).toBe(result.length);
         // the shape nodes are gone and the answer's keyframes are all that's there.
         expect(sectionHandles(state, sec)).toHaveLength(0);
         expect(sectionForces(state, sec).map(({ s, g }) => ({ s, g }))).toEqual(result.points);
@@ -226,7 +227,7 @@ describe("convertGeo", () => {
         const secEid = sectionAt(state, sec);
         if (secEid === null) throw new Error("section missing");
 
-        const landed = Section.length.get(secEid);
+        const landed = runExtentOf(state, sec);
         expect(landed).toBe(result.length);
         const stored = sectionForces(state, sec).map((p) => p.s);
         expect(stored).toEqual(result.points.map((p) => p.s));
