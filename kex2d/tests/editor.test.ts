@@ -31,6 +31,9 @@ import {
     selectForces,
     selectNodes,
     selectOneShot,
+    selectSegment,
+    selectSegments,
+    activateSegment,
     selectSection,
     selectStart,
     selectStrip,
@@ -180,6 +183,18 @@ test("a set applier that grows past a sub-mode's subject drops the sub-mode", ()
     enterTangentEdit(10);
     selectNodes([10, 20], 20);
     expect(editor.tangentEdit).toBeNull();
+});
+
+test("canonical segment selection keeps stable membership and active identity", () => {
+    selectSegment(41);
+    selectSegment(42, "toggle");
+    expect([...editor.segments.ids]).toEqual([41, 42]);
+    expect(editor.segment).toBe(42);
+    activateSegment(41);
+    expect(editor.segment).toBe(41);
+    selectSegments([7, 8], 8);
+    expect([...editor.segments.ids]).toEqual([7, 8]);
+    expect(activeKind()).toBe("segment");
 });
 
 test("selectForces writes the force set without sweeping other kinds (S2: marquee extends)", () => {
