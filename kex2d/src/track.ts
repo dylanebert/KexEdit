@@ -1995,7 +1995,9 @@ export function extend(ecs: State, sectionId: number): number {
     // stored heading (the arc rule exits exactly along `theta`). placing straight along the exit
     // makes `reflect` return it, so the new segment opens straight.
     const p = continuation(last, stickyLen(SectionKind.Geo));
-    return addNode(ecs, sectionId, p.x, p.y);
+    const eid = addNode(ecs, sectionId, p.x, p.y);
+    spliceGeoMembers(ecs, Handle.section.get(eid));
+    return eid;
 }
 
 /** remove the trailing (highest-order) node on a section — never below the two
@@ -2011,12 +2013,67 @@ export function removeTrailingHandle(ecs: State, sectionId: number): boolean {
     const last = lastHandle(ecs, sectionId);
     if (last === null) return false;
     if (sectionHandles(ecs, sectionId).length <= 2) return false;
-    const memberId = Handle.segment.get(last);
+    const runId = Handle.section.get(last);
     ecs.destroy(last);
-    const member = segmentAt(ecs, memberId);
-    const next = segmentHandles(ecs, memberId).at(-1);
-    if (member !== null) Segment.geoEndNode.set(member, next === undefined ? 0 : next + 1);
+    spliceGeoMembers(ecs, runId);
     return true;
+}
+
+/** @temporary S3–S7 — atomically project one geo run's raw edge chain onto canonical members.
+ * The first member carries the run-entry node and first terminating node; every later member
+ * carries exactly its terminating node. Coordinates and tangents stay in the shared run-entry
+ * frame. Planning completes before chain order, ownership, zero extents, and boundary pointers
+ * are published from raw columns. */
+export function spliceGeoMembers(ecs: State, runId: number): void {
+    const before = runMembers(ecs, runId);
+    if (before.length === 0) throw new Error(`spliceGeoMembers: no run ${runId}`);
+    const first = before[0]!;
+    const kind = Section.kind.get(first.eid) as SectionKind;
+    if (kind !== SectionKind.Geo) return;
+    const nodes = before
+        .flatMap((member) => segmentHandles(ecs, member.id))
+        .sort((a, b) => Handle.order.get(a) - Handle.order.get(b));
+    if (nodes.length < 2) return;
+
+    let nextGeoId = Math.max(-1, ...segments(ecs).map((member) => member.id)) + 1;
+    const ids = Array.from({ length: nodes.length - 1 }, (_, index) =>
+        index === 0 ? runId : (before[index]?.id ?? nextGeoId++),
+    );
+    reserveIds({ section: ids });
+    const desired = new Set(ids);
+    const allBefore = segments(ecs);
+    const runSet = new Set(before.map((member) => member.id));
+    const insertion = allBefore.findIndex((row) => runSet.has(row.id));
+
+    // First mutation: every value below was planned from raw columns above.
+    for (const id of ids) {
+        if (segmentAt(ecs, id) === null) spawnSection(ecs, id, 0, kind, 0, runId, 0, 0);
+    }
+    for (let index = 0; index < nodes.length; index++) {
+        const owner = ids[Math.max(0, index - 1)]!;
+        Handle.segment.set(nodes[index]!, owner);
+        Handle.section.set(nodes[index]!, runId);
+    }
+    for (const member of before) {
+        if (!desired.has(member.id)) ecs.destroy(member.eid);
+    }
+    for (const id of ids) {
+        const eid = segmentAt(ecs, id)!;
+        Segment.run.set(eid, runId);
+        Segment.runStation.set(eid, 0);
+        Segment.runExtent.set(eid, 0);
+        Segment.runEntryForce.set(eid, 0);
+        Section.kind.set(eid, SectionKind.Geo);
+        Section.length.set(eid, 0);
+        Segment.geoEndNode.set(eid, 0);
+    }
+    const chain = allBefore.filter((row) => !runSet.has(row.id)).map((row) => row.id);
+    chain.splice(insertion, 0, ...ids);
+    for (let order = 0; order < chain.length; order++)
+        Section.order.set(segmentAt(ecs, chain[order]!)!, order);
+    // Last mutation: publish each member's terminating boundary only after ownership is coherent.
+    for (let index = 0; index < ids.length; index++)
+        Segment.geoEndNode.set(segmentAt(ecs, ids[index]!)!, nodes[index + 1]! + 1);
 }
 
 // ── force points ─────────────────────────────────────────────────────────────
@@ -2713,8 +2770,13 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     Segment.runStation.set(eid, snap.runStation);
     Segment.runExtent.set(eid, snap.runExtent);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
-    const geoEnd = snap.geoEndNode < 0 ? null : handleAt(ecs, snap.id, snap.geoEndNode);
-    Segment.geoEndNode.set(eid, geoEnd === null ? 0 : geoEnd + 1);
+    const geoEnd =
+        snap.geoEndNode < 0
+            ? undefined
+            : segmentHandles(ecs, snap.id).find(
+                  (node) => Handle.order.get(node) === snap.geoEndNode,
+              );
+    Segment.geoEndNode.set(eid, geoEnd === undefined ? 0 : geoEnd + 1);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
     refreshRunEntryForce(ecs, snap.run);
 }
@@ -2748,7 +2810,7 @@ export function restoreRun(ecs: State, snap: RunSnapshot): void {
         for (const point of segmentForces(ecs, surplus.id)) ecs.destroy(point.eid);
         ecs.destroy(surplus.eid);
     }
-    for (const member of snap.members) {
+    for (const [index, member] of snap.members.entries()) {
         let eid = segmentAt(ecs, member.id);
         if (eid === null) {
             bumpOrders(ecs, member.order, 1);
@@ -2767,8 +2829,8 @@ export function restoreRun(ecs: State, snap: RunSnapshot): void {
         restoreSegment(ecs, {
             ...member,
             run: snap.id,
-            runStation: snap.stations[snap.members.indexOf(member)]!,
-            runExtent: snap.stations.at(-1)!,
+            runStation: snap.stations[index]!,
+            runExtent: index === 0 ? snap.stations.at(-1)! : member.runExtent,
         });
     }
     // Cardinality-changing undo/redo can otherwise leave holes in the global order.
@@ -2998,9 +3060,26 @@ export function convertSection(ecs: State, sectionId: number): void {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
     if (!run) return;
     for (const id of run.segmentIds) {
-        const eid = segmentAt(ecs, id)!;
-        if (run.kind === SectionKind.Geo) resetToForce(ecs, eid, id);
-        else resetToGeo(ecs, eid, id);
+        for (const handle of segmentHandles(ecs, id)) ecs.destroy(handle);
+        for (const point of segmentForces(ecs, id)) ecs.destroy(point.eid);
+    }
+    const first = run.segmentIds[0]!;
+    const target = run.kind === SectionKind.Geo ? SectionKind.Force : SectionKind.Geo;
+    if (target === SectionKind.Force) {
+        resetToForce(ecs, segmentAt(ecs, first)!, first);
+        const extent = Section.length.get(segmentAt(ecs, first)!);
+        for (const id of run.segmentIds.slice(1)) {
+            const eid = segmentAt(ecs, id)!;
+            Section.kind.set(eid, target);
+            Section.length.set(eid, extent);
+        }
+    } else {
+        resetToGeo(ecs, segmentAt(ecs, first)!, first);
+        for (const id of run.segmentIds.slice(1)) {
+            const eid = segmentAt(ecs, id)!;
+            Section.kind.set(eid, target);
+            Section.length.set(eid, 0);
+        }
     }
 }
 
@@ -3024,7 +3103,17 @@ export function resetSection(ecs: State, sectionId: number): void {
         refreshRunEntryForce(ecs, run.id);
         return;
     }
-    for (const id of run.segmentIds) resetToGeo(ecs, segmentAt(ecs, id)!, id);
+    for (const id of run.segmentIds) {
+        for (const handle of segmentHandles(ecs, id)) ecs.destroy(handle);
+        for (const point of segmentForces(ecs, id)) ecs.destroy(point.eid);
+    }
+    const first = run.segmentIds[0]!;
+    resetToGeo(ecs, segmentAt(ecs, first)!, first);
+    for (const id of run.segmentIds.slice(1)) {
+        const eid = segmentAt(ecs, id)!;
+        Section.kind.set(eid, SectionKind.Geo);
+        Section.length.set(eid, 0);
+    }
 }
 
 /** whether the section menu's Reset row may fire: exactly ONE section, and — force only — a

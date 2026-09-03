@@ -18,6 +18,7 @@ import {
     createTrack,
     SectionKind,
     spawnNode,
+    spliceGeoMembers,
     Track,
 } from "../src/track";
 
@@ -30,6 +31,7 @@ function scenarioDocument(s: (typeof scenarios)[number]): string {
     s.nodes.forEach((n, i) => {
         spawnNode(state, sec, i, n.x, n.y, n.theta, n.tangent);
     });
+    spliceGeoMembers(state, sec);
     createOneShot(state, s.v0);
     state.step(0);
     return saveDocument(state);

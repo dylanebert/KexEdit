@@ -31,6 +31,7 @@ import {
     sections,
     snapshotAll,
     spawnNode,
+    spliceGeoMembers,
     Track,
     trackEntity,
 } from "../src/track";
@@ -52,6 +53,7 @@ function scenarioTrack(s: (typeof scenarios)[number]): { state: State; eid: numb
     s.nodes.forEach((n, i) => {
         spawnNode(state, sec, i, n.x, n.y, n.theta, n.tangent);
     });
+    spliceGeoMembers(state, sec);
     createOneShot(state, s.v0);
     return { state, eid };
 }
@@ -93,6 +95,8 @@ describe("round-trip over the scenarios.ts corpus", () => {
             a.state.step(0);
 
             const text = saveDocument(a.state);
+            const authored = snapshotAll(a.state);
+            const baked = bakedArrays(a.eid);
 
             // canonical idempotence: re-emitting a parsed document reproduces the same text.
             expect(serializeDocument(parseDocument(text))).toBe(text);
@@ -106,14 +110,10 @@ describe("round-trip over the scenarios.ts corpus", () => {
 
             // authored-state deep equality (TrackSnapshot) — every section/node/point/strip/
             // one-shot the document carries, plus the four Track scalars.
-            expect(snapshotAll(b)).toEqual(snapshotAll(a.state));
-            expect(Track.ds.get(bEid)).toBe(Track.ds.get(a.eid));
-            expect(Track.domain.get(bEid)).toBe(Track.domain.get(a.eid));
-            expect(Track.friction.get(bEid)).toBe(Track.friction.get(a.eid));
-            expect(Track.resistance.get(bEid)).toBe(Track.resistance.get(a.eid));
+            expect(snapshotAll(b)).toEqual(authored);
 
             // bakeOut/samples arrays byte-identical.
-            expect(bakedArrays(bEid)).toEqual(bakedArrays(a.eid));
+            expect(bakedArrays(bEid)).toEqual(baked);
         });
     }
 });
@@ -135,7 +135,13 @@ describe("a document with strips, a force section, and an explicit geo tangent r
             outY: 3,
         });
         addNode(state, geo, 80, 0);
-        const force = createSection(state, 1, SectionKind.Force, 30);
+        spliceGeoMembers(state, geo);
+        const force = createSection(
+            state,
+            snapshotAll(state).segments.length,
+            SectionKind.Force,
+            30,
+        );
         createForcePoint(state, force, 0, 1.5, Easing.Cubic);
         createForcePoint(state, force, 15, 2.5, Easing.Quintic);
         createStrip(state, 5, 25, 24);
@@ -147,6 +153,7 @@ describe("a document with strips, a force section, and an explicit geo tangent r
         const a = widerTrack();
         a.state.step(0);
         const text = saveDocument(a.state);
+        const baked = bakedArrays(a.eid);
         expect(serializeDocument(parseDocument(text))).toBe(text);
 
         const b = new State();
@@ -156,8 +163,8 @@ describe("a document with strips, a force section, and an explicit geo tangent r
         const bEid = trackEntity(b);
         if (bEid === null) throw new Error("no track after load");
 
-        expect(snapshotAll(b)).toEqual(snapshotAll(a.state));
-        expect(bakedArrays(bEid)).toEqual(bakedArrays(a.eid));
+        expect(saveDocument(b)).toBe(text);
+        expect(bakedArrays(bEid)).toEqual(baked);
     });
 });
 
@@ -253,20 +260,25 @@ describe("f32 exactness: emit/parse/Math.fround round-trips identical bits", () 
                 0,
             );
         }
+        spliceGeoMembers(state, sec);
         createOneShot(state, 22);
         state.step(0);
 
         const text = saveDocument(state);
+        const authored = snapshotAll(state);
+        const dsBits = bits(Track.ds.get(eid));
+        const frictionBits = bits(Track.friction.get(eid));
+        const resistanceBits = bits(Track.resistance.get(eid));
         const b = new State();
         b.addSystem(BakeSystem);
         loadDocument(b, text);
         const bEid = trackEntity(b);
         if (bEid === null) throw new Error("no track after load");
 
-        expect(bits(Track.ds.get(bEid))).toBe(bits(Track.ds.get(eid)));
-        expect(bits(Track.friction.get(bEid))).toBe(bits(Track.friction.get(eid)));
-        expect(bits(Track.resistance.get(bEid))).toBe(bits(Track.resistance.get(eid)));
-        expect(snapshotAll(b)).toEqual(snapshotAll(state));
+        expect(bits(Track.ds.get(bEid))).toBe(dsBits);
+        expect(bits(Track.friction.get(bEid))).toBe(frictionBits);
+        expect(bits(Track.resistance.get(bEid))).toBe(resistanceBits);
+        expect(snapshotAll(b)).toEqual(authored);
     });
 });
 
@@ -716,6 +728,12 @@ describe("run-nested unstable-v3 wire", () => {
                             nodes: [{ order: 1, x: 8, y: 2, theta: 0 }],
                             points: [],
                         },
+                        {
+                            node: 2,
+                            kind: SectionKind.Geo,
+                            nodes: [{ order: 2, x: 16, y: 0, theta: 0 }],
+                            points: [],
+                        },
                     ],
                 },
             ],
@@ -731,8 +749,12 @@ describe("run-nested unstable-v3 wire", () => {
             JSON.parse(canonical).segments[0].members.map(
                 (member: { node: number }) => member.node,
             ),
-        ).toEqual([0, 1]);
-        expect(snapshotAll(state).segments.map((member) => member.geoEndNode)).toEqual([0, 1]);
+        ).toEqual([1, 2]);
+        const snapshot = snapshotAll(state);
+        expect(snapshot.segments.map((member) => member.geoEndNode)).toEqual([1, 2]);
+        expect(
+            snapshot.segments.flatMap((member) => member.nodes.map((node) => node.order)),
+        ).toEqual([0, 1, 2]);
         expect(checkDocInvariants(parseDocument(canonical))).toEqual([]);
     });
 });

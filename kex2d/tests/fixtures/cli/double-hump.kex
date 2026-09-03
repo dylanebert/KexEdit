@@ -3,25 +3,25 @@
   "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
   "segments": [
     {
-      "id": 8,
+      "id": 47,
       "order": 0,
       "kind": 0,
       "length": 0,
-      "nodes": [
-        {"order":0,"x":0,"y":0,"theta":0},
-        {"order":1,"x":20,"y":0,"theta":0},
-        {"order":2,"x":38,"y":7,"theta":0.7417825776253247},
-        {"order":3,"x":56,"y":11,"theta":-0.30444468587744083},
-        {"order":4,"x":74,"y":7,"theta":-0.13289320587044307},
-        {"order":5,"x":92,"y":0,"theta":-0.6088893717548817},
-        {"order":6,"x":112,"y":0,"theta":0.6088893717548817},
-        {"order":7,"x":130,"y":7,"theta":0.13289320587044307},
-        {"order":8,"x":148,"y":11,"theta":0.30444468587744083},
-        {"order":9,"x":166,"y":7,"theta":-0.7417825776253247},
-        {"order":10,"x":184,"y":0,"theta":0},
-        {"order":11,"x":204,"y":0,"theta":0}
-      ],
-      "points": []
+      "nodes": [],
+      "points": [],
+      "members": [
+        {"node":1,"kind":0,"nodes":[{"order":0,"x":0,"y":0,"theta":0},{"order":1,"x":20,"y":0,"theta":0}],"points":[]},
+        {"node":2,"kind":0,"nodes":[{"order":2,"x":38,"y":7,"theta":0.7417825776253247}],"points":[]},
+        {"node":3,"kind":0,"nodes":[{"order":3,"x":56,"y":11,"theta":-0.30444468587744083}],"points":[]},
+        {"node":4,"kind":0,"nodes":[{"order":4,"x":74,"y":7,"theta":-0.13289320587044307}],"points":[]},
+        {"node":5,"kind":0,"nodes":[{"order":5,"x":92,"y":0,"theta":-0.6088893717548817}],"points":[]},
+        {"node":6,"kind":0,"nodes":[{"order":6,"x":112,"y":0,"theta":0.6088893717548817}],"points":[]},
+        {"node":7,"kind":0,"nodes":[{"order":7,"x":130,"y":7,"theta":0.13289320587044307}],"points":[]},
+        {"node":8,"kind":0,"nodes":[{"order":8,"x":148,"y":11,"theta":0.30444468587744083}],"points":[]},
+        {"node":9,"kind":0,"nodes":[{"order":9,"x":166,"y":7,"theta":-0.7417825776253247}],"points":[]},
+        {"node":10,"kind":0,"nodes":[{"order":10,"x":184,"y":0,"theta":0}],"points":[]},
+        {"node":11,"kind":0,"nodes":[{"order":11,"x":204,"y":0,"theta":0}],"points":[]}
+      ]
     }
   ],
   "strips": [],
