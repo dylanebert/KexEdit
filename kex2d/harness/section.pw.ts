@@ -9,6 +9,7 @@ import {
     OUT,
     SHOT_MS,
     kexCall,
+    forcePointAt,
     nodePoint,
     seedHill,
     frameTimeline,
@@ -3516,7 +3517,6 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
     // force circles in view after framing — not a hardcoded index.
     const caughtForce = (await forceSelIds()).sort((a, b) => a - b);
     expect(caughtForce.length).toBe(1);
-    const fhit = page.locator(".fhit");
     const forceU = (await kexCall(page, "forceU")) as { id: number; s: number }[];
     const caughtIdx = forceU
         .slice()
@@ -3524,10 +3524,9 @@ test("two-strip marquee arrow-nudge moves both strips' keyframes", async ({ page
         .map((p) => p.id)
         .indexOf(caughtForce[0]);
     if (caughtIdx < 0) throw new Error("caught force point not found");
-    const bump = await fhit.nth(caughtIdx).boundingBox();
-    if (!bump) throw new Error("caught force point not laid out");
+    const bump = await forcePointAt(page, caughtIdx);
     await page.keyboard.down("Shift");
-    await page.mouse.click(bump.x + bump.width / 2, bump.y + bump.height / 2);
+    await page.mouse.click(bump.x, bump.y);
     await page.keyboard.up("Shift");
     await expect.poll(async () => (await forceSelIds()).length).toBe(0);
 
@@ -3696,10 +3695,9 @@ test("pin-session lockdown blocks mixed nudge and force-originated drag strip-kf
 
     // a section-0 force keyframe shift-clicked into the set LAST — the ACTIVE member is the
     // force keyframe, so the force handler's own branch is the site that fires
-    const forceHit = await page.locator(".fhit").nth(2).boundingBox();
-    if (!forceHit) throw new Error("force diamond 2 not laid out");
+    const forceHit = await forcePointAt(page, 2);
     await page.keyboard.down("Shift");
-    await page.mouse.click(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
+    await page.mouse.click(forceHit.x, forceHit.y);
     await page.keyboard.up("Shift");
     await expect.poll(async () => (await forceSelIds()).length).toBe(1);
     const activeForce = (await kexCall(page, "forceSelActive")) as number;
@@ -3731,10 +3729,10 @@ test("pin-session lockdown blocks mixed nudge and force-originated drag strip-kf
         beforePointerForce === undefined
     )
         throw new Error("mixed pointer baseline is incomplete");
-    await page.mouse.click(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
-    await page.mouse.move(forceHit.x + forceHit.width / 2, forceHit.y + forceHit.height / 2);
+    await page.mouse.click(forceHit.x, forceHit.y);
+    await page.mouse.move(forceHit.x, forceHit.y);
     await page.mouse.down();
-    await page.mouse.move(forceHit.x + forceHit.width / 2 + 20, forceHit.y + forceHit.height / 2, {
+    await page.mouse.move(forceHit.x + 20, forceHit.y, {
         steps: 10,
     });
     await page.mouse.up();

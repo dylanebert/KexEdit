@@ -12,6 +12,7 @@ import {
     OUT,
     SHOT_MS,
     kexCall,
+    forcePointAt,
     type Kex,
     nodePoint,
     seedHill,
@@ -1025,31 +1026,27 @@ test("context menu stays in the viewport near the bottom edge", async ({ page, b
     await kexCall(page, "seedForceBump");
     await expect.poll(forceCount).toBeGreaterThanOrEqual(3);
     await expect.poll(tTotal).not.toBe(tFlat);
-    await frameTimeline(page); // whole force section on-screen so every diamond has a DOM box
+    await frameTimeline(page);
     const nPts = await forceCount();
-    // `.fpt` is shared with velocity-strip keyframes; `seed()` (S3) carries no strip of its own
-    // (`force.pw.ts`'s own note), so `.fpt` is force points only.
-    await expect(page.locator(".fpt")).toHaveCount(nPts);
 
     const vp = page.viewportSize();
     if (!vp) throw new Error("no viewport size");
 
-    // find the lowest-on-screen keyframe (largest y = nearest the bottom edge) — its
-    // downward-opening context menu is the one the flip fix rescues.
-    const fpts = page.locator(".fpt");
+    // Find the lowest projected station without depending on the retiring force glyph DOM.
     let lowest = 0;
     let lowestY = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < nPts; i++) {
-        const b = await fpts.nth(i).boundingBox();
-        if (b && b.y + b.height / 2 > lowestY) {
-            lowestY = b.y + b.height / 2;
+        const p = await forcePointAt(page, i);
+        if (p && p.y > lowestY) {
+            lowestY = p.y;
             lowest = i;
         }
     }
     // the low keyframe really is near the bottom — otherwise this test can't exercise the overflow.
     expect(lowestY).toBeGreaterThan(vp.height * 0.6);
 
-    await fpts.nth(lowest).click({ button: "right" });
+    const target = await forcePointAt(page, lowest);
+    await page.mouse.click(target.x, target.y, { button: "right" });
     await expect(page.locator(".fmenu")).toBeVisible();
     const mb = await page.locator(".fmenu").boundingBox();
     if (!mb) throw new Error("force keyframe menu not laid out");
