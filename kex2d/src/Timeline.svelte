@@ -1864,8 +1864,7 @@ let marqueePointer = -1; // the pressed pointer, captured on arm (not on down)
 // `oncontextmenu` (the chart-inertness registry in `tests/menu.test.ts` pins chartzone as having
 // no handler at all). A right-click can only target a diamond a person can already see, so it is
 // never dispatched at a position the current frame has not drawn.
-function freshKfPts(kind: KfKind): (ForcePt | StripKfPt)[] {
-    const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+function freshKfPts(kind: KfKind, freshSpans = eid === null ? [] : sectionSpans(ecs, eid)): (ForcePt | StripKfPt)[] {
     return kind === "force"
         ? computeForcePts(computeClips(freshSpans, ecs), freshSpans, ecs)
         : computeStripKfPts(computeBandStrips(freshSpans, ecs), freshSpans, ecs);
@@ -1876,18 +1875,25 @@ function freshKfPts(kind: KfKind): (ForcePt | StripKfPt)[] {
 // (`bandCandidates`' own "never one fresh and one stale" law). Candidates outside the chart's
 // own clip (`#fclip`) are dropped: a clipped diamond is not hit-testable in the DOM either, so
 // including it here would make the rect hit a keyframe the circle path cannot.
-function freshKfSnapshot(): {
+type KfSnapshot = {
     cand: KfHitCandidate;
     at: (kind: KfKind, id: number) => ForcePt | StripKfPt | undefined;
-} {
-    const byKind = new Map<KfKind, (ForcePt | StripKfPt)[]>();
+};
+function kfSnapshot(
+    force: (ForcePt | StripKfPt)[],
+    strip: (ForcePt | StripKfPt)[],
+    rows: ReturnType<typeof segmentSpans>,
+): KfSnapshot {
+    const byKind = new Map<KfKind, (ForcePt | StripKfPt)[]>([
+        ["force", force],
+        ["strip", strip],
+    ]);
     const points: KfHitCandidate["points"][number][] = [];
     const yLo = TOP;
     const yHi = Math.max(TOP, h - BOT_PAD);
     for (const kind of KF_KINDS) {
         const desc = kfDesc(kind);
-        const pts = freshKfPts(kind);
-        byKind.set(kind, pts);
+        const pts = byKind.get(kind) ?? [];
         for (const p of pts) {
             const x = ptX(p);
             const y = desc.axis.valToY(desc.axis.val(p));
@@ -1895,7 +1901,6 @@ function freshKfSnapshot(): {
             points.push({ kind, id: p.id, x, y });
         }
     }
-    const rows = eid === null ? [] : segmentSpans(ecs, eid);
     const segmentRows = rows.map((row) => ({
         id: row.id,
         x0: uPx(uOfLen(row.offset)),
@@ -1906,6 +1911,22 @@ function freshKfSnapshot(): {
         at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id),
     };
 }
+function freshKfSnapshot(): KfSnapshot {
+    const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
+    return kfSnapshot(
+        freshKfPts("force", freshSpans),
+        freshKfPts("strip", freshSpans),
+        eid === null ? [] : segmentSpans(ecs, eid),
+    );
+}
+const hitSegmentSpans = $derived.by(() => {
+    void tick;
+    return eid === null ? [] : segmentSpans(ecs, eid);
+});
+const frameKfSnapshot = $derived.by((): KfSnapshot => {
+    void tick;
+    return kfSnapshot(forcePts, stripKfPts, hitSegmentSpans);
+});
 
 // every left-button press on the chart — from a diamond's own hit circle OR from the chart-wide
 // rect beneath it. Classifies fresh, then hands off to the existing `keyframeDown` with the point
@@ -1932,7 +1953,7 @@ function chartDown(e: PointerEvent): void {
 let chartHover: ReturnType<typeof classifyKfHit> = $state({ kind: "empty" });
 function chartHoverMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
-    chartHover = classifyKfHit(e.clientX - rect.left, e.clientY - rect.top, freshKfSnapshot().cand, FHIT_R);
+    chartHover = classifyKfHit(e.clientX - rect.left, e.clientY - rect.top, frameKfSnapshot.cand, FHIT_R);
 }
 function chartHoverLeave(): void {
     chartHover = { kind: "empty" };
