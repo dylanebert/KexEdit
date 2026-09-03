@@ -193,12 +193,12 @@ test("section clip strip flow", async ({ page, boot }) => {
     // ── 3. Drag the force clip's right-edge trim handle → the section lengthens (one
     // history entry). the force clip is the only one with a trim handle. ──
     const before = await sectionLengths();
-    const trim = page.locator(".clip-trim");
+    const trim = page.locator(".segment-boundary:last-of-type");
     await expect(trim).toHaveCount(1);
     const tb = await trim.boundingBox();
     if (!tb) throw new Error("trim handle not laid out");
     const cy = tb.y + tb.height / 2;
-    await trim.hover(); // move to the handle center with actionability, then drag right
+    await page.mouse.move(tb.x + tb.width / 2, cy); // move to the handle center with actionability, then drag right
     // hold Ctrl to bypass the snapping magnet (default-on, kex2d-ux-foundations stage E) —
     // this flow tests the extent trim itself, not snapping, so the drag lands where the
     // cursor does, deterministically. The un-bypassed snap grammar (grid + landmark, Ctrl
@@ -1970,7 +1970,7 @@ test("velocity projection holds during length drag", async ({ page, boot }) => {
         })
         .toBe(true);
 
-    const trim = page.locator(".clip-trim");
+    const trim = page.locator(".segment-boundary:last-of-type");
     await expect(trim).toHaveCount(1);
     const box = await trim.boundingBox();
     const clip = await page.locator(".clip").first().boundingBox();
@@ -1978,7 +1978,7 @@ test("velocity projection holds during length drag", async ({ page, boot }) => {
     if (!box || !clip) throw new Error("length trim handle not laid out");
     const before = { range: await kexCall(page, "vRange"), fit: await kexCall(page, "vFit") };
     await page.keyboard.down("Control");
-    await trim.hover();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(clip.x + 12 * pxPerU, box.y + box.height / 2, { steps: 10 });
     const held = { range: await kexCall(page, "vRange"), fit: await kexCall(page, "vFit") };
@@ -4350,7 +4350,7 @@ const onGrid = (v: number): boolean => Math.abs(v / S_GRID - Math.round(v / S_GR
 // inside the ORIGINAL extent, behind the widened edge; the strip is created with room to
 // drag without hitting the track's own end). The Ctrl twin below asserts the bypass — this is
 // the arm that discharges the Residue instance list (S1's own six recorded
-// `.clip-trim` Ctrl-bypass sites): the segment half here is the first `.clip-trim` flow that
+// segment-edge Ctrl-bypass sites): the segment half here is the first segment-edge flow that
 // does NOT hold Ctrl through the drag.
 //
 // RED-FIRST WITNESS: replaced `applyLen`'s `const r = snapAxis(...)` call with a raw
@@ -4415,12 +4415,12 @@ test("segment and strip resize snap to grid increments (F4)", async ({ page, boo
     // ── segment resize: the force clip's right-edge extent trim handle, no Ctrl. ──
     const sectionLengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
     const before = await sectionLengths();
-    const trim = page.locator(".clip-trim");
+    const trim = page.locator(".segment-boundary:last-of-type");
     await expect(trim).toHaveCount(1);
     const tb = await trim.boundingBox();
     if (!tb) throw new Error("trim handle not laid out");
     const cy = tb.y + tb.height / 2;
-    await trim.hover();
+    await page.mouse.move(tb.x + tb.width / 2, cy);
     await page.mouse.down();
     // an off-grid px delta, well past SNAP_PX (8) — the grid quantum, not a coincidental raw
     // landing, is what resolves this drag (no reachable landmark: the section's own force
@@ -4442,7 +4442,7 @@ test("segment and strip resize snap to grid increments (F4)", async ({ page, boo
 // sub-pixel tolerance derived from `pxPerU`, matching every other deterministic-px arm in this
 // file) — proving the bypass reaches BOTH handlers, not just the (pre-existing) keyframe path.
 // This is the arm that discharges the Residue instance list (S1's own six recorded
-// `.clip-trim` Ctrl-bypass sites): the segment half here is a `.clip-trim` flow whose OWN
+// segment-edge Ctrl-bypass sites): the segment half here is a segment-edge flow whose OWN
 // Ctrl hold is exercising the bypass itself, never citing a unit arm to opt out of it — its
 // sibling (above) is the un-bypassed trim snap the residue names.
 test("segment and strip resize Ctrl bypasses grid snap (F4)", async ({ page, boot }) => {
@@ -4501,13 +4501,13 @@ test("segment and strip resize Ctrl bypasses grid snap (F4)", async ({ page, boo
     const sectionLengths = () => kexCall(page, "sectionLengths") as Promise<number[]>;
     const [, pxPerU0] = (await kexCall(page, "xView")) as [number, number];
     const before = await sectionLengths();
-    const trim = page.locator(".clip-trim");
+    const trim = page.locator(".segment-boundary:last-of-type");
     await expect(trim).toHaveCount(1);
     const tb = await trim.boundingBox();
     if (!tb) throw new Error("trim handle not laid out");
     const cy = tb.y + tb.height / 2;
     const dragPx = 63.4;
-    await trim.hover();
+    await page.mouse.move(tb.x + tb.width / 2, cy);
     await page.keyboard.down("Control");
     await page.mouse.down();
     await page.mouse.move(tb.x + tb.width / 2 + dragPx, cy, { steps: 11 });

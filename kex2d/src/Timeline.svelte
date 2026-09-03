@@ -64,7 +64,7 @@ import {
     beginStripKeyframeMoves,
     cancel,
     commit,
-    commitLength,
+    commitSegmentLength,
     deleteOneShot,
     deleteStrips,
     deleteSegment as commitDeleteSegment,
@@ -168,6 +168,7 @@ import {
     setForcePoint,
     setOneShotValue,
     setSectionLength,
+    setSegmentExtentRippled,
     setStrip,
     setStripKeyframe,
     keyframeRoom,
@@ -635,6 +636,7 @@ const spans = $derived.by(() => {
 
 interface ForceSegmentView {
     id: number;
+    run: number;
     offset: number;
     len: number;
     startG: number;
@@ -647,16 +649,20 @@ const forceSegments = $derived.by((): ForceSegmentView[] => {
     void tick;
     if (eid === null) return [];
     const rows = segmentSpans(ecs, eid);
+    const runSpans = new Map(sectionSpans(ecs, eid).map((row) => [row.id, row]));
     const out: ForceSegmentView[] = [];
     for (const row of rows) {
         const member = segmentAt(ecs, row.id);
         if (member === null || Segment.kind.get(member) !== SectionKind.Force) continue;
         const runId = Segment.run.get(member);
+        const runSpan = runSpans.get(runId);
+        if (runSpan === undefined) continue;
         const profile = sectionForces(ecs, runId).map((point) => ({ s: point.s, g: point.g }));
         const startStation = Segment.runStation.get(member);
+        const authoredLen = Section.length.get(member);
         const startG = sampleForce(profile, startStation);
-        const endG = SegmentForceBoundary.g(ecs, row.id) ?? sampleForce(profile, startStation + row.len);
-        out.push({ id: row.id, offset: row.offset, len: row.len, startG, endG });
+        const endG = SegmentForceBoundary.g(ecs, row.id) ?? sampleForce(profile, startStation + authoredLen);
+        out.push({ id: row.id, run: runId, offset: runSpan.offset + startStation, len: authoredLen, startG, endG });
     }
     return out;
 });
@@ -2142,6 +2148,13 @@ function chartDown(e: PointerEvent): void {
         if (segment) segmentKnobDown(e, segment);
         return;
     }
+    if (hit.kind === "boundary") {
+        const segment = forceSegments.find((row) => row.id === hit.id);
+        if (segment && sectionEditable(editor.pinning, segment.run)) {
+            lenDown(e, segment);
+            return;
+        }
+    }
     pressedSegment = hit.kind === "body" || hit.kind === "boundary" ? hit.id : null;
     marqueeDown(e);
 }
@@ -2153,6 +2166,13 @@ function chartHoverMove(e: PointerEvent): void {
 }
 function chartHoverLeave(): void {
     chartHover = { kind: "empty" };
+}
+function resizableEdgeHover(): boolean {
+    if (chartHover.kind !== "boundary") return false;
+    const id = chartHover.id;
+    return forceSegments.some(
+        (row) => row.id === id && sectionEditable(editor.pinning, row.run),
+    );
 }
 function marqueeDown(e: PointerEvent): void {
     if (e.button !== 0) return;
@@ -2677,14 +2697,14 @@ $effect(() => {
     return () => window.removeEventListener("pointerdown", close, { capture: true });
 });
 
-// ── force-section extent: drag a force clip's RIGHT EDGE (in the strip) to resize the
-// profile. the extent is the force section's own authored length, independent of
-// the geo shape a convert came from — a convert resets it to a default, this sets it.
+// ── force-segment extent: drag a canonical segment's terminating edge to resize it.
+// This is the shipped run-clip gesture with only its subject and writer migrated: the
+// authored member entry/extent remain distinct from the published, possibly clamped span.
 // reuses the keyframe-drag freeze machinery: uFrozen holds the chart's span so the
 // pan clamp holds the view still under the drag (the x-scale never rescales — that's
 // clampView's law), and xGrow edge-pans when the cursor is held past the chart edge. one
 // undo entry per drag.
-let lenId: number | null = $state(null); // the force section being resized, or null
+let lenId: number | null = $state(null); // the canonical force segment being resized, or null
 const draggingLen = $derived(lenId !== null);
 let lenStartU = 0; // the dragged section's entry, projected -- pixel/snap-target math only
 let lenStartD = 0; // the dragged section's entry in arclength (fixed during the drag) -- the WRITE base
@@ -2724,8 +2744,16 @@ function applyLen(): void {
     const rawU = pxToU(cv, rawPx);
     snapX = null;
     const active = snapActive(lenMod);
+    const segment = forceSegments.find((row) => row.id === lenId);
     const ownU: number[] = [];
-    for (const p of forcePts) if (p.section === lenId) ownU.push(p.u);
+    if (segment) {
+        // Only landmarks before the terminating boundary stay fixed under ripple. The moved
+        // boundary and every later station are self-snaps and therefore excluded.
+        for (const p of forcePts) {
+            const d = p.startD + p.s;
+            if (d >= segment.offset && d < segment.offset + segment.len) ownU.push(p.u);
+        }
+    }
     const targets = trimTargets(cv, ownU, paused && cartS !== null ? uOf(cartS) : null);
     const r = snapAxis(active, rawPx, rawU, targets, GRID, (px) => pxToU(cv, px), null);
     let cumU = r.value;
@@ -2741,25 +2769,39 @@ function applyLen(): void {
     // section past its current profile extrapolates at the frozen exit speed instead of pinning
     // to the bake's last finite sample (S6b).
     const d = uToDExtend(gestureMapping ?? mapping, domain, cumU, lenVExit);
-    setSectionLength(ecs, lenId, d - lenStartD); // arclength edge − arclength entry
+    const extent = Math.max(minForceExtent(domain), d - lenStartD);
+    const member = segmentAt(ecs, lenId);
+    if (
+        member !== null &&
+        Math.abs(
+            Segment.runStation.get(member) +
+                Section.length.get(member) -
+                Segment.runExtent.get(member),
+        ) <= 1e-5
+    ) {
+        // The run-terminal member retains the proven conserved-frame rebuild host; its run
+        // extent is member-entry + member extent. Interior members use canonical ripple.
+        setSectionLength(ecs, lenId, Segment.runStation.get(member) + extent);
+    } else {
+        setSegmentExtentRippled(ecs, lenId, extent);
+    }
 }
-function lenDown(e: PointerEvent, c: Clip): void {
+function lenDown(e: PointerEvent, segment: ForceSegmentView): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    // the lockdown: in-mode only the pinning section's extent trims (length is authored
-    // slack — the author's own DOF); other sections are read-only.
-    if (!sectionEditable(editor.pinning, c.id)) return;
+    // The lockdown remains run-scoped while the gesture subject is the canonical member.
+    if (!sectionEditable(editor.pinning, segment.run)) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
     lenX0 = lenCx;
     lenArmed = false;
     lenMod = e.ctrlKey || e.metaKey;
-    lenStartU = c.u0; // upstream is unchanged by this resize, so the entry is fixed
-    lenStartD = c.s0; // the arclength twin -- the write base
-    selectSection(c.id); // grabbing the edge selects the section (one object, two surfaces)
-    beginLength(ecs, c.id);
-    lenId = c.id;
+    lenStartU = uOfLen(segment.offset); // upstream is unchanged by this resize, so the entry is fixed
+    lenStartD = segment.offset; // authored run offset + conserved member entry station
+    selectSegment(segment.id);
+    beginLength(ecs, segment.id);
+    lenId = segment.id;
     uFrozen = uTotal; // freeze the pan-clamp span so the view holds still under the drag
     // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
     gestureMapping = mapping;
@@ -2791,7 +2833,7 @@ function lenUp(): void {
     // extent as the session's new sticky append default — the one call site that updates it. a
     // sub-DRAG_PX click release (armed=false) still commits (a no-move release records nothing
     // regardless, per `commit`'s own no-op check) but never stamps the sticky value.
-    commitLength(history, ecs, id, armed); // clampView now only re-clamps pan to the live extent, never rescales
+    commitSegmentLength(history, ecs, id, armed); // one entry + selected member's sticky extent
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
     window.removeEventListener("pointercancel", lenUp);
@@ -3601,7 +3643,7 @@ function render(ctx: CanvasRenderingContext2D): void {
         // STROKE it takes, and its `.hbandzone` companion carries `ew-resize`. The handle is a
         // distinct affordance over the selected span, so its hover stroke survives selection;
         // body hover remains suppressed by `bodyHover` above. This is the canvas twin of the
-        // force clip-trim's hover-brightens-the-handle shape (`.clip-trim:hover`). Spans the
+        // segment edge's classifier-published hover treatment. Spans the
         // fill's own rendered height (`CLIP_H`), the same inset the fill itself draws at.
         if (bandHit.kind === "endpoint" && bandHit.id === s.id) {
             const ex = bandHit.edge === "start" ? cx0 : cx0 + cw;
@@ -4599,6 +4641,8 @@ onMount(() => {
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="chartzone"
+                    class:edge-hover={resizableEdgeHover()}
+                    class:knob-hover={chartHover.kind === "knob"}
                     x={LEFT_GUT}
                     y={TOP}
                     width={Math.max(0, w - LEFT_GUT)}
@@ -4697,19 +4741,6 @@ onMount(() => {
                                     width={Math.max(1, cw - 1)}
                                     height={CLIP_H}
                                     rx="2"
-                                />
-                            {/if}
-                            {#if isF}
-                                <rect
-                                    class="clip-trim"
-                                    class:active={lenId === c.id}
-                                    x={x1 - 5}
-                                    y={RULER_H + CLIP_PAD}
-                                    width="10"
-                                    height={CLIP_H}
-                                    onpointerdown={(e) => lenDown(e, c)}
-                                    role="presentation"
-                                    aria-label="Resize force section"
                                 />
                             {/if}
                         {/if}
@@ -5529,7 +5560,6 @@ onMount(() => {
        is unaffected: its gesture listens on `window` and holds pointer capture, which
        bypasses hit-testing. */
     :global([data-dragging]) .clip,
-    :global([data-dragging]) .clip-trim,
     :global([data-dragging]) .clip-add,
     :global([data-dragging]) .clip-flyout,
     :global([data-dragging]) .fhit,
@@ -5678,6 +5708,12 @@ onMount(() => {
         pointer-events: all;
         cursor: default;
     }
+    .chartzone.edge-hover {
+        cursor: ew-resize;
+    }
+    .chartzone.knob-hover {
+        cursor: grab;
+    }
 
     .force-segment-body {
         fill: transparent;
@@ -5702,10 +5738,7 @@ onMount(() => {
         opacity: 0.7;
     }
     .segment-knob.end {
-        cursor: grab;
-    }
-    .segment-knob.end:active {
-        cursor: grabbing;
+        pointer-events: none;
     }
 
     /* force points: a filled diamond (the keyframe idiom — authored input), light so it
@@ -5883,27 +5916,13 @@ onMount(() => {
     .clip-label.dim {
         opacity: 0.3;
     }
-    /* a force clip's right edge is its extent trim: a wide invisible hit strip over the
-       boundary carrying the ew-resize affordance and a faint accent wash on hover/drag. */
-    .clip-trim {
-        fill: transparent;
-        pointer-events: all;
-        cursor: ew-resize;
-        transition: fill 100ms var(--ease-out);
-    }
-    .clip-trim:hover,
-    .clip-trim.active {
-        fill: color-mix(in srgb, var(--accent) 40%, transparent);
-    }
-
     /* the velocity-strip header band hit zone (T1): transparent, captures pointer events for
        the band-wide hit classifier. The visual strips are drawn on the canvas. Cursor stays
        `default` over empty band space (deliberately inert, no create-drag). A span BODY gets
        the same pointer affordance a segment clip carries (S4, finding 1: the declared-registry
        extension, below) alongside the hover-rung fill highlight, never instead of it —
        `body-hover` mirrors `bandHit.kind === "body"` live. A span EDGE carries its own
-       affordance too (S5, finding 2), `.clip-trim`'s own treatment on the force-section extent
-       trim — `edge-hover` mirrors `bandHit.kind === "endpoint"`. */
+       affordance too (S5, finding 2); `edge-hover` mirrors `bandHit.kind === "endpoint"`. */
     .hbandzone {
         fill: transparent;
         pointer-events: all;

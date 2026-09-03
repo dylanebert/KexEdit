@@ -20,13 +20,13 @@ Every live `@temporary` adapter in `src/` has an exit class. This inventory is r
 | `TrackStart.velocity` | migration compatibility | Retain the entry one-shot address through S4, then use the final track-start boundary surface. |
 | `Section` | migration compatibility | Remove the alias after section-facing callers migrate. |
 | `Handle.section` | migration compatibility | Remove the run-id mirror after section-facing readers migrate to canonical member/run addresses. |
-| `Force.section` | migration compatibility | Remove the run membership alias. |
+| `Force.section` | migration compatibility | Retained by command/CLI force operations, conversion and pin readers, canvas projection, and clip-lane compatibility; S5/S6 migrate canvas/conversion/pin owners and S7 removes the alias after the remaining command and lane exits. |
 | `Force.g` | migration compatibility | Remove the alias; `ForceBoundary.g` is the authored owner. |
 | `Force.ease` | migration compatibility | Remove the alias; `ForceBoundary.ease` is the authored owner. |
 | `Force.s` | migration compatibility | Force station mirror maintained by the run splice host; retire when every consumer reads the conserved member/run station frame. |
 | `runInfo` | derived `@plumbing` evaluation projection | Retag as permanent bake metadata if still required after section readers retire. |
-| `sections` | migration compatibility | Remove after callers use segment/run readers. |
-| `sectionAt` | migration compatibility | Remove after callers resolve canonical segment or run identities. |
+| `sections` | migration compatibility | Retained by command/CLI, conversion, pin, canvas, and clip-lane owners; S5 migrates canvas, S6 migrates conversion/pin, and S7 removes the residual command/lane adapter. |
+| `sectionAt` | migration compatibility | Retained by command/CLI, conversion, pin, canvas, and clip-lane identity lookups; S5/S6 migrate those surface owners and S7 removes the residual adapter. |
 | `spliceGeoMembers` | retirement | Remove the migration transaction once all geometry authoring operates on canonical members. |
 | `spliceRunMembers` | retirement | Replace the migration transaction with final segment operations once force/velocity interaction migration completes. |
 | `VelocityBoundary` | migration compatibility | Remove the partial-address adapter after S4 consumes it. |

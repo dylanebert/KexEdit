@@ -853,7 +853,7 @@ test("timeline domain flow — Time-view trim writes arclength through the froze
     const startD = await dOf(start.u);
     const trimU = await uOf(startD + len0);
     const [, scale] = await xView();
-    const trim = page.locator(".clip-trim");
+    const trim = page.locator(".segment-boundary:last-of-type");
     const box = await trim.boundingBox();
     if (!box) throw new Error("Time-view trim handle not laid out");
     const finalU = trimU + 50 / scale;
@@ -898,7 +898,7 @@ test("timeline domain flow — Time-view extent trim extrapolates past the bake 
     const extended = await dOfTrim(past);
     expect(extended).toBeGreaterThan(clamped + 1);
     const [, scale] = await xView();
-    const trim = page.locator(".clip-trim");
+    const trim = page.locator(".segment-boundary:last-of-type");
     const box = await trim.boundingBox();
     if (!box) throw new Error("Time-view extrapolation trim not laid out");
     await page.keyboard.down("Control");

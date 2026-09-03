@@ -333,7 +333,7 @@ interface CursorSite {
 // tail, the transport play button, the global scrubber, the two modal buttons, the shared
 // menu-item class every context menu renders through, and the velocity-strip span body, S4), and
 // every trim/scrub affordance that carries `cursor: ew-resize` (the two field-row key scrubs, the
-// nav-window pan edge, the force-section extent trim, and the velocity-strip span-edge trim, S5).
+// nav-window pan edge, the classifier-published segment edge, and the velocity-strip span edge).
 const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "App.svelte", selector: ".pinpanel button", value: "pointer" },
     { file: "App.svelte", selector: ".convert .cancel", value: "pointer" },
@@ -345,10 +345,9 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Timeline.svelte", selector: ".nav-window:active", value: "grabbing" },
     { file: "Timeline.svelte", selector: ".nav-edge", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".clip", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".segment-knob.end", value: "grab" },
-    { file: "Timeline.svelte", selector: ".segment-knob.end:active", value: "grabbing" },
+    { file: "Timeline.svelte", selector: ".chartzone.edge-hover", value: "ew-resize" },
+    { file: "Timeline.svelte", selector: ".chartzone.knob-hover", value: "grab" },
     { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".clip-trim", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
     { file: "Timeline.svelte", selector: ".fld .key", value: "ew-resize" },
