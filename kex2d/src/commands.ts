@@ -40,6 +40,11 @@ import {
     landDomain,
     removeSection as removeSectionH,
     setForcesEase,
+    setSegmentBoundaryValue,
+    setSegmentBoundaryEase,
+    insertSegmentAt,
+    deleteSegment,
+    setSegmentExtentRippled,
     trimTrack,
 } from "./history";
 import type { Easing } from "./profile";
@@ -257,6 +262,18 @@ export interface SegmentExtentOp {
     extent: number;
 }
 
+export type SegmentAuthorAction =
+    | { action: "boundary-value"; segment: number; value: number }
+    | { action: "boundary-ease"; segment: number; ease: Easing }
+    | { action: "insert"; segment: number; station: number }
+    | { action: "delete"; segment: number }
+    | { action: "extent-ripple"; segment: number; extent: number };
+
+export interface SegmentAuthorOp {
+    type: "segment-author";
+    edit: SegmentAuthorAction;
+}
+
 export interface StartSpeedOp {
     type: "start-speed";
     value: number;
@@ -298,6 +315,7 @@ export type Op =
     | StripKeyframeDeleteOp
     | SectionLengthOp
     | SegmentExtentOp
+    | SegmentAuthorOp
     | StartSpeedOp
     | FrictionOp
     | ResistanceOp
@@ -646,6 +664,30 @@ function applyAnyOp(ecs: State, h: History, op: Op): OpResult {
             setSectionLength(ecs, op.segment, op.extent);
             commit(h);
             return ok();
+        }
+
+        case "segment-author": {
+            const edit = op.edit;
+            if (sectionAt(ecs, edit.segment) === null)
+                return refused("segmentNotFound", `no segment with id ${edit.segment}`);
+            switch (edit.action) {
+                case "boundary-value":
+                    setSegmentBoundaryValue(h, ecs, edit.segment, edit.value);
+                    return ok();
+                case "boundary-ease":
+                    setSegmentBoundaryEase(h, ecs, edit.segment, edit.ease);
+                    return ok();
+                case "insert":
+                    return ok(insertSegmentAt(h, ecs, edit.segment, edit.station));
+                case "delete":
+                    return deleteSegment(h, ecs, edit.segment)
+                        ? ok()
+                        : refused("segmentDeleteFloor", "the run-entry segment cannot be deleted");
+                case "extent-ripple":
+                    setSegmentExtentRippled(h, ecs, edit.segment, edit.extent);
+                    return ok();
+            }
+            throw new Error("unknown segment author action");
         }
 
         // `Timeline.svelte`'s `oneShotFieldEdit` (drag) / `createOneShotAt`

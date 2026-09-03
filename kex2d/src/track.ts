@@ -4460,8 +4460,119 @@ export const TrackPlugin: Plugin = {
     systems: [BakeSystem],
 };
 
+/** Write the authored force value at a segment's terminating boundary, creating that
+ * boundary key when the member was introduced by another channel. */
+export function setSegmentBoundaryValue(ecs: State, segmentId: number, g: number): void {
+    const member = segmentAt(ecs, segmentId);
+    if (member === null) throw new Error(`no segment ${segmentId}`);
+    const keyId = SegmentForceBoundary.id(ecs, segmentId);
+    if (keyId !== null) {
+        ForceBoundary.g.set(forceAt(ecs, keyId)!, g);
+        return;
+    }
+    const id = createForcePoint(ecs, segmentId, Section.length.get(member), g);
+    spliceRunMembers(ecs, runIdOf(ecs, segmentId)!, "create");
+    if (SegmentForceBoundary.id(ecs, segmentId) !== id)
+        throw new Error(`segment ${segmentId} boundary was not authored`);
+}
+
+/** Write the easing owned by a segment's terminating force boundary. */
+export function setSegmentBoundaryEase(ecs: State, segmentId: number, ease: Easing): void {
+    if (SegmentForceBoundary.id(ecs, segmentId) === null) {
+        const member = segmentAt(ecs, segmentId);
+        if (member === null) throw new Error(`no segment ${segmentId}`);
+        const run = runIdOf(ecs, segmentId)!;
+        const points = runMembers(ecs, run).flatMap((row) =>
+            segmentForces(ecs, row.id).map((point) => ({
+                s: Segment.runStation.get(row.eid) + point.s,
+                g: point.g,
+                ease: ForceBoundary.ease.get(point.eid) as Easing,
+            })),
+        );
+        setSegmentBoundaryValue(
+            ecs,
+            segmentId,
+            sampleForce(points, Segment.runStation.get(member) + Section.length.get(member)),
+        );
+    }
+    setForceEase(ecs, SegmentForceBoundary.id(ecs, segmentId)!, ease);
+}
+
+/** Split one force member at a positive member-local station. */
+export function insertSegmentAt(ecs: State, segmentId: number, station: number): number {
+    const member = segmentAt(ecs, segmentId);
+    if (member === null) throw new Error(`no segment ${segmentId}`);
+    const length = Section.length.get(member);
+    if (!(station > 0 && station < length))
+        throw new RangeError("segment split is outside its extent");
+    const run = runIdOf(ecs, segmentId)!;
+    const global = Segment.runStation.get(member) + station;
+    const points = runMembers(ecs, run).flatMap((row) =>
+        segmentForces(ecs, row.id).map((point) => ({
+            s: Segment.runStation.get(row.eid) + point.s,
+            g: point.g,
+            ease: ForceBoundary.ease.get(point.eid) as Easing,
+        })),
+    );
+    createForcePoint(ecs, segmentId, station, sampleForce(points, global));
+    spliceRunMembers(ecs, run, "create");
+    return runMembers(ecs, run).find((row) => Segment.runStation.get(row.eid) === global)!.id;
+}
+
+/** Delete one member by absorbing its extent and terminating datum into its predecessor. */
+export function deleteSegment(ecs: State, segmentId: number): boolean {
+    const member = segmentAt(ecs, segmentId);
+    if (member === null) return false;
+    const run = runIdOf(ecs, segmentId)!;
+    const members = runMembers(ecs, run);
+    const index = members.findIndex((row) => row.id === segmentId);
+    if (index <= 0) return false;
+    const predecessorKey = SegmentForceBoundary.id(ecs, members[index - 1]!.id);
+    if (predecessorKey === null) return false;
+    destroyForce(ecs, predecessorKey);
+    spliceRunMembers(ecs, run, "delete");
+    return true;
+}
+
+/** Resize one member while keeping every later boundary datum affixed to its identity. */
+export function setSegmentExtentRippled(ecs: State, segmentId: number, extent: number): void {
+    const member = segmentAt(ecs, segmentId);
+    if (member === null) throw new Error(`no segment ${segmentId}`);
+    if (!(extent > 0) || !Number.isFinite(extent))
+        throw new RangeError("segment extent must be positive");
+    const run = runIdOf(ecs, segmentId)!;
+    const delta = extent - Section.length.get(member);
+    if (delta === 0) return;
+    const boundary = Segment.runStation.get(member) + Section.length.get(member);
+    const first = runMembers(ecs, run)[0]!;
+    const points = runMembers(ecs, run).flatMap((row) =>
+        segmentForces(ecs, row.id).map((point) => ({
+            eid: point.eid,
+            station: Segment.runStation.get(row.eid) + point.s,
+        })),
+    );
+    for (const point of points) {
+        Force.section.set(point.eid, first.id);
+        Force.s.set(
+            point.eid,
+            Math.fround(point.station >= boundary ? point.station + delta : point.station),
+        );
+    }
+    Segment.runExtent.set(first.eid, Math.fround(Segment.runExtent.get(first.eid) + delta));
+    spliceRunMembers(ecs, run, "move");
+    const rebuilt = runMembers(ecs, run);
+    const runExtent = Segment.runExtent.get(rebuilt[0]!.eid);
+    for (let index = 0; index < rebuilt.length; index++) {
+        const start = Segment.runStation.get(rebuilt[index]!.eid);
+        const end =
+            index + 1 < rebuilt.length
+                ? Segment.runStation.get(rebuilt[index + 1]!.eid)
+                : runExtent;
+        Section.length.set(rebuilt[index]!.eid, Math.fround(end - start));
+    }
+}
+
 /** Canonical structural writer surface; section names remain temporary compatibility aliases. */
 export const createSegment = createSection;
 export const appendSegment = appendSection;
-export const deleteSegment = deleteSection;
 export const setSegmentExtent = setSectionLength;

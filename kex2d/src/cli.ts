@@ -56,7 +56,7 @@ const USAGE = `kex2d — a headless CLI over the kex2d authored substrate (.kex 
 Usage:
   kex2d stats <file>                 structured stats readback (length, time, g envelope, airtime)
   kex2d dump <file>                  the baked curves (positions, force, speed, time)
-  kex2d edit <file> [--ops <json>]   apply S2 ops (JSON array or single op), save in place
+  kex2d edit <file> [--ops <json>]   apply authored ops (JSON array or single op), save in place
                                       (ops read from stdin when --ops is absent)
   kex2d fmt <file>                   parse + canonically reserialize in place
   kex2d new <file> [--force]         seed a fresh document (refuses to overwrite unless --force)

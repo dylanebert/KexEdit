@@ -26,6 +26,8 @@ import {
     removeSection,
     setForcesEase,
     trimTrack,
+    undo,
+    redo,
 } from "../src/history";
 import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
@@ -59,6 +61,8 @@ import {
     StripKeyframe,
     stripKeyframeAt,
     trackEntity,
+    SegmentForceBoundary,
+    assertRunStructure,
 } from "../src/track";
 
 /** the typed s/v field's own clamp (`Timeline.svelte:3303`'s `clamp(s, 0, p.len)`) — the
@@ -68,6 +72,47 @@ import {
 function clamp(x: number, lo: number, hi: number): number {
     return Math.min(Math.max(x, lo), hi);
 }
+
+test("segment-author op ripples extents and preserves exact ids through undo/redo", () => {
+    const state = fixture();
+    const h = createHistory();
+    const inserted = applyOp(state, h, {
+        type: "segment-author",
+        edit: { action: "insert", segment: FORCE_SEC!, station: 10 },
+    }).id!;
+    applyOp(state, h, {
+        type: "segment-author",
+        edit: { action: "boundary-value", segment: FORCE_SEC!, value: 7 },
+    });
+    applyOp(state, h, {
+        type: "segment-author",
+        edit: { action: "boundary-ease", segment: FORCE_SEC!, ease: Easing.Quintic },
+    });
+    const beforeRipple = snapshotRun(state, FORCE_SEC!);
+    const ids = beforeRipple.members.map((row) => row.id);
+    const values = beforeRipple.members.map((row) => SegmentForceBoundary.g(state, row.id));
+    applyOp(state, h, {
+        type: "segment-author",
+        edit: { action: "extent-ripple", segment: FORCE_SEC!, extent: 15 },
+    });
+    const rippled = snapshotRun(state, FORCE_SEC!);
+    expect(rippled.members.map((row) => row.id)).toEqual(ids);
+    expect(rippled.members.map((row) => SegmentForceBoundary.g(state, row.id))).toEqual(values);
+    for (let index = 0; index < beforeRipple.members.length; index++) {
+        if (values[index] === null || beforeRipple.stations[index + 1]! < 10) continue;
+        expect(rippled.stations[index + 1]).toBe(beforeRipple.stations[index + 1]! + 5);
+    }
+    assertRunStructure(state);
+    const saved = saveDocument(state);
+    undo(h, state);
+    expect(snapshotRun(state, FORCE_SEC!).members.map((row) => row.id)).toEqual(ids);
+    redo(h, state);
+    expect(snapshotRun(state, FORCE_SEC!).members.map((row) => row.id)).toEqual(ids);
+    const loaded = new State();
+    loadDocument(loaded, saved);
+    expect(saveDocument(loaded)).toBe(saved);
+    expect(inserted).not.toBe(FORCE_SEC!);
+});
 
 // the command layer's own differential oracle: for each op family, the command-layer edit
 // and the direct setter edit — the exact call sequence the UI itself performs, cited inline in
