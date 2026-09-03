@@ -103,11 +103,12 @@ const TEMPLATE = parseDocument(TEMPLATE_TEXT);
 const GEO = TEMPLATE.segments.find((s) => s.kind === SectionKind.Geo)?.id;
 const FORCE_SEC = TEMPLATE.segments.find((s) => s.kind === SectionKind.Force)?.id;
 if (GEO === undefined || FORCE_SEC === undefined) throw new Error("template: missing a section");
-const forceSecDoc = TEMPLATE.segments.find((s) => s.id === FORCE_SEC);
-if (!forceSecDoc) throw new Error("template: force section vanished");
-const FORCE_LEN = forceSecDoc.length; // 30 — the clamp domain finding 2's boundary test drives past
-const FP0 = forceSecDoc.points.find((p) => p.s === 0)?.id;
-const FP20 = forceSecDoc.points.find((p) => p.s === 20)?.id;
+const TEMPLATE_STATE = new State();
+loadDocument(TEMPLATE_STATE, TEMPLATE_TEXT);
+const FORCE_LEN = snapshotRun(TEMPLATE_STATE, FORCE_SEC).stations.at(-1)!;
+const templateForcePoints = sectionForces(TEMPLATE_STATE, FORCE_SEC);
+const FP0 = templateForcePoints.find((p) => p.s === 0)?.id;
+const FP20 = templateForcePoints.find((p) => p.s === 20)?.id;
 if (FP0 === undefined || FP20 === undefined) throw new Error("template: missing a force point");
 const STRIP = TEMPLATE.strips[0]?.id;
 if (STRIP === undefined) throw new Error("template: missing the strip");
@@ -171,7 +172,7 @@ describe("canonical force segment commands conserve the run extent", () => {
     function expectFrame(state: State, stations: number[]): void {
         const run = snapshotRun(state, FORCE_SEC!);
         expect(run.stations.at(-1)).toBe(FORCE_LEN);
-        expect(run.stations).toEqual(stations);
+        expect(run.stations.map(Math.fround)).toEqual(stations.map(Math.fround));
         expect(run.members).toHaveLength(stations.length - 1);
         for (let i = 0; i < run.members.length; i++) {
             const end = i + 1 === stations.length - 1 ? FORCE_LEN : stations[i + 1]!;
@@ -182,7 +183,14 @@ describe("canonical force segment commands conserve the run extent", () => {
     test("create → delete → move changes only edited stations while extent stays bit-identical", () => {
         const state = fixture();
         const h = createHistory();
-        expectFrame(state, [0, FORCE_LEN]);
+        const velocityStations = snapshotRun(state, FORCE_SEC!).stations.filter(
+            (station) => station !== 0 && station !== 20 && station !== FORCE_LEN,
+        );
+        expect(velocityStations).toHaveLength(1);
+        expectFrame(
+            state,
+            [0, ...velocityStations, 20, FORCE_LEN].sort((a, b) => a - b),
+        );
 
         const created = applyForceSegmentOp(state, h, {
             type: "force-create",
@@ -191,13 +199,22 @@ describe("canonical force segment commands conserve the run extent", () => {
             g: 2,
         });
         expect(created.id).toBeNumber();
-        expectFrame(state, [0, 3.3, 20, FORCE_LEN]);
+        expectFrame(
+            state,
+            [0, 3.3, ...velocityStations, 20, FORCE_LEN].sort((a, b) => a - b),
+        );
 
         applyForceSegmentOp(state, h, { type: "force-delete", ids: [created.id as number] });
-        expectFrame(state, [0, 20, FORCE_LEN]);
+        expectFrame(
+            state,
+            [0, ...velocityStations, 20, FORCE_LEN].sort((a, b) => a - b),
+        );
 
         applyForceSegmentOp(state, h, { type: "force-move", id: FP20, s: 7.7, g: 2.5 });
-        expectFrame(state, [0, 7.7, FORCE_LEN]);
+        expectFrame(
+            state,
+            [0, 7.7, ...velocityStations, FORCE_LEN].sort((a, b) => a - b),
+        );
     });
 });
 

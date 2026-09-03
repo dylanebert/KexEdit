@@ -41,6 +41,9 @@ import {
     sameForcePoint,
     sameNodes,
     SectionKind,
+    Segment,
+    segmentAt,
+    sectionForces,
     sections,
     type SectionSnapshot,
     seedTangent,
@@ -53,6 +56,7 @@ import {
     setStickyLen,
     snapshotAll,
     snapshotRun,
+    snapshotVelocityRuns,
     spliceRunMembers,
     stampProvenance,
     type RunSnapshot,
@@ -64,6 +68,7 @@ import {
     type StripState,
     stripState,
     restoreStrip,
+    refreshVelocityRunMembers,
     createOneShot as createOneShotTrack,
     destroyOneShot,
     entryOneShot,
@@ -509,6 +514,16 @@ export function beginForceMoves(ecs: State, ids: readonly number[]): void {
 
 // ── velocity strips ────────────────────────────────────────────────────────────
 
+function restoreVelocityRuns(ecs: State, snapshots: readonly RunSnapshot[]): void {
+    for (const snapshot of snapshots) {
+        restoreRun(ecs, snapshot);
+        for (const member of snapshot.members) {
+            const eid = segmentAt(ecs, member.id);
+            if (eid !== null) Segment.runExtent.set(eid, member.runExtent);
+        }
+    }
+}
+
 /** author a track-global velocity strip over `[start, end)` at `value`, recording an
  *  undoable add — `createForce`'s span-shaped twin. The overlap guard lives in
  *  `track.createStrip` itself, so a refused (overlapping) span records nothing and
@@ -524,8 +539,11 @@ export function addStrip(
     value: number,
 ): number | null {
     const pre = selHook?.snapshot(ecs);
+    const beforeRuns = snapshotVelocityRuns(ecs);
     const id = createStripTrack(ecs, start, end, value);
     if (id === null) return null;
+    refreshVelocityRunMembers(ecs);
+    const afterRuns = snapshotVelocityRuns(ecs);
     const st = stripState(ecs, id) as StripState;
     record(
         h,
@@ -533,8 +551,12 @@ export function addStrip(
             apply: () => {
                 spawnStrip(ecs, id, start, end, value);
                 for (const k of st.kfs) spawnStripKeyframe(ecs, id, k.id, k.s, k.v);
+                restoreVelocityRuns(ecs, afterRuns);
             },
-            reverse: () => destroyStrip(ecs, id),
+            reverse: () => {
+                destroyStrip(ecs, id);
+                restoreVelocityRuns(ecs, beforeRuns);
+            },
         },
         pre,
     );
@@ -554,18 +576,22 @@ export function deleteStrips(h: History, ecs: State, ids: readonly number[]): vo
         if (st) sts.push(st);
     }
     if (sts.length === 0) return;
+    const beforeRuns = snapshotVelocityRuns(ecs);
     for (const st of sts) destroyStrip(ecs, st.id);
+    const afterRuns = snapshotVelocityRuns(ecs);
     record(
         h,
         {
             apply: () => {
                 for (const st of sts) destroyStrip(ecs, st.id);
+                restoreVelocityRuns(ecs, afterRuns);
             },
             reverse: () => {
                 for (const st of sts) {
                     spawnStrip(ecs, st.id, st.start, st.end, st.value);
                     for (const k of st.kfs) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
                 }
+                restoreVelocityRuns(ecs, beforeRuns);
             },
         },
         pre,
@@ -641,10 +667,21 @@ export function beginOneShotMove(ecs: State, id: number): void {
  *  reading already implies no-op keyframes. */
 export function beginStripMove(ecs: State, id: number): void {
     begin(
-        () => stripState(ecs, id),
-        (st: StripState) => restoreStrip(ecs, st),
-        (a: StripState, b: StripState) =>
-            a.start === b.start && a.end === b.end && a.value === b.value,
+        () => {
+            const strip = stripState(ecs, id);
+            return strip ? { strip, runs: snapshotVelocityRuns(ecs) } : undefined;
+        },
+        (state: { strip: StripState; runs: RunSnapshot[] }) => {
+            restoreStrip(ecs, state.strip);
+            restoreVelocityRuns(ecs, state.runs);
+        },
+        (
+            a: { strip: StripState; runs: RunSnapshot[] },
+            b: { strip: StripState; runs: RunSnapshot[] },
+        ) =>
+            a.strip.start === b.strip.start &&
+            a.strip.end === b.strip.end &&
+            a.strip.value === b.strip.value,
     );
 }
 
@@ -664,14 +701,23 @@ export function addStripKeyframe(
     v: number,
 ): number {
     const pre = selHook?.snapshot(ecs);
+    const beforeRuns = snapshotVelocityRuns(ecs);
     const id = createStripKf(ecs, stripId, s, v);
+    refreshVelocityRunMembers(ecs);
+    const afterRuns = snapshotVelocityRuns(ecs);
     // read back the clamped s so the redo callback agrees with the create path
     const cs = stripKeyframeState(ecs, id)?.s ?? s;
     record(
         h,
         {
-            apply: () => spawnStripKeyframe(ecs, stripId, id, cs, v),
-            reverse: () => destroyStripKeyframe(ecs, id),
+            apply: () => {
+                spawnStripKeyframe(ecs, stripId, id, cs, v);
+                restoreVelocityRuns(ecs, afterRuns);
+            },
+            reverse: () => {
+                destroyStripKeyframe(ecs, id);
+                restoreVelocityRuns(ecs, beforeRuns);
+            },
         },
         pre,
     );
@@ -683,12 +729,20 @@ export function deleteStripKeyframe(h: History, ecs: State, id: number): void {
     const pre = selHook?.snapshot(ecs);
     const st = stripKeyframeState(ecs, id);
     if (!st) return;
+    const beforeRuns = snapshotVelocityRuns(ecs);
     destroyStripKeyframe(ecs, id);
+    const afterRuns = snapshotVelocityRuns(ecs);
     record(
         h,
         {
-            apply: () => destroyStripKeyframe(ecs, id),
-            reverse: () => spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v),
+            apply: () => {
+                destroyStripKeyframe(ecs, id);
+                restoreVelocityRuns(ecs, afterRuns);
+            },
+            reverse: () => {
+                spawnStripKeyframe(ecs, st.strip, st.id, st.s, st.v);
+                restoreVelocityRuns(ecs, beforeRuns);
+            },
         },
         pre,
     );
@@ -1024,9 +1078,10 @@ export function solvePin(
 ): void {
     const pre = selHook?.snapshot(ecs);
     const before = snapshotRun(ecs, section);
+    const stations = new Map(sectionForces(ecs, section).map((point) => [point.id, point.s]));
     for (const w of writes) {
-        const st = forcePointState(ecs, w.id);
-        if (st) setForcePoint(ecs, w.id, st.s, w.g);
+        const station = stations.get(w.id);
+        if (station !== undefined) setForcePoint(ecs, w.id, station, w.g);
     }
     mode.exit();
     const after = snapshotRun(ecs, section);
