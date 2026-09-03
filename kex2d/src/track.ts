@@ -1417,11 +1417,18 @@ export function assertRunStructure(ecs: State): void {
             const lastEntry = run.stations[run.stations.length - 2]!;
             if (!(run.length > lastEntry))
                 throw new Error(`force run ${run.id} extent must exceed its last station`);
+            const terminating = new Set(run.stations.slice(1));
             for (let index = 0; index < run.segmentIds.length; index++) {
                 const member = segmentAt(ecs, run.segmentIds[index]!);
                 const expected = Math.fround(run.stations[index + 1]! - run.stations[index]!);
                 if (member === null || Section.length.get(member) !== expected)
                     throw new Error(`force run ${run.id} member ${index} extent is stale`);
+                if (Segment.runExtent.get(member) !== run.length)
+                    throw new Error(`force run ${run.id} member ${index} extent copy is stale`);
+            }
+            for (const point of sectionForces(ecs, run.id)) {
+                if (point.s <= run.length && point.s !== 0 && !terminating.has(point.s))
+                    throw new Error(`force run ${run.id} key ${point.id} is not a member boundary`);
             }
             continue;
         }
@@ -2770,33 +2777,14 @@ export function nextForce(ecs: State, id: number): number | null {
 
 // ── force-section extent ──────────────────────────────────────────────────────
 
-/** a force section's undoable extent, keyed by stable id — the end-handle drag
- *  gesture snapshots this. */
-export interface SectionLengthState {
-    id: number;
-    length: number;
-}
-
-/** snapshot a section's extent by id, or undefined if it's gone. */
-export function sectionLengthState(ecs: State, id: number): SectionLengthState | undefined {
-    const length = runExtentOf(ecs, id);
-    return length === null ? undefined : { id, length };
-}
-
-/** set a force section's extent, in the track's active domain unit, floored at that
- *  domain's minimum (`minForceExtent`) — the end-handle drag + gesture restore. re-bakes on
- *  the next tick (the extent is in the bake hash). */
+/** set a force run's conserved extent, then atomically republish its member frame. */
 export function setSectionLength(ecs: State, id: number, length: number): void {
     const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(id));
     if (!run) return;
-    const terminal = run.segmentIds[run.segmentIds.length - 1]!;
-    const eid = segmentAt(ecs, terminal)!;
-    const terminalIndex = run.segmentIds.length - 1;
-    const prefix = run.stations[terminalIndex]!;
     const nextExtent = Math.max(minRunForceExtent(ecs, id), length);
-    Section.length.set(eid, nextExtent - prefix);
     const first = segmentAt(ecs, run.segmentIds[0]!)!;
     Segment.runExtent.set(first, nextExtent);
+    spliceRunMembers(ecs, run.id, "rebuild");
 }
 
 // ── track initial speed (v0, S3: derived from the track-start one-shot) ─────────────
@@ -3485,13 +3473,14 @@ export interface SolvedForce {
  *  section's own convert never reaches them, so the old S5 entry-speed-preservation wrapper
  *  this function used is retired: there is no strip to lose). */
 export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce): void {
-    const run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
+    let run = rebuildRunProjection(ecs).find((row) => row.segmentIds.includes(sectionId));
     if (!run) throw new Error(`applyConvert: no section ${sectionId}`);
+    for (const h of sectionHandles(ecs, run.id)) ecs.destroy(h);
+    for (const p of sectionForces(ecs, run.id)) ecs.destroy(p.eid);
     setSectionLength(ecs, sectionId, solved.length);
+    run = rebuildRunProjection(ecs).find((row) => row.id === run!.id)!;
     const members = run.segmentIds.map((id) => {
         const eid = segmentAt(ecs, id)!;
-        for (const h of segmentHandles(ecs, id)) ecs.destroy(h);
-        for (const p of segmentForces(ecs, id)) ecs.destroy(p.eid);
         Section.kind.set(eid, SectionKind.Force);
         return { id, length: Section.length.get(eid) };
     });
@@ -3504,6 +3493,7 @@ export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce)
         }
         offset = end;
     }
+    spliceRunMembers(ecs, run.id, "rebuild");
 }
 
 /** an invoked force→geo fit's authored output: the sparse Auto node chain `geofit` emitted, in

@@ -180,6 +180,18 @@ describe("conversion/reset conserve the frozen-v3 run frame", () => {
         expect(saveDocument(loaded)).toBe(saved);
     }
 
+    test("force trim rebuilds before save and remains a reload/save fixed point", () => {
+        const state = new State();
+        createTrack(state);
+        const force = createSection(state, 0, SectionKind.Force, 30);
+        createForcePoint(state, force, 0, 1);
+        createForcePoint(state, force, 12, 2);
+        createForcePoint(state, force, 30, 1);
+        refreshVelocityRunMembers(state);
+        setSectionLength(state, force, 8);
+        fixedPoint(state);
+    });
+
     test("default geo→force, multi-edge geo→force, velocity-unioned force→geo, and resized-force reset", () => {
         {
             const state = new State();

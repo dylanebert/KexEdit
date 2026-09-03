@@ -5,6 +5,7 @@ import { State } from "@dylanebert/shallot";
 import {
     addNode,
     applyConvert,
+    assertRunStructure,
     allStrips,
     appendSection,
     authoredHash,
@@ -356,10 +357,11 @@ test("run conversion applies solved force stations across ordered members", () =
         ],
     });
     expect(sectionForces(ecs, first).map((point) => point.s)).toEqual([5, 20]);
-    expect(Section.length.get(segmentAt(ecs, second)!)).toBe(13);
+    expect(snapshotRun(ecs, first).members.map((member) => member.length)).toEqual([5, 15, 5]);
+    assertRunStructure(ecs);
 });
 
-test("run extent resize moves only the terminal member", () => {
+test("run extent resize rebuilds the conserved member frame", () => {
     const ecs = new State();
     createTrack(ecs);
     const first = createSection(ecs, 0, SectionKind.Force, 12);
@@ -368,8 +370,10 @@ test("run extent resize moves only the terminal member", () => {
     Segment.runStation.set(segmentAt(ecs, second)!, 12);
     Segment.runExtent.set(sectionAt(ecs, first)!, 20);
     setSectionLength(ecs, first, 25);
-    expect(Section.length.get(sectionAt(ecs, first)!)).toBe(12);
-    expect(Section.length.get(segmentAt(ecs, second)!)).toBe(13);
+    expect(snapshotRun(ecs, first).members.map((member) => member.id)).toEqual([first]);
+    expect(Section.length.get(sectionAt(ecs, first)!)).toBe(25);
+    expect(Segment.runExtent.get(sectionAt(ecs, first)!)).toBe(25);
+    assertRunStructure(ecs);
 });
 
 // the ECS layer: BakeSystem walks the sorted sections → chain(START, payloads) →
