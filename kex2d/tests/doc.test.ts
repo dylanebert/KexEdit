@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
+    checkDocInvariants,
     CURRENT_VERSION,
     docFromEcs,
     type DocGeoTangent,
@@ -688,6 +689,51 @@ describe("run-nested unstable-v3 wire", () => {
         loadDocument(state, canonical);
         expect(snapshotAll(state)).toEqual(first);
         expect(saveDocument(state)).toBe(canonical);
+    });
+
+    test("geo run members use ordered node addresses and run-scoped node guards", () => {
+        const document = {
+            version: CURRENT_VERSION,
+            track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
+            segments: [
+                {
+                    id: 9,
+                    order: 0,
+                    kind: SectionKind.Geo,
+                    length: 0,
+                    nodes: [],
+                    points: [],
+                    members: [
+                        {
+                            node: 0,
+                            kind: SectionKind.Geo,
+                            nodes: [{ order: 0, x: 0, y: 0, theta: 0 }],
+                            points: [],
+                        },
+                        {
+                            node: 1,
+                            kind: SectionKind.Geo,
+                            nodes: [{ order: 1, x: 8, y: 2, theta: 0 }],
+                            points: [],
+                        },
+                    ],
+                },
+            ],
+            strips: [],
+            oneShot: [],
+        };
+        const wire = serializeDocument(document);
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, wire);
+        const canonical = saveDocument(state);
+        expect(
+            JSON.parse(canonical).segments[0].members.map(
+                (member: { node: number }) => member.node,
+            ),
+        ).toEqual([0, 1]);
+        expect(snapshotAll(state).segments.map((member) => member.geoEndNode)).toEqual([0, 1]);
+        expect(checkDocInvariants(parseDocument(canonical))).toEqual([]);
     });
 });
 

@@ -92,6 +92,8 @@ export const Segment = {
     runExtent: sparse(f32),
     /** @temporary S3–S7 — encoded stable id of the run-entry force point, on the first member. */
     runEntryForce: sparse(u32),
+    /** @temporary S3–S7 — encoded entity pointer to this geo member's terminating node. */
+    geoEndNode: sparse(u32),
 };
 
 /** Canonical predecessor-less boundary for segment zero. Channel payload ownership moves
@@ -1559,6 +1561,7 @@ export function createSection(
     // Sparse columns are shared by entity index across State instances. A recycled section eid
     // must not inherit another state's published run-entry pointer.
     Segment.runEntryForce.set(eid, 0);
+    Segment.geoEndNode.set(eid, 0);
     return id;
 }
 
@@ -1585,6 +1588,7 @@ function spawnSection(
     Segment.runStation.set(eid, runStation);
     Segment.runExtent.set(eid, runExtent);
     Segment.runEntryForce.set(eid, 0);
+    Segment.geoEndNode.set(eid, 0);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -1637,6 +1641,8 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
         // chord-scaled length, tip reflection). a node turns concrete bezier only when authored
         // (a handle drag or a mode set), never at append.
     }
+    const member = segmentAt(ecs, sectionId);
+    if (member !== null) Segment.geoEndNode.set(member, eid + 1);
     return eid;
 }
 
@@ -1722,6 +1728,12 @@ export function spawnNode(
     Handle.theta.set(eid, theta);
     writeTangent(eid, tan);
     invalidateBake(ecs);
+    const member = segmentAt(ecs, sectionId);
+    if (member !== null) {
+        const current = Segment.geoEndNode.get(member);
+        if (current === 0 || order > Handle.order.get(current - 1))
+            Segment.geoEndNode.set(member, eid + 1);
+    }
     return eid;
 }
 
@@ -1797,6 +1809,26 @@ export function handleTangent(ecs: State, sectionId: number, order: number): Tan
     const eid = handleAt(ecs, sectionId, order);
     return eid === null ? undefined : readTangent(eid);
 }
+
+/** Named address for a geo member's terminating boundary. Endpoint and explicit tangent
+ * remain in Handle storage; this accessor only resolves the member's temporary pointer. */
+export const GeoMemberBoundary = {
+    node(ecs: State, segmentId: number): NodeState | undefined {
+        const member = segmentAt(ecs, segmentId);
+        if (member === null) return undefined;
+        const encoded = Segment.geoEndNode.get(member);
+        if (encoded === 0) return undefined;
+        const eid = encoded - 1;
+        if (!ecs.has(eid, Handle) || Handle.segment.get(eid) !== segmentId) return undefined;
+        return {
+            order: Handle.order.get(eid),
+            x: Handle.pos.x.get(eid),
+            y: Handle.pos.y.get(eid),
+            theta: Handle.theta.get(eid),
+            tangent: readTangent(eid),
+        };
+    },
+};
 
 /** seed an explicit tangent from a node's current `Auto` arc-rule tangents, so summoning
  *  explicit (the popover mode control or a handle pull) starts from exactly what the arc
@@ -1961,7 +1993,11 @@ export function removeTrailingHandle(ecs: State, sectionId: number): boolean {
     const last = lastHandle(ecs, sectionId);
     if (last === null) return false;
     if (sectionHandles(ecs, sectionId).length <= 2) return false;
+    const memberId = Handle.segment.get(last);
     ecs.destroy(last);
+    const member = segmentAt(ecs, memberId);
+    const next = segmentHandles(ecs, memberId).at(-1);
+    if (member !== null) Segment.geoEndNode.set(member, next === undefined ? 0 : next + 1);
     return true;
 }
 
@@ -2595,6 +2631,8 @@ export interface SegmentSnapshot {
     runStation: number;
     /** The conserved run extent (identical on every member of the run). */
     runExtent: number;
+    /** Ordered node index of this member's terminating geometry boundary, or -1 when absent. */
+    geoEndNode: number;
     nodes: NodeState[];
     points: {
         id: number;
@@ -2617,6 +2655,13 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
         run: Segment.run.get(eid),
         runStation: Segment.runStation.get(eid),
         runExtent: Segment.runExtent.get(eid),
+        geoEndNode: (() => {
+            const encoded = Segment.geoEndNode.get(eid);
+            const node = encoded - 1;
+            return encoded === 0 || !ecs.has(node, Handle) || Handle.segment.get(node) !== sectionId
+                ? -1
+                : Handle.order.get(node);
+        })(),
         nodes: nodeSnapshot(ecs, sectionId),
         points: segmentForces(ecs, sectionId).map((p) => ({
             id: p.id,
@@ -2644,6 +2689,8 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     Segment.runStation.set(eid, snap.runStation);
     Segment.runExtent.set(eid, snap.runExtent);
     for (const n of snap.nodes) spawnNode(ecs, snap.id, n.order, n.x, n.y, n.theta, n.tangent);
+    const geoEnd = snap.geoEndNode < 0 ? null : handleAt(ecs, snap.id, snap.geoEndNode);
+    Segment.geoEndNode.set(eid, geoEnd === null ? 0 : geoEnd + 1);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
     refreshRunEntryForce(ecs, snap.run);
 }
