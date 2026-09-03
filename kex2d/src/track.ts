@@ -12,7 +12,7 @@ import {
     type Step,
 } from "./profile";
 import { rebuildRunProjection } from "./projection";
-import { forceStationUnion } from "./segment";
+import { evalHermite, forceStationUnion, invertHermiteArclength, splitHermite } from "./segment";
 import {
     chain,
     Domain,
@@ -23,14 +23,7 @@ import {
     SectionKind,
     type Strip as StripSpec,
 } from "./section";
-import {
-    autoTangent,
-    type Node,
-    reflect,
-    sampleChain,
-    type Tangent,
-    type TangentMode,
-} from "./spline";
+import { autoTangent, type Node, reflect, sampleChain, type Tangent, TangentMode } from "./spline";
 
 /** the kind enum is defined with the substrate that gives it meaning (`section.ts`);
  *  it is re-exported here because `Section.kind` is where the document stores it, and
@@ -2085,6 +2078,94 @@ export function spliceGeoMembers(ecs: State, runId: number): void {
         Segment.geoEndNode.set(segmentAt(ecs, ids[index]!)!, nodes[index + 1]! + 1);
 }
 
+function geoCurve(nodes: number[], index: number) {
+    const a = nodes[index]!;
+    const b = nodes[index + 1]!;
+    const ax = Handle.pos.x.get(a);
+    const ay = Handle.pos.y.get(a);
+    const bx = Handle.pos.x.get(b);
+    const by = Handle.pos.y.get(b);
+    const angle = Math.atan2(by - ay, bx - ax);
+    const chord = Math.hypot(bx - ax, by - ay);
+    const at = readTangent(a);
+    const bt = readTangent(b);
+    return {
+        p0: [ax, ay] as const,
+        p1: [bx, by] as const,
+        m0: (at
+            ? [at.outX, at.outY]
+            : autoTangent(Handle.theta.get(a), angle, chord)) as readonly number[],
+        m1: (bt
+            ? [bt.inX, bt.inY]
+            : autoTangent(Handle.theta.get(b), angle, chord)) as readonly number[],
+    };
+}
+
+function explicitAt(nodes: number[], index: number): Tangent {
+    const node = nodes[index]!;
+    const stored = readTangent(node);
+    const incoming = index > 0 ? geoCurve(nodes, index - 1).m1 : [1, 0];
+    const outgoing = index + 1 < nodes.length ? geoCurve(nodes, index).m0 : incoming;
+    return {
+        mode: TangentMode.Free,
+        inX: stored?.inX ?? incoming[0]!,
+        inY: stored?.inY ?? incoming[1]!,
+        outX: stored?.outX ?? outgoing[0]!,
+        outY: stored?.outY ?? outgoing[1]!,
+    };
+}
+
+function splitGeoAt(ecs: State, runId: number, station: number): boolean {
+    const track = trackEntity(ecs);
+    if (track === null) return false;
+    const nodes = sectionHandles(ecs, runId);
+    const sampled = geoChordDs(ecs, runId, Track.ds.get(track));
+    let accumulated = 0;
+    for (let edge = 0; edge + 1 < sampled.offsets.length; edge++) {
+        const start = sampled.offsets[edge]!;
+        const end = sampled.offsets[edge + 1]!;
+        let length = 0;
+        for (let i = start; i < end; i++) length += sampled.ds[i]!;
+        const local = station - accumulated;
+        const boundaryTol = Math.max(1e-6, Track.ds.get(track) * 1e-3);
+        if (local > boundaryTol && local < length - boundaryTol) {
+            const curve = geoCurve(nodes, edge);
+            const t = invertHermiteArclength(curve, local / length);
+            const [left, right] = splitHermite(curve, t);
+            const point = evalHermite(curve, t);
+            const aTan = explicitAt(nodes, edge);
+            const bTan = explicitAt(nodes, edge + 1);
+            aTan.outX = left.m0[0]!;
+            aTan.outY = left.m0[1]!;
+            bTan.inX = right.m1[0]!;
+            bTan.inY = right.m1[1]!;
+            writeTangent(nodes[edge]!, aTan);
+            writeTangent(nodes[edge + 1]!, bTan);
+            for (let i = edge + 1; i < nodes.length; i++)
+                Handle.order.set(nodes[i]!, Handle.order.get(nodes[i]!) + 1);
+            spawnNode(
+                ecs,
+                runId,
+                edge + 1,
+                point[0]!,
+                point[1]!,
+                Math.atan2(left.m1[1]!, left.m1[0]!),
+                {
+                    mode: TangentMode.Free,
+                    inX: left.m1[0]!,
+                    inY: left.m1[1]!,
+                    outX: right.m0[0]!,
+                    outY: right.m0[1]!,
+                },
+            );
+            spliceGeoMembers(ecs, runId);
+            return true;
+        }
+        accumulated += length;
+    }
+    return false;
+}
+
 // ── force points ─────────────────────────────────────────────────────────────
 
 /** an authored force keyframe read off the ECS: eid + section, stable `id`,
@@ -2266,21 +2347,34 @@ export function spliceRunMembers(
     refreshRunEntryForce(ecs, runId);
 }
 
-/** Rebuild force-run members at every authored velocity station. Geo runs remain untouched until
- * exact curve subdivision lands in S2d3. */
+/** Rebuild canonical members at every authored velocity station. Geometry stations subdivide
+ * the affected Hermite edge exactly before its member projection is refreshed. */
 export function refreshVelocityRunMembers(ecs: State): void {
-    const forceRuns = rebuildRunProjection(ecs)
-        .filter((run) => run.kind === SectionKind.Force)
-        .map((run) => run.id);
-    for (const runId of forceRuns) spliceRunMembers(ecs, runId, "rebuild");
+    const stations = new Set<number>();
+    for (const strip of allStrips(ecs)) {
+        stations.add(strip.start);
+        stations.add(strip.end);
+        for (const keyframe of stripKeyframes(ecs, strip.id)) stations.add(keyframe.s);
+    }
+    for (const run of rebuildRunProjection(ecs)) {
+        if (run.kind === SectionKind.Force) {
+            spliceRunMembers(ecs, run.id, "rebuild");
+            continue;
+        }
+        const window = sectionWindows(ecs).find((row) => row.id === run.id);
+        if (!window) continue;
+        const local = [...stations]
+            .map((station) => station - window.offset)
+            .filter((station) => station > 0 && station < window.len)
+            .sort((a, b) => a - b);
+        for (const station of local) splitGeoAt(ecs, run.id, station);
+    }
     reserveIds({ section: segments(ecs).map((segment) => segment.id) });
 }
 
-/** Capture every force run whose structure can be changed by a track-global velocity station. */
+/** Capture every run whose structure can be changed by a track-global velocity station. */
 export function snapshotVelocityRuns(ecs: State): RunSnapshot[] {
-    return rebuildRunProjection(ecs)
-        .filter((run) => run.kind === SectionKind.Force)
-        .map((run) => snapshotRun(ecs, run.id));
+    return rebuildRunProjection(ecs).map((run) => snapshotRun(ecs, run.id));
 }
 
 /** @temporary S3–S7 — named access to the one existing run-entry boundary datum. */
