@@ -164,10 +164,11 @@ function geoRunReading(split: boolean) {
     ] as const;
     const handles = nodes.map(([x, y]) => addNode(ecs, run, x, y));
     if (split) {
-        Handle.section.set(handles[2]!, members[1]!);
-        Handle.order.set(handles[2]!, 0);
-        Handle.section.set(handles[3]!, members[2]!);
-        Handle.order.set(handles[3]!, 0);
+        Handle.segment.set(handles[0]!, members[0]!);
+        Handle.segment.set(handles[1]!, members[0]!);
+        Handle.segment.set(handles[2]!, members[1]!);
+        Handle.segment.set(handles[3]!, members[2]!);
+        for (const handle of handles) Handle.section.set(handle, run);
     }
     BakeSystem.update?.(ecs);
     const gathered = sectionHandles(ecs, run);

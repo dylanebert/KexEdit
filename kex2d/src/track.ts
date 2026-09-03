@@ -11,7 +11,7 @@ import {
     sampleForce,
     type Step,
 } from "./profile";
-import { rebuildRunProjection, runProjection } from "./projection";
+import { rebuildRunProjection } from "./projection";
 import { forceStationUnion } from "./segment";
 import {
     chain,
@@ -118,12 +118,11 @@ export const Section = Segment;
  *  from `theta` via the arc rule). when it isn't Auto, `tin`/`tout` hold the
  *  explicit in/out tangent vectors (section-local, absolute) the bake honors in
  *  place of the arc rule — the summoned inner layer (`Aligned` / `Free`). */
-const handleSegment = sparse(u32);
 export const Handle = {
-    /** Stable canonical segment id. */
-    segment: handleSegment,
-    /** @temporary S7 — legacy section-facing membership projection. */
-    section: handleSegment,
+    /** Stable canonical member id. */
+    segment: sparse(u32),
+    /** @temporary S3–S7 — evaluator run id for section-facing readers. */
+    section: sparse(u32),
     order: sparse(u32),
     sample: sparse(u32),
     pos: sparse(vec2),
@@ -1596,16 +1595,31 @@ function spawnSection(
 function segmentHandles(ecs: State, segmentId: number): number[] {
     const eids: number[] = [];
     for (const eid of ecs.query([Handle])) {
-        if (Handle.section.get(eid) === segmentId) eids.push(eid);
+        if (Handle.segment.get(eid) === segmentId) eids.push(eid);
     }
     eids.sort((a, b) => Handle.order.get(a) - Handle.order.get(b));
     return eids;
 }
 
-/** collect every node in an evaluator run, preserving member chain order and node order. */
+/** collect every node in an evaluator run in run-global node order. */
 export function sectionHandles(ecs: State, sectionId: number): number[] {
-    const members = runProjection(ecs, sectionId)?.segmentIds ?? [sectionId];
-    return members.flatMap((id) => segmentHandles(ecs, id));
+    const eids: number[] = [];
+    for (const eid of ecs.query([Handle])) {
+        if (Handle.section.get(eid) === sectionId) eids.push(eid);
+    }
+    eids.sort((a, b) => Handle.order.get(a) - Handle.order.get(b));
+    return eids;
+}
+
+function terminalMemberId(ecs: State, runId: number): number | null {
+    let terminal: { id: number; order: number } | null = null;
+    for (const eid of ecs.query([Segment])) {
+        if (Segment.run.get(eid) !== runId) continue;
+        const order = Segment.order.get(eid);
+        if (terminal === null || order > terminal.order)
+            terminal = { id: Segment.id.get(eid), order };
+    }
+    return terminal?.id ?? null;
 }
 
 /** last node in an evaluator run's ordered member chain, or null when empty. */
@@ -1621,11 +1635,13 @@ export function lastHandle(ecs: State, sectionId: number): number | null {
  *  (θ = 0) — the section always leaves its entry along the entry heading, and node 1
  *  reflects that. */
 export function addNode(ecs: State, sectionId: number, x: number, y: number): number {
-    const handles = segmentHandles(ecs, sectionId);
+    const memberId = terminalMemberId(ecs, sectionId) ?? sectionId;
+    const handles = sectionHandles(ecs, sectionId);
     const prev = handles[handles.length - 1] ?? null;
     const order = prev === null ? 0 : Handle.order.get(prev) + 1;
     const eid = ecs.create();
     ecs.add(eid, Handle);
+    Handle.segment.set(eid, memberId);
     Handle.section.set(eid, sectionId);
     Handle.order.set(eid, order);
     Handle.sample.set(eid, 0);
@@ -1641,7 +1657,7 @@ export function addNode(ecs: State, sectionId: number, x: number, y: number): nu
         // chord-scaled length, tip reflection). a node turns concrete bezier only when authored
         // (a handle drag or a mode set), never at append.
     }
-    const member = segmentAt(ecs, sectionId);
+    const member = segmentAt(ecs, memberId);
     if (member !== null) Segment.geoEndNode.set(member, eid + 1);
     return eid;
 }
@@ -1721,14 +1737,16 @@ export function spawnNode(
 ): number {
     const eid = ecs.create();
     ecs.add(eid, Handle);
-    Handle.section.set(eid, sectionId);
+    const member = segmentAt(ecs, sectionId);
+    const runId = member === null ? sectionId : Segment.run.get(member);
+    Handle.segment.set(eid, sectionId);
+    Handle.section.set(eid, runId);
     Handle.order.set(eid, order);
     Handle.sample.set(eid, 0);
     Handle.pos.set(eid, x, y);
     Handle.theta.set(eid, theta);
     writeTangent(eid, tan);
     invalidateBake(ecs);
-    const member = segmentAt(ecs, sectionId);
     if (member !== null) {
         const current = Segment.geoEndNode.get(member);
         if (current === 0 || order > Handle.order.get(current - 1))
@@ -2662,7 +2680,13 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
                 ? -1
                 : Handle.order.get(node);
         })(),
-        nodes: nodeSnapshot(ecs, sectionId),
+        nodes: segmentHandles(ecs, sectionId).map((node) => ({
+            order: Handle.order.get(node),
+            x: Handle.pos.x.get(node),
+            y: Handle.pos.y.get(node),
+            theta: Handle.theta.get(node),
+            tangent: readTangent(node),
+        })),
         points: segmentForces(ecs, sectionId).map((p) => ({
             id: p.id,
             s: p.s,
