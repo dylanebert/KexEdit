@@ -20,6 +20,7 @@ import {
     createTrack,
     destroyOneShot,
     destroyStrip,
+    destroyStripKeyframe,
     destroyStripKeyframes,
     entryOneShot,
     entrySpeed,
@@ -36,6 +37,7 @@ import {
     stripKeyframeState,
     stripKeyframes,
     setStrip,
+    setStripKeyframe,
     stripsForStep,
     setBakeFreeze,
     setBakeLanding,
@@ -82,6 +84,8 @@ import {
     runInfo,
     RunEntryForceBoundary,
     Segment,
+    StartVelocity,
+    VelocityBoundary,
     sectionResettable,
     sections,
     sectionSolvable,
@@ -3381,6 +3385,37 @@ describe("velocity strips — ECS layer (C3)", () => {
         const kfInside = createStripKeyframe(state, stripId, 12, 5);
         const stInside = stripKeyframeState(state, kfInside);
         expect(stInside?.s).toBe(12);
+    });
+
+    test("velocity boundary pointers follow create, set, destroy, and whole-track restore", () => {
+        const { state, sec } = track();
+        convertSection(state, sec);
+        const stripId = createStrip(state, 2, 6, 8)!;
+        const key = stripKeyframes(state, stripId).find((row) => row.s === 6)!;
+        const owner = [...state.query([Segment])].find(
+            (eid) => Segment.velocityBoundary.get(eid) === key.id + 1,
+        )!;
+        const segmentId = Segment.id.get(owner);
+        expect(VelocityBoundary.v(state, segmentId)).toBe(8);
+
+        setStripKeyframe(state, key.id, key.s, 13);
+        expect(VelocityBoundary.v(state, segmentId)).toBe(13);
+        const snap = snapshotAll(state);
+        destroyStripKeyframe(state, key.id);
+        expect(VelocityBoundary.v(state, segmentId)).toBeUndefined();
+        restoreAll(state, snap);
+        expect(VelocityBoundary.v(state, segmentId)).toBe(13);
+    });
+
+    test("track-start velocity pointer follows one-shot lifecycle and empty restore", () => {
+        const { state } = track();
+        expect(StartVelocity.v(state)).toBeUndefined();
+        const id = createOneShot(state, 12);
+        expect(StartVelocity.v(state)).toBe(12);
+        destroyOneShot(state, id);
+        expect(StartVelocity.v(state)).toBeUndefined();
+        restoreAll(state, snapshotAll(state));
+        expect(StartVelocity.v(state)).toBeUndefined();
     });
 
     test("strip keyframes round-trip through snapshotAll/restoreAll byte-identical", () => {
