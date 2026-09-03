@@ -1,57 +1,106 @@
 import { describe, expect, test } from "bun:test";
-import { classifyKfHit, type KfHitCandidate } from "../src/kf-hit";
+import {
+    classifyKfHit,
+    type KfHitCandidate,
+    type KfPointCandidate,
+    type KfSpanCandidate,
+} from "../src/kf-hit";
 
-// the force chart's keyframe hit classifier, tested off-DOM (`strip-hit.test.ts`'s own shape).
-// The projection is the caller's job, so every candidate here is already in canvas-local px.
-
-const force = (id: number, x: number, y: number): KfHitCandidate => ({ kind: "force", id, x, y });
-const strip = (id: number, x: number, y: number): KfHitCandidate => ({ kind: "strip", id, x, y });
+const point = (kind: "force" | "strip", id: number, x: number, y: number): KfPointCandidate => ({
+    kind,
+    id,
+    x,
+    y,
+});
+const span = (id: number, x0: number, x1: number): KfSpanCandidate => ({ id, x0, x1 });
+const candidates = (overrides: Partial<KfHitCandidate> = {}): KfHitCandidate => ({
+    knobs: [],
+    points: [],
+    spans: [],
+    ...overrides,
+});
 
 describe("classifyKfHit", () => {
-    test("nothing in range reads null — the caller's empty-surface grammar", () => {
-        expect(classifyKfHit(0, 0, [force(1, 100, 100)], 12)).toBeNull();
-        expect(classifyKfHit(0, 0, [], 12)).toBeNull();
+    test("empty chart is explicit", () => {
+        expect(classifyKfHit(20, 40, candidates(), 12)).toEqual({ kind: "empty" });
     });
 
-    test("a press on a diamond's centre hits it", () => {
-        expect(classifyKfHit(100, 50, [force(7, 100, 50)], 12)).toEqual({ kind: "force", id: 7 });
-        expect(classifyKfHit(100, 50, [strip(7, 100, 50)], 12)).toEqual({ kind: "strip", id: 7 });
-    });
-
-    test("the radius is a circle, not a box — a corner press at the box's edge misses", () => {
-        // (9, 9) is inside a 12px BOX but outside the 12px circle (hypot 12.7).
-        expect(classifyKfHit(9, 9, [force(1, 0, 0)], 12)).toBeNull();
-        // straight out along one axis at the same 9px is comfortably inside.
-        expect(classifyKfHit(9, 0, [force(1, 0, 0)], 12)).toEqual({ kind: "force", id: 1 });
-    });
-
-    test("the radius is inclusive at exactly `radius` px", () => {
-        expect(classifyKfHit(12, 0, [force(1, 0, 0)], 12)).toEqual({ kind: "force", id: 1 });
-        expect(classifyKfHit(13, 0, [force(1, 0, 0)], 12)).toBeNull();
-    });
-
-    test("nearest wins over list order, in both directions", () => {
-        const far = force(1, 100, 0);
-        const near = force(2, 104, 0);
-        expect(classifyKfHit(105, 0, [far, near], 12)).toEqual({ kind: "force", id: 2 });
-        expect(classifyKfHit(105, 0, [near, far], 12)).toEqual({ kind: "force", id: 2 });
-    });
-
-    test("an exact distance tie resolves to strip — the kind that was drawn on top", () => {
-        const both: KfHitCandidate[] = [force(1, 100, 0), strip(2, 100, 0)];
-        expect(classifyKfHit(100, 0, both, 12)).toEqual({ kind: "strip", id: 2 });
-        // and the same answer with the list order reversed: the tie-break is on kind, not order.
-        expect(classifyKfHit(100, 0, [both[1], both[0]], 12)).toEqual({ kind: "strip", id: 2 });
-    });
-
-    test("a nearer force keyframe still beats a farther strip one — kind only breaks exact ties", () => {
-        expect(classifyKfHit(100, 0, [force(1, 100, 0), strip(2, 106, 0)], 12)).toEqual({
-            kind: "force",
-            id: 1,
+    test("nearest point wins independent of list order", () => {
+        const far = point("force", 1, 20, 20);
+        const near = point("force", 2, 24, 20);
+        expect(classifyKfHit(25, 20, candidates({ points: [far, near] }), 12)).toEqual({
+            kind: "point",
+            pointKind: "force",
+            id: 2,
+        });
+        expect(classifyKfHit(25, 20, candidates({ points: [near, far] }), 12)).toEqual({
+            kind: "point",
+            pointKind: "force",
+            id: 2,
         });
     });
 
-    test("both axes are read — a keyframe at the same x but a far y is not a hit", () => {
-        expect(classifyKfHit(100, 0, [force(1, 100, 40)], 12)).toBeNull();
+    test("point radius is circular and inclusive", () => {
+        expect(classifyKfHit(9, 9, candidates({ points: [point("force", 1, 0, 0)] }), 12)).toEqual({
+            kind: "empty",
+        });
+        expect(classifyKfHit(12, 0, candidates({ points: [point("force", 1, 0, 0)] }), 12)).toEqual(
+            {
+                kind: "point",
+                pointKind: "force",
+                id: 1,
+            },
+        );
+    });
+
+    test("strip breaks an exact point tie but a nearer force point wins", () => {
+        const force = point("force", 1, 20, 20);
+        const strip = point("strip", 2, 20, 20);
+        expect(classifyKfHit(20, 20, candidates({ points: [force, strip] }), 12)).toEqual({
+            kind: "point",
+            pointKind: "strip",
+            id: 2,
+        });
+        expect(
+            classifyKfHit(20, 20, candidates({ points: [force, { ...strip, x: 26 }] }), 12),
+        ).toEqual({ kind: "point", pointKind: "force", id: 1 });
+    });
+
+    test("knob has precedence over a coincident point and boundary", () => {
+        expect(
+            classifyKfHit(
+                20,
+                20,
+                candidates({
+                    knobs: [{ id: 7, edge: "end", x: 20, y: 20 }],
+                    points: [point("strip", 2, 20, 20)],
+                    spans: [span(7, 0, 20)],
+                }),
+                12,
+            ),
+        ).toEqual({ kind: "knob", id: 7, edge: "end" });
+    });
+
+    test("a coincident velocity point is more specific than a member boundary", () => {
+        expect(
+            classifyKfHit(
+                20,
+                60,
+                candidates({ points: [point("strip", 4, 20, 60)], spans: [span(7, 0, 20)] }),
+                12,
+            ),
+        ).toEqual({ kind: "point", pointKind: "strip", id: 4 });
+    });
+
+    test("boundary precedes body and nearest boundary wins", () => {
+        expect(
+            classifyKfHit(21, 60, candidates({ spans: [span(1, 0, 20), span(2, 20, 50)] }), 12),
+        ).toEqual({ kind: "boundary", id: 1 });
+    });
+
+    test("span body and outside-chart space are distinguished", () => {
+        const input = candidates({ spans: [span(9, 10, 30)] });
+        expect(classifyKfHit(20, 60, input, 4)).toEqual({ kind: "body", id: 9 });
+        expect(classifyKfHit(40, 60, input, 4)).toEqual({ kind: "empty" });
     });
 });
