@@ -131,7 +131,7 @@ function nodes(): { state: State; eid: number; sec: number } {
     return { state, eid, sec };
 }
 
-test("multi-member run conversion and delete history preserve member identities", () => {
+test("multi-member conversion collapses the default run and undo restores member identities", () => {
     const state = new State();
     createTrack(state);
     const first = createSection(state, 0, SectionKind.Force, 12);
@@ -144,10 +144,10 @@ test("multi-member run conversion and delete history preserve member identities"
 
     convertSection(h, state, first);
     expect(Section.kind.get(firstEid)).toBe(SectionKind.Geo);
-    expect(Section.kind.get(secondEid)).toBe(SectionKind.Geo);
+    expect(segmentAt(state, second)).toBeNull();
     undo(h, state);
     expect(sectionAt(state, first)).toBe(firstEid);
-    expect(segmentAt(state, second)).toBe(secondEid);
+    expect(segmentAt(state, second)).not.toBeNull();
 
     expect(removeSections(h, state, [first])).toBe(true);
     expect(sectionAt(state, first)).toBeNull();

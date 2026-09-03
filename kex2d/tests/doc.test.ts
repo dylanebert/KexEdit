@@ -17,6 +17,7 @@ import { scenarios } from "../src/scenarios";
 import { TangentMode } from "../src/spline";
 import {
     addNode,
+    assertRunStructure,
     bakeOut,
     BakeSystem,
     createForcePoint,
@@ -24,11 +25,15 @@ import {
     createSection,
     createStrip,
     createTrack,
+    convertSection,
+    refreshVelocityRunMembers,
+    resetSection,
     samples,
     SectionKind,
     snapshotAll,
     spawnNode,
     spliceGeoMembers,
+    setSectionLength,
     Track,
     trackEntity,
 } from "../src/track";
@@ -162,6 +167,62 @@ describe("a document with strips, a force section, and an explicit geo tangent r
 
         expect(saveDocument(b)).toBe(text);
         expect(bakedArrays(bEid)).toEqual(baked);
+    });
+});
+
+describe("conversion/reset conserve the frozen-v3 run frame", () => {
+    function fixedPoint(state: State): void {
+        assertRunStructure(state);
+        const saved = saveDocument(state);
+        const loaded = new State();
+        loadDocument(loaded, saved);
+        assertRunStructure(loaded);
+        expect(saveDocument(loaded)).toBe(saved);
+    }
+
+    test("default geo→force, multi-edge geo→force, velocity-unioned force→geo, and resized-force reset", () => {
+        {
+            const state = new State();
+            createTrack(state);
+            const geo = createSection(state, 0, SectionKind.Geo, 0);
+            addNode(state, geo, 0, 0);
+            addNode(state, geo, 24, 0);
+            spliceGeoMembers(state, geo);
+            convertSection(state, geo);
+            fixedPoint(state);
+        }
+        {
+            const state = new State();
+            createTrack(state);
+            const geo = createSection(state, 0, SectionKind.Geo, 0);
+            addNode(state, geo, 0, 0);
+            addNode(state, geo, 12, 2);
+            addNode(state, geo, 30, 0);
+            spliceGeoMembers(state, geo);
+            convertSection(state, geo);
+            fixedPoint(state);
+        }
+        {
+            const state = new State();
+            createTrack(state);
+            const force = createSection(state, 0, SectionKind.Force, 30);
+            createForcePoint(state, force, 0, 1);
+            createForcePoint(state, force, 30, 1);
+            createStrip(state, 5, 20, 12);
+            refreshVelocityRunMembers(state);
+            convertSection(state, force);
+            fixedPoint(state);
+        }
+        {
+            const state = new State();
+            createTrack(state);
+            const force = createSection(state, 0, SectionKind.Force, 30);
+            createForcePoint(state, force, 0, 1);
+            createForcePoint(state, force, 30, 1);
+            setSectionLength(state, force, 41.25);
+            resetSection(state, force);
+            fixedPoint(state);
+        }
     });
 });
 
