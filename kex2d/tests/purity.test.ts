@@ -387,12 +387,54 @@ function writeSites(): WriteSite[] {
     return sites;
 }
 
+test("every live @temporary source symbol has an adapter-inventory row", () => {
+    const inventory = readFileSync(join(srcRoot, "..", "ADAPTERS.md"), "utf8");
+    const symbols: string[] = [];
+    for (const file of collectSrcFiles(srcRoot).filter((name) => name.endsWith(".ts"))) {
+        const source = readFileSync(join(srcRoot, file), "utf8");
+        for (const match of source.matchAll(/@temporary/g)) {
+            const tail = source.slice(match.index! + match[0].length, match.index! + 500);
+            const afterComment = tail.slice(tail.indexOf("*/") + 2);
+            const declaration = /\b(?:export\s+)?(?:interface|function|type|const)\s+(\w+)/.exec(
+                afterComment,
+            );
+            const field = /^\s*(\w+)\s*:/m.exec(afterComment);
+            const symbol =
+                field && (!declaration || field.index! < declaration.index!)
+                    ? field[1]
+                    : declaration?.[1];
+            expect(
+                symbol,
+                `${file}:${source.slice(0, match.index).split("\n").length}`,
+            ).toBeTruthy();
+            symbols.push(symbol!);
+        }
+    }
+    expect(symbols.length).toBeGreaterThan(0);
+    for (const symbol of symbols)
+        expect(inventory, `missing adapter inventory row for ${symbol}`).toMatch(
+            new RegExp("\\| `[^`]*\\b" + symbol + "\\b[^`]*` \\|"),
+        );
+});
+
 describe("authored-component writer census — no second write path", () => {
     test("positive control: the walker reaches real write-sites in both classes", () => {
         // proves the census isn't vacuously empty before its verdict is read below.
         const sites = writeSites();
         expect(sites.length).toBeGreaterThan(0);
         expect(sites.some((s) => s.file === "doc.ts")).toBe(true);
+    });
+
+    test("foreign velocity writers route only through canonical command setters", () => {
+        const velocity = new Set(["Segment", "TrackStart", "Strip", "StripKeyframe", "OneShot"]);
+        const sites = writeSites().filter((site) => velocity.has(site.text.split(".")[0]!));
+        expect(sites).toHaveLength(0);
+        const commands = readFileSync(join(srcRoot, "commands.ts"), "utf8");
+        expect(commands).toContain("applyVelocitySegmentOp");
+        expect(commands).toContain("setStrip(ecs, op.id, op.start, op.end, op.value)");
+        expect(commands).toContain("setStripKeyframe(ecs, op.id, op.s, op.v)");
+        expect(commands).toContain("setOneShotValue(ecs, os.id, op.value)");
+        expect(commands).toContain("StartVelocity.v(ecs)");
     });
 
     test("foreign geometry writers route through the canonical position setter", () => {
@@ -424,6 +466,9 @@ describe("authored-component writer census — no second write path", () => {
         expect(AUTHORED_COMPONENTS).toContain("ForceBoundary");
         expect(AUTHORED_COMPONENTS).toContain("Segment");
         expect(AUTHORED_COMPONENTS).toContain("TrackStart");
+        expect(AUTHORED_COMPONENTS).toContain("Strip");
+        expect(AUTHORED_COMPONENTS).toContain("StripKeyframe");
+        expect(AUTHORED_COMPONENTS).toContain("OneShot");
     });
 
     test("every un-gestured write-site lives in doc.ts, and doc.ts actually has one", () => {
