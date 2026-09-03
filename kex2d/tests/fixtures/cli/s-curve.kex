@@ -6,19 +6,90 @@
       "id": 18,
       "order": 0,
       "kind": 0,
-      "length": 0,
-      "nodes": [],
-      "points": [],
-      "members": [
-        {"node":1,"kind":0,"nodes":[{"order":0,"x":0,"y":0,"theta":0},{"order":1,"x":20,"y":0,"theta":0}],"points":[]},
-        {"node":2,"kind":0,"nodes":[{"order":2,"x":40,"y":8,"theta":0.7610127542247298}],"points":[]},
-        {"node":3,"kind":0,"nodes":[{"order":3,"x":60,"y":8,"theta":-0.7610127542247298}],"points":[]},
-        {"node":4,"kind":0,"nodes":[{"order":4,"x":80,"y":0,"theta":0}],"points":[]},
-        {"node":5,"kind":0,"nodes":[{"order":5,"x":95,"y":-5,"theta":-0.6435011087932844}],"points":[]},
-        {"node":6,"kind":0,"nodes":[{"order":6,"x":115,"y":-5,"theta":0.6435011087932844}],"points":[]},
-        {"node":7,"kind":0,"nodes":[{"order":7,"x":135,"y":0,"theta":-0.15354378253955608}],"points":[]},
-        {"node":8,"kind":0,"nodes":[{"order":8,"x":155,"y":0,"theta":0.15354378253955608}],"points":[]}
-      ]
+      "run": 18,
+      "node": 1,
+      "nodes": [
+        {"order":0,"x":0,"y":0,"theta":0},
+        {"order":1,"x":20,"y":0,"theta":0}
+      ],
+      "points": []
+    },
+    {
+      "id": 19,
+      "order": 1,
+      "kind": 0,
+      "run": 18,
+      "node": 2,
+      "nodes": [
+        {"order":2,"x":40,"y":8,"theta":0.7610127542247298}
+      ],
+      "points": []
+    },
+    {
+      "id": 20,
+      "order": 2,
+      "kind": 0,
+      "run": 18,
+      "node": 3,
+      "nodes": [
+        {"order":3,"x":60,"y":8,"theta":-0.7610127542247298}
+      ],
+      "points": []
+    },
+    {
+      "id": 21,
+      "order": 3,
+      "kind": 0,
+      "run": 18,
+      "node": 4,
+      "nodes": [
+        {"order":4,"x":80,"y":0,"theta":0}
+      ],
+      "points": []
+    },
+    {
+      "id": 22,
+      "order": 4,
+      "kind": 0,
+      "run": 18,
+      "node": 5,
+      "nodes": [
+        {"order":5,"x":95,"y":-5,"theta":-0.6435011087932844}
+      ],
+      "points": []
+    },
+    {
+      "id": 23,
+      "order": 5,
+      "kind": 0,
+      "run": 18,
+      "node": 6,
+      "nodes": [
+        {"order":6,"x":115,"y":-5,"theta":0.6435011087932844}
+      ],
+      "points": []
+    },
+    {
+      "id": 24,
+      "order": 6,
+      "kind": 0,
+      "run": 18,
+      "node": 7,
+      "nodes": [
+        {"order":7,"x":135,"y":0,"theta":-0.15354378253955608}
+      ],
+      "points": []
+    },
+    {
+      "id": 25,
+      "order": 7,
+      "kind": 0,
+      "run": 18,
+      "node": 8,
+      "nodes": [
+        {"order":8,"x":155,"y":0,"theta":0.15354378253955608}
+      ],
+      "points": []
     }
   ],
   "strips": [],

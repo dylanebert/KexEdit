@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
-    checkDocInvariants,
     CURRENT_VERSION,
     docFromEcs,
     type DocGeoTangent,
@@ -14,7 +13,6 @@ import {
     serializeDocument,
 } from "../src/doc";
 import { Easing } from "../src/profile";
-import { rebuildSectionProjection } from "../src/projection";
 import { scenarios } from "../src/scenarios";
 import { TangentMode } from "../src/spline";
 import {
@@ -28,7 +26,6 @@ import {
     createTrack,
     samples,
     SectionKind,
-    sections,
     snapshotAll,
     spawnNode,
     spliceGeoMembers,
@@ -462,14 +459,27 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
 
         const doc = JSON.parse(saveDocument(state));
         doc.version = 1;
-        doc.sections = doc.segments;
-        // Reconstruct the historical flat v1 point shape before exercising both migrations.
-        for (const section of doc.sections) {
-            section.points = section.points.map((p: Record<string, unknown>) => {
-                const boundary = p.boundary as { g: number; ease: number };
-                return { id: p.id, s: p.s, g: boundary.g, ease: boundary.ease };
-            });
+        // Collapse the current edge records back to the historical one-record-per-section v1
+        // shape before exercising both migrations.
+        const byRun = new Map<number, any[]>();
+        for (const segment of doc.segments) {
+            const rows = byRun.get(segment.run) ?? [];
+            rows.push(segment);
+            byRun.set(segment.run, rows);
         }
+        doc.sections = [...byRun.values()].map((rows) => ({
+            id: rows[0].run,
+            order: rows[0].order,
+            kind: rows[0].kind,
+            length: rows.at(-1).extent ?? 0,
+            nodes: rows.flatMap((row) => row.nodes),
+            points: rows
+                .flatMap((row) => row.points)
+                .map((p: Record<string, unknown>) => {
+                    const boundary = p.boundary as { g: number; ease: number };
+                    return { id: p.id, s: p.s, g: boundary.g, ease: boundary.ease };
+                }),
+        }));
         delete doc.segments;
         // the pre-S3 explicit-handle shape: a mode + one stored (Δs, Δg) offset.
         doc.sections[1].points[1].tangent = { mode: TangentMode.Free, out: { ds: 3, dg: -0.5 } };
@@ -645,43 +655,43 @@ describe("frozen v2 migration corpus", () => {
     });
 });
 
-describe("run-nested unstable-v3 wire", () => {
-    test("load → save → load keeps one contiguous id space across multi-member edge runs", () => {
-        const run = (
-            id: number,
-            order: number,
-            kind: SectionKind,
-            length: number,
-            stations: number[],
-        ) => {
-            const nodes =
-                kind === SectionKind.Geo
-                    ? [
-                          { id: 0, order: 0, x: 0, y: 0, theta: 0 },
-                          { id: 1, order: 1, x: 1, y: 0, theta: 0 },
-                      ]
-                    : [];
-            const row = { id, order, kind, length, nodes, points: [] };
-            return stations.length > 1
-                ? {
-                      ...row,
-                      members: stations.map((station) => ({
-                          station,
-                          kind,
-                          nodes: [],
-                          points: [],
-                      })),
-                  }
-                : row;
-        };
+describe("frozen flat-v3 wire", () => {
+    test("load → save → load preserves stable member ids and terminal residual", () => {
         const wire = serializeDocument({
             version: CURRENT_VERSION,
             track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
             segments: [
-                run(41, 0, SectionKind.Force, 30, [0, 11.25]),
-                run(50, 1, SectionKind.Force, 8, [0]),
-                run(60, 2, SectionKind.Geo, 0, [0]),
-                run(70, 3, SectionKind.Force, 20, [0, 7]),
+                {
+                    id: 41,
+                    order: 0,
+                    kind: SectionKind.Force,
+                    run: 41,
+                    station: 0,
+                    nodes: [],
+                    points: [],
+                },
+                {
+                    id: 71,
+                    order: 1,
+                    kind: SectionKind.Force,
+                    run: 41,
+                    station: 11.25,
+                    extent: 30.000001907348633,
+                    nodes: [],
+                    points: [{ id: 91, s: 11.25, boundary: { g: 1, ease: Easing.Cubic } }],
+                },
+                {
+                    id: 60,
+                    order: 2,
+                    kind: SectionKind.Geo,
+                    run: 60,
+                    node: 1,
+                    nodes: [
+                        { order: 0, x: 0, y: 0, theta: 0 },
+                        { order: 1, x: 8, y: 2, theta: 0 },
+                    ],
+                    points: [],
+                },
             ],
             strips: [],
             oneShot: [],
@@ -690,72 +700,69 @@ describe("run-nested unstable-v3 wire", () => {
         state.addSystem(BakeSystem);
         loadDocument(state, wire);
         const first = snapshotAll(state);
-        expect(first.segments.map((segment) => segment.order)).toEqual([0, 1, 2, 3, 4, 5]);
-        expect(first.segments.map((segment) => segment.id)).toEqual([41, 71, 50, 60, 70, 72]);
-        expect(first.segments.map((segment) => segment.run)).toEqual([41, 41, 50, 60, 70, 70]);
-        expect(sections(state).map((section) => section.id)).toEqual([41, 50, 60, 70]);
-        expect(rebuildSectionProjection(state).map((section) => section.id)).toEqual([
-            41, 50, 60, 70,
-        ]);
+        expect(first.segments.map((segment) => segment.id)).toEqual([41, 71, 60]);
+        expect(first.segments[1]!.length).toBe(Math.fround(30.000001907348633 - 11.25));
         const canonical = saveDocument(state);
+        expect(
+            JSON.parse(canonical).segments.every((segment: object) => !("members" in segment)),
+        ).toBe(true);
         loadDocument(state, canonical);
         expect(snapshotAll(state)).toEqual(first);
         expect(saveDocument(state)).toBe(canonical);
     });
 
-    test("geo run members use ordered node addresses and run-scoped node guards", () => {
-        const document = {
+    test("flat structural refusals happen before ECS writes", () => {
+        const base = {
             version: CURRENT_VERSION,
             track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
             segments: [
                 {
-                    id: 9,
+                    id: 4,
                     order: 0,
-                    kind: SectionKind.Geo,
-                    length: 0,
+                    kind: SectionKind.Force,
+                    run: 4,
+                    station: 0,
+                    extent: 10,
                     nodes: [],
                     points: [],
-                    members: [
-                        {
-                            node: 0,
-                            kind: SectionKind.Geo,
-                            nodes: [{ order: 0, x: 0, y: 0, theta: 0 }],
-                            points: [],
-                        },
-                        {
-                            node: 1,
-                            kind: SectionKind.Geo,
-                            nodes: [{ order: 1, x: 8, y: 2, theta: 0 }],
-                            points: [],
-                        },
-                        {
-                            node: 2,
-                            kind: SectionKind.Geo,
-                            nodes: [{ order: 2, x: 16, y: 0, theta: 0 }],
-                            points: [],
-                        },
-                    ],
                 },
             ],
             strips: [],
             oneShot: [],
         };
-        const wire = serializeDocument(document);
-        const state = new State();
-        state.addSystem(BakeSystem);
-        loadDocument(state, wire);
-        const canonical = saveDocument(state);
-        expect(
-            JSON.parse(canonical).segments[0].members.map(
-                (member: { node: number }) => member.node,
-            ),
-        ).toEqual([1, 2]);
-        const snapshot = snapshotAll(state);
-        expect(snapshot.segments.map((member) => member.geoEndNode)).toEqual([1, 2]);
-        expect(
-            snapshot.segments.flatMap((member) => member.nodes.map((node) => node.order)),
-        ).toEqual([0, 1, 2]);
-        expect(checkDocInvariants(parseDocument(canonical))).toEqual([]);
+        const mutations = [
+            {
+                name: "bijection",
+                change: (d: any) => {
+                    d.segments[0].order = 2;
+                },
+            },
+            {
+                name: "first record id",
+                change: (d: any) => {
+                    d.segments[0].run = 3;
+                },
+            },
+            {
+                name: "terminal extent",
+                change: (d: any) => {
+                    delete d.segments[0].extent;
+                },
+            },
+            {
+                name: "terminal extent",
+                change: (d: any) => {
+                    d.segments[0].extent = 0;
+                },
+            },
+        ];
+        for (const mutation of mutations) {
+            const candidate = structuredClone(base);
+            mutation.change(candidate);
+            expect(() => parseDocument(JSON.stringify(candidate))).toThrow(
+                new RegExp(mutation.name),
+            );
+        }
     });
 });
 

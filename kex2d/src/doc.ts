@@ -36,6 +36,7 @@ import {
     MIN_V0,
     type NodeState,
     type OneShotSnapshot,
+    refreshVelocityRunMembers,
     reserveIds,
     restoreAll,
     type SectionSnapshot,
@@ -44,7 +45,6 @@ import {
     stripOverlapped,
     type StripSnapshot,
     snapshotAll,
-    spliceGeoMembers,
     Track,
     trackEntity,
     type TrackSnapshot,
@@ -59,7 +59,7 @@ import {
  *  load; a v1 file's geo tangents (`DocNode.tangent`) are untouched, a structurally distinct key
  *  on a distinct entity. migrations stay cheap by design (one function per version step, applied
  *  in sequence). */
-/** Unstable while the segment authoring data stages S2a–S2c are in flight. */
+/** Frozen flat segment wire. Future authored-shape changes require a version bump. */
 export const CURRENT_VERSION = 3;
 
 // ── wire types (post-parse, post-migration — always shaped exactly like this) ────────────────
@@ -100,27 +100,23 @@ export interface DocPoint {
     boundary: DocForceBoundary;
 }
 
-export interface DocRunMember {
-    /** Force membership is addressed in the conserved station frame. */
-    station?: number;
-    /** Geo membership is addressed by the terminating node's ordered run index. */
-    node?: number;
-    kind: number;
-    nodes: DocNode[];
-    points: DocPoint[];
-}
-
 export interface DocSegment {
-    /** Run identity. The first synthesized member deliberately reuses it. */
+    /** Stable canonical segment identity. */
     id: number;
     order: number;
     kind: number;
-    /** Conserved run extent. */
-    length: number;
+    /** Stable run identity; the run's first record has id === run. */
+    run: number;
+    /** Force-only conserved run-local entry station. */
+    station?: number;
+    /** Force-only conserved run extent, present on exactly the terminal record. */
+    extent?: number;
+    /** Geo-only terminating node's run-global order. */
+    node?: number;
+    /** Geo payload (node zero rides the first record); empty on force records. */
     nodes: DocNode[];
+    /** Force points at run-local absolute stations; empty on geo records. */
     points: DocPoint[];
-    /** Present only for a multi-member run, preserving current single-member bytes. */
-    members?: DocRunMember[];
 }
 
 export interface DocStripKeyframe {
@@ -156,12 +152,15 @@ function toDocTangent(t: Tangent | undefined): DocGeoTangent | undefined {
     return t ? { mode: t.mode, inX: t.inX, inY: t.inY, outX: t.outX, outY: t.outY } : undefined;
 }
 
-function toDocSegment(s: SectionSnapshot): DocSegment {
+function toDocSegment(s: SectionSnapshot, terminal: boolean): DocSegment {
     return {
         id: s.id,
         order: s.order,
         kind: s.kind,
-        length: s.length,
+        run: s.run,
+        ...(s.kind === SectionKind.Force
+            ? { station: s.runStation, ...(terminal ? { extent: s.runExtent } : {}) }
+            : { node: s.geoEndNode }),
         nodes: s.nodes
             .slice()
             .sort((a, b) => a.order - b.order)
@@ -177,7 +176,7 @@ function toDocSegment(s: SectionSnapshot): DocSegment {
             .sort((a, b) => a.id - b.id)
             .map((p) => ({
                 id: p.id,
-                s: p.s,
+                s: s.runStation + p.s,
                 boundary: { g: p.g, ease: p.ease },
             })),
     };
@@ -222,43 +221,9 @@ export function docFromEcs(ecs: State): Kex2dDocument {
         track,
         segments: (() => {
             const ordered = snap.segments.slice().sort((a, b) => a.order - b.order);
-            const groups = new Map<number, typeof ordered>();
-            for (const member of ordered) {
-                const group = groups.get(member.run) ?? [];
-                group.push(member);
-                groups.set(member.run, group);
-            }
-            return [...groups.values()].map((members) => {
-                if (members.length === 1) return toDocSegment(members[0]!);
-                const first = members[0]!;
-                return {
-                    id: first.run,
-                    order: first.order,
-                    kind: first.kind,
-                    length: first.runExtent,
-                    nodes: [],
-                    points: [],
-                    members: members.map((member) => {
-                        const payload = toDocSegment(member);
-                        return member.kind === SectionKind.Geo
-                            ? {
-                                  node: member.geoEndNode,
-                                  kind: payload.kind,
-                                  nodes: payload.nodes,
-                                  points: payload.points,
-                              }
-                            : {
-                                  station: member.runStation,
-                                  kind: payload.kind,
-                                  nodes: payload.nodes,
-                                  points: payload.points.map((point) => ({
-                                      ...point,
-                                      s: member.runStation + point.s,
-                                  })),
-                              };
-                    }),
-                };
-            });
+            return ordered.map((member, index) =>
+                toDocSegment(member, ordered[index + 1]?.run !== member.run),
+            );
         })(),
         strips: snap.strips
             .slice()
@@ -276,16 +241,17 @@ function fromDocTangent(t: DocGeoTangent | undefined): Tangent | undefined {
         : undefined;
 }
 
-function fromDocSegment(s: DocSegment): SectionSnapshot {
+function fromDocSegment(s: DocSegment, length: number, runExtent: number): SectionSnapshot {
+    const station = s.station ?? 0;
     return {
         id: s.id,
         order: s.order,
         kind: s.kind as SectionKind,
-        length: s.length,
-        run: s.id,
-        runStation: 0,
-        runExtent: s.length,
-        geoEndNode: s.nodes.length - 1,
+        length,
+        run: s.run,
+        runStation: station,
+        runExtent,
+        geoEndNode: s.node ?? s.nodes.at(-1)?.order ?? 0,
         nodes: s.nodes.map(
             (n): NodeState => ({
                 order: n.order,
@@ -297,7 +263,7 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
         ),
         points: s.points.map((p) => ({
             id: p.id,
-            s: p.s,
+            s: p.s - station,
             g: p.boundary.g,
             ease: p.boundary.ease as Easing,
         })),
@@ -308,36 +274,15 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
  *  `TrackSnapshot` shape — the four `Track` scalars are applied separately by the caller
  *  (`restoreAll` never touches the `Track` component itself). */
 export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
-    const maxWireId = Math.max(-1, ...doc.segments.map((run) => run.id));
-    let nextMemberId = maxWireId + 1;
-    let nextOrder = 0;
-    const segments = doc.segments.flatMap((run) => {
-        if (!run.members) {
-            const member = fromDocSegment(run);
-            member.order = nextOrder++;
-            return [member];
-        }
-        return run.members
-            .map((member, index) => {
-                const station = member.station ?? 0;
-                const end = run.members![index + 1]?.station ?? run.length;
-                const result = fromDocSegment({
-                    id: index === 0 ? run.id : nextMemberId++,
-                    order: nextOrder++,
-                    kind: member.kind,
-                    length: Math.fround(end - station),
-                    nodes: member.nodes,
-                    points: member.points.map((point) => ({ ...point, s: point.s - station })),
-                });
-                result.geoEndNode = member.node ?? result.geoEndNode;
-                return result;
-            })
-            .map((member, index) => ({
-                ...member,
-                run: run.id,
-                runStation: run.members![index]!.station ?? 0,
-                runExtent: run.length,
-            }));
+    const runExtents = new Map<number, number>();
+    for (const segment of doc.segments)
+        if (segment.extent !== undefined) runExtents.set(segment.run, segment.extent);
+    const segments = doc.segments.map((segment, index) => {
+        if (segment.kind === SectionKind.Geo) return fromDocSegment(segment, 0, 0);
+        const runExtent = runExtents.get(segment.run)!;
+        const terminal = doc.segments[index + 1]?.run !== segment.run;
+        const end = terminal ? runExtent : doc.segments[index + 1]!.station!;
+        return fromDocSegment(segment, Math.fround(end - segment.station!), runExtent);
     });
     return {
         segments,
@@ -414,19 +359,19 @@ function emitBlockArray(indent: string, blocks: string[]): string {
     return `[\n${inner}\n${indent}]`;
 }
 
-/** one section, rendered at LOCAL indent 0 (its own `{` has none; its fields sit two spaces
- *  in) — `emitBlockArray` re-indents the whole block uniformly when it's embedded, so the
- *  local nesting here only has to be internally consistent. */
+/** One flat canonical segment record, rendered at local indent zero. */
 function renderSection(sec: DocSegment): string {
     return [
         "{",
         `  "id": ${sec.id},`,
         `  "order": ${sec.order},`,
         `  "kind": ${sec.kind},`,
-        `  "length": ${emitFlat(sec.length)},`,
+        `  "run": ${sec.run},`,
+        ...(sec.station === undefined ? [] : [`  "station": ${emitFlat(sec.station)},`]),
+        ...(sec.extent === undefined ? [] : [`  "extent": ${emitFlat(sec.extent)},`]),
+        ...(sec.node === undefined ? [] : [`  "node": ${sec.node},`]),
         `  "nodes": ${emitFlatArray("  ", sec.nodes)},`,
-        `  "points": ${emitFlatArray("  ", sec.points)}${sec.members ? "," : ""}`,
-        ...(sec.members ? [`  "members": ${emitFlatArray("  ", sec.members)}`] : []),
+        `  "points": ${emitFlatArray("  ", sec.points)}`,
         "}",
     ].join("\n");
 }
@@ -488,6 +433,13 @@ export class SemanticRefusalError extends Error {
 /** every semantic-invariant refusal throws through here, one thrown message naming every
  *  violated guard — `fail`'s own remedy suffix, so a semantic rejection reads exactly like a
  *  structural one to a caller matching on `/kex2d document:/` or the recovery-remedy text. */
+function failGuard(guard: string, message: string): never {
+    throw new SemanticRefusalError(
+        `kex2d document: ${guard}: ${message}. The file may be truncated, corrupted, or hand-edited invalid — re-save from a working document to recover.`,
+        [{ guard, message }],
+    );
+}
+
 function failSemantics(refusals: Refusal[]): never {
     const detail = refusals.map((r) => `${r.guard}: ${r.message}`).join("; ");
     const msg = `document violates ${refusals.length} invariant${refusals.length === 1 ? "" : "s"} — ${detail}`;
@@ -584,53 +536,33 @@ function validateSegment(v: unknown, i: number): DocSegment {
     if (!isPlainObject(v)) fail(`${path} is not an object`);
     if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
     if (!isInt(v.order)) fail(`${path}.order is missing or not an integer`);
+    if (!isInt(v.run)) fail(`${path}.run is missing or not an integer`);
     if (!isInt(v.kind) || (v.kind !== SectionKind.Geo && v.kind !== SectionKind.Force))
         fail(`${path}.kind is missing or not a valid SectionKind (0 or 1)`);
-    if (!isFiniteNumber(v.length)) fail(`${path}.length is missing or not a finite number`);
     if (!Array.isArray(v.nodes)) fail(`${path}.nodes is missing or not an array`);
     if (!Array.isArray(v.points)) fail(`${path}.points is missing or not an array`);
-    let members: DocRunMember[] | undefined;
-    if (v.members !== undefined) {
-        if (!Array.isArray(v.members) || v.members.length < 2)
-            fail(`${path}.members must be an array with at least two entries`);
-        members = v.members.map((member, j) => {
-            const memberPath = `${path}.members[${j}]`;
-            if (!isPlainObject(member)) fail(`${memberPath} is not an object`);
-            if (
-                !isInt(member.kind) ||
-                (member.kind !== SectionKind.Geo && member.kind !== SectionKind.Force)
-            )
-                fail(`${memberPath}.kind is missing or invalid`);
-            if (!Array.isArray(member.nodes) || !Array.isArray(member.points))
-                fail(`${memberPath} payload arrays are missing`);
-            if (member.kind === SectionKind.Geo) {
-                if (!isInt(member.node) || (member.node as number) < 0)
-                    fail(`${memberPath}.node is missing or not a non-negative integer`);
-                if (member.station !== undefined)
-                    fail(`${memberPath}.station is not a geo member field`);
-            } else {
-                if (!isFiniteNumber(member.station))
-                    fail(`${memberPath}.station is missing or not finite`);
-                if (member.node !== undefined)
-                    fail(`${memberPath}.node is not a force member field`);
-            }
-            return {
-                ...(member.station === undefined ? {} : { station: member.station as number }),
-                ...(member.node === undefined ? {} : { node: member.node as number }),
-                kind: member.kind as number,
-                nodes: member.nodes.map((n, k) => validateNode(n, `${memberPath}.nodes[${k}]`)),
-                points: member.points.map((p, k) => validatePoint(p, `${memberPath}.points[${k}]`)),
-            };
-        });
+    if (v.kind === SectionKind.Geo) {
+        if (!isInt(v.node) || (v.node as number) < 0)
+            fail(`${path}.node is missing or not a non-negative integer`);
+        if (v.station !== undefined || v.extent !== undefined || v.points.length > 0)
+            failGuard("sectionKind", `${path} carries a force channel on a geo record`);
+    } else {
+        if (!isFiniteNumber(v.station)) fail(`${path}.station is missing or not finite`);
+        if (v.extent !== undefined && !isFiniteNumber(v.extent))
+            fail(`${path}.extent is not finite`);
+        if (v.node !== undefined || v.nodes.length > 0)
+            failGuard("sectionKind", `${path} carries a geo channel on a force record`);
     }
     return {
         id: v.id as number,
         order: v.order as number,
         kind: v.kind as number,
-        length: v.length as number,
+        run: v.run as number,
+        ...(v.station === undefined ? {} : { station: v.station as number }),
+        ...(v.extent === undefined ? {} : { extent: v.extent as number }),
+        ...(v.node === undefined ? {} : { node: v.node as number }),
         nodes: v.nodes.map((n, j) => validateNode(n, `${path}.nodes[${j}]`)),
         points: v.points.map((p, j) => validatePoint(p, `${path}.points[${j}]`)),
-        members,
     };
 }
 
@@ -692,13 +624,59 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     if (!Array.isArray(raw.strips)) fail("strips is missing or not an array");
     if (!Array.isArray(raw.oneShot)) fail("oneShot is missing or not an array");
     if (raw.oneShot.length > 1) fail("oneShot carries more than one entry (at most one may exist)");
-    return {
+    const doc: Kex2dDocument = {
         version: raw.version as number,
         track,
         segments: raw.segments.map((s, i) => validateSegment(s, i)),
         strips: raw.strips.map((s, i) => validateStrip(s, i)),
         oneShot: raw.oneShot.map((o, i) => validateOneShot(o, i)),
     };
+    const ids = new Set<number>();
+    const orders = new Set<number>();
+    for (const segment of doc.segments) {
+        if (ids.has(segment.id))
+            failGuard("duplicateId", `two or more segments share id ${segment.id}`);
+        if (orders.has(segment.order))
+            failGuard("duplicateSectionOrder", `two or more segments claim order ${segment.order}`);
+        ids.add(segment.id);
+        orders.add(segment.order);
+    }
+    const seenRuns = new Set<number>();
+    for (let i = 0; i < doc.segments.length; ) {
+        const first = doc.segments[i]!;
+        if (first.order !== i)
+            failGuard(
+                "duplicateSectionOrder",
+                "segments.order is not a bijection onto chain order",
+            );
+        if (seenRuns.has(first.run)) fail(`run ${first.run} is not contiguous`);
+        seenRuns.add(first.run);
+        if (first.id !== first.run)
+            fail(`run ${first.run}'s first record id does not equal its run id`);
+        let end = i + 1;
+        while (end < doc.segments.length && doc.segments[end]!.run === first.run) end++;
+        const records = doc.segments.slice(i, end);
+        if (records.some((record) => record.kind !== first.kind))
+            fail(`run ${first.run} mixes kinds`);
+        if (first.kind === SectionKind.Force) {
+            for (let j = 0; j < records.length; j++) {
+                if (j === 0 && records[j]!.station !== 0)
+                    fail(`force run ${first.run} does not start at station 0`);
+                if (j > 0 && records[j]!.station! <= records[j - 1]!.station!)
+                    fail(`force run ${first.run} stations are not strictly increasing`);
+                const terminal = j === records.length - 1;
+                if (terminal !== (records[j]!.extent !== undefined))
+                    fail(`force run ${first.run} has missing or duplicate terminal extent`);
+            }
+            const last = records.at(-1)!;
+            if (last.extent! <= last.station!)
+                fail(`force run ${first.run}'s terminal extent is not above its last station`);
+        } else if (records.some((record, j) => j > 0 && record.node! <= records[j - 1]!.node!)) {
+            fail(`geo run ${first.run} node orders are not strictly increasing`);
+        }
+        i = end;
+    }
+    return doc;
 }
 
 // ── semantic invariant validation (document-boundary guard census) ───────────────────────
@@ -769,53 +747,53 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
         });
 
     const orders = new Set<number>();
-    for (const s of doc.segments) {
-        if (orders.has(s.order))
+    for (const segment of doc.segments) {
+        if (orders.has(segment.order))
             refusals.push({
                 guard: "duplicateSectionOrder",
-                message: `two or more sections claim order ${s.order}`,
+                message: `two or more segments claim order ${segment.order}`,
             });
-        orders.add(s.order);
+        orders.add(segment.order);
     }
 
-    for (const s of doc.segments) {
-        const runNodes = s.members
-            ? s.members
-                  .filter((member) => member.kind === SectionKind.Geo)
-                  .flatMap((member) => member.nodes)
-            : s.nodes;
-        const runPoints = s.members
-            ? s.members
-                  .filter((member) => member.kind === SectionKind.Force)
-                  .flatMap((member) => member.points)
-            : s.points;
-        if (s.kind === SectionKind.Geo) {
+    const runs = new Map<number, DocSegment[]>();
+    for (const segment of doc.segments) {
+        const records = runs.get(segment.run) ?? [];
+        records.push(segment);
+        runs.set(segment.run, records);
+    }
+    for (const [runId, records] of runs) {
+        const kind = records[0]!.kind;
+        const runNodes = records.flatMap((record) => record.nodes);
+        const runPoints = records.flatMap((record) => record.points);
+        if (kind === SectionKind.Geo) {
             if (runPoints.length > 0)
                 refusals.push({
                     guard: "sectionKind",
-                    message: `section ${s.id} is a geo section but carries force points`,
+                    message: `run ${runId} is geo but carries force points`,
                 });
             if (runNodes.length < 2)
                 refusals.push({
                     guard: "minNodeFloor",
-                    message: `section ${s.id} is a geo section with fewer than two nodes (node 0 + one shape node)`,
+                    message: `run ${runId} has fewer than two nodes`,
                 });
-            const node0 = runNodes[0];
+            const node0 = runNodes.find((node) => node.order === 0);
             if (node0 && (node0.x !== 0 || node0.y !== 0 || node0.theta !== 0))
                 refusals.push({
                     guard: "nodeZeroOrigin",
-                    message: `section ${s.id}'s node 0 must sit at the local origin (0, 0) with heading 0 (the rigid-placement law) — found (${node0.x}, ${node0.y}, θ=${node0.theta})`,
+                    message: `run ${runId}'s node 0 must sit at the local origin with heading 0`,
                 });
         } else {
-            if (s.nodes.length > 0)
+            const extent = records.at(-1)!.extent!;
+            if (runNodes.length > 0)
                 refusals.push({
                     guard: "sectionKind",
-                    message: `section ${s.id} is a force section but carries geo nodes`,
+                    message: `run ${runId} is force but carries geo nodes`,
                 });
-            if (s.length < MIN_FORCE_LEN)
+            if (extent < MIN_FORCE_LEN)
                 refusals.push({
                     guard: "minForceExtent",
-                    message: `section ${s.id}'s extent ${s.length} is below the minimum force-section extent ${MIN_FORCE_LEN}`,
+                    message: `run ${runId}'s extent ${extent} is below ${MIN_FORCE_LEN}`,
                 });
         }
         const stations = new Set<number>();
@@ -824,7 +802,7 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
             if (stations.has(key))
                 refusals.push({
                     guard: "stationTaken",
-                    message: `two or more force points on section ${s.id} share station ${p.s}`,
+                    message: `two or more force points on run ${runId} share station ${p.s}`,
                 });
             stations.add(key);
         }
@@ -968,8 +946,7 @@ function dropForceTangent(doc: Record<string, unknown>): Record<string, unknown>
     return { ...doc, version: 2, sections };
 }
 
-/** v2 → unstable v3 moves force value/easing into their boundary owner while retaining
- * the force point's station as a separate authored datum until S2b3. */
+/** v2 → frozen flat v3 emits exactly one segment record per v2 section, never a union. */
 function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknown> {
     const { sections, ...rest } = doc;
     const segments = Array.isArray(sections)
@@ -980,7 +957,19 @@ function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknow
                   const { g, ease, ...station } = point;
                   return { ...station, boundary: { g, ease } };
               });
-              return { ...section, points };
+              const { length, nodes, points: _points, id, order, kind, ...unknown } = section;
+              const geo = kind === SectionKind.Geo;
+              const nodeRows = Array.isArray(nodes) ? nodes : [];
+              return {
+                  id,
+                  order,
+                  kind,
+                  run: id,
+                  ...(geo ? { node: nodeRows.length - 1 } : { station: 0, extent: length }),
+                  nodes,
+                  points,
+                  ...unknown,
+              };
           })
         : sections;
     return { ...rest, version: 3, segments };
@@ -1077,10 +1066,7 @@ export function loadDocument(ecs: State, text: string): void {
     // Reserve every identity carried by the wire before deterministic member synthesis.
     reserveIds({
         section: doc.segments.map((s) => s.id),
-        force: doc.segments.flatMap((s) => [
-            ...s.points.map((p) => p.id),
-            ...(s.members ?? []).flatMap((m) => m.points.map((p) => p.id)),
-        ]),
+        force: doc.segments.flatMap((s) => s.points.map((p) => p.id)),
         strip: doc.strips.map((st) => st.id),
         stripKeyframe: doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
         oneShot: doc.oneShot.map((o) => o.id),
@@ -1110,9 +1096,9 @@ export function loadDocument(ecs: State, text: string): void {
     else Track.count.set(trackEid, 0);
 
     restoreAll(ecs, snap);
-    for (const run of doc.segments) {
-        if (run.kind === SectionKind.Geo) spliceGeoMembers(ecs, run.id);
-    }
+    // Retained top-level velocity records union their stations back into the restored chain;
+    // this also refreshes geo edge membership and all load-derived velocity pointers.
+    refreshVelocityRunMembers(ecs);
     Track.ds.set(trackEid, doc.track.ds);
     Track.domain.set(trackEid, doc.track.domain);
     Track.friction.set(trackEid, doc.track.friction);

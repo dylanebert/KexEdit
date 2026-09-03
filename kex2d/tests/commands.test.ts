@@ -136,7 +136,7 @@ function fixture(): State {
  *  (`force-create`, `strip-keyframe-create`), silently comparing their two allocated ids
  *  byte-raw instead of normalizing them — witnessed and fixed below (`\s*` matches both). */
 function normIds(text: string): string {
-    return text.replace(/"id":\s*-?\d+/g, '"id": #');
+    return text.replace(/"id":\s*-?\d+/g, '"id": #').replace(/"run":\s*-?\d+/g, '"run": #');
 }
 
 /** run `direct` (the hand-authored UI-shaped call sequence) against one fixture and
@@ -151,7 +151,7 @@ function normIds(text: string): string {
 function expectSameDoc(
     op: Parameters<typeof applyOp>[2],
     direct: (state: State, h: History) => void,
-    createsId = false,
+    _createsId = false,
 ): { result: OpResult; a: State; b: State } {
     const a = fixture();
     const ha = createHistory();
@@ -163,8 +163,10 @@ function expectSameDoc(
     const result = applyOp(b, hb, op);
 
     const docB = saveDocument(b);
-    if (createsId) expect(normIds(docB)).toBe(normIds(docA));
-    else expect(docB).toBe(docA);
+    // Flat v3 exposes canonical member ids that the former run-nested wire synthesized on load.
+    // The two sequential fixtures intentionally consume one module-global allocator, so compare
+    // identity-normalized text while retaining every order, channel, station, and value byte.
+    expect(normIds(docB)).toBe(normIds(docA));
     return { result, a, b };
 }
 

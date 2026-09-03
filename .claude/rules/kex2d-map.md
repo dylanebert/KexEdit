@@ -731,7 +731,12 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
 - `doc.ts` — the kex2d document (`kex2d-serialization` spec): a canonical, lossless text form of
   the authored ECS state (`AGENTS.md` § Authoring API's component list) — the four `Track`
   scalars (`ds`/`domain`/`friction`/`resistance`, NOT `count`, bake output) plus every
-  section/node/force-point/strip/strip-keyframe/one-shot. `.kex`, JSON inside, text canonical.
+  canonical segment/node/force-point plus retained top-level strip/strip-keyframe/one-shot state.
+  The frozen v3 wire is flat: one chain-ordered record per canonical segment carrying stable id,
+  order, kind, and run id. Force records carry their conserved run-local entry station and only
+  the terminal record carries run extent; geo records carry their terminating node order/payload,
+  with node zero on the run's first record. Member extents are recovered from adjacent f32 stations
+  plus the terminal residual, never by re-summing. `.kex`, JSON inside, text canonical.
   `docFromEcs`/`docToTrackSnapshot` are the two-way projection against `snapshotAll`'s own
   `TrackSnapshot` (`track.ts`); `saveDocument(ecs): string` / `loadDocument(ecs, text): void` are
   the boundary — save throws only on a non-finite scalar in the live ECS (`numLit`'s guard — an
@@ -751,18 +756,21 @@ strip at all (below), so there is nothing left for a kind-flip to lose.
   from raw `JSON.stringify` only at `-0` (`JSON.stringify(-0) === "0"`, which `JSON.parse` reads
   back as +0, a DIFFERENT f32 bit pattern), and refuses a non-finite input rather than emitting
   unparseable JSON. `CURRENT_VERSION` + a forward-only migration seam (one function per version
-  step, applied in sequence at parse) bridge an older file up; every thrown validation error
-  names a recovery remedy. Round-trip + f32-exactness + rejection-arm oracles, a committed golden
+  step, applied in sequence at parse) bridge v1/v2 files up; v2 emits one record per old section
+  and never unions during migration. Flat-record shape, order/run contiguity, kind channels,
+  stations, and terminal extent are rejected before any ECS write; semantic guards are then
+  re-expressed over flat runs. Every thrown validation error names a recovery remedy. Round-trip
+  + f32-exactness + rejection-arm oracles, a committed golden
   fixture's own round-trip arm, and the two-edit diff artifact: `tests/doc.test.ts` +
   `tests/fixtures/hill-explicit-golden.kex` + `tests/two-edit-diff.ts`.
   **`loadDocument` owns the ECS and nothing beside it**, which is sound for a headless driver and
   is exactly what an interactive load must finish: it drives raw `restoreAll` (so `history.ts`'s
   structural-op wrapper never runs and `editor.selection` keeps ids the load invalidated), leaves
   the module-level `provenance` sidecar untouched (a respawned section landing on an id a stale
-  entry keys on inherits that entry's solve certification), and `restoreAll` itself destroys the
-  live ECS before respawning with no rollback. Validation is type- and range-shaped, not
-  structural — a hand-edited file with a zero-node geo section, duplicate ids, or a `start > end`
-  strip parses and loads — so a UI or CLI that opens untrusted files owes those arms.
+  entry keys on inherits that entry's solve certification). Structural and doc-level semantic
+  validation precede writes; the two geometry-dependent strip guards validate in-place with an
+  exact rollback because two live `State`s alias component storage. After restore, the existing
+  velocity/geo union transactions recover canonical members and load-derived pointers.
 - `cart.ts` — looping cart animation on the *baked* track. `cartState[trackEid]` (`t`, `held`),
   `cartPose` (interps the baked geometry for the box renderer), `forceCurve` (baked F_n as per-sample
   `(s, f)` over cumulative arclength — the chart's distance x-axis), `velocityCurve` (`forceCurve`'s

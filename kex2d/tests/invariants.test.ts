@@ -40,13 +40,18 @@ describe("document-boundary invariant validation: red fixtures", () => {
     for (const name of INVARIANTS) {
         test(`${name}: refused by name, live document untouched`, async () => {
             const text = await readFixture(`${name}-red.kex`);
-            const doc = parseDocument(text);
+            const structural = new Set(["duplicateId", "duplicateSectionOrder", "sectionKind"]);
+            const doc = structural.has(name) ? null : parseDocument(text);
 
-            // the guard fires in the pure check function directly, by NAME — not just "some
-            // refusal happened" (a wrong-guard false positive would still pass a bare `.toThrow()`).
-            const refusals = checkDocumentSemantics(doc);
-            expect(refusals.length).toBeGreaterThan(0);
-            expect(refusals.map((r) => r.guard)).toContain(name);
+            // Flat-shape guards refuse during parse, before an ECS exists. The remaining semantic
+            // guards retain the structured Refusal[] contract.
+            if (doc) {
+                const refusals = checkDocumentSemantics(doc);
+                expect(refusals.length).toBeGreaterThan(0);
+                expect(refusals.map((r) => r.guard)).toContain(name);
+            } else {
+                expect(() => parseDocument(text)).toThrow(new RegExp(name));
+            }
 
             // and `loadDocument` refuses the same way, naming the guard in its thrown message,
             // touching an existing live document not at all (the green baseline pre-loaded).
@@ -104,9 +109,7 @@ describe("checkDocumentSemantics: the exported validation entry point", () => {
         // duplicateId planted on the section category would make a scratch ECS load ambiguous
         // (two entities racing for one stable id) — the geometry pass must not run over it.
         const text = await readFixture("duplicateId-red.kex");
-        const doc = parseDocument(text);
-        const refusals = checkDocumentSemantics(doc);
-        expect(refusals).toEqual([{ guard: "duplicateId", message: expect.any(String) }]);
+        expect(() => parseDocument(text)).toThrow(/duplicateId/);
     });
 
     test("a document with no violations returns an empty refusal list", async () => {
