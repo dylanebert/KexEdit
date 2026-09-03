@@ -6,6 +6,7 @@ import {
     HBAND_TOP,
     clickMenuItem,
     kexCall,
+    forcePointAt,
     type Page,
     seedHill,
     test,
@@ -119,9 +120,8 @@ test("popover key scrub affordance — force keyframe control", async ({ page, b
     await expect.poll(async () => (await kexCall(page, "forces")).length).toBe(5);
     await frameTimeline(page);
 
-    const dia = await page.locator(".fpt").nth(2).boundingBox();
-    if (!dia) throw new Error("force keyframe 2 not laid out");
-    await page.mouse.click(dia.x + dia.width / 2, dia.y + dia.height / 2);
+    const dia = await forcePointAt(page, 2);
+    await page.mouse.click(dia.x, dia.y);
     await expect.poll(async () => (await kexCall(page, "forceSelIds")).length).toBe(1);
     await expect(page.locator(".ptip")).toHaveCount(1);
     const sel = await kexCall(page, "forceSelActive");

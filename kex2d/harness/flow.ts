@@ -244,6 +244,24 @@ export interface Kex {
 // typed end to end by `Kex` above. One round trip per call, matching what the casts did before.
 // The one place that stays a raw inline cast is a batched in-page read (several `__kex` calls in
 // one `page.evaluate`, to save round trips) — this helper is for the single-accessor case.
+export async function forcePointAt(page: Page, index: number): Promise<{ x: number; y: number }> {
+    const [rows, [, scale], [gLo, gHi], body, clip] = await Promise.all([
+        kexCall(page, "forceU"),
+        kexCall(page, "xView"),
+        kexCall(page, "gRange"),
+        page.locator(".dock .body").boundingBox(),
+        page.locator(".clip").first().boundingBox(),
+    ]);
+    const row = rows[index];
+    if (!row || !body || !clip) throw new Error(`force station ${index} not projected`);
+    const top = body.y + CHART_TOP;
+    const bottom = body.y + body.height - CHART_BOT_PAD;
+    return {
+        x: clip.x + row.u * scale,
+        y: top + (1 - (row.g - gLo) / (gHi - gLo)) * (bottom - top),
+    };
+}
+
 export function kexCall<K extends keyof Kex>(
     page: Page,
     method: K,

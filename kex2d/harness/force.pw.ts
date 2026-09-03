@@ -8,6 +8,7 @@ import {
     OUT,
     SHOT_MS,
     kexCall,
+    forcePointAt,
     seedHill,
     frameTimeline,
     clickFlyout,
@@ -780,18 +781,12 @@ test("playhead parking flow", async ({ page, boot }) => {
     if (arc1 === null) throw new Error("cartArc null after park");
     if (strip) await page.screenshot({ path: join(OUT, "park-1-anchored.png"), clip: strip });
 
-    // ── 3. Drag the keyframe's g (vertical drag on its fat hit circle) → the force
-    // profile changes, the bake re-times (tTotal shifts). `.fhit` is shared with velocity-
-    // strip keyframes (Timeline.svelte draws force points first, strip keyframes after, in
-    // that DOM order), and the appended force section has two continuation seeds — grab the
-    // exit seed for this surviving value-drag heir. ──
-    const fhit = page.locator(".fhit");
-    await expect(fhit).toHaveCount(2);
-    const hb = await fhit.nth(1).boundingBox();
-    if (!hb) throw new Error("force point hit target not laid out");
-    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    // ── 3. Drag the keyframe's g from its projected station → the force profile changes and
+    // the bake re-times. The station hook survives the force glyph identity change in S3c3. ──
+    const marker = await forcePointAt(page, 1);
+    await page.mouse.move(marker.x, marker.y);
     await page.mouse.down();
-    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2 + 60, { steps: 10 });
+    await page.mouse.move(marker.x, marker.y + 60, { steps: 10 });
     await page.mouse.up();
 
     // the ride re-timed (the bake's total time changed)…
