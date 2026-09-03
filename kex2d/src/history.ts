@@ -38,6 +38,8 @@ import {
     restoreForcePoint,
     restoreNodes,
     restoreRun,
+    runExtentOf,
+    runIdOf,
     sameForcePoint,
     sameNodes,
     SectionKind,
@@ -48,11 +50,8 @@ import {
     type SectionSnapshot,
     seedTangent,
     setTangent,
-    type SectionLengthState,
-    sectionLengthState,
     setForceEase as writeForceEase,
     setForcePoint,
-    setSectionLength,
     setStickyLen,
     snapshotAll,
     snapshotRun,
@@ -901,13 +900,14 @@ export function setForcesEase(h: History, ecs: State, ids: readonly number[], ea
     record(h, { apply: () => restore(after), reverse: () => restore(before) }, pre);
 }
 
-/** open a gesture on a force-section end-handle drag, snapshotting its extent. commit
- *  coalesces the live resize into one entry; a no-move release records nothing. */
+/** open a gesture on a force-run end-handle drag, capturing its complete member frame. */
 export function beginLength(ecs: State, id: number): void {
+    const run = runIdOf(ecs, id);
+    if (run === null) return;
     begin(
-        () => sectionLengthState(ecs, id),
-        (st: SectionLengthState) => setSectionLength(ecs, st.id, st.length),
-        (a: SectionLengthState, b: SectionLengthState) => a.length === b.length,
+        () => snapshotRun(ecs, run),
+        (snap: RunSnapshot) => restoreRun(ecs, snap),
+        (a: RunSnapshot, b: RunSnapshot) => JSON.stringify(a) === JSON.stringify(b),
     );
 }
 
@@ -921,8 +921,8 @@ export function beginLength(ecs: State, id: number): void {
  *  realized extent never becomes the next append's default. */
 export function commitLength(h: History, ecs: State, id: number, armed: boolean): void {
     if (armed) {
-        const st = sectionLengthState(ecs, id);
-        if (st) setStickyLen(SectionKind.Force, st.length, trackDomain(ecs));
+        const extent = runExtentOf(ecs, runIdOf(ecs, id) ?? id);
+        if (extent !== null) setStickyLen(SectionKind.Force, extent, trackDomain(ecs));
     }
     commit(h);
 }
@@ -1083,6 +1083,7 @@ export function solvePin(
         const station = stations.get(w.id);
         if (station !== undefined) setForcePoint(ecs, w.id, station, w.g);
     }
+    spliceRunMembers(ecs, before.id, "rebuild");
     mode.exit();
     const after = snapshotRun(ecs, section);
     // recordOuter, structurally: the landing is the ONE outer entry a mode ever produces, and

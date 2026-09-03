@@ -742,6 +742,24 @@ test("a fresh append gets EXTEND_DIST (DEFAULT_FORCE_LEN) before anything has co
     expect(sections(state).find((s) => s.id === force)?.length).toBe(EXTEND_DIST);
 });
 
+test("extent-trim undo restores the exact member ids destroyed by the rebuild", () => {
+    const state = new State();
+    createTrack(state);
+    const run = createSection(state, 0, SectionKind.Force, 20);
+    const setup = createHistory();
+    createForce(setup, state, run, 8, 2);
+    const before = snapshotRun(state, run);
+    const h = createHistory();
+    beginLength(state, run);
+    setSectionLength(state, run, 5);
+    commit(h);
+    expect(snapshotRun(state, run).members.map((member) => member.id)).toEqual([run]);
+    undo(h, state);
+    expect(snapshotRun(state, run)).toEqual(before);
+    redo(h, state);
+    expect(snapshotRun(state, run).members.map((member) => member.id)).toEqual([run]);
+});
+
 test("a committed extent-trim becomes the next append's default length", () => {
     const { state } = nodes();
     const h = createHistory();
