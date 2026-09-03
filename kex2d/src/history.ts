@@ -52,6 +52,11 @@ import {
     setTangent,
     setForceEase as writeForceEase,
     setForcePoint,
+    setSegmentBoundaryValue as writeSegmentBoundaryValue,
+    setSegmentBoundaryEase as writeSegmentBoundaryEase,
+    insertSegmentAt as writeInsertSegmentAt,
+    deleteSegment as writeDeleteSegment,
+    setSegmentExtentRippled as writeSegmentExtentRippled,
     setStickyLen,
     snapshotAll,
     snapshotRun,
@@ -1202,6 +1207,59 @@ export function removeSections(h: History, ecs: State, ids: readonly number[]): 
     const after = snapshotAll(ecs);
     record(h, restoreCommand(ecs, before, after, restoreAll), pre);
     return true;
+}
+
+/** Run-scoped segment authoring verbs. */
+export function setSegmentBoundaryValue(h: History, ecs: State, segment: number, g: number): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotRun(ecs, segment);
+    writeSegmentBoundaryValue(ecs, segment, g);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
+}
+
+export function setSegmentBoundaryEase(
+    h: History,
+    ecs: State,
+    segment: number,
+    ease: Easing,
+): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotRun(ecs, segment);
+    writeSegmentBoundaryEase(ecs, segment, ease);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
+}
+
+export function insertSegmentAt(h: History, ecs: State, segment: number, station: number): number {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotRun(ecs, segment);
+    const id = writeInsertSegmentAt(ecs, segment, station);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
+    return id;
+}
+
+export function deleteSegment(h: History, ecs: State, segment: number): boolean {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotRun(ecs, segment);
+    if (!writeDeleteSegment(ecs, segment)) return false;
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
+    return true;
+}
+
+export function setSegmentExtentRippled(
+    h: History,
+    ecs: State,
+    segment: number,
+    extent: number,
+): void {
+    const pre = selHook?.snapshot(ecs);
+    const before = snapshotRun(ecs, segment);
+    writeSegmentExtentRippled(ecs, segment, extent);
+    const after = snapshotRun(ecs, before.id);
+    record(h, restoreCommand(ecs, before, after, restoreRun), pre);
 }
 
 /** Canonical structural history surface. */
