@@ -4589,6 +4589,7 @@ onMount(() => {
                 onpointerdown={chartDown}
                 onpointermove={chartHoverMove}
                 onpointerleave={chartHoverLeave}
+                role="presentation"
             >
                 {#each forcePts as p (p.id)}
                     {@const mx = ptX(p)}
@@ -4643,6 +4644,7 @@ onMount(() => {
                 onpointerdown={chartDown}
                 onpointermove={chartHoverMove}
                 onpointerleave={chartHoverLeave}
+                role="presentation"
             >
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
