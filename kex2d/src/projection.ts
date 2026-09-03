@@ -58,7 +58,7 @@ export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
         runs.push({
             ...segment,
             id: runId,
-            length: Segment.runExtent.get(segment.eid) || segment.length,
+            length: Segment.runExtent.get(segment.eid),
             segmentIds: [segment.id],
             stations: [entry],
         });

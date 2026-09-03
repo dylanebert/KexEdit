@@ -1406,6 +1406,41 @@ export function runExtentOf(ecs: State, id: number): number | null {
     return rebuildRunProjection(ecs).find((row) => row.id === id)?.length ?? null;
 }
 
+/** Assert the canonical member partition directly from authored columns. Callable after any
+ * authored operation; throws at the first stale conserved frame or boundary address. */
+export function assertRunStructure(ecs: State): void {
+    for (const run of rebuildRunProjection(ecs)) {
+        if (run.kind === SectionKind.Force) {
+            const entry = segmentAt(ecs, run.segmentIds[0]!);
+            if (entry === null || Segment.runExtent.get(entry) !== run.length)
+                throw new Error(`force run ${run.id} entry extent is not authoritative`);
+            const lastEntry = run.stations[run.stations.length - 2]!;
+            if (!(run.length > lastEntry))
+                throw new Error(`force run ${run.id} extent must exceed its last station`);
+            for (let index = 0; index < run.segmentIds.length; index++) {
+                const member = segmentAt(ecs, run.segmentIds[index]!);
+                const expected = Math.fround(run.stations[index + 1]! - run.stations[index]!);
+                if (member === null || Section.length.get(member) !== expected)
+                    throw new Error(`force run ${run.id} member ${index} extent is stale`);
+            }
+            continue;
+        }
+        for (const segmentId of run.segmentIds) {
+            const member = segmentAt(ecs, segmentId);
+            const encoded = member === null ? 0 : Segment.geoEndNode.get(member);
+            if (encoded === 0) throw new Error(`geo member ${segmentId} has no terminating node`);
+            const node = encoded - 1;
+            if (!ecs.has(node, Handle) || Handle.segment.get(node) !== segmentId)
+                throw new Error(`geo member ${segmentId} terminating node is not owned once`);
+            const ownedTerminals = sectionHandles(ecs, run.id).filter(
+                (eid) => Handle.segment.get(eid) === segmentId && Handle.order.get(eid) > 0,
+            );
+            if (ownedTerminals.length !== 1 || ownedTerminals[0] !== node)
+                throw new Error(`geo member ${segmentId} must own exactly one terminating node`);
+        }
+    }
+}
+
 /** a section's place on the track-global arclength axis: the distance `d` at the section's
  *  entry (the cumulative baked arclength of every upstream section) and its own baked
  *  arclength, so it occupies the d-interval `[offset, offset + len]`. Geometry lives here — a
@@ -3240,6 +3275,31 @@ function seedForceKeyframes(ecs: State, sectionId: number, length: number, g: nu
  *  continuation keyframes seeded at the recovered entry force (a flat continuation over the
  *  default extent). the ONE body behind `convertSection`'s geo → force flip and
  *  `resetSection`'s force-held reset, so the two seeds can't drift apart. */
+function collapseRunFrame(
+    ecs: State,
+    runId: number,
+    memberIds: readonly number[],
+    kind: SectionKind,
+    extent: number,
+): void {
+    const first = segmentAt(ecs, memberIds[0]!);
+    if (first === null) throw new Error(`collapseRunFrame: no entry member for run ${runId}`);
+    for (const id of memberIds.slice(1)) {
+        const eid = segmentAt(ecs, id);
+        if (eid !== null) ecs.destroy(eid);
+    }
+    Segment.run.set(first, runId);
+    Segment.runStation.set(first, 0);
+    Segment.runExtent.set(first, extent);
+    Segment.runEntryForce.set(first, 0);
+    Segment.geoEndNode.set(first, 0);
+    Section.kind.set(first, kind);
+    Section.length.set(first, extent);
+    segments(ecs).forEach((row, order) => {
+        Section.order.set(row.eid, order);
+    });
+}
+
 function resetToForce(ecs: State, eid: number, sectionId: number): void {
     // recover the entry force from the current bake before the reset — the seed continues
     // the incoming force, stamped at creation.
@@ -3249,8 +3309,12 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Force);
     const extent = defaultForceExtent();
-    Section.length.set(eid, extent); // reset to the default extent, not inherited
+    Section.length.set(eid, extent); // compatibility mirror of the conserved member extent
+    Segment.runStation.set(eid, 0);
+    Segment.runExtent.set(eid, extent);
+    Segment.geoEndNode.set(eid, 0);
     seedForceKeyframes(ecs, sectionId, extent, gEntry);
+    refreshRunEntryForce(ecs, Segment.run.get(eid));
 }
 
 /** reset a section's payload to the GEO default: both row kinds cleared, the flat two-node
@@ -3261,6 +3325,9 @@ function resetToGeo(ecs: State, eid: number, sectionId: number): void {
     for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
+    Segment.runStation.set(eid, 0);
+    Segment.runExtent.set(eid, 0);
+    Segment.runEntryForce.set(eid, 0);
     addNode(ecs, sectionId, 0, 0);
     addNode(ecs, sectionId, EXTEND_DIST, 0);
 }
@@ -3281,20 +3348,13 @@ export function convertSection(ecs: State, sectionId: number): void {
     const first = run.segmentIds[0]!;
     const target = run.kind === SectionKind.Geo ? SectionKind.Force : SectionKind.Geo;
     if (target === SectionKind.Force) {
+        collapseRunFrame(ecs, run.id, run.segmentIds, target, defaultForceExtent());
         resetToForce(ecs, segmentAt(ecs, first)!, first);
-        const extent = Section.length.get(segmentAt(ecs, first)!);
-        for (const id of run.segmentIds.slice(1)) {
-            const eid = segmentAt(ecs, id)!;
-            Section.kind.set(eid, target);
-            Section.length.set(eid, extent);
-        }
     } else {
+        collapseRunFrame(ecs, run.id, run.segmentIds, target, 0);
         resetToGeo(ecs, segmentAt(ecs, first)!, first);
-        for (const id of run.segmentIds.slice(1)) {
-            const eid = segmentAt(ecs, id)!;
-            Section.kind.set(eid, target);
-            Section.length.set(eid, 0);
-        }
+        spliceGeoMembers(ecs, run.id);
+        refreshVelocityRunMembers(ecs);
     }
 }
 
@@ -3314,8 +3374,8 @@ export function resetSection(ecs: State, sectionId: number): void {
         for (const id of run.segmentIds)
             for (const point of segmentForces(ecs, id)) ecs.destroy(point.eid);
         const first = run.segmentIds[0]!;
+        collapseRunFrame(ecs, run.id, run.segmentIds, SectionKind.Force, defaultForceExtent());
         resetToForce(ecs, segmentAt(ecs, first)!, first);
-        refreshRunEntryForce(ecs, run.id);
         return;
     }
     for (const id of run.segmentIds) {
@@ -3323,12 +3383,10 @@ export function resetSection(ecs: State, sectionId: number): void {
         for (const point of segmentForces(ecs, id)) ecs.destroy(point.eid);
     }
     const first = run.segmentIds[0]!;
+    collapseRunFrame(ecs, run.id, run.segmentIds, SectionKind.Geo, 0);
     resetToGeo(ecs, segmentAt(ecs, first)!, first);
-    for (const id of run.segmentIds.slice(1)) {
-        const eid = segmentAt(ecs, id)!;
-        Section.kind.set(eid, SectionKind.Geo);
-        Section.length.set(eid, 0);
-    }
+    spliceGeoMembers(ecs, run.id);
+    refreshVelocityRunMembers(ecs);
 }
 
 /** whether the section menu's Reset row may fire: exactly ONE section, and — force only — a
