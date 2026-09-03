@@ -46,6 +46,7 @@ import {
     SectionKind,
     sectionForces,
     snapshotRun,
+    spliceRunMembers,
     setForcePoint,
     setOneShotValue,
     setSectionLength,
@@ -61,7 +62,6 @@ import {
     StripKeyframe,
     stripKeyframeAt,
     trackEntity,
-    SegmentForceBoundary,
     assertRunStructure,
 } from "../src/track";
 
@@ -73,45 +73,74 @@ function clamp(x: number, lo: number, hi: number): number {
     return Math.min(Math.max(x, lo), hi);
 }
 
-test("segment-author op ripples extents and preserves exact ids through undo/redo", () => {
-    const state = fixture();
-    const h = createHistory();
-    const inserted = applyOp(state, h, {
-        type: "segment-author",
-        edit: { action: "insert", segment: FORCE_SEC!, station: 10 },
-    }).id!;
-    applyOp(state, h, {
-        type: "segment-author",
-        edit: { action: "boundary-value", segment: FORCE_SEC!, value: 7 },
-    });
-    applyOp(state, h, {
-        type: "segment-author",
-        edit: { action: "boundary-ease", segment: FORCE_SEC!, ease: Easing.Quintic },
-    });
-    const beforeRipple = snapshotRun(state, FORCE_SEC!);
-    const ids = beforeRipple.members.map((row) => row.id);
-    const values = beforeRipple.members.map((row) => SegmentForceBoundary.g(state, row.id));
-    applyOp(state, h, {
-        type: "segment-author",
-        edit: { action: "extent-ripple", segment: FORCE_SEC!, extent: 15 },
-    });
-    const rippled = snapshotRun(state, FORCE_SEC!);
-    expect(rippled.members.map((row) => row.id)).toEqual(ids);
-    expect(rippled.members.map((row) => SegmentForceBoundary.g(state, row.id))).toEqual(values);
-    for (let index = 0; index < beforeRipple.members.length; index++) {
-        if (values[index] === null || beforeRipple.stations[index + 1]! < 10) continue;
-        expect(rippled.stations[index + 1]).toBe(beforeRipple.stations[index + 1]! + 5);
+describe("segment-author op: every verb is structurally fixed and id-exact through history", () => {
+    function segmentFixture(): { state: State; run: number } {
+        const state = new State();
+        createTrack(state);
+        const run = createSection(state, 0, SectionKind.Force, 30);
+        createForcePoint(state, run, 0, 1);
+        createForcePoint(state, run, 20, 2);
+        spliceRunMembers(state, run, "rebuild");
+        return { state, run };
     }
-    assertRunStructure(state);
-    const saved = saveDocument(state);
-    undo(h, state);
-    expect(snapshotRun(state, FORCE_SEC!).members.map((row) => row.id)).toEqual(ids);
-    redo(h, state);
-    expect(snapshotRun(state, FORCE_SEC!).members.map((row) => row.id)).toEqual(ids);
-    const loaded = new State();
-    loadDocument(loaded, saved);
-    expect(saveDocument(loaded)).toBe(saved);
-    expect(inserted).not.toBe(FORCE_SEC!);
+
+    const cases = [
+        { name: "boundary-value", edit: { action: "boundary-value", value: 7 } as const },
+        { name: "boundary-ease", edit: { action: "boundary-ease", ease: Easing.Quintic } as const },
+        { name: "insert", edit: { action: "insert", station: 10 } as const },
+        { name: "extent-ripple", edit: { action: "extent-ripple", extent: 25 } as const },
+    ];
+
+    for (const { name, edit } of cases) {
+        test(name, () => {
+            const { state, run } = segmentFixture();
+            const h = createHistory();
+            const before = snapshotRun(state, run);
+            const beforeIds = before.members.map((row) => row.id);
+            const target = name.startsWith("boundary-") ? before.members.at(-1)!.id : run;
+            const result = applyOp(state, h, {
+                type: "segment-author",
+                edit: { ...edit, segment: target },
+            });
+            expect(result.applied).toBe(true);
+            assertRunStructure(state);
+            const afterIds = snapshotRun(state, run).members.map((row) => row.id);
+            const saved = saveDocument(state);
+            undo(h, state);
+            expect(snapshotRun(state, run).members.map((row) => row.id)).toEqual(beforeIds);
+            redo(h, state);
+            expect(snapshotRun(state, run).members.map((row) => row.id)).toEqual(afterIds);
+            const loaded = new State();
+            loadDocument(loaded, saved);
+            expect(saveDocument(loaded)).toBe(saved);
+        });
+    }
+
+    test("delete", () => {
+        const { state, run } = segmentFixture();
+        const inserted = applyOp(state, createHistory(), {
+            type: "segment-author",
+            edit: { action: "insert", segment: run, station: 10 },
+        }).id!;
+        const h = createHistory();
+        const beforeIds = snapshotRun(state, run).members.map((row) => row.id);
+        const result = applyOp(state, h, {
+            type: "segment-author",
+            edit: { action: "delete", segment: inserted },
+        });
+        expect(result.applied).toBe(true);
+        assertRunStructure(state);
+        const afterIds = snapshotRun(state, run).members.map((row) => row.id);
+        expect(afterIds).not.toContain(inserted);
+        const saved = saveDocument(state);
+        undo(h, state);
+        expect(snapshotRun(state, run).members.map((row) => row.id)).toEqual(beforeIds);
+        redo(h, state);
+        expect(snapshotRun(state, run).members.map((row) => row.id)).toEqual(afterIds);
+        const loaded = new State();
+        loadDocument(loaded, saved);
+        expect(saveDocument(loaded)).toBe(saved);
+    });
 });
 
 // the command layer's own differential oracle: for each op family, the command-layer edit

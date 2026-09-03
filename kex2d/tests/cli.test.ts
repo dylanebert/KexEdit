@@ -9,6 +9,7 @@ import { dispatch } from "../src/cli";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { createHistory } from "../src/history";
 import {
+    assertRunStructure,
     createForcePoint,
     createSection,
     createTrack,
@@ -357,6 +358,66 @@ describe("edit: no second write path — a CLI-edited file reopened equals the o
             const snap = snapshotRun(reopened, run);
             expect(snap.stations.at(-1)).toBe(10.1);
             expect(snap.stations).toEqual([0, 4.4, 10.1]);
+        } finally {
+            teardown();
+        }
+    });
+
+    test("segment-author JSON dispatches every action and saves a reloadable fixed point", async () => {
+        setup();
+        try {
+            const state = new State();
+            createTrack(state);
+            const run = createSection(state, 0, SectionKind.Force, 30);
+            createForcePoint(state, run, 0, 1);
+            createForcePoint(state, run, 20, 2);
+            const path = join(workdir, "segment-author.kex");
+            writeFileSync(path, saveDocument(state));
+
+            const insertedResult = await dispatch([
+                "edit",
+                path,
+                "--ops",
+                JSON.stringify({
+                    type: "segment-author",
+                    edit: { action: "insert", segment: run, station: 10 },
+                }),
+            ]);
+            expect(insertedResult.exitCode).toBe(0);
+            const inserted = JSON.parse(insertedResult.stdout).results[0].id as number;
+
+            const result = await dispatch([
+                "edit",
+                path,
+                "--ops",
+                JSON.stringify([
+                    {
+                        type: "segment-author",
+                        edit: { action: "boundary-value", segment: inserted, value: 6 },
+                    },
+                    {
+                        type: "segment-author",
+                        edit: { action: "boundary-ease", segment: inserted, ease: 2 },
+                    },
+                    {
+                        type: "segment-author",
+                        edit: { action: "extent-ripple", segment: inserted, extent: 15 },
+                    },
+                    {
+                        type: "segment-author",
+                        edit: { action: "delete", segment: inserted },
+                    },
+                ]),
+            ]);
+            expect(result.exitCode).toBe(0);
+            expect(JSON.parse(result.stdout).results).toHaveLength(4);
+
+            const text = readFileSync(path, "utf8");
+            const reopened = new State();
+            loadDocument(reopened, text);
+            assertRunStructure(reopened);
+            expect(saveDocument(reopened)).toBe(text);
+            expect(snapshotRun(reopened, run).members.map((row) => row.id)).not.toContain(inserted);
         } finally {
             teardown();
         }

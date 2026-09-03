@@ -65,6 +65,7 @@ import {
     Section,
     SectionKind,
     sectionAt,
+    segmentAt,
     sectionHandles,
     sections,
     setForcePoint,
@@ -668,7 +669,7 @@ function applyAnyOp(ecs: State, h: History, op: Op): OpResult {
 
         case "segment-author": {
             const edit = op.edit;
-            if (sectionAt(ecs, edit.segment) === null)
+            if (segmentAt(ecs, edit.segment) === null)
                 return refused("segmentNotFound", `no segment with id ${edit.segment}`);
             switch (edit.action) {
                 case "boundary-value":
