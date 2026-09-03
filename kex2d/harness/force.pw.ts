@@ -838,7 +838,6 @@ test("timeline domain flow — Time-view trim writes arclength through the froze
     const domain = () => kexCall(page, "domain");
     const dOf = (u: number) => kexCall(page, "dOf", u) as Promise<number>;
     const dOfTrim = (u: number) => kexCall(page, "dOfTrim", u) as Promise<number>;
-    const uOf = (d: number) => kexCall(page, "uOf", d) as Promise<number>;
     const xView = () => kexCall(page, "xView") as Promise<[number, number]>;
     await kexCall(page, "seedForceBump");
     await kexCall(page, "setV0", 25);
@@ -851,22 +850,62 @@ test("timeline domain flow — Time-view trim writes arclength through the froze
     const start = rows[0];
     const len0 = (await lengths())[0];
     const startD = await dOf(start.u);
-    const trimU = await uOf(startD + len0);
     const [, scale] = await xView();
     const trim = page.locator(".segment-boundary:last-of-type");
     const box = await trim.boundingBox();
     if (!box) throw new Error("Time-view trim handle not laid out");
-    const finalU = trimU + 50 / scale;
+    const authoredEndU = (await kexCall(page, "uOfTrim", startD + len0)) as number;
+    const finalU = authoredEndU + 20 / scale;
     const expected = (await dOfTrim(finalU)) - startD;
     await page.keyboard.down("Control");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + 50, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2, { steps: 10 });
     await page.mouse.up();
     await page.keyboard.up("Control");
     await expect.poll(async () => (await lengths())[0]).toBeCloseTo(expected, 0);
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await lengths())[0]).toBeCloseTo(len0, 3);
+});
+
+test("segment edge resize ripples later stations with boundary identity/value affixed", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await kexCall(page, "seedForceBump");
+    await expect
+        .poll(async () => (await kexCall(page, "segmentExtents")).length)
+        .toBeGreaterThan(1);
+    const before = (await kexCall(page, "segmentExtents")) as {
+        id: number;
+        offset: number;
+        len: number;
+    }[];
+    const valuesBefore = await kexCall(page, "forceU");
+    const edge = page.locator(".segment-boundary").nth(0);
+    const box = await edge.boundingBox();
+    if (!box) throw new Error("interior segment boundary not laid out");
+    await page.keyboard.down("Control");
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 24, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    const after = (await kexCall(page, "segmentExtents")) as {
+        id: number;
+        offset: number;
+        len: number;
+    }[];
+    const delta = after[0].len - before[0].len;
+    expect(Math.abs(delta)).toBeGreaterThan(0.1);
+    expect(after.map((s) => s.id)).toEqual(before.map((s) => s.id));
+    for (let i = 1; i < after.length; i++)
+        expect(after[i].offset - before[i].offset).toBeCloseTo(delta, 4);
+    const valuesAfter = await kexCall(page, "forceU");
+    expect(valuesAfter.map(({ id, g }) => ({ id, g }))).toEqual(
+        valuesBefore.map(({ id, g }) => ({ id, g })),
+    );
 });
 
 test("timeline domain flow — Time-view extent trim extrapolates past the bake end (S6b heir)", async ({
@@ -901,10 +940,11 @@ test("timeline domain flow — Time-view extent trim extrapolates past the bake 
     const trim = page.locator(".segment-boundary:last-of-type");
     const box = await trim.boundingBox();
     if (!box) throw new Error("Time-view extrapolation trim not laid out");
+    const targetX = box.x + box.width / 2 + (past - trimU) * scale;
     await page.keyboard.down("Control");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + (past - trimU) * scale, box.y + box.height / 2, {
+    await page.mouse.move(targetX, box.y + box.height / 2, {
         steps: 10,
     });
     await page.mouse.up();

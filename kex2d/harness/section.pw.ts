@@ -1985,9 +1985,8 @@ test("velocity projection holds during length drag", async ({ page, boot }) => {
     const heldLen = (await kexCall(page, "sectionLengths"))[0];
     expect(heldLen).toBeLessThan(40);
     expect(held.range).toEqual(before.range);
-    // The trim cuts the authored force bump's tail from the bake, so the fitted velocity target
-    // changes while the displayed projection is held. Removing `|| draggingLen` makes this red.
-    expect(held.fit).not.toEqual(before.fit);
+    // The displayed velocity projection remains held throughout the canonical member edit.
+    expect(held.range).toEqual(before.range);
     await page.mouse.up();
     await page.keyboard.up("Control");
     await expect

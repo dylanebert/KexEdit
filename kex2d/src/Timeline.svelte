@@ -167,7 +167,6 @@ import {
     allStrips,
     setForcePoint,
     setOneShotValue,
-    setSectionLength,
     setSegmentExtentRippled,
     setStrip,
     setStripKeyframe,
@@ -2710,7 +2709,10 @@ let lenStartU = 0; // the dragged section's entry, projected -- pixel/snap-targe
 let lenStartD = 0; // the dragged section's entry in arclength (fixed during the drag) -- the WRITE base
 let lenCx = 0; // last length-drag cursor, canvas-local px (drives the per-frame edge-pan)
 let lenX0 = 0; // grab-point cursor px (fixed) — the dead-zone origin `lenArmed` measures from
+let lenGrabU = 0; // chart coordinate beneath the press in the gesture-start view
+let lenStartEndU = 0; // authored edge projected through the frozen table, even past publication
 let lenArmed = false; // the standard DRAG_PX dead-zone latch (`armDrag`) — gates the sticky-commit
+let lenPointer = 0;
 let lenMod = false; // Ctrl/Cmd held (live) during the extent drag — snap bypass
 // `exitSpeed()`'s own snapshot, taken at gesture start alongside `gestureMapping` -- this drag's
 // own write extends the bake (a longer section publishes more samples), which would move
@@ -2741,7 +2743,10 @@ function applyLen(): void {
     if (lenId === null) return;
     const cv = clampView(view, chartW, uFrozen ?? uTotal, mFloor);
     const rawPx = lenCx - LEFT_GUT;
-    const rawU = pxToU(cv, rawPx);
+    // Preserve the press-relative anchor when the published span clamps before the authored
+    // boundary: move by the pointer's chart delta from the frozen authored edge, never replace
+    // the authored extent with the clamped pixel under the initial press.
+    const rawU = lenStartEndU + (pxToU(cv, rawPx) - lenGrabU);
     snapX = null;
     const active = snapActive(lenMod);
     const segment = forceSegments.find((row) => row.id === lenId);
@@ -2770,21 +2775,9 @@ function applyLen(): void {
     // to the bake's last finite sample (S6b).
     const d = uToDExtend(gestureMapping ?? mapping, domain, cumU, lenVExit);
     const extent = Math.max(minForceExtent(domain), d - lenStartD);
-    const member = segmentAt(ecs, lenId);
-    if (
-        member !== null &&
-        Math.abs(
-            Segment.runStation.get(member) +
-                Section.length.get(member) -
-                Segment.runExtent.get(member),
-        ) <= 1e-5
-    ) {
-        // The run-terminal member retains the proven conserved-frame rebuild host; its run
-        // extent is member-entry + member extent. Interior members use canonical ripple.
-        setSectionLength(ecs, lenId, Segment.runStation.get(member) + extent);
-    } else {
-        setSegmentExtentRippled(ecs, lenId, extent);
-    }
+    // One canonical writer for interior and terminal members alike: moving the terminating
+    // boundary ripples every later station while preserving its affixed value/easing/id.
+    setSegmentExtentRippled(ecs, lenId, extent);
 }
 function lenDown(e: PointerEvent, segment: ForceSegmentView): void {
     if (e.button !== 0) return;
@@ -2799,31 +2792,39 @@ function lenDown(e: PointerEvent, segment: ForceSegmentView): void {
     lenMod = e.ctrlKey || e.metaKey;
     lenStartU = uOfLen(segment.offset); // upstream is unchanged by this resize, so the entry is fixed
     lenStartD = segment.offset; // authored run offset + conserved member entry station
-    selectSegment(segment.id);
-    beginLength(ecs, segment.id);
     lenId = segment.id;
     uFrozen = uTotal; // freeze the pan-clamp span so the view holds still under the drag
-    // freeze the s↔t table for the whole gesture (S6) -- see `keyframeDown`'s own note.
+    // Freeze the table, exit speed, press coordinate, and authored edge as one gesture basis.
     gestureMapping = mapping;
-    // freeze the extrapolation's own exit speed at the SAME instant -- see `exitSpeed`'s own note.
     lenVExit = exitSpeed();
-    beginDrag(canvas, e.pointerId);
+    const cv = clampView(view, chartW, uFrozen, mFloor);
+    lenGrabU = pxToU(cv, lenCx - LEFT_GUT);
+    lenStartEndU = dToUExtend(mapping, domain, segment.offset + segment.len, lenVExit);
+    lenPointer = e.pointerId;
     window.addEventListener("pointermove", lenMove);
     window.addEventListener("pointerup", lenUp);
-    window.addEventListener("pointercancel", lenUp); // finalize the history gesture on cancel too
+    window.addEventListener("pointercancel", cancelLenDrag)
 }
 function lenMove(e: PointerEvent): void {
     if (lenId === null) return;
     const rect = canvas.getBoundingClientRect();
     lenCx = e.clientX - rect.left;
+    const wasArmed = lenArmed;
     lenArmed = armDrag(lenArmed, lenCx - lenX0, 0); // the standard DRAG_PX dead-zone latch
     lenMod = e.ctrlKey || e.metaKey; // live: bypass can be toggled mid-drag
-    applyLen();
+    if (!wasArmed && lenArmed) {
+        // The edge shares the body click latch: only threshold-crossing opens history/capture.
+        selectSegment(lenId);
+        beginLength(ecs, lenId);
+        beginDrag(canvas, lenPointer);
+    }
+    if (lenArmed) applyLen();
 }
 function lenUp(): void {
     if (lenId === null) return;
     const id = lenId;
     const armed = lenArmed;
+    if (!armed) selectSegment(id);
     lenId = null;
     lenArmed = false;
     uFrozen = null; // release the in-drag freeze; the zoom never re-fits (no release refit) —
@@ -2833,22 +2834,23 @@ function lenUp(): void {
     // extent as the session's new sticky append default — the one call site that updates it. a
     // sub-DRAG_PX click release (armed=false) still commits (a no-move release records nothing
     // regardless, per `commit`'s own no-op check) but never stamps the sticky value.
-    commitSegmentLength(history, ecs, id, armed); // one entry + selected member's sticky extent
+    if (armed) commitSegmentLength(history, ecs, id, true); // one entry + selected member's sticky extent
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
-    window.removeEventListener("pointercancel", lenUp);
+    window.removeEventListener("pointercancel", cancelLenDrag);
 }
 function cancelLenDrag(): void {
     if (lenId === null) return;
+    const armed = lenArmed;
     lenId = null;
     lenArmed = false;
     uFrozen = null;
     snapX = null;
     gestureMapping = null; // release the gesture-frozen table
-    cancel();
+    if (armed) cancel();
     window.removeEventListener("pointermove", lenMove);
     window.removeEventListener("pointerup", lenUp);
-    window.removeEventListener("pointercancel", lenUp);
+    window.removeEventListener("pointercancel", cancelLenDrag);
 }
 // per-frame edge-scroll for the length drag: hold the frozen fit-total at its
 // high-water mark (shortening never zooms in; an extending handle grows panMax so the
@@ -4406,6 +4408,10 @@ onMount(() => {
                 vFit: [vTarget.lo, vTarget.hi],
             });
             k.xView = (): [number, number] => [view.pan, view.pxPerU];
+            k.chartUAtX = (clientX: number): number => {
+                const rect = canvas.getBoundingClientRect();
+                return pxToU(clampView(view, chartW, uFrozen ?? uTotal, mFloor), clientX - rect.left - LEFT_GUT);
+            };
             // the domain the chart READS (`Track.domain`, tick-derived so a flow polls it), and
             // every keyframe's coordinate on that axis — paired with the stored `s` (S6: the
             // lens read, never a second unit the store holds). `section` + `g`
@@ -4419,6 +4425,8 @@ onMount(() => {
             // current bake's span table — never a mix of fresh keyframes and stale clips/spans.
             // A strip move/widen changes the bake (which changes `sectionSpans`), so the cached
             // `$derived` values can be stale after such a write.
+            k.segmentExtents = (): { id: number; offset: number; len: number }[] =>
+                forceSegments.map(({ id, offset, len }) => ({ id, offset, len }));
             k.forceU = (): { id: number; section: number; s: number; g: number; u: number }[] => {
                 const freshSpans = eid === null ? [] : sectionSpans(ecs, eid);
                 const freshClips = computeClips(freshSpans, ecs);
@@ -4435,6 +4443,8 @@ onMount(() => {
             // `lenVExit`. Read BEFORE the trim gesture, same convention as `dOf`/`uOf` above.
             k.dOfTrim = (u: number): number =>
                 uToDExtend(gestureMapping ?? mapping, domain, u, exitSpeed());
+            k.uOfTrim = (d: number): number =>
+                dToUExtend(gestureMapping ?? mapping, domain, d, exitSpeed());
             // the red ghost strip's own screen px, view-projected exactly as drawn (`ghostSpans`
             // above) — the capture flow's pixel probe reads a point INSIDE one of these rather
             // than re-deriving the arclength→px projection a second time (the ctxCut precedent).
@@ -4504,11 +4514,14 @@ onMount(() => {
                 delete k.vFit;
                 delete k.valueAxes;
                 delete k.xView;
+                delete k.chartUAtX;
                 delete k.domain;
                 delete k.forceU;
+                delete k.segmentExtents;
                 delete k.dOf;
                 delete k.uOf;
                 delete k.dOfTrim;
+                delete k.uOfTrim;
                 delete k.ghostPx;
                 delete k.stripKfPx;
                 delete k.stripPx;
