@@ -71,6 +71,7 @@ import {
     samples,
     Section,
     sectionAt,
+    sectionEdgeDs,
     segmentAt,
     SectionKind,
     sectionForces,
@@ -138,6 +139,56 @@ import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, type Tangent, TangentMode } from "../src/spline";
 import { GOLDEN } from "./helpers/golden";
+
+function geoRunReading(split: boolean) {
+    const ecs = new State();
+    const track = createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Geo, 0);
+    const members = [run];
+    if (split) {
+        members.push(createSection(ecs, 1, SectionKind.Geo, 0));
+        members.push(createSection(ecs, 2, SectionKind.Geo, 0));
+        for (const id of members) {
+            const eid = segmentAt(ecs, id)!;
+            Segment.run.set(eid, run);
+            Segment.runStation.set(eid, 0);
+            Segment.runExtent.set(eid, 0);
+        }
+    }
+    const nodes = [
+        [0, 0],
+        [4, 1],
+        [9, -1],
+        [14, 0],
+    ] as const;
+    const handles = nodes.map(([x, y]) => addNode(ecs, run, x, y));
+    if (split) {
+        Handle.section.set(handles[2]!, members[1]!);
+        Handle.order.set(handles[2]!, 0);
+        Handle.section.set(handles[3]!, members[2]!);
+        Handle.order.set(handles[3]!, 0);
+    }
+    BakeSystem.update?.(ecs);
+    const gathered = sectionHandles(ecs, run);
+    const edge = sectionEdgeDs(ecs, run)!;
+    const out = bakeOut.get(track)!;
+    return {
+        nodes: gathered.map((eid) => [Handle.pos.x.get(eid), Handle.pos.y.get(eid)]),
+        ds: Array.from(edge.ds).slice(0, edge.edges),
+        payload: {
+            x: Array.from(samples.get(track)!.posX).slice(0, Track.count.get(track)),
+            y: Array.from(samples.get(track)!.posY).slice(0, Track.count.get(track)),
+            ds: Array.from(out.ds).slice(0, Track.count.get(track) - 1),
+        },
+        sampleMap: gathered.map((eid) => Handle.sample.get(eid)),
+    };
+}
+
+test("three-member geo run gathers the same payload, edges, and sample map as one member", () => {
+    const one = geoRunReading(false);
+    const three = geoRunReading(true);
+    expect(three).toEqual(one);
+});
 
 test("run restore preserves surviving member entities and respawns only absent identities", () => {
     const ecs = new State();

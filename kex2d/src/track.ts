@@ -11,7 +11,7 @@ import {
     sampleForce,
     type Step,
 } from "./profile";
-import { rebuildRunProjection } from "./projection";
+import { rebuildRunProjection, runProjection } from "./projection";
 import { forceStationUnion } from "./segment";
 import {
     chain,
@@ -1589,30 +1589,25 @@ function spawnSection(
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
 
-/** collect every node on a section, sorted by `Handle.order`. ECS query order
- *  isn't guaranteed; the bake and the heading walk need deterministic order. */
-export function sectionHandles(ecs: State, sectionId: number): number[] {
+function segmentHandles(ecs: State, segmentId: number): number[] {
     const eids: number[] = [];
     for (const eid of ecs.query([Handle])) {
-        if (Handle.section.get(eid) === sectionId) eids.push(eid);
+        if (Handle.section.get(eid) === segmentId) eids.push(eid);
     }
     eids.sort((a, b) => Handle.order.get(a) - Handle.order.get(b));
     return eids;
 }
 
-/** highest-order node on a section, or null when empty. */
+/** collect every node in an evaluator run, preserving member chain order and node order. */
+export function sectionHandles(ecs: State, sectionId: number): number[] {
+    const members = runProjection(ecs, sectionId)?.segmentIds ?? [sectionId];
+    return members.flatMap((id) => segmentHandles(ecs, id));
+}
+
+/** last node in an evaluator run's ordered member chain, or null when empty. */
 export function lastHandle(ecs: State, sectionId: number): number | null {
-    let best: number | null = null;
-    let bestOrder = -1;
-    for (const eid of ecs.query([Handle])) {
-        if (Handle.section.get(eid) !== sectionId) continue;
-        const o = Handle.order.get(eid);
-        if (o > bestOrder) {
-            bestOrder = o;
-            best = eid;
-        }
-    }
-    return best;
+    const handles = sectionHandles(ecs, sectionId);
+    return handles[handles.length - 1] ?? null;
 }
 
 /** append a node at the section's end (order = maxOrder + 1) at **section-local**
@@ -1622,7 +1617,8 @@ export function lastHandle(ecs: State, sectionId: number): number | null {
  *  (θ = 0) — the section always leaves its entry along the entry heading, and node 1
  *  reflects that. */
 export function addNode(ecs: State, sectionId: number, x: number, y: number): number {
-    const prev = lastHandle(ecs, sectionId);
+    const handles = segmentHandles(ecs, sectionId);
+    const prev = handles[handles.length - 1] ?? null;
     const order = prev === null ? 0 : Handle.order.get(prev) + 1;
     const eid = ecs.create();
     ecs.add(eid, Handle);
@@ -2639,7 +2635,7 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
 export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
     const eid = segmentAt(ecs, snap.id);
     if (eid === null) throw new Error(`restoreSection: no section ${snap.id}`);
-    for (const h of sectionHandles(ecs, snap.id)) ecs.destroy(h);
+    for (const h of segmentHandles(ecs, snap.id)) ecs.destroy(h);
     for (const p of segmentForces(ecs, snap.id)) ecs.destroy(p.eid);
     Section.order.set(eid, snap.order);
     Section.kind.set(eid, snap.kind);
@@ -2677,7 +2673,7 @@ export function restoreRun(ecs: State, snap: RunSnapshot): void {
     const wanted = new Set(snap.members.map((member) => member.id));
     for (const surplus of runMembers(ecs, snap.id)) {
         if (wanted.has(surplus.id)) continue;
-        for (const handle of sectionHandles(ecs, surplus.id)) ecs.destroy(handle);
+        for (const handle of segmentHandles(ecs, surplus.id)) ecs.destroy(handle);
         for (const point of segmentForces(ecs, surplus.id)) ecs.destroy(point.eid);
         ecs.destroy(surplus.eid);
     }
@@ -2901,7 +2897,7 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     // the incoming force, stamped at creation.
     const info = sectionInfo.get(sectionId);
     const gEntry = info ? bakeEntryForce(ecs, info.startSample) : DEFAULT_G;
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const h of segmentHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Force);
     const extent = defaultForceExtent();
@@ -2913,7 +2909,7 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
  *  seed. `resetToForce`'s twin — one body behind `convertSection`'s force → geo flip and
  *  `resetSection`'s geo-held reset. */
 function resetToGeo(ecs: State, eid: number, sectionId: number): void {
-    for (const h of sectionHandles(ecs, sectionId)) ecs.destroy(h);
+    for (const h of segmentHandles(ecs, sectionId)) ecs.destroy(h);
     for (const p of segmentForces(ecs, sectionId)) ecs.destroy(p.eid);
     Section.kind.set(eid, SectionKind.Geo);
     Section.length.set(eid, 0);
@@ -3061,7 +3057,7 @@ export function applyConvert(ecs: State, sectionId: number, solved: SolvedForce)
     setSectionLength(ecs, sectionId, solved.length);
     const members = run.segmentIds.map((id) => {
         const eid = segmentAt(ecs, id)!;
-        for (const h of sectionHandles(ecs, id)) ecs.destroy(h);
+        for (const h of segmentHandles(ecs, id)) ecs.destroy(h);
         for (const p of segmentForces(ecs, id)) ecs.destroy(p.eid);
         Section.kind.set(eid, SectionKind.Force);
         return { id, length: Section.length.get(eid) };
@@ -3109,14 +3105,10 @@ export function applyConvertGeo(
     if (!run) throw new Error(`applyConvertGeo: no section ${sectionId}`);
     for (const id of run.segmentIds) {
         const eid = segmentAt(ecs, id)!;
-        for (const h of sectionHandles(ecs, id)) ecs.destroy(h);
+        for (const h of segmentHandles(ecs, id)) ecs.destroy(h);
         for (const p of segmentForces(ecs, id)) ecs.destroy(p.eid);
         Section.kind.set(eid, SectionKind.Geo);
         Section.length.set(eid, 0);
-        if (id !== run.segmentIds[0]) {
-            spawnNode(ecs, id, 0, 0, 0, 0);
-            spawnNode(ecs, id, 1, EXTEND_DIST, 0, 0);
-        }
     }
     const first = run.segmentIds[0]!;
     solved.nodes.forEach((n, i) => {
@@ -3328,11 +3320,11 @@ export function geoNodes(ecs: State, sectionId: number): Node[] {
  *  section's window collapses to an inert `{0,0}` spec or is dropped past the extent
  *  (`edgeStrips`'s own boundary clamp), so passing every strip to every section is
  *  correct, not just convenient. */
-function geoPayload(ecs: State, sectionId: number, ds: number, offset: number): SectionSpec {
+function geoPayload(ecs: State, runId: number, ds: number, offset: number): SectionSpec {
     const strips = allStrips(ecs);
     let edgeSpecs: StripSpec[] | undefined;
     if (strips.length > 0) {
-        const { ds: chordDs, edges } = geoChordDs(ecs, sectionId, ds);
+        const { ds: chordDs, edges } = geoChordDs(ecs, runId, ds);
         edgeSpecs = edgeStrips(
             chordDs,
             edges,
@@ -3346,7 +3338,7 @@ function geoPayload(ecs: State, sectionId: number, ds: number, offset: number): 
     }
     return {
         kind: "geo",
-        nodes: geoNodes(ecs, sectionId),
+        nodes: geoNodes(ecs, runId),
         ds,
         strips: edgeSpecs,
     };
@@ -3705,18 +3697,17 @@ function bake(
     const friction = Track.friction.get(trackEid);
     const resistance = Track.resistance.get(trackEid);
 
-    // a geo section needs ≥2 nodes to bake; if any is short, keep the prior bake
-    // rather than half-render the chain.
-    for (const segment of segments) {
-        if (segment.kind === SectionKind.Geo && sectionHandles(ecs, segment.id).length < 2) return;
-    }
-
     const byId = new Map(segments.map((segment) => [segment.id, segment]));
     const runs = rebuildRunProjection(ecs).map((run) => ({
         ...run,
         kind: run.kind as SectionKind,
         segments: run.segmentIds.map((id) => byId.get(id)!),
     }));
+    // a geo run needs ≥2 gathered nodes to bake; member splits do not create new payload floors.
+    for (const run of runs) {
+        if (run.kind === SectionKind.Geo && sectionHandles(ecs, run.id).length < 2) return;
+    }
+
     const windows: SectionWindow[] = [];
     let runOffset = 0;
     for (const run of runs) {
@@ -3729,7 +3720,7 @@ function bake(
                           edges: step.edges,
                       };
                   })()
-                : sectionEdgeDs(ecs, run.segmentIds[0]);
+                : sectionEdgeDs(ecs, run.id);
         const runDs = edge?.ds ?? EMPTY_DS;
         const edges = edge?.edges ?? 0;
         let len = 0;
@@ -3739,7 +3730,7 @@ function bake(
     }
     const payloads = runs.map((run, i) =>
         run.kind === SectionKind.Geo
-            ? geoPayload(ecs, run.segmentIds[0], ds, windows[i].offset)
+            ? geoPayload(ecs, run.id, ds, windows[i].offset)
             : forcePayload(ecs, run.segmentIds, run.stations, run.length, ds, windows[i].offset),
     );
     runInfo.clear();
@@ -3819,7 +3810,7 @@ function bake(
             const run = runs[sk];
 
             if (run.kind === SectionKind.Geo) {
-                const hs = sectionHandles(ecs, run.segmentIds[0]);
+                const hs = sectionHandles(ecs, run.id);
                 for (let n = 0; n < r.offsets.length; n++) {
                     Handle.sample.set(hs[n], range.start + r.offsets[n] + p.offset);
                 }

@@ -67,6 +67,11 @@ export function rebuildRunProjection(ecs: State): RunProjectionRow[] {
     return runs;
 }
 
+/** @temporary S3–S7 — resolve one evaluator run without assuming its entry member owns all data. */
+export function runProjection(ecs: State, runId: number): RunProjectionRow | undefined {
+    return rebuildRunProjection(ecs).find((run) => run.id === runId);
+}
+
 /** @plumbing — evaluator-compatible force row derived from split station/boundary ownership. */
 export interface ForceProjectionRow {
     eid: number;
