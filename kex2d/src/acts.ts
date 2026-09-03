@@ -48,6 +48,7 @@ import {
     handleTangent,
     lastHandle,
     removeTrailingHandle,
+    runIdOf,
     sectionForces,
     sectionHandles,
     sectionSpans,
@@ -136,16 +137,14 @@ export function nodeMembers(ecs: State): { section: number; order: number }[] {
     return out;
 }
 
-/** whether EVERY selected force keyframe's section is editable under the live lockdown — the
- *  action-layer guard the Del key and the menu's bulk rows share (all-or-nothing: bulk ops act
- *  on the whole set, so a mixed set grays rather than acting on a silent subset). re-derives each
- *  id's section from the ECS (`forceAt`/`Force.section`), so the guard is testable and the same
- *  one every force path reads — never a component-local `$derived`. */
+/** whether EVERY selected force keyframe's run is editable under the live lockdown — the
+ * action-layer guard the Del key and the menu's bulk rows share. */
 export function forceSetEditable(ecs: State): boolean {
     for (const id of editor.forces.ids) {
         const eid = forceAt(ecs, id);
         if (eid === null) return false;
-        if (!sectionEditable(editor.pinning, Force.section.get(eid))) return false;
+        const run = runIdOf(ecs, Force.section.get(eid));
+        if (run === null || !sectionEditable(editor.pinning, run)) return false;
     }
     return true;
 }

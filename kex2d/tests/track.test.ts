@@ -451,6 +451,14 @@ function track(): { state: State; eid: number; sec: number } {
     return { state, eid, sec };
 }
 
+test("an appended geo run keeps the identity returned for clip selection", () => {
+    const { state } = track();
+    const appended = appendSection(state, SectionKind.Geo);
+    expect(appended).toBeGreaterThan(1);
+    expect(sections(state).at(-1)?.id).toBe(appended);
+    expect(sectionAt(state, appended)).not.toBeNull();
+});
+
 describe("BakeSystem", () => {
     test("two canonical force segments in one run reproduce the unsplit evaluator payload byte-for-byte", () => {
         const state = new State();

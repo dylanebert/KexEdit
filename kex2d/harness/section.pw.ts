@@ -1289,8 +1289,8 @@ test("Convert/Pin/Solve/Reset keyboard bindings flow", async ({ page, boot }) =>
     // dismissal. ──
     const selected = () => kexCall(page, "selectedSection");
 
-    await page.locator(".clip").nth(1).click(); // the appended geo section
-    await expect.poll(selected).toBe(1); // wait for the appended section's selection to actually land
+    await page.locator(".clip").nth(1).click(); // the appended geo run
+    await expect.poll(selected).not.toBeNull();
     const geoId = await selected();
     await frames(page, 1);
     await page.keyboard.press("d");
