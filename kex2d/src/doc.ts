@@ -100,7 +100,10 @@ export interface DocPoint {
 }
 
 export interface DocRunMember {
-    station: number;
+    /** Force membership is addressed in the conserved station frame. */
+    station?: number;
+    /** Geo membership is addressed by the terminating node's ordered run index. */
+    node?: number;
     kind: number;
     nodes: DocNode[];
     points: DocPoint[];
@@ -236,15 +239,22 @@ export function docFromEcs(ecs: State): Kex2dDocument {
                     points: [],
                     members: members.map((member) => {
                         const payload = toDocSegment(member);
-                        return {
-                            station: member.runStation,
-                            kind: payload.kind,
-                            nodes: payload.nodes,
-                            points: payload.points.map((point) => ({
-                                ...point,
-                                s: member.runStation + point.s,
-                            })),
-                        };
+                        return member.kind === SectionKind.Geo
+                            ? {
+                                  node: member.geoEndNode,
+                                  kind: payload.kind,
+                                  nodes: payload.nodes,
+                                  points: payload.points,
+                              }
+                            : {
+                                  station: member.runStation,
+                                  kind: payload.kind,
+                                  nodes: payload.nodes,
+                                  points: payload.points.map((point) => ({
+                                      ...point,
+                                      s: member.runStation + point.s,
+                                  })),
+                              };
                     }),
                 };
             });
@@ -274,6 +284,7 @@ function fromDocSegment(s: DocSegment): SectionSnapshot {
         run: s.id,
         runStation: 0,
         runExtent: s.length,
+        geoEndNode: s.nodes.length - 1,
         nodes: s.nodes.map(
             (n): NodeState => ({
                 order: n.order,
@@ -307,9 +318,9 @@ export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
         }
         return run.members
             .map((member, index) => {
-                const station = member.station;
+                const station = member.station ?? 0;
                 const end = run.members![index + 1]?.station ?? run.length;
-                return fromDocSegment({
+                const result = fromDocSegment({
                     id: index === 0 ? run.id : nextMemberId++,
                     order: nextOrder++,
                     kind: member.kind,
@@ -317,11 +328,13 @@ export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
                     nodes: member.nodes,
                     points: member.points.map((point) => ({ ...point, s: point.s - station })),
                 });
+                result.geoEndNode = member.node ?? result.geoEndNode;
+                return result;
             })
             .map((member, index) => ({
                 ...member,
                 run: run.id,
-                runStation: run.members![index]!.station,
+                runStation: run.members![index]!.station ?? 0,
                 runExtent: run.length,
             }));
     });
@@ -582,8 +595,6 @@ function validateSegment(v: unknown, i: number): DocSegment {
         members = v.members.map((member, j) => {
             const memberPath = `${path}.members[${j}]`;
             if (!isPlainObject(member)) fail(`${memberPath} is not an object`);
-            if (!isFiniteNumber(member.station))
-                fail(`${memberPath}.station is missing or not finite`);
             if (
                 !isInt(member.kind) ||
                 (member.kind !== SectionKind.Geo && member.kind !== SectionKind.Force)
@@ -591,8 +602,20 @@ function validateSegment(v: unknown, i: number): DocSegment {
                 fail(`${memberPath}.kind is missing or invalid`);
             if (!Array.isArray(member.nodes) || !Array.isArray(member.points))
                 fail(`${memberPath} payload arrays are missing`);
+            if (member.kind === SectionKind.Geo) {
+                if (!isInt(member.node) || (member.node as number) < 0)
+                    fail(`${memberPath}.node is missing or not a non-negative integer`);
+                if (member.station !== undefined)
+                    fail(`${memberPath}.station is not a geo member field`);
+            } else {
+                if (!isFiniteNumber(member.station))
+                    fail(`${memberPath}.station is missing or not finite`);
+                if (member.node !== undefined)
+                    fail(`${memberPath}.node is not a force member field`);
+            }
             return {
-                station: member.station as number,
+                ...(member.station === undefined ? {} : { station: member.station as number }),
+                ...(member.node === undefined ? {} : { node: member.node as number }),
                 kind: member.kind as number,
                 nodes: member.nodes.map((n, k) => validateNode(n, `${memberPath}.nodes[${k}]`)),
                 points: member.points.map((p, k) => validatePoint(p, `${memberPath}.points[${k}]`)),
@@ -755,18 +778,28 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
     }
 
     for (const s of doc.segments) {
+        const runNodes = s.members
+            ? s.members
+                  .filter((member) => member.kind === SectionKind.Geo)
+                  .flatMap((member) => member.nodes)
+            : s.nodes;
+        const runPoints = s.members
+            ? s.members
+                  .filter((member) => member.kind === SectionKind.Force)
+                  .flatMap((member) => member.points)
+            : s.points;
         if (s.kind === SectionKind.Geo) {
-            if (s.points.length > 0)
+            if (runPoints.length > 0)
                 refusals.push({
                     guard: "sectionKind",
                     message: `section ${s.id} is a geo section but carries force points`,
                 });
-            if (s.nodes.length < 2)
+            if (runNodes.length < 2)
                 refusals.push({
                     guard: "minNodeFloor",
                     message: `section ${s.id} is a geo section with fewer than two nodes (node 0 + one shape node)`,
                 });
-            const node0 = s.nodes.find((n) => n.order === 0);
+            const node0 = runNodes[0];
             if (node0 && (node0.x !== 0 || node0.y !== 0 || node0.theta !== 0))
                 refusals.push({
                     guard: "nodeZeroOrigin",
@@ -785,7 +818,7 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
                 });
         }
         const stations = new Set<number>();
-        for (const p of s.points) {
+        for (const p of runPoints) {
             const key = Math.fround(p.s);
             if (stations.has(key))
                 refusals.push({

@@ -50,6 +50,7 @@ import {
     forceMarkers,
     forcePointState,
     forceSample,
+    GeoMemberBoundary,
     Handle,
     handleAt,
     handleTangent,
@@ -188,6 +189,32 @@ test("three-member geo run gathers the same payload, edges, and sample map as on
     const one = geoRunReading(false);
     const three = geoRunReading(true);
     expect(three).toEqual(one);
+});
+
+test("geo member boundary address and run restore preserve endpoint and explicit tangent", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Geo, 0);
+    addNode(ecs, run, 0, 0);
+    addNode(ecs, run, 6, 1);
+    const tip = addNode(ecs, run, 12, 3);
+    const tangent = { mode: TangentMode.Free, inX: 2, inY: 1, outX: 4, outY: -1 };
+    setTangent(ecs, run, 2, tangent);
+    const snap = snapshotRun(ecs, run);
+
+    expect(Segment.geoEndNode.get(segmentAt(ecs, run)!)).toBe(tip + 1);
+    expect(GeoMemberBoundary.node(ecs, run)).toEqual({
+        order: 2,
+        x: 12,
+        y: 3,
+        theta: Handle.theta.get(tip),
+        tangent,
+    });
+
+    removeTrailingHandle(ecs, run);
+    restoreRun(ecs, snap);
+    expect(snapshotRun(ecs, run)).toEqual(snap);
+    expect(GeoMemberBoundary.node(ecs, run)?.tangent).toEqual(tangent);
 });
 
 test("run restore preserves surviving member entities and respawns only absent identities", () => {
@@ -1565,6 +1592,7 @@ describe("provenance sidecar (kex2d-provenance stage 1)", () => {
             run: sec,
             runStation: 0,
             runExtent: 0,
+            geoEndNode: -1,
             nodes: [],
             points: [],
         });
