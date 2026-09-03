@@ -151,6 +151,7 @@ import {
     sectionInfo,
     sections,
     sectionSpans,
+    segmentSpans,
     allStrips,
     setForcePoint,
     setOneShotValue,
@@ -1876,11 +1877,11 @@ function freshKfPts(kind: KfKind): (ForcePt | StripKfPt)[] {
 // own clip (`#fclip`) are dropped: a clipped diamond is not hit-testable in the DOM either, so
 // including it here would make the rect hit a keyframe the circle path cannot.
 function freshKfSnapshot(): {
-    cand: KfHitCandidate[];
+    cand: KfHitCandidate;
     at: (kind: KfKind, id: number) => ForcePt | StripKfPt | undefined;
 } {
     const byKind = new Map<KfKind, (ForcePt | StripKfPt)[]>();
-    const cand: KfHitCandidate[] = [];
+    const points: KfHitCandidate["points"][number][] = [];
     const yLo = TOP;
     const yHi = Math.max(TOP, h - BOT_PAD);
     for (const kind of KF_KINDS) {
@@ -1890,12 +1891,20 @@ function freshKfSnapshot(): {
         for (const p of pts) {
             const x = ptX(p);
             const y = desc.axis.valToY(desc.axis.val(p));
-            if (x < LEFT_GUT || x > w) continue;
-            if (y < yLo || y > yHi) continue;
-            cand.push({ kind, id: p.id, x, y });
+            if (x < LEFT_GUT || x > w || y < yLo || y > yHi) continue;
+            points.push({ kind, id: p.id, x, y });
         }
     }
-    return { cand, at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id) };
+    const rows = eid === null ? [] : segmentSpans(ecs, eid);
+    const segmentRows = rows.map((row) => ({
+        id: row.id,
+        x0: uPx(uOfLen(row.offset)),
+        x1: uPx(uOfLen(row.offset + row.len)),
+    }));
+    return {
+        cand: { knobs: [], points, spans: segmentRows },
+        at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id),
+    };
 }
 
 // every left-button press on the chart — from a diamond's own hit circle OR from the chart-wide
@@ -1907,16 +1916,27 @@ function chartDown(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     const snap = freshKfSnapshot();
     const hit = classifyKfHit(e.clientX - rect.left, e.clientY - rect.top, snap.cand, FHIT_R);
-    if (hit !== null) {
-        const pt = snap.at(hit.kind, hit.id);
+    if (hit.kind === "point") {
+        const pt = snap.at(hit.pointKind, hit.id);
         if (pt !== undefined) {
-            keyframeDown(e, hit.kind, pt);
+            keyframeDown(e, hit.pointKind, pt);
             return;
         }
     }
+    // Segment subjects intentionally remain inert until S3c3. Body and boundary presses still
+    // arm the ordinary marquee, so a release preserves today's empty-click grammar while a drag
+    // begun over either span is not consumed by the future body subject.
     marqueeDown(e);
 }
 
+let chartHover: ReturnType<typeof classifyKfHit> = $state({ kind: "empty" });
+function chartHoverMove(e: PointerEvent): void {
+    const rect = canvas.getBoundingClientRect();
+    chartHover = classifyKfHit(e.clientX - rect.left, e.clientY - rect.top, freshKfSnapshot().cand, FHIT_R);
+}
+function chartHoverLeave(): void {
+    chartHover = { kind: "empty" };
+}
 function marqueeDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     // layered dismissal: a chart click while a popover field is focused only blurs it (the
@@ -4183,7 +4203,7 @@ onMount(() => {
             k.stripKfPx = (): { id: number; x: number; y: number }[] => {
                 const rect = canvas.getBoundingClientRect();
                 return freshKfSnapshot()
-                    .cand.filter((c) => c.kind === "strip")
+                    .cand.points.filter((c) => c.kind === "strip")
                     .map((c) => ({ id: c.id, x: rect.left + c.x, y: rect.top + c.y }));
             };
             // every strip's header-band screen x0/x1, canvas-local like `ghostPx` (not
@@ -4380,6 +4400,8 @@ onMount(() => {
                     height={Math.max(0, h - BOT_PAD - TOP)}
                     ondblclick={chartCreate}
                     onpointerdown={chartDown}
+                    onpointermove={chartHoverMove}
+                    onpointerleave={chartHoverLeave}
                     role="presentation"
                 />
             {/if}
@@ -4561,7 +4583,13 @@ onMount(() => {
                  an invisible fat hit circle (FHIT_R) carries the grab + hover so the 5px
                  diamond isn't a pixel-hunt (the AE/Unity fat-pick-zone). the visible
                  diamond is inert; the chartzone owns creation. -->
-            <g class="fmarkers" clip-path="url(#fclip)">
+            <g
+                class="fmarkers"
+                clip-path="url(#fclip)"
+                onpointerdown={chartDown}
+                onpointermove={chartHoverMove}
+                onpointerleave={chartHoverLeave}
+            >
                 {#each forcePts as p (p.id)}
                     {@const mx = ptX(p)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
@@ -4574,6 +4602,9 @@ onMount(() => {
                             class="fpt"
                             class:sel={selForceSet.has(p.id)}
                             class:active={p.id === selForce}
+                            class:hovered={chartHover.kind === "point" &&
+                                chartHover.pointKind === "force" &&
+                                chartHover.id === p.id}
                             class:driven={optClip !== null &&
                                 optClip.id === p.section &&
                                 lockedSet.has(p.id)}
@@ -4583,7 +4614,6 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                onpointerdown={chartDown}
                                 oncontextmenu={(e) => forceCtx(e, p)}
                                 role="button"
                                 tabindex="-1"
@@ -4607,7 +4637,13 @@ onMount(() => {
                  `.msel` marks a non-active multi-select member (`editor.stripKfs`, +0.2px stroke)
                  — both thin strokes over the shared bright fill. Same diamond idiom as force
                  keyframes but on the v-axis (vOf, not yOf). Clipped to the chart. -->
-            <g class="fmarkers" clip-path="url(#fclip)">
+            <g
+                class="fmarkers"
+                clip-path="url(#fclip)"
+                onpointerdown={chartDown}
+                onpointermove={chartHoverMove}
+                onpointerleave={chartHoverLeave}
+            >
                 {#each stripKfPts as k (k.id)}
                     {@const mx = uPx(k.u)}
                     {#if mx >= LEFT_GUT - FHIT_R && mx <= w + FHIT_R}
@@ -4616,6 +4652,9 @@ onMount(() => {
                             class="fpt"
                             class:sel={selStripKfSet.has(k.id)}
                             class:active={selStripKfPt !== null && k.id === selStripKfPt.id}
+                            class:hovered={chartHover.kind === "point" &&
+                                chartHover.pointKind === "strip" &&
+                                chartHover.id === k.id}
                             class:msel={selStripKfSet.has(k.id) &&
                                 (selStripKfPt === null || k.id !== selStripKfPt.id)}
                         >
@@ -4624,7 +4663,6 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                onpointerdown={chartDown}
                                 role="button"
                                 tabindex="-1"
                                 aria-label="Velocity keyframe"
@@ -5398,7 +5436,6 @@ onMount(() => {
         fill: transparent;
         pointer-events: all;
         cursor: default;
-        outline: none; /* pointer-only (tabindex -1); no browser focus ring on click */
     }
     .fmarker {
         fill: var(--pin);
@@ -5414,7 +5451,8 @@ onMount(() => {
        at 1.4px over the accent fill, so hover reads exactly one rung below (editor-ui.md Kind
        color). never on a stronger register: a selected member keeps the brightened fill, a
        driven key its dash — the lift marks exactly what a plain click would newly take. */
-    .fpt:hover:not(.sel):not(.driven) .fmarker {
+    .fpt:hover:not(.sel):not(.driven) .fmarker,
+    .fpt.hovered:not(.sel):not(.driven) .fmarker {
         fill: #fff;
         stroke: var(--fg);
     }
