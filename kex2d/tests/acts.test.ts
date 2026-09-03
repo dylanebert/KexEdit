@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { State } from "@dylanebert/shallot";
-import { keyframeActs, nodeActs, sectionActs } from "../src/acts";
+import { forceSetEditable, keyframeActs, nodeActs, sectionActs } from "../src/acts";
 import {
     beginLanding,
     closeContext,
@@ -19,6 +19,8 @@ import { enterPinMode, exitPinMode } from "../src/pin";
 import { TangentMode } from "../src/spline";
 import {
     EXTEND_DIST,
+    forceAt,
+    Force,
     Handle,
     handleTangent,
     lastHandle,
@@ -325,6 +327,21 @@ describe("nodeActs", () => {
 });
 
 describe("keyframeActs", () => {
+    test("a pin session keeps force keys on every member of its run editable", () => {
+        const { state, sec } = forceTrack();
+        if (!enterPinMode(state, sec)) throw new Error("no session");
+        const keys = sectionForces(state, sec);
+        expect(
+            new Set(keys.map((key) => Force.section.get(forceAt(state, key.id)!))).size,
+        ).toBeGreaterThan(1);
+        selectForces(
+            keys.map((key) => key.id),
+            keys.at(-1)!.id,
+        );
+        expect(forceSetEditable(state)).toBe(true);
+        exitPinMode(state);
+    });
+
     test("remove deletes the selected set and skips a live landing", () => {
         const { state, sec } = forceTrack();
         const ids = sectionForces(state, sec).map((r) => r.id);
