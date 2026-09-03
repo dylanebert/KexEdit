@@ -69,6 +69,8 @@ import {
     deleteStrips,
     deleteSegment as commitDeleteSegment,
     history,
+    insertSegmentAt as commitInsertSegmentAt,
+    setSegmentBoundaryEase as commitSegmentBoundaryEase,
     setForcesEase,
     setSegmentBoundaryValue as commitSegmentBoundaryValue,
 } from "./history";
@@ -149,7 +151,9 @@ import {
     Handle,
     minForceExtent,
     Segment,
+    Section,
     SegmentForceBoundary,
+    RunEntryForceBoundary,
     segmentAt,
     SectionKind,
     type SectionSpan,
@@ -159,6 +163,7 @@ import {
     sections,
     sectionSpans,
     segmentSpans,
+    stationTaken,
     allStrips,
     setForcePoint,
     setOneShotValue,
@@ -700,6 +705,89 @@ function segmentKnobDown(e: PointerEvent, segment: ForceSegmentView): void {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up, { once: true });
 }
+
+let segmentMenu: { x: number; y: number; id: number } | null = $state(null);
+function segmentLeadingBoundary(id: number): {
+    key: number;
+    predecessor: number | null;
+    ease: Easing;
+} | null {
+    const member = segmentAt(ecs, id);
+    if (member === null) return null;
+    const run = Segment.run.get(member);
+    const station = Segment.runStation.get(member);
+    if (station === 0) {
+        const key = sectionForces(ecs, run).find((point) => point.s === 0)?.id;
+        const ease = RunEntryForceBoundary.ease(ecs, run);
+        return key === undefined || ease === undefined ? null : { key, predecessor: null, ease };
+    }
+    const predecessor = segmentSpans(ecs, eid ?? 0).find((row) => {
+        const candidate = segmentAt(ecs, row.id);
+        return (
+            candidate !== null &&
+            Segment.run.get(candidate) === run &&
+            Math.fround(Segment.runStation.get(candidate) + Section.length.get(candidate)) ===
+                Math.fround(station)
+        );
+    })?.id;
+    if (predecessor === undefined) return null;
+    const key = SegmentForceBoundary.id(ecs, predecessor);
+    return { key: key ?? -1, predecessor, ease: SegmentForceBoundary.ease(ecs, predecessor) ?? Easing.Cubic };
+}
+const segmentMenuItems = $derived.by((): MenuItem[] => {
+    if (segmentMenu === null) return [];
+    const id = segmentMenu.id;
+    const leading = segmentLeadingBoundary(id);
+    const member = segmentAt(ecs, id);
+    const deletable = member !== null && Segment.runStation.get(member) > 0;
+    const items = keyframeMenu(
+        {
+            setOk: true,
+            lock: null,
+            multi: false,
+            terminal: false,
+            easeTargets: leading === null ? 0 : 1,
+            ease: leading?.ease ?? Easing.Cubic,
+            presetGlyph,
+        },
+        {
+            remove: () => {
+                if (commitDeleteSegment(history, ecs, id)) selectSegment(null);
+                segmentMenu = null;
+            },
+            toggleLock: () => {},
+            setEase: (value) => {
+                if (leading?.predecessor !== null && leading?.predecessor !== undefined)
+                    commitSegmentBoundaryEase(history, ecs, leading.predecessor, value);
+                else if (leading !== null) setForcesEase(history, ecs, [leading.key], value);
+                segmentMenu = null;
+            },
+        },
+    );
+    return deletable ? items : items.filter((item) => item.label !== "Delete");
+});
+function segmentContext(e: MouseEvent): void {
+    const rect = canvas.getBoundingClientRect();
+    const snapshot = freshKfSnapshot();
+    const candidates: KfHitCandidate = {
+        ...snapshot.cand,
+        points: snapshot.cand.points.filter((candidate) => {
+            if (candidate.kind !== "force") return true;
+            const point = snapshot.at("force", candidate.id) as ForcePt | undefined;
+            return point !== undefined && point.s > point.len;
+        }),
+    };
+    const hit = classifyKfHit(e.clientX - rect.left, e.clientY - rect.top, candidates, FHIT_R);
+    if (hit.kind !== "body" && hit.kind !== "boundary") {
+        segmentMenu = null;
+        return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    selectSegment(hit.id);
+    segmentMenu = { x: e.clientX, y: e.clientY, id: hit.id };
+}
+
 // the interior section boundaries on the chart's own axis — drawn as chart guides, and the
 // landmarks every s-axis snap resolves against. each non-last span's native exit
 // (`offset + len`), so a boundary needs no projection in either domain. Reads through `uOfLen`
@@ -1386,9 +1474,21 @@ function chartCreate(e: MouseEvent): void {
             return;
         }
     }
-    // No force insertion arm remains in this shared handler. Force keyframes stay selectable
-    // and value-draggable here; placement is reserved for the segment-authoring unit.
-    return;
+    const d = dOf(u);
+    const segment = forceSegments.find((row) => d > row.offset && d < row.offset + row.len);
+    if (segment === undefined) return;
+    const member = segmentAt(ecs, segment.id);
+    if (member === null) return;
+    const run = Segment.run.get(member);
+    if (!sectionEditable(editor.pinning, run)) return;
+    const runWindow = sectionSpans(ecs, eid ?? 0).find((row) => row.id === run);
+    if (runWindow === undefined) return;
+    const station = Math.fround(d - runWindow.offset - Segment.runStation.get(member));
+    const length = Section.length.get(member);
+    const runStation = Math.fround(Segment.runStation.get(member) + station);
+    if (!(station > 0 && station < length) || stationTaken(ecs, run, runStation, -1)) return;
+    const id = commitInsertSegmentAt(history, ecs, segment.id, station);
+    selectSegment(id);
 }
 
 // ── keyframe drag (unified: force and strip keyframes ride ONE code path — S1's substrate law).
@@ -2465,7 +2565,14 @@ function toggleAppend(e: PointerEvent): void {
 }
 function append(kind: SectionKind): void {
     appendAnchor = null;
-    selectSection(appendSection(history, ecs, kind));
+    const run = appendSection(history, ecs, kind);
+    if (kind === SectionKind.Force) {
+        const first = segmentSpans(ecs, eid ?? 0).find((row) => {
+            const member = segmentAt(ecs, row.id);
+            return member !== null && Segment.run.get(member) === run;
+        });
+        selectSegment(first?.id ?? null);
+    } else selectSection(run);
 }
 const appendItems: MenuItem[] = appendMenu({ append });
 // appending never moves the view: the x-axis is a document axis, and the always-framed
@@ -4017,6 +4124,11 @@ onMount(() => {
             }
             return;
         }
+        if (segmentMenu !== null && e.key === "Escape") {
+            e.preventDefault();
+            segmentMenu = null;
+            return;
+        }
         if (appendAnchor && e.key === "Escape") {
             e.preventDefault();
             appendAnchor = null;
@@ -4115,37 +4227,20 @@ onMount(() => {
                 const stepV = e.shiftKey ? NUDGE_V_COARSE : NUDGE_V;
                 const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                 const dv = e.key === "ArrowUp" ? stepV : e.key === "ArrowDown" ? -stepV : 0;
-                if (editor.forces.ids.size > 0) {
-                    // S5: mixed-domain nudge — station (ds) moves every member; value (dv)
-                    // moves NO member when the set spans both keyframe domains (force + strip).
-                    // one gesture (`beginKeyframeMoves`) so one undo restores all.
-                    // synchronous ECS read — not `forcePts` (a `$derived` behind `void tick`):
-                    // a second nudge before the tick flushes reads pre-first-nudge state and
-                    // writes it back (the axis-law red: a vertical nudge rewinds a force's
-                    // station after a horizontal nudge changed it). `sections`/`sectionForces`
-                    // are synchronous ECS queries, same class as the stripKf handler's own
-                    // `stripKfMembers` read above.
-                    const forceMembers = sections(ecs)
-                        .filter((s) => s.kind === SectionKind.Force)
-                        .flatMap((s) =>
-                            sectionForces(ecs, s.id)
-                                .filter((f) => editor.forces.ids.has(f.id))
-                                .map((f) => ({ id: f.id, s: f.s, g: f.g, len: s.length })),
-                        );
-                    if (forceMembers.length > 0 && forceSetEditable(ecs)) {
+                if (editor.forces.ids.size > 0 && forceSetEditable(ecs)) {
+                    const forceMembers = freshKfPts("force").filter(
+                        (point): point is ForcePt => editor.forces.ids.has(point.id),
+                    );
+                    if (forceMembers.length > 0) {
                         beginKeyframeMoves(
                             ecs,
-                            forceMembers.map((m) => m.id),
-                            members.map((m) => m.id),
+                            forceMembers.map((member) => member.id),
+                            members.map((member) => member.id),
                         );
-                        for (const w of nudgeKeyframes(
-                            forceMembers.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
-                            ds,
-                            0,
-                        ))
-                            setForcePoint(ecs, w.id, w.s, w.v);
-                        for (const w of nudgeKeyframes(members, ds, 0))
-                            setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
+                        for (const member of forceMembers)
+                            setForcePoint(ecs, member.id, member.s, member.g);
+                        for (const moved of nudgeKeyframes(members, ds, 0))
+                            setStripKeyframe(ecs, moved.id, moved.s, Math.max(V_FLOOR, moved.v));
                         commit(history);
                         return;
                     }
@@ -4201,74 +4296,39 @@ onMount(() => {
                         e.key === "ArrowUp" ||
                         e.key === "ArrowDown")
                 ) {
-                    // arrow-nudge the selected force set — only while the pointer is over the
-                    // timeline (the hovered-surface router — a node nudge in the viewport must not
-                    // also move a force point). single-select rounds the absolute result to the
-                    // field grid (pre-multiselect semantics); a multi-set moves by one shared delta
-                    // under the rigid clamp, offsets preserved (`nudgeKeyframes`, timeline.ts). Shift
-                    // coarse; one press = one undo entry.
-                    // synchronous ECS read — not `forcePts` (a `$derived` behind `void tick`):
-                    // a second nudge before the tick flushes reads pre-first-nudge state and
-                    // writes it back (the axis-law red: a vertical nudge rewinds a force's
-                    // station after a horizontal nudge changed it). `sections`/`sectionForces`
-                    // are synchronous ECS queries, same class as the stripKf handler's own
-                    // `stripKeyframes(ecs, ...)` read.
-                    const members = sections(ecs)
-                        .filter((s) => s.kind === SectionKind.Force)
-                        .flatMap((s) =>
-                            sectionForces(ecs, s.id)
-                                .filter((f) => editor.forces.ids.has(f.id))
-                                .map((f) => ({ id: f.id, s: f.s, g: f.g, len: s.length })),
-                        );
-                    if (members.length === 0) return;
-                    if (!forceSetEditable(ecs)) return; // the lockdown — all-or-nothing, like Del
+                    const members = freshKfPts("force").filter(
+                        (point): point is ForcePt => editor.forces.ids.has(point.id),
+                    );
+                    if (members.length === 0 || !forceSetEditable(ecs)) return;
                     e.preventDefault();
-                    skipLanding(); // keyboard mutation mid-window: same routing as undo/redo above
-                    const stepS = e.shiftKey ? NUDGE_S_COARSE : NUDGE_S;
+                    skipLanding();
                     const stepG = e.shiftKey ? NUDGE_G_COARSE : NUDGE_G;
-                    const ds = e.key === "ArrowLeft" ? -stepS : e.key === "ArrowRight" ? stepS : 0;
                     const dg = e.key === "ArrowUp" ? stepG : e.key === "ArrowDown" ? -stepG : 0;
                     if (editor.stripKfs.ids.size > 0) {
-                        // S5: mixed-domain nudge — station (ds) moves every member; value
-                        // (dg) moves NO member when the set spans both keyframe domains (force +
-                        // strip). one gesture (`beginKeyframeMoves`) so one undo restores all.
-                        // the strip-kf subset resolves per OWNING strip (`stripKfMembers`, same
-                        // synchronous-ECS class as the force read above) and the lockdown is
-                        // all-or-nothing on it: a locked owner blocks the WHOLE strip-kf subset
-                        // from the mixed move (never a silent moving subset) — the forces still
-                        // nudge alone below, unchanged.
-                        const { members: skMembers, anyLocked } = stripKfMembers(
+                        const { members: stripMembers, anyLocked } = stripKfMembers(
                             ecs,
                             editor.stripKfs.ids,
                         );
-                        if (skMembers.length > 0 && !anyLocked) {
+                        if (stripMembers.length > 0 && !anyLocked) {
                             beginKeyframeMoves(
                                 ecs,
-                                members.map((m) => m.id),
-                                skMembers.map((m) => m.id),
+                                members.map((member) => member.id),
+                                stripMembers.map((member) => member.id),
                             );
-                            for (const w of nudgeKeyframes(
-                                members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
-                                ds,
-                                0,
-                            ))
-                                setForcePoint(ecs, w.id, w.s, w.v);
-                            for (const w of nudgeKeyframes(skMembers, ds, 0))
-                                setStripKeyframe(ecs, w.id, w.s, Math.max(V_FLOOR, w.v));
+                            for (const member of members)
+                                setForcePoint(ecs, member.id, member.s, member.g);
+                            for (const moved of nudgeKeyframes(stripMembers, 0, 0))
+                                setStripKeyframe(ecs, moved.id, moved.s, Math.max(V_FLOOR, moved.v));
                             commit(history);
                             return;
                         }
                     }
                     beginForceMoves(
                         ecs,
-                        members.map((m) => m.id),
+                        members.map((member) => member.id),
                     );
-                    for (const w of nudgeKeyframes(
-                        members.map((m) => ({ id: m.id, s: m.s, v: m.g, len: m.len })),
-                        ds,
-                        dg,
-                    ))
-                        setForcePoint(ecs, w.id, w.s, w.v);
+                    for (const member of members)
+                        setForcePoint(ecs, member.id, member.s, member.g + dg);
                     commit(history);
                 }
             }
@@ -4545,6 +4605,7 @@ onMount(() => {
                     height={Math.max(0, h - BOT_PAD - TOP)}
                     ondblclick={chartCreate}
                     onpointerdown={chartDown}
+                    oncontextmenu={segmentContext}
                     onpointermove={chartHoverMove}
                     onpointerleave={chartHoverLeave}
                     role="presentation"
@@ -4800,7 +4861,7 @@ onMount(() => {
                                 cx={mx}
                                 cy={my}
                                 r={FHIT_R}
-                                oncontextmenu={(e) => forceCtx(e, p)}
+                                oncontextmenu={p.s > p.len ? (e) => forceCtx(e, p) : undefined}
                                 role="button"
                                 tabindex="-1"
                                 aria-label="Force point"
@@ -5176,6 +5237,11 @@ onMount(() => {
 {#if fmenu}
     <div class="fmenu menu" use:fitMenu={{ x: fmenu.x, y: fmenu.y }} role="menu" aria-label="Force keyframe">
         <Menu items={fmenuItems} onclose={closeForceMenu} />
+    </div>
+{/if}
+{#if segmentMenu}
+    <div class="fmenu menu" use:fitMenu={{ x: segmentMenu.x, y: segmentMenu.y }} role="menu" aria-label="Force segment">
+        <Menu items={segmentMenuItems} onclose={() => (segmentMenu = null)} />
     </div>
 {/if}
 

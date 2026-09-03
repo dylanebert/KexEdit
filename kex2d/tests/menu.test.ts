@@ -2278,17 +2278,9 @@ describe("menu source pins — builders and renderer stay singular", () => {
     });
 });
 
-// ── chart inertness (kex2d-structural-editing stage 7b, feel round 8): the graph stops being a
-// Cut surface at all, and with it the pre-existing curve-span→leading-keyframe convention that
-// used to promote a non-keyframe click to the leading keyframe's Easing menu ("I wouldn't expect
-// that" — round 8's verdict). The chart's only right-click subject is a keyframe diamond
-// (`forceCtx`, on the marker's own `fhit` rect); every other chart right-click opens nothing and
-// selects nothing. Neither behavior is reachable from `bun test` as a live DOM interaction (no
-// jsdom/browser in this suite — `bun run capture` covers pointer-true reachability), so this
-// pins it as a source census, the same declared-registry shape `acts.ts source census` above
-// uses for the same reason (two of its three homes are `.svelte` and equally unreachable): every
-// `oncontextmenu` site in `Timeline.svelte`, enumerated in source order, both directions.
-describe("Chart inertness — the chart's only right-click subject is a keyframe diamond", () => {
+// S3d replaces point-first context with the selected force segment's easing/delete menu. The
+// chart-wide router classifies body/boundary hits; empty chart space remains inert.
+describe("force segment context routing", () => {
     const timelineSrc = readFileSync(join(import.meta.dir, "..", "src", "Timeline.svelte"), "utf8");
 
     // the declared registry: every `oncontextmenu` handler in the file, in source order.
@@ -2299,9 +2291,10 @@ describe("Chart inertness — the chart's only right-click subject is a keyframe
         "toggleSnapPop", // the snap-toggle rail's own increment popover
         "(e) => e.preventDefault()", // the .body wrapper: blocks the browser menu, opens nothing
         "rulerCtx", // the ruler's Meters/Seconds domain picker
+        "segmentContext", // force segment body/boundary — Easing/Delete
         "(e) => clipMenu(e, c)", // the clip strip — the section context menu (Convert/Pin/Reset/Delete)
         "bandContext", // the velocity-strip band — Add/Delete (T1)
-        "(e) => forceCtx(e, p)", // the keyframe diamond's own fhit rect
+        "p.s > p.len ? (e) => forceCtx(e, p) : undefined", // orphan force key only
     ];
 
     test("every oncontextmenu site in Timeline.svelte matches the declared registry, in order", () => {
@@ -2321,15 +2314,31 @@ describe("Chart inertness — the chart's only right-click subject is a keyframe
         expect(found).not.toEqual(Handlers);
     });
 
-    // the chartzone rect itself, isolated: no oncontextmenu attribute at all. Since nothing
-    // handles the event there, nothing opens a menu and nothing writes selection — the two
-    // properties the spec's Validation names — as a direct consequence of there being no
-    // handler to do either. Redundant with the registry test above by construction (a chartzone
-    // handler would also break it); kept because it names the specific element the law is about.
-    test("the chartzone rect carries no oncontextmenu handler", () => {
-        const m = timelineSrc.match(/<rect\s+class="chartzone"[\s\S]*?\/>/);
-        expect(m).not.toBeNull();
-        expect(m?.[0]).not.toMatch(/oncontextmenu/);
+    test("the chartzone and orphan point are the only force context owners", () => {
+        const chart = timelineSrc.match(/<rect\s+class="chartzone"[\s\S]*?\/>/)?.[0];
+        expect(chart?.match(/oncontextmenu=\{([^}]*)\}/)?.[1]).toBe("segmentContext");
+        const forceHit = [...timelineSrc.matchAll(/<circle[\s\S]*?\/>/g)]
+            .map((match) => match[0])
+            .find((circle) => circle.includes('aria-label="Force point"'));
+        expect(forceHit).toBeDefined();
+        expect(forceHit?.match(/oncontextmenu=\{([^}]*)\}/)?.[1]).toBe(
+            "p.s > p.len ? (e) => forceCtx(e, p) : undefined",
+        );
+        expect(timelineSrc.match(/class="fhit"/g)).toHaveLength(2);
+    });
+
+    test("segment context resolves and writes the leading boundary", () => {
+        expect(timelineSrc.match(/RunEntryForceBoundary\.ease\(ecs, run\)/g)).toHaveLength(1);
+        expect(
+            timelineSrc.match(/setForcesEase\(history, ecs, \[leading\.key\], value\)/g),
+        ).toHaveLength(1);
+        expect(timelineSrc.match(/SegmentForceBoundary\.ease\(ecs, id\)/g) ?? []).toHaveLength(0);
+    });
+
+    test("legacy section gathers survive only in computeClips", () => {
+        expect(timelineSrc.match(/sections\(/g)).toHaveLength(1);
+        const body = timelineSrc.match(/function computeClips\([\s\S]*?\n\}/)?.[0];
+        expect(body?.match(/sections\(/g)).toHaveLength(1);
     });
 
     // the retired curve-span→leading-keyframe fallback itself: gone, not just unwired. Guards
