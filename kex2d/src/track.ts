@@ -87,11 +87,16 @@ export const Segment = {
     runEntryForce: sparse(u32),
     /** @temporary S3–S7 — encoded entity pointer to this geo member's terminating node. */
     geoEndNode: sparse(u32),
+    /** @temporary S3–S7 — encoded stable id of this member's terminating velocity keyframe. */
+    velocityBoundary: sparse(u32),
 };
 
-/** Canonical predecessor-less boundary for segment zero. Channel payload ownership moves
- * here in later data stages; S2a establishes its stable structural identity. */
-export const TrackStart = { id: sparse(u32) };
+/** Canonical predecessor-less boundary for segment zero. */
+export const TrackStart = {
+    id: sparse(u32),
+    /** @temporary S3–S7 — encoded stable id of the entry one-shot. */
+    velocity: sparse(u32),
+};
 
 /** @temporary S7 — section-facing readers are a compatibility projection over Segment. */
 export const Section = Segment;
@@ -586,6 +591,8 @@ export function createOneShot(ecs: State, value: number): number {
     const id = nextOneShotId++;
     OneShot.id.set(eid, id);
     OneShot.value.set(eid, Math.max(MIN_V0, value));
+    const track = trackEntity(ecs);
+    if (track !== null) TrackStart.velocity.set(track, id + 1);
     return id;
 }
 
@@ -597,6 +604,8 @@ export function spawnOneShot(ecs: State, id: number, value: number): void {
     ecs.add(eid, OneShot);
     OneShot.id.set(eid, id);
     OneShot.value.set(eid, value);
+    const track = trackEntity(ecs);
+    if (track !== null) TrackStart.velocity.set(track, id + 1);
 }
 
 /** bump the module-private stable-id counters (`nextSectionId`/`nextForceId`/`nextStripId`/
@@ -628,6 +637,9 @@ export function reserveIds(ids: {
 export function destroyOneShot(ecs: State, id: number): void {
     const eid = oneShotAt(ecs, id);
     if (eid !== null) ecs.destroy(eid);
+    const track = trackEntity(ecs);
+    if (track !== null && TrackStart.velocity.get(track) === id + 1)
+        TrackStart.velocity.set(track, 0);
 }
 
 /** the one-shot's live-authoring value writer (F5: the value popover's inline field edit)
@@ -788,12 +800,19 @@ export function stripKeyframes(ecs: State, stripId: number): StripKeyframeRow[] 
     const rows: StripKeyframeRow[] = [];
     for (const eid of ecs.query([StripKeyframe])) {
         if (StripKeyframe.strip.get(eid) !== stripId) continue;
+        const id = StripKeyframe.id.get(eid);
+        const owner = [...ecs.query([Segment])].find(
+            (segment) => Segment.velocityBoundary.get(segment) === id + 1,
+        );
         rows.push({
             eid,
             strip: stripId,
-            id: StripKeyframe.id.get(eid),
+            id,
             s: StripKeyframe.s.get(eid),
-            v: StripKeyframe.v.get(eid),
+            v:
+                owner === undefined
+                    ? StripKeyframe.v.get(eid)
+                    : (VelocityBoundary.v(ecs, Segment.id.get(owner)) ?? StripKeyframe.v.get(eid)),
         });
     }
     rows.sort((a, b) => a.s - b.s);
@@ -849,6 +868,7 @@ export function createStripKeyframe(ecs: State, stripId: number, s: number, v: n
     StripKeyframe.id.set(eid, id);
     StripKeyframe.s.set(eid, cs);
     StripKeyframe.v.set(eid, v);
+    refreshVelocityRunMembers(ecs);
     return id;
 }
 
@@ -883,6 +903,7 @@ export function destroyStripKeyframes(ecs: State, stripId: number): void {
     for (const eid of [...ecs.query([StripKeyframe])]) {
         if (StripKeyframe.strip.get(eid) === stripId) ecs.destroy(eid);
     }
+    refreshVelocityRunMembers(ecs);
 }
 
 /** a strip keyframe's undoable state, keyed by stable id. */
@@ -1292,6 +1313,7 @@ export function createTrack(ecs: State): number {
     ecs.add(trackEid, Track);
     ecs.add(trackEid, TrackStart);
     TrackStart.id.set(trackEid, 0);
+    TrackStart.velocity.set(trackEid, 0);
     Track.count.set(trackEid, 0);
     Track.ds.set(trackEid, DS_NOMINAL);
     Track.domain.set(trackEid, Domain.Distance);
@@ -1563,6 +1585,7 @@ export function createSection(
     // must not inherit another state's published run-entry pointer.
     Segment.runEntryForce.set(eid, 0);
     Segment.geoEndNode.set(eid, 0);
+    Segment.velocityBoundary.set(eid, 0);
     return id;
 }
 
@@ -1590,6 +1613,7 @@ function spawnSection(
     Segment.runExtent.set(eid, runExtent);
     Segment.runEntryForce.set(eid, 0);
     Segment.geoEndNode.set(eid, 0);
+    Segment.velocityBoundary.set(eid, 0);
 }
 
 // ── geo nodes (section-local) ────────────────────────────────────────────────
@@ -2347,6 +2371,50 @@ export function spliceRunMembers(
     refreshRunEntryForce(ecs, runId);
 }
 
+function refreshVelocityBoundaryPointers(ecs: State): void {
+    for (const eid of ecs.query([Segment])) Segment.velocityBoundary.set(eid, 0);
+    const boundaryByStation = new Map<number, number>();
+    for (const run of rebuildRunProjection(ecs)) {
+        const window = sectionWindows(ecs).find((row) => row.id === run.id);
+        if (!window) continue;
+        for (let index = 0; index < run.segmentIds.length; index++)
+            boundaryByStation.set(
+                Math.fround(window.offset + run.stations[index + 1]!),
+                run.segmentIds[index]!,
+            );
+    }
+    for (const eid of ecs.query([StripKeyframe])) {
+        const segmentId = boundaryByStation.get(Math.fround(StripKeyframe.s.get(eid)));
+        if (segmentId === undefined) continue;
+        const segment = segmentAt(ecs, segmentId);
+        if (segment !== null) Segment.velocityBoundary.set(segment, StripKeyframe.id.get(eid) + 1);
+    }
+}
+
+/** @temporary S3–S7 — named access to the one existing terminating velocity datum. */
+export const VelocityBoundary = {
+    v(ecs: State, segmentId: number): number | undefined {
+        const segment = segmentAt(ecs, segmentId);
+        if (segment === null) return undefined;
+        const encoded = Segment.velocityBoundary.get(segment);
+        if (encoded === 0) return undefined;
+        const eid = stripKeyframeAt(ecs, encoded - 1);
+        return eid === null ? undefined : StripKeyframe.v.get(eid);
+    },
+};
+
+/** @temporary S3–S7 — named access to the track-start velocity datum. */
+export const StartVelocity = {
+    v(ecs: State): number | undefined {
+        const track = trackEntity(ecs);
+        if (track === null) return undefined;
+        const encoded = TrackStart.velocity.get(track);
+        if (encoded === 0) return undefined;
+        const eid = oneShotAt(ecs, encoded - 1);
+        return eid === null ? undefined : OneShot.value.get(eid);
+    },
+};
+
 /** Rebuild canonical members at every authored velocity station. Geometry stations subdivide
  * the affected Hermite edge exactly before its member projection is refreshed. */
 export function refreshVelocityRunMembers(ecs: State): void {
@@ -2369,6 +2437,7 @@ export function refreshVelocityRunMembers(ecs: State): void {
             .sort((a, b) => a - b);
         for (const station of local) splitGeoAt(ecs, run.id, station);
     }
+    refreshVelocityBoundaryPointers(ecs);
     reserveIds({ section: segments(ecs).map((segment) => segment.id) });
 }
 
@@ -2706,8 +2775,7 @@ export function setSectionLength(ecs: State, id: number, length: number): void {
  *  finding 6), never a `Strip` row, so there is no keyframe curve to sample here: a point
  *  event carries one scalar, not a curve. */
 export function entrySpeed(ecs: State): number {
-    const os = entryOneShot(ecs);
-    return os ? os.value : V0;
+    return StartVelocity.v(ecs) ?? V0;
 }
 
 /** author the track's initial speed by writing the track-start one-shot's `value` — moves
@@ -2851,6 +2919,8 @@ export interface SegmentSnapshot {
     runExtent: number;
     /** Ordered node index of this member's terminating geometry boundary, or -1 when absent. */
     geoEndNode: number;
+    /** Stable id of this member's terminating velocity keyframe, or -1 when absent. */
+    velocityBoundary?: number;
     nodes: NodeState[];
     points: {
         id: number;
@@ -2880,6 +2950,7 @@ export function snapshotSegment(ecs: State, sectionId: number): SegmentSnapshot 
                 ? -1
                 : Handle.order.get(node);
         })(),
+        velocityBoundary: Segment.velocityBoundary.get(eid) - 1,
         nodes: segmentHandles(ecs, sectionId).map((node) => ({
             order: Handle.order.get(node),
             x: Handle.pos.x.get(node),
@@ -2920,6 +2991,7 @@ export function restoreSegment(ecs: State, snap: SegmentSnapshot): void {
                   (node) => Handle.order.get(node) === snap.geoEndNode,
               );
     Segment.geoEndNode.set(eid, geoEnd === undefined ? 0 : geoEnd + 1);
+    Segment.velocityBoundary.set(eid, (snap.velocityBoundary ?? -1) + 1);
     for (const p of snap.points) spawnForce(ecs, snap.id, p.id, p.s, p.g, p.ease);
     refreshRunEntryForce(ecs, snap.run);
 }
@@ -3500,6 +3572,8 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
     for (const e of [...ecs.query([Strip])]) ecs.destroy(e);
     for (const e of [...ecs.query([StripKeyframe])]) ecs.destroy(e);
     for (const e of [...ecs.query([OneShot])]) ecs.destroy(e);
+    const track = trackEntity(ecs);
+    if (track !== null) TrackStart.velocity.set(track, 0);
     for (const s of snap.segments) {
         spawnSection(ecs, s.id, s.order, s.kind, s.length, s.run, s.runStation, s.runExtent);
         for (const n of s.nodes) spawnNode(ecs, s.id, n.order, n.x, n.y, n.theta, n.tangent);

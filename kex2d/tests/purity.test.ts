@@ -75,6 +75,7 @@ test("spliceRunMembers mutation phase has no projection-backed read", () => {
 const AUTHORED_COMPONENTS = [
     "Track",
     "Segment",
+    "TrackStart",
     "Section",
     "Handle",
     "Force",
@@ -422,6 +423,7 @@ describe("authored-component writer census — no second write path", () => {
         // letting the force-authoring arm pass vacuously on station-only `Force` writes.
         expect(AUTHORED_COMPONENTS).toContain("ForceBoundary");
         expect(AUTHORED_COMPONENTS).toContain("Segment");
+        expect(AUTHORED_COMPONENTS).toContain("TrackStart");
     });
 
     test("every un-gestured write-site lives in doc.ts, and doc.ts actually has one", () => {
