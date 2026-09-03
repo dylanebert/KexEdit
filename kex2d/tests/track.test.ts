@@ -303,6 +303,16 @@ test("interior velocity stations exactly subdivide geo edges with explicit bound
     expect(snapshotRun(ecs, run).members.map((member) => member.geoEndNode)).toEqual([1, 2, 3]);
 });
 
+test("a single canonical member publishes the identical row as its section span", () => {
+    const ecs = new State();
+    ecs.addSystem(BakeSystem);
+    const track = createTrack(ecs);
+    createSection(ecs, 0, SectionKind.Force, 10);
+    ecs.step(0);
+
+    expect(segmentSpans(ecs, track)).toEqual(sectionSpans(ecs, track));
+});
+
 test("three geo edges publish contiguous canonical spans over their run landing arc", () => {
     const ecs = new State();
     ecs.addSystem(BakeSystem);
