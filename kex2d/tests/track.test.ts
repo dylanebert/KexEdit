@@ -273,6 +273,27 @@ test("raw-column run splice splits boundary members and preserves trimmed orphan
     expect(Segment.runEntryForce.get(segmentAt(ecs, run)!)).toBe(entry + 1);
 });
 
+test("interior velocity stations exactly subdivide geo edges with explicit boundaries", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Geo, 0);
+    addNode(ecs, run, 0, 0);
+    addNode(ecs, run, 10, 0);
+
+    createStrip(ecs, 3, 7, 8);
+
+    const nodes = sectionHandles(ecs, run);
+    expect(nodes.map((node) => Handle.order.get(node))).toEqual([0, 1, 2, 3]);
+    expect(nodes.map((node) => Handle.pos.x.get(node))).toEqual([0, 3, 7, 10]);
+    expect(
+        nodes.every(
+            (node) => handleTangent(ecs, run, Handle.order.get(node))?.mode === TangentMode.Free,
+        ),
+    ).toBe(true);
+    expect(snapshotRun(ecs, run).members).toHaveLength(3);
+    expect(snapshotRun(ecs, run).members.map((member) => member.geoEndNode)).toEqual([1, 2, 3]);
+});
+
 test("velocity-only stations split a force run without creating force boundaries", () => {
     const ecs = new State();
     createTrack(ecs);

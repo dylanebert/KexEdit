@@ -218,6 +218,59 @@ export function splitCubic<T extends Point>(curve: Cubic<T>, t: number): [Cubic<
     ];
 }
 
+/** Evaluate a normalized-parameter cubic Hermite curve. */
+export function evalHermite<T extends Point>(curve: HermiteCurve<T>, t: number): T {
+    if (!Number.isFinite(t) || t < 0 || t > 1)
+        throw new RangeError("curve parameter must be inside [0, 1]");
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return pointAdd(
+        pointAdd(pointScale(curve.p0, 2 * t3 - 3 * t2 + 1), pointScale(curve.m0, t3 - 2 * t2 + t)),
+        pointAdd(pointScale(curve.p1, -2 * t3 + 3 * t2), pointScale(curve.m1, t3 - t2)),
+    );
+}
+
+function hermiteSpeed(curve: HermiteCurve<readonly number[]>, t: number): number {
+    const t2 = t * t;
+    let sum = 0;
+    for (let i = 0; i < curve.p0.length; i++) {
+        const d =
+            (6 * t2 - 6 * t) * curve.p0[i]! +
+            (3 * t2 - 4 * t + 1) * curve.m0[i]! +
+            (-6 * t2 + 6 * t) * curve.p1[i]! +
+            (3 * t2 - 2 * t) * curve.m1[i]!;
+        sum += d * d;
+    }
+    return Math.sqrt(sum);
+}
+
+function hermiteLength(curve: HermiteCurve<readonly number[]>, end: number): number {
+    // Composite Simpson integration is deterministic and converges rapidly for a cubic's speed.
+    const steps = 128;
+    const h = end / steps;
+    let sum = hermiteSpeed(curve, 0) + hermiteSpeed(curve, end);
+    for (let i = 1; i < steps; i++) sum += (i & 1 ? 4 : 2) * hermiteSpeed(curve, i * h);
+    return (sum * h) / 3;
+}
+
+/** Invert a fraction of a cubic Hermite curve's arclength to normalized parameter. */
+export function invertHermiteArclength(
+    curve: HermiteCurve<readonly number[]>,
+    fraction: number,
+): number {
+    if (!Number.isFinite(fraction) || fraction <= 0 || fraction >= 1)
+        throw new RangeError("arclength fraction must be inside (0, 1)");
+    const target = hermiteLength(curve, 1) * fraction;
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 48; i++) {
+        const mid = (lo + hi) / 2;
+        if (hermiteLength(curve, mid) < target) lo = mid;
+        else hi = mid;
+    }
+    return (lo + hi) / 2;
+}
+
 /** Split a normalized-parameter cubic Hermite curve exactly. The returned
  * derivatives are with respect to each half's normalized parameter. */
 export function splitHermite<T extends Point>(
