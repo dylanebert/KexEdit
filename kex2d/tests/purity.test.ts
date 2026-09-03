@@ -434,7 +434,13 @@ describe("authored-component writer census — no second write path", () => {
         expect(commands).toContain("setStrip(ecs, op.id, op.start, op.end, op.value)");
         expect(commands).toContain("setStripKeyframe(ecs, op.id, op.s, op.v)");
         expect(commands).toContain("setOneShotValue(ecs, os.id, op.value)");
-        expect(commands).toContain("StartVelocity.v(ecs)");
+        // the start class's owner is the one-shot ENTITY, and the S2d4 address is a read the
+        // `track.ts` read path (`entrySpeed`) already routes through. A command-layer write
+        // gated on the pointer instead of the entity can mint a second start owner, so the
+        // arm pins the entity gate here and the behaviour in `commands.test.ts`.
+        expect(commands).not.toContain("StartVelocity.v(ecs) !== undefined");
+        const track = readFileSync(join(srcRoot, "track.ts"), "utf8");
+        expect(track).toContain("return StartVelocity.v(ecs) ?? V0;");
     });
 
     test("foreign geometry writers route through the canonical position setter", () => {

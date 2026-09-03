@@ -70,7 +70,6 @@ import {
     setTrackFriction,
     setTrackResistance,
     stationTaken,
-    StartVelocity,
     stripAt,
     stripCoversOneEdge,
     StripKeyframe,
@@ -654,9 +653,18 @@ function applyAnyOp(ecs: State, h: History, op: Op): OpResult {
         // exists, created when it doesn't —
         // `entryOneShot`'s own "first hit wins" reading is what `addOneShot` never re-checks
         // (a real UI gesture only offers create when none exists).
+        // S2d6: `StartVelocity.v` (`track.ts`) is the NAMED track-start boundary address the
+        // read path already routes through (`entrySpeed`), and it resolves the same storage the
+        // entity carries — so the address is a read, never the thing that licenses a write. The
+        // create branch is gated on the ENTITY's absence, not on the pointer resolving: a stale
+        // or zeroed `TrackStart.velocity` with a live one-shot would otherwise fall through to
+        // `addOneShot` and mint a SECOND start owner, which is exactly the dual-ownership the
+        // boundary is supposed to forbid (`entryOneShot`'s "first hit wins" then picks between
+        // them nondeterministically). The behavioural arm is `commands.test.ts`'s
+        // "start-speed never mints a second start owner".
         case "start-speed": {
             const os = entryOneShot(ecs);
-            if (StartVelocity.v(ecs) !== undefined && os) {
+            if (os) {
                 beginOneShotMove(ecs, os.id);
                 setOneShotValue(ecs, os.id, op.value);
                 commit(h);

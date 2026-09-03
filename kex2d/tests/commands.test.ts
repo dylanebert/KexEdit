@@ -51,6 +51,9 @@ import {
     setStripKeyframe,
     setTrackFriction,
     setTrackResistance,
+    StartVelocity,
+    OneShot,
+    TrackStart,
     Strip,
     stripAt,
     StripKeyframe,
@@ -445,6 +448,33 @@ describe("commands: differential arm — command layer vs. direct setter calls",
             commit(h);
         });
         expect(result.applied).toBe(true);
+    });
+
+    // S2d6: the start class keeps its single shipped storage, so the command layer must never
+    // mint a SECOND start owner. The hazard is a create branch gated on the S2d4 pointer
+    // (`StartVelocity.v`) rather than on the entity: a zeroed or stale `TrackStart.velocity`
+    // beside a live one-shot then falls through to `addOneShot`, and `entryOneShot`'s "first
+    // hit wins" arbitrates between two owners. Red-first: with the branch gated on the
+    // accessor and the pointer zeroed, the second apply mints a second one-shot and the count
+    // below reads 2.
+    test("start-speed never mints a second start owner, even with a stale boundary pointer", () => {
+        const state = fixture();
+        const h = createHistory();
+        const track = trackEntity(state);
+        if (track === null) throw new Error("fixture missing track");
+
+        applyOp(state, h, { type: "start-speed", value: 18 });
+        expect([...state.query([OneShot])]).toHaveLength(1);
+
+        // zero the temporary address without touching the authored storage it points at
+        TrackStart.velocity.set(track, 0);
+        expect(StartVelocity.v(state)).toBeUndefined();
+
+        const again = applyOp(state, h, { type: "start-speed", value: 21 });
+        expect(again.applied).toBe(true);
+        const owners = [...state.query([OneShot])];
+        expect(owners).toHaveLength(1);
+        expect(OneShot.value.get(owners[0] as number)).toBe(21);
     });
 
     test("friction", () => {
