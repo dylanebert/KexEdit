@@ -17,6 +17,7 @@ import { appendMenu, keyframeMenu, rulerMenu, stripMenu } from "./menus";
 import {
     activateForce,
     activateStripKf,
+    activateSegment,
     activeKind,
     beginDrag,
     closeForceMenu,
@@ -40,6 +41,7 @@ import {
     selectForce,
     selectForces,
     selectOneShot,
+    selectSegment,
     selectSection,
     selectStrip,
     selectStripKf,
@@ -65,8 +67,10 @@ import {
     commitLength,
     deleteOneShot,
     deleteStrips,
+    deleteSegment as commitDeleteSegment,
     history,
     setForcesEase,
+    setSegmentBoundaryValue as commitSegmentBoundaryValue,
 } from "./history";
 import { forceKeyAct } from "./keys";
 import { classifyKfHit, type KfHitCandidate, type KfKind } from "./kf-hit";
@@ -144,6 +148,9 @@ import {
     forceEase,
     Handle,
     minForceExtent,
+    Segment,
+    SegmentForceBoundary,
+    segmentAt,
     SectionKind,
     type SectionSpan,
     sectionForces,
@@ -620,6 +627,79 @@ const spans = $derived.by(() => {
     void tick;
     return eid === null ? [] : sectionSpans(ecs, eid);
 });
+
+interface ForceSegmentView {
+    id: number;
+    offset: number;
+    len: number;
+    startG: number;
+    endG: number;
+}
+
+/** One timeline subject per canonical force segment. Boundary values are read from the
+ * terminating-boundary accessor; the predecessor supplies the displayed start knob. */
+const forceSegments = $derived.by((): ForceSegmentView[] => {
+    void tick;
+    if (eid === null) return [];
+    const rows = segmentSpans(ecs, eid);
+    const out: ForceSegmentView[] = [];
+    for (const row of rows) {
+        const member = segmentAt(ecs, row.id);
+        if (member === null || Segment.kind.get(member) !== SectionKind.Force) continue;
+        const runId = Segment.run.get(member);
+        const profile = sectionForces(ecs, runId).map((point) => ({ s: point.s, g: point.g }));
+        const startStation = Segment.runStation.get(member);
+        const startG = sampleForce(profile, startStation);
+        const endG = SegmentForceBoundary.g(ecs, row.id) ?? sampleForce(profile, startStation + row.len);
+        out.push({ id: row.id, offset: row.offset, len: row.len, startG, endG });
+    }
+    return out;
+});
+const selSegment = $derived.by(() => {
+    void tick;
+    return editor.segment;
+});
+const selSegmentSet = $derived.by(() => {
+    void tick;
+    return editor.segments.ids;
+});
+const activeForceSegment = $derived(
+    selSegment === null ? null : (forceSegments.find((segment) => segment.id === selSegment) ?? null),
+);
+const selectedForceRuns = $derived.by((): Set<number> => {
+    const out = new Set<number>();
+    for (const id of selSegmentSet) {
+        const member = segmentAt(ecs, id);
+        if (member !== null) out.add(Segment.run.get(member));
+    }
+    return out;
+});
+
+function selectForceSegment(e: PointerEvent, id: number): void {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    if (e.shiftKey) selectSegment(id, "toggle");
+    else if (selSegmentSet.has(id)) activateSegment(id);
+    else selectSegment(id);
+}
+
+function segmentKnobDown(e: PointerEvent, segment: ForceSegmentView): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectSegment(segment.id);
+    let value = segment.endG;
+    const move = (event: PointerEvent): void => {
+        value = yToG(clamp(event.clientY - host.getBoundingClientRect().top, TOP, h - BOT_PAD));
+    };
+    const up = (): void => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        commitSegmentBoundaryValue(history, ecs, segment.id, value);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up, { once: true });
+}
 // the interior section boundaries on the chart's own axis — drawn as chart guides, and the
 // landmarks every s-axis snap resolves against. each non-last span's native exit
 // (`offset + len`), so a boundary needs no projection in either domain. Reads through `uOfLen`
@@ -1845,6 +1925,7 @@ let marqueeRect: Rect | null = $state(null); // canvas-local px; drawn as the SV
 let marqueeArmed = false; // past the dead zone → the rect is live AND the canvas holds capture
 let marqueeShift = false;
 let marqueePointer = -1; // the pressed pointer, captured on arm (not on down)
+let pressedSegment: number | null = null;
 // ── the chart's keyframe press path, `freshBandStrips`/`bandDown`'s own law one surface over.
 //
 // A `.fhit` circle is positioned from the tick-paced `forcePts`/`stripKfPts` `$derived`s, so a
@@ -1906,8 +1987,20 @@ function kfSnapshot(
         x0: uPx(uOfLen(row.offset)),
         x1: uPx(uOfLen(row.offset + row.len)),
     }));
+    const active = activeForceSegment;
+    const knobs = active
+        ? [
+              { id: active.id, edge: "start" as const, x: uPx(uOfLen(active.offset)), y: yOf(active.startG) },
+              {
+                  id: active.id,
+                  edge: "end" as const,
+                  x: uPx(uOfLen(active.offset + active.len)),
+                  y: yOf(active.endG),
+              },
+          ]
+        : [];
     return {
-        cand: { knobs: [], points, spans: segmentRows },
+        cand: { knobs, points, spans: segmentRows },
         at: (kind, id) => byKind.get(kind)?.find((p) => p.id === id),
     };
 }
@@ -1944,9 +2037,12 @@ function chartDown(e: PointerEvent): void {
             return;
         }
     }
-    // Segment subjects intentionally remain inert until S3c3. Body and boundary presses still
-    // arm the ordinary marquee, so a release preserves today's empty-click grammar while a drag
-    // begun over either span is not consumed by the future body subject.
+    if (hit.kind === "knob" && hit.edge === "end") {
+        const segment = forceSegments.find((row) => row.id === hit.id);
+        if (segment) segmentKnobDown(e, segment);
+        return;
+    }
+    pressedSegment = hit.kind === "body" || hit.kind === "boundary" ? hit.id : null;
     marqueeDown(e);
 }
 
@@ -2003,6 +2099,14 @@ function marqueeUp(): void {
     const shift = marqueeShift;
     marqueeCancel(); // detach listeners + clear rect/state
     if (!armed || !rect) {
+        if (pressedSegment !== null) {
+            const id = pressedSegment;
+            pressedSegment = null;
+            if (shift) selectSegment(id, "toggle");
+            else if (selSegmentSet.has(id)) activateSegment(id);
+            else selectSegment(id);
+            return;
+        }
         // a plain click on empty chart deselects EVERYTHING (shift-click preserves) — S4's
         // one empty-click grammar: the chart body, the band, and the ruler alike all clear
         // every member through `deselectAll()`. `chartCreate`'s T2 branch (double-click a
@@ -3924,6 +4028,27 @@ onMount(() => {
             return;
         }
         // the track-start one-shot's own select/delete — Escape/Delete only, `editor.strip`'s
+        if (activeKind() === "segment") {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                selectSegment(null);
+            } else if (bound(BINDINGS.remove, e.key) && editor.segment !== null) {
+                e.preventDefault();
+                commitDeleteSegment(history, ecs, editor.segment);
+                selectSegment(null);
+            } else if (
+                editor.hover === "timeline" &&
+                editor.segments.ids.size === 1 &&
+                (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+                editor.segment !== null
+            ) {
+                e.preventDefault();
+                const g = SegmentForceBoundary.g(ecs, editor.segment) ?? activeForceSegment?.endG;
+                if (g !== undefined)
+                    commitSegmentBoundaryValue(history, ecs, editor.segment, g + (e.key === "ArrowUp" ? 0.1 : -0.1));
+            }
+            return;
+        }
         // point-kind twin (S3): no drag, no keyframe sub-selection to peel first. the Escape rung
         // is `controls.ts`'s `oneShotEscape` (S2, the dismissal law, editor-ui.md § Multi context
         // UI): a oneShot-active set is single-kind by construction (every add-path reassigns
@@ -4409,9 +4534,8 @@ onMount(() => {
                 />
             {/if}
             <!-- the chart is the shared keyframe surface: strip double-click creates a strip
-                 keyframe; force diamonds remain selectable and value-draggable, while force
-                 insertion is reserved for segment authoring. a bare click on empty chart
-                 deselects. the diamonds sit above it. -->
+                 keyframe; force segment end knobs are value-draggable, while force insertion is
+                 reserved for the structural stage. a bare click on empty chart deselects. -->
             {#if eid !== null && sTotal > 0}
                 <rect
                     class="chartzone"
@@ -4426,6 +4550,45 @@ onMount(() => {
                     role="presentation"
                 />
             {/if}
+            <!-- Canonical force-segment bodies. Each member owns one body and its terminating
+                 boundary line; section clips remain the geo lane until the canvas stage. -->
+            {#if eid !== null && sTotal > 0}
+                <g class="force-segments" clip-path="url(#fclip)">
+                    {#each forceSegments as segment (segment.id)}
+                        {@const sx0 = uPx(uOf(segment.offset))}
+                        {@const sx1 = uPx(uOf(segment.offset + segment.len))}
+                        <rect
+                            class="force-segment-body"
+                            class:sel={selSegmentSet.has(segment.id)}
+                            x={sx0}
+                            y={TOP}
+                            width={Math.max(1, sx1 - sx0)}
+                            height={Math.max(0, h - BOT_PAD - TOP)}
+                            onpointerdown={(event) => selectForceSegment(event, segment.id)}
+                            role="button"
+                            tabindex="-1"
+                            aria-label="Force segment"
+                        />
+                        <line class="segment-boundary" x1={sx1} y1={TOP} x2={sx1} y2={h - BOT_PAD} />
+                    {/each}
+                    {#if activeForceSegment}
+                        {@const ax0 = uPx(uOf(activeForceSegment.offset))}
+                        {@const ax1 = uPx(uOf(activeForceSegment.offset + activeForceSegment.len))}
+                        <circle class="segment-knob start" cx={ax0} cy={yOf(activeForceSegment.startG)} r={FMARKER_R} />
+                        <circle
+                            class="segment-knob end"
+                            cx={ax1}
+                            cy={yOf(activeForceSegment.endG)}
+                            r={FMARKER_R}
+                            onpointerdown={(event) => segmentKnobDown(event, activeForceSegment)}
+                            role="slider"
+                            tabindex="-1"
+                            aria-label="Force segment end value"
+                            aria-valuenow={activeForceSegment.endG}
+                        />
+                    {/if}
+                </g>
+            {/if}
             <!-- the section clip strip: one clip per section in the marker lane, kind-
                  colored + labeled, selecting editor.section (the same selection as the
                  viewport span). a force clip's right edge is its extent trim (below). -->
@@ -4439,7 +4602,7 @@ onMount(() => {
                             {@const isF = c.kind === SectionKind.Force}
                             <rect
                                 class="clip {isF ? 'force' : 'geo'}"
-                                class:sel={selSections.has(c.id)}
+                                class:sel={selSections.has(c.id) || (isF && selectedForceRuns.has(c.id))}
                                 class:wash={c.id === washSection}
                                 x={x0 + 0.5}
                                 y={RULER_H + CLIP_PAD}
@@ -4630,6 +4793,7 @@ onMount(() => {
                             class:driven={optClip !== null &&
                                 optClip.id === p.section &&
                                 lockedSet.has(p.id)}
+                            class:orphan={p.s > p.len}
                         >
                             <circle
                                 class="fhit"
@@ -5449,6 +5613,35 @@ onMount(() => {
         cursor: default;
     }
 
+    .force-segment-body {
+        fill: transparent;
+        pointer-events: none;
+    }
+    .force-segment-body:hover,
+    .force-segment-body.sel {
+        fill: color-mix(in srgb, var(--force) 9%, transparent);
+    }
+    .segment-boundary {
+        stroke: color-mix(in srgb, var(--muted) 55%, transparent);
+        stroke-width: 1;
+        pointer-events: none;
+    }
+    .segment-knob {
+        fill: var(--surface-raised);
+        stroke: var(--force);
+        stroke-width: 1.5;
+    }
+    .segment-knob.start {
+        pointer-events: none;
+        opacity: 0.7;
+    }
+    .segment-knob.end {
+        cursor: grab;
+    }
+    .segment-knob.end:active {
+        cursor: grabbing;
+    }
+
     /* force points: a filled diamond (the keyframe idiom — authored input), light so it
        reads over the accent curve, selected turns accent with a fitted ring. the diamond
        is visual-only; an invisible fat circle around it (FHIT_R) carries the grab + hover
@@ -5478,6 +5671,9 @@ onMount(() => {
     .fpt.hovered:not(.sel):not(.driven) .fmarker {
         fill: #fff;
         stroke: var(--fg);
+    }
+    .fpt:not(.orphan) .fmarker {
+        opacity: 0;
     }
     .fpt.sel .fmarker {
         fill: var(--accent);

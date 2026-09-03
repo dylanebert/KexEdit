@@ -84,7 +84,15 @@ export function toggleMember(sel: Selection, id: number): void {
 
 /** the selection kinds — one per subject type. `start` and `oneShot` are singleton kinds
  *  (at most one of each per track), carried with a constant id 0. */
-export type SelKind = "node" | "force" | "section" | "strip" | "stripKf" | "start" | "oneShot";
+export type SelKind =
+    | "node"
+    | "force"
+    | "segment"
+    | "section"
+    | "strip"
+    | "stripKf"
+    | "start"
+    | "oneShot";
 
 /** a typed subject reference in the unified selection set. */
 export interface Member {
@@ -235,6 +243,8 @@ interface EditorState {
     /** the selected force keyframes — a derived view over the unified set, filtered to `"force"`.
      *  addressed by stable `Force.id`. */
     forces: Selection;
+    /** canonical force segments selected on the timeline, addressed by stable Segment.id. */
+    segments: Selection;
     /** the selected sections — a derived view over the unified set, filtered to `"section"`.
      *  addressed by stable `Section.id`. */
     sections: Selection;
@@ -251,6 +261,8 @@ interface EditorState {
     /** the active force keyframe id, or null — a derived read: the active member's id when its
      *  kind is `"force"`, else null. */
     force: number | null;
+    /** the active canonical force segment id, or null. */
+    segment: number | null;
     /** the active section id, or null — a derived read: the active member's id when its kind is
      *  `"section"`, else null. */
     section: number | null;
@@ -532,6 +544,9 @@ export const editor: EditorState = {
     get forces(): Selection {
         return kindView("force");
     },
+    get segments(): Selection {
+        return kindView("segment");
+    },
     get sections(): Selection {
         return kindView("section");
     },
@@ -552,6 +567,12 @@ export const editor: EditorState = {
     },
     set force(v: number | null) {
         selectForce(v);
+    },
+    get segment(): number | null {
+        return kindActiveId("segment");
+    },
+    set segment(v: number | null) {
+        selectSegment(v);
     },
     get section(): number | null {
         return kindActiveId("section");
@@ -1099,6 +1120,11 @@ export function selectForces(ids: number[], active: number | null): void {
     selectSet("force", ids, active);
 }
 
+/** Replace the canonical force-segment membership atomically (marquee/programmatic selection). */
+export function selectSegments(ids: number[], active: number | null): void {
+    selectSet("segment", ids, active);
+}
+
 /** enter tangent-edit mode on a node — the summon (double-click). collapses the node selection to
  *  this one subject (clearing the other kinds) and layers the edit sub-mode on it, so its handles
  *  render and grab. node 0 (the entry anchor) is editable too — it exposes its single out-handle
@@ -1128,6 +1154,17 @@ export function selectForce(id: number | null, mode: SelectMode = "replace"): vo
  *  member (the grammar's Blender active-object model, over a set). */
 export function activateForce(id: number): void {
     activateMember("force", id);
+}
+
+/** Select a canonical force segment. Geo clips intentionally continue to use section selection. */
+export function selectSegment(id: number | null, mode: SelectMode = "replace"): void {
+    if (id === null || mode === "replace") selectSingle("segment", id);
+    else toggleSingle("segment", id);
+}
+
+/** Promote a selected segment to active without changing membership. */
+export function activateSegment(id: number): void {
+    activateMember("segment", id);
 }
 
 /** select a section by stable id. "replace" (default) collapses the section set to `id` (or clears

@@ -345,6 +345,8 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Timeline.svelte", selector: ".nav-window:active", value: "grabbing" },
     { file: "Timeline.svelte", selector: ".nav-edge", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".clip", value: "pointer" },
+    { file: "Timeline.svelte", selector: ".segment-knob.end", value: "grab" },
+    { file: "Timeline.svelte", selector: ".segment-knob.end:active", value: "grabbing" },
     { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
     { file: "Timeline.svelte", selector: ".clip-trim", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
