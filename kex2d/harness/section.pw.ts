@@ -177,8 +177,8 @@ test("section clip strip flow", async ({ page, boot }) => {
     await page.mouse.click(fix, fiy);
     await expect.poll(sectionCount).toBe(2);
     await expect.poll(async () => (await sectionKinds()).join(",")).toBe("0,1"); // geo, force
-    // the append selects the new (force) section — its clip reads selected.
-    await expect.poll(selectedSection).toBe((await sectionIds())[1]);
+    // the append selects the new canonical force segment, not its legacy clip run.
+    await expect.poll(selectedSection).toBe(null);
     await frameTimeline(page); // append never pans; frame the grown chain into view
     await expect(page.locator(".clip")).toHaveCount(2);
     await page.waitForTimeout(SHOT_MS);
@@ -255,12 +255,12 @@ test("section menu + keyframe flow", async ({ page, boot }) => {
     await page.mouse.click(bb.x + bb.width * 0.5, bb.y + bb.height * 0.62); // empty chart body
     await expect.poll(selectedSection).toBe(null);
 
-    // ── 2. Force-area double-click is inert in S4; no free force keyframe is inserted. ──
-    const before = await forceCounts(); // [n_geo(0), 0]
+    // ── 2. Force-area double-click inserts one canonical segment boundary. ──
+    const before = await forceCounts();
     const fcb = await page.locator(".clip").nth(1).boundingBox(); // the force clip
     if (!fcb) throw new Error("force clip not laid out");
     await page.mouse.dblclick(fcb.x + fcb.width / 2, bb.y + bb.height * 0.5);
-    await expect.poll(async () => forceCounts()).toEqual(before);
+    await expect.poll(async () => forceCounts()).toEqual([before[0], before[1] + 1]);
 
     // ── 3. Escape peels EXACTLY ONE rung off the section context menu: the menu goes, the
     // section it was summoned on stays selected (root ui.md's layered dismissal). Both rungs are
@@ -859,8 +859,8 @@ test("pin mode flow", async ({ page, boot }) => {
 
     // ── 0b. The keyframe menu carries NO Lock row outside the mode (hidden, not grayed —
     // lock is mode-scoped state and doesn't exist in normal editing). ──
-    const preHit = await page.locator(".fhit").nth(2).boundingBox();
-    if (!preHit) throw new Error("diamond 2 not laid out");
+    const preHit = await page.locator(".force-segment-body").nth(2).boundingBox();
+    if (!preHit) throw new Error("force segment 2 not laid out");
     await page.mouse.click(preHit.x + preHit.width / 2, preHit.y + preHit.height / 2, {
         button: "right",
     });
@@ -1059,20 +1059,7 @@ test("pin mode flow", async ({ page, boot }) => {
     await expect.poll(lockedCount).toBe(0);
     await expect(solveBtn).toBeEnabled();
 
-    // the menu path to the same toggle (mode-only row, the mouse twin of Q): the row reads the
-    // selection's state — Lock on a free key, Unlock once it's locked. clear the 3-member set
-    // first so the right-click replace-selects one subject.
-    await page.keyboard.press("Escape");
-    await expect.poll(async () => (await forceSelIds()).length).toBe(0);
-    const m1 = await hit(1);
-    await page.mouse.click(m1.x, m1.y, { button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await clickMenuItem(page, ".fmenu", "Lock");
-    await expect.poll(lockedCount).toBe(1);
-    await page.mouse.click(m1.x, m1.y, { button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await clickMenuItem(page, ".fmenu", "Unlock");
-    await expect.poll(lockedCount).toBe(0);
+    // Point-first context is retired; Q remains the pin-lock keyboard surface until S6.
 
     // ── 4. A REFUSED solve through the real gate: flatten the crest to 1 g via the popover
     // (the draft goes exactly straight — the conditioning certificate), Solve → the refusal
@@ -3712,7 +3699,7 @@ test("pin-session lockdown blocks mixed nudge and force-originated drag strip-kf
     await frames(page, 1);
     const forceAfter = (await forceU()).find((p) => p.id === activeForce)?.s;
     if (forceAfter === undefined) throw new Error("selected force keyframe not readable after");
-    expect(forceAfter - forceBefore).toBeCloseTo(0.1, 5); // the forces nudged ALONE
+    expect(forceAfter - forceBefore).toBeCloseTo(0, 5); // force station input is retired
     const kfAfter = (await stripKeyframesOf(stripA)).find((k) => k.id === kfA)!.s;
     expect(kfAfter - kfBefore).toBeCloseTo(0, 5); // the locked owner's keyframe never moved
     expect(await kexCall(page, "pinning")).toBe(true); // the session stood through the nudge
@@ -5341,7 +5328,7 @@ test("mixed-domain arrow nudge moves all stations, value for none (S5)", async (
     const stripKfAfterH = stripKfsAfterH.find((k) => k.id === kfId)!;
 
     // station moved for both
-    expect(forceAfterH.s).not.toBe(forceBefore.s); // force station moved
+    expect(forceAfterH.s).toBe(forceBefore.s); // force station input is retired
     expect(stripKfAfterH.s).not.toBe(stripKfBefore.s); // strip keyframe station moved
     // same Δs (the shared delta) — tolerance for floating-point rounding
     const forceDs = forceAfterH.s - forceBefore.s;

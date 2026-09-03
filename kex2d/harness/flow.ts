@@ -758,3 +758,10 @@ export async function marqueeDrag(
     await page.mouse.up();
     if (shift) await page.keyboard.up("Shift");
 }
+
+/** Right-click a canonical force segment through the chart-wide hit router. */
+export async function rightClickForceSegment(page: Page, index = 0): Promise<void> {
+    const box = await page.locator(".force-segment-body").nth(index).boundingBox();
+    if (!box) throw new Error(`force segment ${index} not laid out`);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+}

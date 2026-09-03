@@ -1045,8 +1045,11 @@ test("context menu stays in the viewport near the bottom edge", async ({ page, b
     // the low keyframe really is near the bottom — otherwise this test can't exercise the overflow.
     expect(lowestY).toBeGreaterThan(vp.height * 0.6);
 
-    const target = await forcePointAt(page, lowest);
-    await page.mouse.click(target.x, target.y, { button: "right" });
+    const target = await page.locator(".force-segment-body").nth(lowest).boundingBox();
+    if (!target) throw new Error("force segment not laid out");
+    await page.mouse.click(target.x + target.width / 2, target.y + target.height - 2, {
+        button: "right",
+    });
     await expect(page.locator(".fmenu")).toBeVisible();
     const mb = await page.locator(".fmenu").boundingBox();
     if (!mb) throw new Error("force keyframe menu not laid out");

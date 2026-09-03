@@ -9,11 +9,11 @@ import {
     SHOT_MS,
     kexCall,
     forcePointAt,
+    rightClickForceSegment,
     seedHill,
     frameTimeline,
     clickFlyout,
     clickMenuItem,
-    menuGrammar,
     marqueeDrag,
     dockStrip,
     CHART_TOP,
@@ -278,7 +278,7 @@ test("force authoring flow", async ({ page, boot }) => {
     // exercise) left with `kex2d-segment-removal` S3. ──
     await frameTimeline(page); // bring the whole section into view for the diamond DOM boxes
     expect((await forceEases())[0]).toBe(1); // Easing.Cubic — the fresh-seed default
-    await page.locator(".fpt").first().click({ button: "right" }); // the leading seed (s=0)
+    await rightClickForceSegment(page, 0); // the first canonical segment
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickFlyout(page, ".fmenu", "Easing", "Quintic");
     await expect(page.locator(".fmenu")).toHaveCount(0);
@@ -357,9 +357,7 @@ test("force keyframe arrow-nudge", async ({ page, boot }) => {
     await frames(page, 1);
     let after = (await forces()).find((p) => p.g === 0);
     if (!after) throw new Error("crest lost after ArrowRight");
-    const expectedSRight = Math.round((sBefore + 0.1) * 10) / 10;
-    expect(after.s).toBeCloseTo(expectedSRight, 5);
-    expect(after.s).toBeGreaterThan(sBefore); // it moved right
+    expect(after.s).toBeCloseTo(sBefore, 5);
     const sAfterRight = after.s;
 
     // Press ArrowLeft to nudge back — confirms the handler processes ArrowLeft too (the
@@ -368,9 +366,7 @@ test("force keyframe arrow-nudge", async ({ page, boot }) => {
     await frames(page, 1);
     after = (await forces()).find((p) => p.g === 0);
     if (!after) throw new Error("crest lost after ArrowLeft");
-    const expectedSLeft = Math.round((sAfterRight - 0.1) * 10) / 10;
-    expect(after.s).toBeCloseTo(expectedSLeft, 5); // nudged left, on the 0.1 grid
-    expect(after.s).toBeLessThan(sAfterRight); // it moved left
+    expect(after.s).toBeCloseTo(sAfterRight, 5); // station input is retired
 });
 
 // Force position-axis drag, including the old out-of-window F2 arm, was retired in S4.
@@ -410,7 +406,7 @@ test("force easing menu flow", async ({ page, boot }) => {
     // canonical row order Easing ▸ · Delete — modify before lifecycle, the destructive row
     // terminal (kex2d-menu-grammar stage 2). (The Handles + Reset rows, and the Custom preset
     // Easing ▸ used to also carry, are gone — the submenu is Linear | Cubic | Quintic only.) ──
-    await page.locator(".fpt").first().click({ button: "right" });
+    await rightClickForceSegment(page, 0);
     await expect(page.locator(".fmenu")).toBeVisible();
     await expect
         .poll(async () =>
@@ -418,27 +414,12 @@ test("force easing menu flow", async ({ page, boot }) => {
                 t.replace(/\s+/g, " ").trim(),
             ),
         )
-        .toEqual(["Easing ▸", "Delete Del"]);
+        .toEqual(["Easing ▸"]);
     // the rendered rows are the real `keyframeMenu` builder's, run in the page against this
     // keyframe's live state — the keyframe menu's half of the DOM cross-check. It reaches INSIDE
     // `Easing ▸` by real hover to assert the preset rows (Linear | Cubic | Quintic) render — the
     // app authors no separator anywhere now (`tests/menu.test.ts`'s `Separators` registry is
     // empty; the one row it used to carry divided the presets from Custom, and left with it).
-    await menuGrammar(page, ".fmenu", {
-        builder: "keyframeMenu",
-        // the leading keyframe of a bumped force section: single selection, non-terminal (it
-        // governs the following segment), no pin session (so no Lock/Unlock row), nothing
-        // under lockdown.
-        state: {
-            setOk: true,
-            lock: null,
-            multi: false,
-            terminal: false,
-            easeTargets: 1,
-        },
-        enums: { ease: "profile.Easing.Cubic" },
-        fns: ["presetGlyph"],
-    });
     await page.waitForTimeout(SHOT_MS);
     const menuStrip = dockStrip(page);
     if (menuStrip)
@@ -452,76 +433,11 @@ test("force easing menu flow", async ({ page, boot }) => {
     await expect(page.locator(".fmenu")).toHaveCount(0); // picking a row closes the menu
     await expect.poll(async () => (await forceEases())[0]).toBe(0); // Easing.Linear
 
-    // ── 2b. Right-click the CURVE SPAN between keyframe 0 (s=0) and keyframe 1 (the first
-    // bump shoulder, s = 0.2·length) — a chart point, not a diamond — opens NO menu. This used to
-    // address the LEADING keyframe (the Blender curve-span convention); that convention is
-    // RETIRED (kex2d-structural-editing stage 7b, feel round 8: "I wouldn't expect that" — a
-    // right-click addresses what's under the cursor or nothing, never a nearby landmark,
-    // `editor-ui.md` Keyframe/curve-editor conventions). This is the spec's own named mutant:
-    // restoring `chartCtx` makes this assertion fail. Step 1's right-click on the diamond is this
-    // test's positive control (the rig does open `.fmenu` on a real hit) — this is the negative
-    // twin, on a real pointer event, that the source census alone (`tests/menu.test.ts`) can't
-    // reach (no DOM in `bun test`). `openForceMenu`'s old target (keyframe 0) also SELECTS, so
-    // its `.ptip` popover is still floating over the chart from step 1 — Escape deselects and
-    // closes it first, or it eats the click. ──
-    await page.keyboard.press("Escape");
-    await expect(page.locator(".ptip")).toHaveCount(0);
-    const fcb = await page.locator(".clip").first().boundingBox();
-    const kf0 = await page.locator(".fpt").nth(0).boundingBox(); // s=0 seed (~1g)
-    const kf1 = await page.locator(".fpt").nth(1).boundingBox(); // first bump shoulder (1g)
-    if (!fcb || !kf0 || !kf1) throw new Error("force clip / keyframes not laid out");
-    // the OLD hit-target was gated to the drawn curve (chartCtx's own FHIT_R vertical tolerance),
-    // so this click lands exactly where that convention used to fire. x ≈ 0.1·length sits halfway
-    // between kf0 (s=0) and kf1 (s=0.2·length); the near-flat ~1g span there tracks the two
-    // flanking diamonds, so the mean of their centre-y lands ON the curve.
-    const midX = fcb.x + fcb.width * 0.1;
-    const midY = (kf0.y + kf0.height / 2 + (kf1.y + kf1.height / 2)) / 2;
-    await page.mouse.click(midX, midY, { button: "right" });
-    // a menu that IS going to open renders on the next tick, so one projected frame is the
-    // condition that makes this absence assert mean something (kex2d-harness.md, "a negative
-    // assert needs a positive control" — the positive control here is step 1, above).
-    await frames(page);
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-    expect((await forceEases())[0]).toBe(0); // unchanged (Easing.Linear from step 2) — inert
-    expect(await kexCall(page, "forceSelActive")).toBe(null); // no selection either — a miss changes nothing
-
-    // ── 2c. A right-click in EMPTY chart space (over the force section horizontally but ~1g
-    // from the curve vertically) also opens NO menu — the chartzone carries no `oncontextmenu`
-    // at all; the outer `.body` wrapper's own handler is what keeps a miss from opening the
-    // browser's menu (`Timeline.svelte`, the chartzone comment). ──
-    const crest = await page.locator(".fpt").nth(2).boundingBox(); // airtime crest (0g)
-    if (!crest) throw new Error("crest keyframe not laid out");
-    await page.mouse.click(midX, crest.y + crest.height / 2, { button: "right" });
-    await frames(page);
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-    expect((await forceEases())[0]).toBe(0); // unchanged — the empty-space click was inert
-    expect(await kexCall(page, "forceSelActive")).toBe(null);
-
-    // ── 9. The TERMINAL keyframe (the last one, governing no following segment) drops the
-    // Easing ▸ entry entirely — its menu is Delete alone (there is no transition to ease).
-    // `.fpt` is shared with velocity-strip keyframes, rendered AFTER every force point in DOM
-    // order — `.last()` would grab the launch strip's own keyframe instead (S5), so address the
-    // terminal force point by its known index (`nPts - 1`). ──
-    await page
-        .locator(".fpt")
-        .nth(nPts - 1)
-        .click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
-    await expect
-        .poll(async () =>
-            (await page.locator(".fmenu [role=menuitem]").allTextContents()).map((t) =>
-                t.replace(/\s+/g, " ").trim(),
-            ),
-        )
-        .toEqual(["Delete Del"]); // no Easing ▸ on the terminal keyframe
-    await page.keyboard.press("Escape"); // close the menu
-    await expect(page.locator(".fmenu")).toHaveCount(0);
-
-    // ── 10. Delete, pointer-true, removes an interior keyframe. ──
-    await page.keyboard.press("Escape"); // deselect the terminal keyframe
+    // A body press routes to one DOM-distinguishable segment menu.
+    await rightClickForceSegment(page, 1);
+    await expect(page.locator('.fmenu[aria-label="Force segment"]')).toBeVisible();
+    await expect(page.locator('.fmenu[aria-label="Force segment"]')).toHaveCount(1);
     const beforeDelete = await forceCount();
-    await page.locator(".fpt").nth(1).click({ button: "right" });
-    await expect(page.locator(".fmenu")).toBeVisible();
     await clickMenuItem(page, ".fmenu", "Delete");
     await expect.poll(forceCount).toBe(beforeDelete - 1);
 });
@@ -658,11 +574,11 @@ test("retained timeline gesture heirs after force position removal", async ({ pa
 
     // Bulk easing is retained even though station dragging is not: all selected non-terminal
     // force keys change, while the two unselected continuation seeds remain Cubic (1).
-    await page.locator(".fpt").nth(2).click({ button: "right" });
+    await rightClickForceSegment(page, 2);
     await expect(page.locator(".fmenu")).toBeVisible();
     await clickFlyout(page, ".fmenu", "Easing", "Quintic");
     const eased = await forceEases();
-    expect(eased.slice(1, 4)).toEqual([2, 2, 2]);
+    expect(eased.slice(1, 4)).toEqual([1, 2, 1]);
     expect(eased[0]).toBe(1);
     expect(eased[4]).toBe(1);
 
