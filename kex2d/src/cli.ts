@@ -27,7 +27,9 @@ import { State } from "@dylanebert/shallot";
 import {
     applyForceSegmentOp,
     applyOp,
+    applyVelocitySegmentOp,
     isForceSegmentOp,
+    isVelocitySegmentOp,
     type Op,
     type OpResult,
     type Refusal,
@@ -225,7 +227,9 @@ async function cmdEdit(file: string, opsText: string): Promise<CliResult> {
         try {
             const result = isForceSegmentOp(op)
                 ? applyForceSegmentOp(state, h, op)
-                : applyOp(state, h, op as Op);
+                : isVelocitySegmentOp(op)
+                  ? applyVelocitySegmentOp(state, h, op)
+                  : applyOp(state, h, op as Op);
             results.push(result);
             if (result.refusals.length > 0) anyRefusal = true;
         } catch (e) {

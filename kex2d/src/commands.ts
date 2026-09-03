@@ -304,6 +304,13 @@ export type Op =
     | DomainOp;
 
 export type ForceSegmentOp = ForceCreateOp | ForceMoveOp | ForceDeleteOp | ForceEaseOp;
+export type VelocitySegmentOp =
+    | StripCreateOp
+    | StripMoveOp
+    | StripKeyframeCreateOp
+    | StripKeyframeMoveOp
+    | StripKeyframeDeleteOp
+    | StartSpeedOp;
 
 export function isForceSegmentOp(op: { type: string }): op is ForceSegmentOp {
     return (
@@ -311,6 +318,17 @@ export function isForceSegmentOp(op: { type: string }): op is ForceSegmentOp {
         op.type === "force-move" ||
         op.type === "force-delete" ||
         op.type === "force-ease"
+    );
+}
+
+export function isVelocitySegmentOp(op: { type: string }): op is VelocitySegmentOp {
+    return (
+        op.type === "strip-create" ||
+        op.type === "strip-move" ||
+        op.type === "strip-keyframe-create" ||
+        op.type === "strip-keyframe-move" ||
+        op.type === "strip-keyframe-delete" ||
+        op.type === "start-speed"
     );
 }
 
@@ -379,7 +397,7 @@ export function applyForceSegmentOp(ecs: State, h: History, op: ForceSegmentOp):
 /** apply one op to `ecs`, recording through `h` — the one dispatcher every op family routes
  *  through. every branch below cites the exact UI call site it reproduces, so a diff to either
  *  side is a diff a reviewer can compare directly. */
-export function applyOp(ecs: State, h: History, op: Op): OpResult {
+function applyAnyOp(ecs: State, h: History, op: Op): OpResult {
     switch (op.type) {
         // `Timeline.svelte`'s `toggleAppend`: `selectSection(appendSection(history, ecs, kind))`.
         case "append-section":
@@ -635,6 +653,15 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
         // exists, created when it doesn't —
         // `entryOneShot`'s own "first hit wins" reading is what `addOneShot` never re-checks
         // (a real UI gesture only offers create when none exists).
+        // S2d6: `StartVelocity.v` (`track.ts`) is the NAMED track-start boundary address the
+        // read path already routes through (`entrySpeed`), and it resolves the same storage the
+        // entity carries — so the address is a read, never the thing that licenses a write. The
+        // create branch is gated on the ENTITY's absence, not on the pointer resolving: a stale
+        // or zeroed `TrackStart.velocity` with a live one-shot would otherwise fall through to
+        // `addOneShot` and mint a SECOND start owner, which is exactly the dual-ownership the
+        // boundary is supposed to forbid (`entryOneShot`'s "first hit wins" then picks between
+        // them nondeterministically). The behavioural arm is `commands.test.ts`'s
+        // "start-speed never mints a second start owner".
         case "start-speed": {
             const os = entryOneShot(ecs);
             if (os) {
@@ -699,4 +726,16 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
             throw new Error(`commands.applyOp: unhandled op ${JSON.stringify(_exhaustive)}`);
         }
     }
+}
+
+/** Apply one velocity authoring verb through track.ts's canonical boundary writers. */
+export function applyVelocitySegmentOp(ecs: State, h: History, op: VelocitySegmentOp): OpResult {
+    return applyAnyOp(ecs, h, op);
+}
+
+/** Dispatch one authored operation through its channel's canonical command surface. */
+export function applyOp(ecs: State, h: History, op: Op): OpResult {
+    if (isForceSegmentOp(op)) return applyForceSegmentOp(ecs, h, op);
+    if (isVelocitySegmentOp(op)) return applyVelocitySegmentOp(ecs, h, op);
+    return applyAnyOp(ecs, h, op);
 }
