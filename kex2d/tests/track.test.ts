@@ -85,6 +85,8 @@ import {
     runInfo,
     RunEntryForceBoundary,
     Segment,
+    SegmentForceBoundary,
+    segmentSpans,
     StartVelocity,
     VelocityBoundary,
     sectionResettable,
@@ -111,7 +113,9 @@ import {
     stampProvenance,
     stickyLen,
     toGlobal,
+    toGlobalSegment,
     toLocal,
+    toLocalSegment,
     Track,
     trackDomain,
     DEFAULT_FRICTION,
@@ -297,6 +301,49 @@ test("interior velocity stations exactly subdivide geo edges with explicit bound
     ).toBe(true);
     expect(snapshotRun(ecs, run).members).toHaveLength(3);
     expect(snapshotRun(ecs, run).members.map((member) => member.geoEndNode)).toEqual([1, 2, 3]);
+});
+
+test("three geo edges publish contiguous canonical spans over their run landing arc", () => {
+    const ecs = new State();
+    ecs.addSystem(BakeSystem);
+    const track = createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Geo, 0);
+    addNode(ecs, run, 0, 0);
+    addNode(ecs, run, 4, 1);
+    addNode(ecs, run, 9, -1);
+    addNode(ecs, run, 14, 0);
+    spliceGeoMembers(ecs, run);
+    ecs.step(0);
+
+    const spans = segmentSpans(ecs, track);
+    expect(spans).toHaveLength(3);
+    expect(spans[1]!.offset).toBe(spans[0]!.offset + spans[0]!.len);
+    expect(spans[2]!.offset).toBe(spans[1]!.offset + spans[1]!.len);
+    expect(spans.reduce((sum, span) => sum + span.len, 0)).toBe(sectionSpans(ecs, track)[0]!.len);
+});
+
+test("canonical segment spans and terminating force boundaries follow a split run", () => {
+    const ecs = new State();
+    ecs.addSystem(BakeSystem);
+    const track = createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 10);
+    spawnForce(ecs, run, 20, 0, 1, Easing.Linear);
+    spawnForce(ecs, run, 21, 4, 2, Easing.Quintic);
+    spliceRunMembers(ecs, run);
+    ecs.step(0);
+
+    const spans = segmentSpans(ecs, track);
+    expect(spans.map(({ offset, len }) => [offset, len])).toEqual([
+        [0, 4],
+        [4, 6],
+    ]);
+    expect(toGlobalSegment(spans, spans[1]!.id, 2)).toBe(6);
+    expect(toLocalSegment(spans, 4)).toEqual({ segment: spans[0]!.id, s: 4 });
+    expect(SegmentForceBoundary.id(ecs, spans[0]!.id)).toBe(21);
+    expect(SegmentForceBoundary.g(ecs, spans[0]!.id)).toBe(2);
+    expect(SegmentForceBoundary.ease(ecs, spans[0]!.id)).toBe(Easing.Quintic);
+    expect(SegmentForceBoundary.id(ecs, spans[1]!.id)).toBeNull();
+    expect(spans.reduce((sum, span) => sum + span.len, 0)).toBe(sectionSpans(ecs, track)[0]!.len);
 });
 
 test("velocity-only stations split a force run without creating force boundaries", () => {

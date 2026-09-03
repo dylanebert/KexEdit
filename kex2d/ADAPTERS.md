@@ -14,6 +14,7 @@ Every live `@temporary` adapter in `src/` has an exit class. This inventory is r
 | `Segment.runStation` | authored owner | Retain the conserved member entry station. |
 | `Segment.runExtent` | authored owner | Retain the conserved force-run extent on the entry member. |
 | `Segment.runEntryForce` | authored owner | Retain the constant-time address of the run-entry force boundary until the final boundary address replaces it. |
+| `Segment.forceEndKey` | authored owner | Retain as the constant-time canonical terminating force-boundary address. |
 | `Segment.geoEndNode` | authored owner | Retain the constant-time terminating geometry-node address until the final boundary address replaces it. |
 | `Segment.velocityBoundary` | migration compatibility | Partial force-run-boundary address over retained span storage, not a total owner; retire when S4 interaction projects directly from spans and canonical boundaries. |
 | `TrackStart.velocity` | migration compatibility | Retain the entry one-shot address through S4, then use the final track-start boundary surface. |

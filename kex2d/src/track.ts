@@ -85,6 +85,8 @@ export const Segment = {
     runExtent: sparse(f32),
     /** @temporary S3–S7 — encoded stable id of the run-entry force point, on the first member. */
     runEntryForce: sparse(u32),
+    /** Encoded entity pointer to this member's authored terminating force key. */
+    forceEndKey: sparse(u32),
     /** @temporary S3–S7 — encoded entity pointer to this geo member's terminating node. */
     geoEndNode: sparse(u32),
     /** @temporary S3–S7 — encoded stable id of this member's terminating velocity keyframe. */
@@ -1465,6 +1467,13 @@ export interface SectionSpan {
     len: number;
 }
 
+/** One canonical segment's published place on the whole-track arclength axis. */
+export interface SegmentSpan {
+    id: number;
+    offset: number;
+    len: number;
+}
+
 /** one section's `(entry, extent)` — the pair the affine and its inverse resolve over. */
 type Axis = (sp: SectionSpan) => { entry: number; extent: number };
 
@@ -1494,6 +1503,48 @@ export function sectionSpans(ecs: State, eid: number): SectionSpan[] {
         res.push({ id: run.id, offset, len: cum - offset });
     }
     return res;
+}
+
+/** Canonical segment axis table, clamped to the same published bake prefix as sectionSpans. */
+export function segmentSpans(ecs: State, eid: number): SegmentSpan[] {
+    const out = bakeOut.get(eid);
+    if (!out) return [];
+    const last = Math.max(0, Track.count.get(eid) - 1);
+    const runSpans = new Map(sectionSpans(ecs, eid).map((span) => [span.id, span]));
+    const result: SegmentSpan[] = [];
+    for (const run of rebuildRunProjection(ecs)) {
+        const span = runSpans.get(run.id);
+        const info = runInfo.get(run.id);
+        if (!span || !info) continue;
+        let prior = 0;
+        for (let index = 0; index < run.segmentIds.length; index++) {
+            let end: number;
+            if (run.kind === SectionKind.Force) {
+                end = Math.min(run.stations[index + 1]!, span.len);
+            } else {
+                const member = segmentAt(ecs, run.segmentIds[index]!);
+                const encoded = member === null ? 0 : Segment.geoEndNode.get(member);
+                const node = encoded === 0 ? -1 : encoded - 1;
+                const sample =
+                    node >= 0 && ecs.has(node, Handle) ? Handle.sample.get(node) : info.startSample;
+                end = 0;
+                for (
+                    let edge = info.startSample;
+                    edge < Math.min(sample, info.endSample, last);
+                    edge++
+                )
+                    end += out.ds[edge];
+                end = Math.min(end, span.len);
+            }
+            result.push({
+                id: run.segmentIds[index]!,
+                offset: span.offset + prior,
+                len: end - prior,
+            });
+            prior = end;
+        }
+    }
+    return result;
 }
 
 function toGlobalOn(axis: Axis, spans: SectionSpan[], section: number, s: number): number | null {
@@ -1528,6 +1579,20 @@ export function toGlobal(spans: SectionSpan[], section: number, s: number): numb
  *  nearest end of the track. null when there's no bake. */
 export function toLocal(spans: SectionSpan[], d: number): { section: number; s: number } | null {
     return toLocalOn(arcAxis, spans, d);
+}
+
+/** Segment-local arclength to whole-track arclength. */
+export function toGlobalSegment(spans: SegmentSpan[], segment: number, s: number): number | null {
+    return toGlobalOn(arcAxis, spans, segment, s);
+}
+
+/** Whole-track arclength to a canonical segment-local address. */
+export function toLocalSegment(
+    spans: SegmentSpan[],
+    d: number,
+): { segment: number; s: number } | null {
+    const local = toLocalOn(arcAxis, spans, d);
+    return local === null ? null : { segment: local.section, s: local.s };
 }
 
 /** the baked sample address of a section-local arclength coordinate — where a force
@@ -1624,8 +1689,9 @@ export function createSection(
     Segment.runStation.set(eid, 0);
     Segment.runExtent.set(eid, length);
     // Sparse columns are shared by entity index across State instances. A recycled section eid
-    // must not inherit another state's published run-entry pointer.
+    // must not inherit another state's published boundary pointers.
     Segment.runEntryForce.set(eid, 0);
+    Segment.forceEndKey.set(eid, 0);
     Segment.geoEndNode.set(eid, 0);
     Segment.velocityBoundary.set(eid, 0);
     return id;
@@ -1654,6 +1720,7 @@ function spawnSection(
     Segment.runStation.set(eid, runStation);
     Segment.runExtent.set(eid, runExtent);
     Segment.runEntryForce.set(eid, 0);
+    Segment.forceEndKey.set(eid, 0);
     Segment.geoEndNode.set(eid, 0);
     Segment.velocityBoundary.set(eid, 0);
 }
@@ -2131,6 +2198,7 @@ export function spliceGeoMembers(ecs: State, runId: number): void {
         Segment.runStation.set(eid, 0);
         Segment.runExtent.set(eid, 0);
         Segment.runEntryForce.set(eid, 0);
+        Segment.forceEndKey.set(eid, 0);
         Section.kind.set(eid, SectionKind.Geo);
         Section.length.set(eid, 0);
         Segment.geoEndNode.set(eid, 0);
@@ -2403,6 +2471,9 @@ export function spliceRunMembers(
         Section.kind.set(eid, kind);
         Section.length.set(eid, member.duration);
         Segment.runEntryForce.set(eid, 0);
+        const boundaryId = member.boundary?.value;
+        const boundary = boundaryId === undefined ? null : forceAt(ecs, boundaryId);
+        Segment.forceEndKey.set(eid, boundary === null ? 0 : boundary + 1);
     }
     const replacement = union.members.map((member) => Number(member.id));
     const chain = allBefore.filter((row) => !runSet.has(row.id)).map((row) => row.id);
@@ -2487,6 +2558,40 @@ export function refreshVelocityRunMembers(ecs: State): void {
 export function snapshotVelocityRuns(ecs: State): RunSnapshot[] {
     return rebuildRunProjection(ecs).map((run) => snapshotRun(ecs, run.id));
 }
+
+/** Constant-time access to the authored key terminating a canonical force segment. */
+export const SegmentForceBoundary = {
+    id(ecs: State, segmentId: number): number | null {
+        const member = segmentAt(ecs, segmentId);
+        if (member === null) return null;
+        const encoded = Segment.forceEndKey.get(member);
+        if (encoded === 0) return null;
+        const eid = encoded - 1;
+        return ecs.has(eid, Force) && Force.segment.get(eid) === segmentId
+            ? Force.id.get(eid)
+            : null;
+    },
+    g(ecs: State, segmentId: number): number | null {
+        const member = segmentAt(ecs, segmentId);
+        if (member === null) return null;
+        const encoded = Segment.forceEndKey.get(member);
+        if (encoded === 0) return null;
+        const eid = encoded - 1;
+        return ecs.has(eid, Force) && Force.segment.get(eid) === segmentId
+            ? ForceBoundary.g.get(eid)
+            : null;
+    },
+    ease(ecs: State, segmentId: number): Easing | null {
+        const member = segmentAt(ecs, segmentId);
+        if (member === null) return null;
+        const encoded = Segment.forceEndKey.get(member);
+        if (encoded === 0) return null;
+        const eid = encoded - 1;
+        return ecs.has(eid, Force) && Force.segment.get(eid) === segmentId
+            ? (ForceBoundary.ease.get(eid) as Easing)
+            : null;
+    },
+};
 
 /** @temporary S3–S7 — named access to the one existing run-entry boundary datum. */
 export const RunEntryForceBoundary = {
@@ -3280,6 +3385,7 @@ function collapseRunFrame(
     Segment.runStation.set(first, 0);
     Segment.runExtent.set(first, extent);
     Segment.runEntryForce.set(first, 0);
+    Segment.forceEndKey.set(first, 0);
     Segment.geoEndNode.set(first, 0);
     Section.kind.set(first, kind);
     Section.length.set(first, extent);
@@ -3300,6 +3406,7 @@ function resetToForce(ecs: State, eid: number, sectionId: number): void {
     Section.length.set(eid, extent); // compatibility mirror of the conserved member extent
     Segment.runStation.set(eid, 0);
     Segment.runExtent.set(eid, extent);
+    Segment.forceEndKey.set(eid, 0);
     Segment.geoEndNode.set(eid, 0);
     seedForceKeyframes(ecs, sectionId, extent, gEntry);
     refreshRunEntryForce(ecs, Segment.run.get(eid));
