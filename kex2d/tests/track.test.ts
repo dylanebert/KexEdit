@@ -3742,6 +3742,36 @@ describe("velocity strips — ECS layer (C3)", () => {
         expect(VelocityBoundary.v(state, segmentId)).toBe(13);
     });
 
+    test("whole-track restore preserves an already-unioned corpus and republishes pointers", () => {
+        const state = new State();
+        createTrack(state);
+        const run = createSection(state, 0, SectionKind.Force, 40);
+        for (const [station, g] of [
+            [0, 1],
+            [8, 1],
+            [20, 0],
+            [32, 1],
+            [40, 1],
+        ] as const)
+            createForcePoint(state, run, station, g);
+        const strip = createStrip(state, 2, 40, 8)!;
+        const key = createStripKeyframe(state, strip, 30, 13);
+        refreshVelocityRunMembers(state);
+        const before = snapshotAll(state);
+        const memberIds = before.segments.map((member) => member.id);
+        const restoredRun = snapshotRun(state, run);
+        const station30Index = restoredRun.stations.indexOf(30);
+        const boundaryMember = restoredRun.members[station30Index - 1]!.id;
+
+        restoreAll(state, before);
+
+        expect(snapshotAll(state)).toEqual(before);
+        expect(snapshotRun(state, run).members.map((member) => member.id)).toEqual(memberIds);
+        expect(VelocityBoundary.v(state, boundaryMember)).toBe(13);
+        expect(Segment.velocityBoundary.get(segmentAt(state, boundaryMember)!)).toBe(key + 1);
+        assertRunStructure(state);
+    });
+
     test("track-start velocity pointer follows one-shot lifecycle and empty restore", () => {
         const { state } = track();
         expect(StartVelocity.v(state)).toBeUndefined();
