@@ -437,7 +437,7 @@ test("segment ripple stays total across fixed velocity stations without renaming
     expect(snapshotRun(ecs, run)).toEqual(after);
 });
 
-test("run-terminal ripple preserves hostile-station identities and is repeat-idempotent", () => {
+test("run-terminal ripple carries its non-null boundary and is repeat-idempotent", () => {
     const ecs = new State();
     createTrack(ecs);
     const run = createSection(ecs, 0, SectionKind.Force, 24);
@@ -450,18 +450,30 @@ test("run-terminal ripple preserves hostile-station identities and is repeat-ide
         createForcePoint(ecs, run, station, g);
     spliceRunMembers(ecs, run, "rebuild");
     const before = snapshotRun(ecs, run);
-    const selected = before.members.at(-1)!.id;
+    const selected = before.members.findLast(
+        (member) => SegmentForceBoundary.id(ecs, member.id) !== null,
+    )!.id;
+    const boundaryId = SegmentForceBoundary.id(ecs, selected);
+    expect(boundaryId).not.toBeNull();
     const ids = before.members.map((member) => member.id);
-    const below = before.stations.filter((station) => station < 19.2);
+    const selectedIndex = before.members.findIndex((member) => member.id === selected);
+    const oldBoundary = before.stations[selectedIndex + 1]!;
+    const lowerStations = before.stations.filter((station) => station < oldBoundary);
+    const forceIds = sectionForces(ecs, run).map((point) => point.id);
     const history = createHistory();
 
-    setSegmentExtentRippledHistory(history, ecs, selected, 6);
+    setSegmentExtentRippledHistory(history, ecs, selected, 9);
     const once = snapshotRun(ecs, run);
     expect(once.members.map((member) => member.id)).toEqual(ids);
-    expect(once.stations.filter((station) => station < 19.2)).toEqual(below);
+    expect(once.stations.filter((station) => station < oldBoundary)).toEqual(lowerStations);
+    expect(SegmentForceBoundary.id(ecs, selected)).toBe(boundaryId);
+    expect(sectionForces(ecs, run).map((point) => point.id)).toEqual(forceIds);
+    expect(sectionForces(ecs, run).find((point) => point.id === boundaryId)?.s).toBe(
+        once.stations[selectedIndex + 1],
+    );
     assertRunStructure(ecs);
 
-    setSegmentExtentRippled(ecs, selected, 6);
+    setSegmentExtentRippled(ecs, selected, 9);
     expect(snapshotRun(ecs, run)).toEqual(once);
     undo(history, ecs);
     expect(snapshotRun(ecs, run)).toEqual(before);
