@@ -1421,12 +1421,24 @@ export function assertRunStructure(ecs: State): void {
                 throw new Error(`force run ${run.id} extent must exceed its last station`);
             const terminating = new Set(run.stations.slice(1));
             for (let index = 0; index < run.segmentIds.length; index++) {
-                const member = segmentAt(ecs, run.segmentIds[index]!);
+                const segmentId = run.segmentIds[index]!;
+                const member = segmentAt(ecs, segmentId);
                 const expected = Math.fround(run.stations[index + 1]! - run.stations[index]!);
                 if (member === null || Section.length.get(member) !== expected)
                     throw new Error(`force run ${run.id} member ${index} extent is stale`);
                 if (Segment.runExtent.get(member) !== run.length)
                     throw new Error(`force run ${run.id} member ${index} extent copy is stale`);
+                const boundaryId = SegmentForceBoundary.id(ecs, segmentId);
+                if (boundaryId !== null) {
+                    const boundary = forceAt(ecs, boundaryId)!;
+                    const station = Math.fround(
+                        Segment.runStation.get(member) + Force.s.get(boundary),
+                    );
+                    if (station !== Math.fround(run.stations[index + 1]!))
+                        throw new Error(
+                            `force run ${run.id} member ${index} terminating boundary is stale`,
+                        );
+                }
             }
             for (const point of sectionForces(ecs, run.id)) {
                 if (point.s <= run.length && point.s !== 0 && !terminating.has(point.s))
@@ -4583,16 +4595,18 @@ export function setSegmentExtentRippled(ecs: State, segmentId: number, extent: n
     const nextExtent = Math.fround(extent);
     const delta = nextExtent - Section.length.get(member);
     if (delta === 0) return;
-    const boundary = Segment.runStation.get(member) + Section.length.get(member);
+    const boundary = Math.fround(Segment.runStation.get(member) + Section.length.get(member));
+    const terminatingBoundary = SegmentForceBoundary.id(ecs, segmentId);
     const first = runMembers(ecs, run)[0]!;
     const points = runMembers(ecs, run).flatMap((row) =>
         segmentForces(ecs, row.id).map((point) => ({
             eid: point.eid,
-            station: Segment.runStation.get(row.eid) + point.s,
+            id: point.id,
+            station: Math.fround(Segment.runStation.get(row.eid) + point.s),
         })),
     );
     for (const point of points) {
-        if (point.station < boundary) continue;
+        if (point.id !== terminatingBoundary && point.station < boundary) continue;
         Force.section.set(point.eid, first.id);
         Force.s.set(point.eid, Math.fround(point.station + delta));
     }
