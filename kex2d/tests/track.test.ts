@@ -477,7 +477,7 @@ test("run-terminal ripple carries its non-null boundary and is repeat-idempotent
     );
     assertRunStructure(ecs);
 
-    setSegmentExtentRippled(ecs, selected, requestedExtent);
+    for (let frame = 0; frame < 3; frame++) setSegmentExtentRippled(ecs, selected, requestedExtent);
     expect(snapshotRun(ecs, run)).toEqual(once);
     undo(history, ecs);
     expect(snapshotRun(ecs, run)).toEqual(before);
