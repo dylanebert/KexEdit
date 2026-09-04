@@ -143,8 +143,6 @@ export interface Kex {
     // instead of `dOf`'s own clamp -- called before a trim to read the projection the gesture will
     // freeze.
     dOfTrim(u: number): number;
-    uOfTrim(d: number): number;
-    chartUAtX(clientX: number): number;
     domain(): string;
     editing(): boolean;
     forceCount(): number;
@@ -194,7 +192,6 @@ export interface Kex {
     sectionIds(): number[];
     sectionKinds(): number[];
     sectionLengths(): number[];
-    segmentExtents(): { id: number; offset: number; len: number }[];
     seedForceBump(): void;
     seedForceStress(): void;
     seedHill(): void;

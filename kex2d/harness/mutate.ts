@@ -117,7 +117,6 @@ const BEHAVIORS = [
     "kf-click-select-vs-activate",
     "cross-kind-shift-ensure",
     "axis-law-dv-scale",
-    "segment-resize-ripples-later-stations",
 ] as const;
 
 const PAIRS: Pair[] = [
@@ -257,16 +256,6 @@ const PAIRS: Pair[] = [
             {
                 old: "    const r = snapAxis(active, rawPx, rawU, targets, GRID, (px) => pxToU(cv, px), null);",
                 new: "    const r = { value: rawU, guide: null }; // MUTATED: segment resize snap call removed (F4)",
-            },
-        ],
-    },
-    {
-        name: "segment-resize-ripples-later-stations",
-        flow: "segment edge resize ripples later stations with boundary identity/value affixed",
-        mutations: [
-            {
-                old: "    setSegmentExtentRippled(ecs, lenId, extent);",
-                new: "    // MUTATED: canonical resize writer removed; later stations no longer ripple",
             },
         ],
     },

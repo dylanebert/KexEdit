@@ -100,6 +100,8 @@ import {
     setForceEase,
     setForcePoint,
     setSectionLength,
+    setSegmentExtentRippled,
+    segmentRippleExtentFloor,
     setStartSpeed,
     setStickyLen,
     setTangent,
@@ -142,6 +144,7 @@ import {
     extendTrack as extendTrackCmd,
     redo,
     setForcesEase,
+    setSegmentExtentRippled as setSegmentExtentRippledHistory,
     trimTrack as trimTrackCmd,
     undo,
 } from "../src/history";
@@ -381,6 +384,69 @@ test("velocity-only stations split a force run without creating force boundaries
             values: new Float32Array([64, 72.25, 81, 72.25]),
         },
     ]);
+});
+
+test("segment ripple stays total across fixed velocity stations without renaming survivors", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 20);
+    createForcePoint(ecs, run, 0, 1);
+    createForcePoint(ecs, run, 10, 2);
+    const strip = createStrip(ecs, 4, 16, 8)!;
+    createStripKeyframe(ecs, strip, 7, 9);
+    refreshVelocityRunMembers(ecs);
+    const before = snapshotRun(ecs, run);
+    const selected = before.members.find((member) => member.runStation === 4)!.id;
+    const survivorByStation = new Map(before.members.map((member) => [member.runStation, member.id]));
+    const velocity = allStrips(ecs).map((row) => ({
+        id: row.id,
+        start: row.start,
+        end: row.end,
+        value: row.value,
+        keys: stripKeyframes(ecs, row.id).map((key) => [key.id, key.s, key.v]),
+    }));
+
+    const history = createHistory();
+    setSegmentExtentRippledHistory(history, ecs, selected, 5);
+
+    const after = snapshotRun(ecs, run);
+    expect(after.members.find((member) => member.runStation === 4)?.id).toBe(selected);
+    for (const station of [0, 4, 16])
+        expect(after.members.find((member) => member.runStation === station)?.id).toBe(
+            survivorByStation.get(station),
+        );
+    expect(new Set(after.members.map((member) => member.id)).size).toBe(after.members.length);
+    expect(after.members.map((member) => member.order)).toEqual(
+        after.members.map((_, index) => index),
+    );
+    expect(allStrips(ecs).map((row) => ({
+        id: row.id,
+        start: row.start,
+        end: row.end,
+        value: row.value,
+        keys: stripKeyframes(ecs, row.id).map((key) => [key.id, key.s, key.v]),
+    }))).toEqual(velocity);
+    assertRunStructure(ecs);
+    undo(history, ecs);
+    expect(snapshotRun(ecs, run)).toEqual(before);
+    redo(history, ecs);
+    expect(snapshotRun(ecs, run)).toEqual(after);
+});
+
+test("segment ripple floors a trim at the last fixed station in that member", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 20);
+    createForcePoint(ecs, run, 0, 1);
+    createForcePoint(ecs, run, 10, 2);
+    const strip = createStrip(ecs, 4, 16, 8)!;
+    createStripKeyframe(ecs, strip, 7, 9);
+    refreshVelocityRunMembers(ecs);
+    const member = snapshotRun(ecs, run).members.find((row) => row.runStation === 4)!.id;
+
+    expect(segmentRippleExtentFloor(ecs, member)).toBe(3);
+    expect(() => setSegmentExtentRippled(ecs, member, 2)).toThrow(RangeError);
+    assertRunStructure(ecs);
 });
 
 test("section creation clears a recycled cross-State run-entry pointer", () => {

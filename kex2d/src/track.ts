@@ -2405,18 +2405,26 @@ export function spliceRunMembers(
     );
     if (union.members.length === 0) throw new Error(`spliceRunMembers: empty run ${runId}`);
 
-    // The pure union allocates positionally; live gestures instead preserve identity by intent.
-    // Create/delete retain intervals whose entry station survives, while move retains both adjacent
-    // members by position. Only a genuinely new split member receives a new id.
+    // Exact entry stations preserve interval identity. A moved force boundary preserves the
+    // interval it terminates; fixed velocity boundaries can add/remove intervals around it, so
+    // positional assignment is neither stable nor injective when cardinality changes.
     const oldByStation = new Map(
         before.map((member) => [Segment.runStation.get(member.eid), member.id]),
     );
-    const positional = before.map((member) => member.id);
-    for (let i = 0; i < union.members.length; i++) {
-        const member = union.members[i]!;
-        if (i === 0) member.id = runId;
-        else if (intent === "move" && positional[i] !== undefined) member.id = positional[i]!;
-        else member.id = oldByStation.get(member.entryStation) ?? allocateSectionId(ecs);
+    const oldByBoundary = new Map<number, number>();
+    for (const member of before) {
+        const encoded = Segment.forceEndKey.get(member.eid);
+        if (encoded !== 0) oldByBoundary.set(encoded - 1, member.id);
+    }
+    const claimed = new Set<number>();
+    for (const member of union.members) {
+        const exact = oldByStation.get(member.entryStation);
+        const boundary = member.boundary?.value;
+        const inherited =
+            exact ?? (boundary === undefined ? undefined : oldByBoundary.get(boundary));
+        const id = member.entryStation === 0 ? runId : inherited;
+        member.id = id !== undefined && !claimed.has(id) ? id : allocateSectionId(ecs);
+        claimed.add(Number(member.id));
     }
 
     const allBefore = segments(ecs);
@@ -4534,12 +4542,34 @@ export function deleteSegment(ecs: State, segmentId: number): boolean {
     return true;
 }
 
+/** Smallest rippled extent that does not cross a fixed velocity station in the member. */
+export function segmentRippleExtentFloor(ecs: State, segmentId: number): number {
+    const member = segmentAt(ecs, segmentId);
+    if (member === null) throw new Error(`no segment ${segmentId}`);
+    const run = runIdOf(ecs, segmentId)!;
+    const window = sectionWindows(ecs).find((row) => row.id === run);
+    if (window === undefined) throw new Error(`no run window ${run}`);
+    const start = Segment.runStation.get(member);
+    const end = start + Section.length.get(member);
+    let floor = MIN_FORCE_LEN;
+    for (const strip of allStrips(ecs)) {
+        const stations = [strip.start, strip.end];
+        for (const keyframe of stripKeyframes(ecs, strip.id)) stations.push(keyframe.s);
+        for (const global of stations) {
+            const station = global - window.offset;
+            if (station > start && station <= end) floor = Math.max(floor, station - start);
+        }
+    }
+    return Math.fround(floor);
+}
+
 /** Resize one member while keeping every later boundary datum affixed to its identity. */
 export function setSegmentExtentRippled(ecs: State, segmentId: number, extent: number): void {
     const member = segmentAt(ecs, segmentId);
     if (member === null) throw new Error(`no segment ${segmentId}`);
-    if (!(extent > 0) || !Number.isFinite(extent))
-        throw new RangeError("segment extent must be positive");
+    const floor = segmentRippleExtentFloor(ecs, segmentId);
+    if (!Number.isFinite(extent) || extent < floor)
+        throw new RangeError(`segment extent must be at least ${floor}`);
     const run = runIdOf(ecs, segmentId)!;
     const delta = extent - Section.length.get(member);
     if (delta === 0) return;

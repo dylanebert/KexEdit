@@ -42,7 +42,6 @@ import {
     runIdOf,
     sameForcePoint,
     sameNodes,
-    Section,
     SectionKind,
     Segment,
     segmentAt,
@@ -917,21 +916,18 @@ export function beginLength(ecs: State, id: number): void {
     );
 }
 
-/** Commit the legacy run-edge gesture while its remaining callers retire. */
+/** commit a `beginLength` extent-trim gesture: coalesce the drag into one undo entry
+ *  (`commit`) AND, when `armed` (the gesture cleared its dead-zone latch), record the landed
+ *  extent as the session's new sticky append default for FORCE sections in the track's ACTIVE
+ *  domain (`track.setStickyLen` — a meters trim never becomes a seconds default, or vice versa).
+ *  `armed=false` (a no-move release under the latch) commits bare — a click-vs-drag release
+ *  must not overwrite the sticky value with the section's UNCHANGED extent. A solve landing
+ *  never calls this (it commits through `solveForce`/`solveGeo`), so a converted section's
+ *  realized extent never becomes the next append's default. */
 export function commitLength(h: History, ecs: State, id: number, armed: boolean): void {
     if (armed) {
         const extent = runExtentOf(ecs, runIdOf(ecs, id) ?? id);
         if (extent !== null) setStickyLen(SectionKind.Force, extent, trackDomain(ecs));
-    }
-    commit(h);
-}
-
-/** Commit a canonical segment-edge resize and stamp that member's authored extent. */
-export function commitSegmentLength(h: History, ecs: State, id: number, armed: boolean): void {
-    if (armed) {
-        const member = segmentAt(ecs, id);
-        if (member !== null)
-            setStickyLen(SectionKind.Force, Section.length.get(member), trackDomain(ecs));
     }
     commit(h);
 }
