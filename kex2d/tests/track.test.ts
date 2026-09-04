@@ -30,6 +30,7 @@ import {
     spawnStrip,
     spawnStripKeyframe,
     Strip,
+    StripKeyframe,
     stripAt,
     stripDefaultExtentAt,
     stripMinExtentAt,
@@ -149,6 +150,8 @@ import {
     undo,
 } from "../src/history";
 import { DEFAULT_G, Easing } from "../src/profile";
+import { velocityCurve } from "../src/cart";
+import { yFit } from "../src/timeline";
 import { scenarios } from "../src/scenarios";
 import { LENGTH_MIN } from "../src/magnet";
 import { Domain, evalGeo } from "../src/section";
@@ -538,7 +541,7 @@ test("section-length rebuild preserves every surviving member identity", () => {
     assertRunStructure(ecs);
 });
 
-test("segment ripple floors a trim at the last fixed station in that member", () => {
+test("segment ripple floor pins strictly interior fixed stations, not its terminating station", () => {
     const ecs = new State();
     createTrack(ecs);
     const run = createSection(ecs, 0, SectionKind.Force, 20);
@@ -546,12 +549,104 @@ test("segment ripple floors a trim at the last fixed station in that member", ()
     createForcePoint(ecs, run, 10, 2);
     const strip = createStrip(ecs, 4, 16, 8)!;
     createStripKeyframe(ecs, strip, 7, 9);
-    refreshVelocityRunMembers(ecs);
-    const member = snapshotRun(ecs, run).members.find((row) => row.runStation === 4)!.id;
+    const keyframe = stripKeyframes(ecs, strip)[0]!;
+    StripKeyframe.s.set(keyframe.eid, 6);
+    const members = snapshotRun(ecs, run).members;
+    const interior = members.find((row) => row.runStation === 4)!.id;
+    const terminated = members.find((row) => row.runStation === 7)!.id;
 
-    expect(segmentRippleExtentFloor(ecs, member)).toBe(3);
-    expect(() => setSegmentExtentRippled(ecs, member, 2)).toThrow(RangeError);
+    expect(segmentRippleExtentFloor(ecs, interior)).toBe(2);
+    expect(() => setSegmentExtentRippled(ecs, interior, 1)).toThrow(RangeError);
+    expect(segmentRippleExtentFloor(ecs, terminated)).toBe(MIN_FORCE_LEN);
     assertRunStructure(ecs);
+});
+
+test("maximal velocity-terminated ripple retains velocity data and undoes exact ids", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 40);
+    for (const [station, g] of [
+        [0, 1],
+        [8, 1],
+        [20, 0],
+        [32, 1],
+        [40, 1],
+    ] as const)
+        createForcePoint(ecs, run, station, g);
+    const strip = createStrip(ecs, 2, 40, 8)!;
+    createStripKeyframe(ecs, strip, 20, 40);
+    createStripKeyframe(ecs, strip, 30, 3);
+    createOneShot(ecs, 25);
+    refreshVelocityRunMembers(ecs);
+    const before = snapshotRun(ecs, run);
+    const selected = before.members.find((row) => row.runStation === 32)!.id;
+    const velocity = {
+        strips: allStrips(ecs),
+        keys: stripKeyframes(ecs, strip),
+        oneShot: entryOneShot(ecs),
+    };
+    const history = createHistory();
+
+    expect(segmentRippleExtentFloor(ecs, selected)).toBe(MIN_FORCE_LEN);
+    setSegmentExtentRippledHistory(history, ecs, selected, MIN_FORCE_LEN);
+
+    expect(Section.length.get(segmentAt(ecs, selected)!)).toBe(MIN_FORCE_LEN);
+    expect({
+        strips: allStrips(ecs),
+        keys: stripKeyframes(ecs, strip),
+        oneShot: entryOneShot(ecs),
+    }).toEqual(velocity);
+    expect(allStrips(ecs)[0]!.end).toBeGreaterThan(
+        Segment.runExtent.get(segmentAt(ecs, snapshotRun(ecs, run).members[0]!.id)!),
+    );
+    assertRunStructure(ecs);
+    undo(history, ecs);
+    expect(snapshotRun(ecs, run)).toEqual(before);
+});
+
+test("maximal trim leaves the quantized fitted velocity target unchanged in both ratified Time-view setups", () => {
+    const measure = (length: number, withVelocityProfile: boolean) => {
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        const track = createTrack(ecs);
+        const run = createSection(ecs, 0, SectionKind.Force, length);
+        for (const [fraction, g] of [
+            [0, 1],
+            [0.2, 1],
+            [0.5, 0],
+            [0.8, 1],
+            [1, 1],
+        ] as const)
+            createForcePoint(ecs, run, Math.fround(length * fraction), g);
+        createOneShot(ecs, 25);
+        if (withVelocityProfile) {
+            const strip = createStrip(ecs, 2, length, 8)!;
+            createStripKeyframe(ecs, strip, length * 0.5, 40);
+            createStripKeyframe(ecs, strip, length * 0.75, 3);
+        }
+        refreshVelocityRunMembers(ecs);
+        ecs.step(0);
+        const fit = () => {
+            const curve = velocityCurve(track);
+            if (curve === null) throw new Error("no velocity curve");
+            const values = curve.v.subarray(0, curve.n);
+            return yFit(Math.min(...values), Math.max(...values), 0, [0, 20]);
+        };
+        const before = fit();
+        const terminal = snapshotRun(ecs, run).members.find(
+            (member) => member.runStation === Math.fround(length * 0.8),
+        )!.id;
+        setSegmentExtentRippled(ecs, terminal, segmentRippleExtentFloor(ecs, terminal));
+        ecs.step(0);
+        return { before, after: fit() };
+    };
+
+    const domainTrim = measure(24, false);
+    const velocityProjectionTrim = measure(40, true);
+    console.log("Time-view domain trim yFit:", domainTrim);
+    console.log("Time-view velocity projection trim yFit:", velocityProjectionTrim);
+    expect(domainTrim.after).toEqual(domainTrim.before);
+    expect(velocityProjectionTrim.after).toEqual(velocityProjectionTrim.before);
 });
 
 test("section creation clears a recycled cross-State run-entry pointer", () => {
