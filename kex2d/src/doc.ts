@@ -876,6 +876,7 @@ function buildScratchEcs(doc: Kex2dDocument): State {
     const ecs = new State();
     const trackEid = createTrack(ecs);
     restoreAll(ecs, docToTrackSnapshot(doc));
+    refreshVelocityRunMembers(ecs);
     Track.ds.set(trackEid, doc.track.ds);
     Track.domain.set(trackEid, doc.track.domain);
     Track.friction.set(trackEid, doc.track.friction);

@@ -514,6 +514,15 @@ export function createStrip(ecs: State, start: number, end: number, value: numbe
  *  create, or a snapshot restore. no id allocation, so it round-trips byte-identical;
  *  bypasses {@link stripOverlapped} on purpose (a snapshot restore must be byte-identical
  *  even for a document authored before the guard existed). */
+function spawnStripRaw(ecs: State, id: number, start: number, end: number, value: number): void {
+    const eid = ecs.create();
+    ecs.add(eid, Strip);
+    Strip.id.set(eid, id);
+    Strip.start.set(eid, start);
+    Strip.end.set(eid, end);
+    Strip.value.set(eid, value);
+}
+
 export function spawnStrip(
     ecs: State,
     id: number,
@@ -521,12 +530,7 @@ export function spawnStrip(
     end: number,
     value: number,
 ): void {
-    const eid = ecs.create();
-    ecs.add(eid, Strip);
-    Strip.id.set(eid, id);
-    Strip.start.set(eid, start);
-    Strip.end.set(eid, end);
-    Strip.value.set(eid, value);
+    spawnStripRaw(ecs, id, start, end, value);
     refreshVelocityRunMembers(ecs);
 }
 
@@ -876,7 +880,7 @@ export function createStripKeyframe(ecs: State, stripId: number, s: number, v: n
 
 /** re-create a strip keyframe at an exact strip / id / s / v — undo of a delete, redo
  *  of a create, or a snapshot restore. No id allocation, so it round-trips byte-identical. */
-export function spawnStripKeyframe(
+function spawnStripKeyframeRaw(
     ecs: State,
     stripId: number,
     id: number,
@@ -889,6 +893,16 @@ export function spawnStripKeyframe(
     StripKeyframe.id.set(eid, id);
     StripKeyframe.s.set(eid, s);
     StripKeyframe.v.set(eid, v);
+}
+
+export function spawnStripKeyframe(
+    ecs: State,
+    stripId: number,
+    id: number,
+    s: number,
+    v: number,
+): void {
+    spawnStripKeyframeRaw(ecs, stripId, id, s, v);
     refreshVelocityRunMembers(ecs);
 }
 
@@ -3764,10 +3778,11 @@ export function restoreAll(ecs: State, snap: TrackSnapshot): void {
         for (const p of s.points) spawnForce(ecs, s.id, p.id, p.s, p.g, p.ease);
     }
     for (const st of snap.strips) {
-        spawnStrip(ecs, st.id, st.start, st.end, st.value);
-        for (const k of st.keyframes) spawnStripKeyframe(ecs, st.id, k.id, k.s, k.v);
+        spawnStripRaw(ecs, st.id, st.start, st.end, st.value);
+        for (const k of st.keyframes) spawnStripKeyframeRaw(ecs, st.id, k.id, k.s, k.v);
     }
     for (const os of snap.oneShot) spawnOneShot(ecs, os.id, os.value);
+    refreshVelocityBoundaryPointers(ecs);
 }
 
 /** append a new section of `kind` at the end of the chain. geo gets the flat

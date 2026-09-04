@@ -24,18 +24,27 @@ import {
     createOneShot,
     createSection,
     createStrip,
+    createStripKeyframe,
     createTrack,
     convertSection,
+    entryOneShot,
     refreshVelocityRunMembers,
     resetSection,
     samples,
     SectionKind,
+    segmentAt,
+    Segment,
+    setSegmentExtentRippled,
     snapshotAll,
+    snapshotRun,
     spawnNode,
     spliceGeoMembers,
     setSectionLength,
     Track,
     trackEntity,
+    allStrips,
+    stripKeyframes,
+    MIN_FORCE_LEN,
 } from "../src/track";
 
 // the document boundary (spec `kex2d-serialization`): save → load → bake must be byte-identical
@@ -89,6 +98,73 @@ function bakedArrays(eid: number) {
         ds: Array.from(out.ds.subarray(0, Math.max(0, count - 1))),
     };
 }
+
+function velocityUnionTrack() {
+    const state = new State();
+    createTrack(state);
+    const run = createSection(state, 0, SectionKind.Force, 40);
+    for (const [station, g] of [
+        [0, 1],
+        [8, 1],
+        [20, 0],
+        [32, 1],
+        [40, 1],
+    ] as const)
+        createForcePoint(state, run, station, g);
+    const strip = createStrip(state, 2, 40, 8)!;
+    createStripKeyframe(state, strip, 20, 40);
+    createStripKeyframe(state, strip, 30, 3);
+    createOneShot(state, 25);
+    refreshVelocityRunMembers(state);
+    return { state, run, strip };
+}
+
+function stableVelocitySnapshot(state: State, run: number, strip: number) {
+    return {
+        run: {
+            ...snapshotRun(state, run),
+            members: snapshotRun(state, run).members.map(
+                ({ velocityBoundary: _pointer, ...member }) => member,
+            ),
+        },
+        strips: allStrips(state).map(({ eid: _eid, ...row }) => row),
+        keys: stripKeyframes(state, strip).map(({ eid: _eid, ...row }) => row),
+        oneShot: (({ eid: _eid, ...row }) => row)(entryOneShot(state)!),
+    };
+}
+
+test("velocity-unioned save and three reloads are an identity fixed point", () => {
+    const { state, run, strip } = velocityUnionTrack();
+    const station30 = snapshotRun(state, run).members.find(
+        (member) => member.runStation === 30,
+    )!.id;
+    let text = saveDocument(state);
+    for (let reload = 0; reload < 3; reload++) {
+        loadDocument(state, text);
+        expect(saveDocument(state)).toBe(text);
+        expect(snapshotRun(state, run).members.find((member) => member.runStation === 30)!.id).toBe(
+            station30,
+        );
+        text = saveDocument(state);
+    }
+    expect(
+        stableVelocitySnapshot(state, run, strip).keys.find((key) => key.s === 30)?.id,
+    ).toBeDefined();
+});
+
+test("maximally trimmed velocity-unioned document reloads exactly", () => {
+    const { state, run, strip } = velocityUnionTrack();
+    const terminal = snapshotRun(state, run).members.find((member) => member.runStation === 32)!.id;
+    setSegmentExtentRippled(state, terminal, MIN_FORCE_LEN);
+    const before = stableVelocitySnapshot(state, run, strip);
+    const text = saveDocument(state);
+    loadDocument(state, text);
+    expect(saveDocument(state)).toBe(text);
+    expect(stableVelocitySnapshot(state, run, strip)).toEqual(before);
+    expect(allStrips(state)[0]!.end).toBeGreaterThan(
+        Segment.runExtent.get(segmentAt(state, snapshotRun(state, run).members[0]!.id)!),
+    );
+});
 
 describe("round-trip over the scenarios.ts corpus", () => {
     for (const s of scenarios) {
