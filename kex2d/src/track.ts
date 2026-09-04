@@ -4578,7 +4578,7 @@ export function segmentRippleExtentFloor(ecs: State, segmentId: number): number 
         for (const keyframe of stripKeyframes(ecs, strip.id)) stations.push(keyframe.s);
         for (const global of stations) {
             const station = global - window.offset;
-            if (station > start && station <= end) floor = Math.max(floor, station - start);
+            if (station > start && station < end) floor = Math.max(floor, station - start);
         }
     }
     return Math.fround(floor);
