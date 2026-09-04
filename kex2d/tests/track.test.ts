@@ -397,7 +397,9 @@ test("segment ripple stays total across fixed velocity stations without renaming
     refreshVelocityRunMembers(ecs);
     const before = snapshotRun(ecs, run);
     const selected = before.members.find((member) => member.runStation === 4)!.id;
-    const survivorByStation = new Map(before.members.map((member) => [member.runStation, member.id]));
+    const survivorByStation = new Map(
+        before.members.map((member) => [member.runStation, member.id]),
+    );
     const velocity = allStrips(ecs).map((row) => ({
         id: row.id,
         start: row.start,
@@ -419,13 +421,15 @@ test("segment ripple stays total across fixed velocity stations without renaming
     expect(after.members.map((member) => member.order)).toEqual(
         after.members.map((_, index) => index),
     );
-    expect(allStrips(ecs).map((row) => ({
-        id: row.id,
-        start: row.start,
-        end: row.end,
-        value: row.value,
-        keys: stripKeyframes(ecs, row.id).map((key) => [key.id, key.s, key.v]),
-    }))).toEqual(velocity);
+    expect(
+        allStrips(ecs).map((row) => ({
+            id: row.id,
+            start: row.start,
+            end: row.end,
+            value: row.value,
+            keys: stripKeyframes(ecs, row.id).map((key) => [key.id, key.s, key.v]),
+        })),
+    ).toEqual(velocity);
     assertRunStructure(ecs);
     undo(history, ecs);
     expect(snapshotRun(ecs, run)).toEqual(before);

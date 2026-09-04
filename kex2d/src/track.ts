@@ -2350,7 +2350,7 @@ function allocateSectionId(ecs: State): number {
 export function spliceRunMembers(
     ecs: State,
     runId: number,
-    intent: RunSpliceIntent = "rebuild",
+    _intent: RunSpliceIntent = "rebuild",
 ): void {
     const before = runMembers(ecs, runId);
     if (before.length === 0) throw new Error(`spliceRunMembers: no run ${runId}`);
