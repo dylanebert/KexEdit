@@ -467,6 +467,37 @@ test("run-terminal ripple preserves hostile-station identities and is repeat-ide
     expect(snapshotRun(ecs, run)).toEqual(before);
 });
 
+test("interior ripple resolves moved intervals by stable force id, never force eid", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 24);
+    for (const [id, station, g] of [
+        [101, 0, 1],
+        [211, 4.8, 2],
+        [307, 12, 3],
+        [401, 19.2, 4],
+    ] as const)
+        spawnForce(ecs, run, id, station, g);
+    spliceRunMembers(ecs, run, "rebuild");
+    const before = snapshotRun(ecs, run);
+    expect(before.members.map((member) => SegmentForceBoundary.id(ecs, member.id))).toEqual([
+        211,
+        307,
+        401,
+        null,
+    ]);
+    const selected = before.members[1]!.id;
+
+    setSegmentExtentRippled(ecs, selected, 8);
+
+    const after = snapshotRun(ecs, run);
+    expect(after.members.map((member) => member.id)).toEqual(
+        before.members.map((member) => member.id),
+    );
+    expect(sectionForces(ecs, run).map((point) => point.id)).toEqual([101, 211, 307, 401]);
+    assertRunStructure(ecs);
+});
+
 test("section-length rebuild preserves every surviving member identity", () => {
     const ecs = new State();
     createTrack(ecs);

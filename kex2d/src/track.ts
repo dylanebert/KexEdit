@@ -2416,12 +2416,23 @@ export function spliceRunMembers(
         const encoded = Segment.forceEndKey.get(member.eid);
         if (encoded !== 0) oldByBoundary.set(encoded - 1, member.id);
     }
+    const oldByEntryBoundary = new Map<number, number>();
+    const forceAtStation = new Map(
+        [...forceStations].map(([station, id]) => [Math.fround(station), id]),
+    );
+    for (let index = 1; index < before.length; index++) {
+        const encoded = Segment.forceEndKey.get(before[index - 1]!.eid);
+        if (encoded !== 0) oldByEntryBoundary.set(encoded - 1, before[index]!.id);
+    }
     const claimed = new Set<number>();
     for (const member of union.members) {
         const exact = oldByStation.get(Math.fround(member.entryStation));
         const boundary = member.boundary?.value;
+        const entryBoundary = forceAtStation.get(Math.fround(member.entryStation));
         const inherited =
-            exact ?? (boundary === undefined ? undefined : oldByBoundary.get(boundary));
+            exact ??
+            (boundary === undefined ? undefined : oldByBoundary.get(boundary)) ??
+            (entryBoundary === undefined ? undefined : oldByEntryBoundary.get(entryBoundary));
         const id = member.entryStation === 0 ? runId : inherited;
         member.id = id !== undefined && !claimed.has(id) ? id : allocateSectionId(ecs);
         claimed.add(Number(member.id));
