@@ -85,7 +85,7 @@ export const Segment = {
     runExtent: sparse(f32),
     /** @temporary S3–S7 — encoded stable id of the run-entry force point, on the first member. */
     runEntryForce: sparse(u32),
-    /** Encoded entity pointer to this member's authored terminating force key. */
+    /** Encoded stable id of this member's authored terminating force key. */
     forceEndKey: sparse(u32),
     /** @temporary S3–S7 — encoded entity pointer to this geo member's terminating node. */
     geoEndNode: sparse(u32),
@@ -2409,7 +2409,7 @@ export function spliceRunMembers(
     // interval it terminates; fixed velocity boundaries can add/remove intervals around it, so
     // positional assignment is neither stable nor injective when cardinality changes.
     const oldByStation = new Map(
-        before.map((member) => [Segment.runStation.get(member.eid), member.id]),
+        before.map((member) => [Math.fround(Segment.runStation.get(member.eid)), member.id]),
     );
     const oldByBoundary = new Map<number, number>();
     for (const member of before) {
@@ -2418,7 +2418,7 @@ export function spliceRunMembers(
     }
     const claimed = new Set<number>();
     for (const member of union.members) {
-        const exact = oldByStation.get(member.entryStation);
+        const exact = oldByStation.get(Math.fround(member.entryStation));
         const boundary = member.boundary?.value;
         const inherited =
             exact ?? (boundary === undefined ? undefined : oldByBoundary.get(boundary));
@@ -2477,11 +2477,10 @@ export function spliceRunMembers(
         Segment.runStation.set(eid, member.entryStation);
         Segment.runExtent.set(eid, extent);
         Section.kind.set(eid, kind);
-        Section.length.set(eid, member.duration);
+        Section.length.set(eid, Math.fround(member.duration));
         Segment.runEntryForce.set(eid, 0);
         const boundaryId = member.boundary?.value;
-        const boundary = boundaryId === undefined ? null : forceAt(ecs, boundaryId);
-        Segment.forceEndKey.set(eid, boundary === null ? 0 : boundary + 1);
+        Segment.forceEndKey.set(eid, boundaryId === undefined ? 0 : boundaryId + 1);
     }
     const replacement = union.members.map((member) => Number(member.id));
     const chain = allBefore.filter((row) => !runSet.has(row.id)).map((row) => row.id);
@@ -2574,18 +2573,17 @@ export const SegmentForceBoundary = {
         if (member === null) return null;
         const encoded = Segment.forceEndKey.get(member);
         if (encoded === 0) return null;
-        const eid = encoded - 1;
-        return ecs.has(eid, Force) && Force.segment.get(eid) === segmentId
-            ? Force.id.get(eid)
-            : null;
+        const id = encoded - 1;
+        const eid = forceAt(ecs, id);
+        return eid !== null && Force.segment.get(eid) === segmentId ? id : null;
     },
     g(ecs: State, segmentId: number): number | null {
         const member = segmentAt(ecs, segmentId);
         if (member === null) return null;
         const encoded = Segment.forceEndKey.get(member);
         if (encoded === 0) return null;
-        const eid = encoded - 1;
-        return ecs.has(eid, Force) && Force.segment.get(eid) === segmentId
+        const eid = forceAt(ecs, encoded - 1);
+        return eid !== null && Force.segment.get(eid) === segmentId
             ? ForceBoundary.g.get(eid)
             : null;
     },
@@ -2594,8 +2592,8 @@ export const SegmentForceBoundary = {
         if (member === null) return null;
         const encoded = Segment.forceEndKey.get(member);
         if (encoded === 0) return null;
-        const eid = encoded - 1;
-        return ecs.has(eid, Force) && Force.segment.get(eid) === segmentId
+        const eid = forceAt(ecs, encoded - 1);
+        return eid !== null && Force.segment.get(eid) === segmentId
             ? (ForceBoundary.ease.get(eid) as Easing)
             : null;
     },
@@ -4571,7 +4569,8 @@ export function setSegmentExtentRippled(ecs: State, segmentId: number, extent: n
     if (!Number.isFinite(extent) || extent < floor)
         throw new RangeError(`segment extent must be at least ${floor}`);
     const run = runIdOf(ecs, segmentId)!;
-    const delta = extent - Section.length.get(member);
+    const nextExtent = Math.fround(extent);
+    const delta = nextExtent - Section.length.get(member);
     if (delta === 0) return;
     const boundary = Segment.runStation.get(member) + Section.length.get(member);
     const first = runMembers(ecs, run)[0]!;
@@ -4582,11 +4581,9 @@ export function setSegmentExtentRippled(ecs: State, segmentId: number, extent: n
         })),
     );
     for (const point of points) {
+        if (point.station < boundary) continue;
         Force.section.set(point.eid, first.id);
-        Force.s.set(
-            point.eid,
-            Math.fround(point.station >= boundary ? point.station + delta : point.station),
-        );
+        Force.s.set(point.eid, Math.fround(point.station + delta));
     }
     Segment.runExtent.set(first.eid, Math.fround(Segment.runExtent.get(first.eid) + delta));
     spliceRunMembers(ecs, run, "move");

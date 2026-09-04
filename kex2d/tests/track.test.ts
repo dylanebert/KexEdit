@@ -437,6 +437,60 @@ test("segment ripple stays total across fixed velocity stations without renaming
     expect(snapshotRun(ecs, run)).toEqual(after);
 });
 
+test("run-terminal ripple preserves hostile-station identities and is repeat-idempotent", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 24);
+    for (const [station, g] of [
+        [0, 1],
+        [4.8, 2],
+        [12, 3],
+        [19.2, 4],
+    ] as const)
+        createForcePoint(ecs, run, station, g);
+    spliceRunMembers(ecs, run, "rebuild");
+    const before = snapshotRun(ecs, run);
+    const selected = before.members.at(-1)!.id;
+    const ids = before.members.map((member) => member.id);
+    const below = before.stations.filter((station) => station < 19.2);
+    const history = createHistory();
+
+    setSegmentExtentRippledHistory(history, ecs, selected, 6);
+    const once = snapshotRun(ecs, run);
+    expect(once.members.map((member) => member.id)).toEqual(ids);
+    expect(once.stations.filter((station) => station < 19.2)).toEqual(below);
+    assertRunStructure(ecs);
+
+    setSegmentExtentRippled(ecs, selected, 6);
+    expect(snapshotRun(ecs, run)).toEqual(once);
+    undo(history, ecs);
+    expect(snapshotRun(ecs, run)).toEqual(before);
+});
+
+test("section-length rebuild preserves every surviving member identity", () => {
+    const ecs = new State();
+    createTrack(ecs);
+    const run = createSection(ecs, 0, SectionKind.Force, 24);
+    for (const [station, g] of [
+        [0, 1],
+        [4.8, 2],
+        [12, 3],
+        [19.2, 4],
+    ] as const)
+        createForcePoint(ecs, run, station, g);
+    spliceRunMembers(ecs, run, "rebuild");
+    const before = snapshotRun(ecs, run);
+
+    setSectionLength(ecs, run, 30);
+
+    const after = snapshotRun(ecs, run);
+    expect(after.members.map((member) => member.id)).toEqual(
+        before.members.map((member) => member.id),
+    );
+    expect(after.stations.slice(0, -1)).toEqual(before.stations.slice(0, -1));
+    assertRunStructure(ecs);
+});
+
 test("segment ripple floors a trim at the last fixed station in that member", () => {
     const ecs = new State();
     createTrack(ecs);
