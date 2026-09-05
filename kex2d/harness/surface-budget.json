@@ -18,8 +18,8 @@
             "maxParagraphChars": 680
         },
         ".claude/rules/kex2d-harness.md": {
-            "bytes": 29475,
-            "maxParagraphChars": 6349
+            "bytes": 3493,
+            "maxParagraphChars": 445
         },
         ".claude/rules/kex2d-map.md": {
             "bytes": 5975,
@@ -42,7 +42,7 @@
             "maxParagraphChars": 157
         }
     },
-    "totalBytes": 53559,
+    "totalBytes": 27577,
     "processChecks": [
         "kex2d/tests/harness.test.ts"
     ]
