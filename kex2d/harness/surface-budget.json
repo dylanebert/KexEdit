@@ -1,0 +1,49 @@
+{
+    "version": 1,
+    "files": {
+        ".claude/rules/blender.md": {
+            "bytes": 1324,
+            "maxParagraphChars": 377
+        },
+        ".claude/rules/core.md": {
+            "bytes": 1499,
+            "maxParagraphChars": 301
+        },
+        ".claude/rules/editor-ui.md": {
+            "bytes": 62668,
+            "maxParagraphChars": 8475
+        },
+        ".claude/rules/fidelity.md": {
+            "bytes": 1684,
+            "maxParagraphChars": 680
+        },
+        ".claude/rules/kex2d-harness.md": {
+            "bytes": 29475,
+            "maxParagraphChars": 6349
+        },
+        ".claude/rules/kex2d-map.md": {
+            "bytes": 5975,
+            "maxParagraphChars": 538
+        },
+        "AGENTS.md": {
+            "bytes": 2302,
+            "maxParagraphChars": 654
+        },
+        "CLAUDE.md": {
+            "bytes": 169,
+            "maxParagraphChars": 157
+        },
+        "kex2d/AGENTS.md": {
+            "bytes": 4971,
+            "maxParagraphChars": 477
+        },
+        "kex2d/CLAUDE.md": {
+            "bytes": 169,
+            "maxParagraphChars": 157
+        }
+    },
+    "totalBytes": 110236,
+    "processChecks": [
+        "kex2d/tests/harness.test.ts"
+    ]
+}

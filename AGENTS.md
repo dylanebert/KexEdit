@@ -1,17 +1,17 @@
 # KexEdit
 
-Roller coaster editor using Force Vector Design (FVD).
+MIT Force Vector Design (FVD) coaster editor.
 
 ## Structure
 
-- `packages/core/` — Rust crate. Physics simulation, node graph, binary format (.kex). Only runtime dep: `approx`
-- `plugins/blender/` — Blender 4.2+ addon. `kexedit/` is the addon package (name required by Blender). Flat: ffi.py, types.py, coords.py (no bpy), operators.py, panels.py, properties.py, curve.py, fcurve.py (bpy). Loads core via handle-based FFI (`kex_load` → `kex_build` → `kex_output_read_*`). Python-side `.kex` serializer in `ffi.py` mirrors the format in `packages/core/src/persistence/`
-- `app/` — placeholder for the Shallot-based web editor (not yet implemented)
-- `kex2d/` — 2D coaster prototype (Shallot + Svelte + canvas2D). Sections-of-atoms track model: a chain of geo (author shape → recover force) and force (author F_n → integrate geometry) sections joined by anchor propagation, with structural ops (append/split/delete/convert) and both invoked conversions landed end to end (`geoforce.ts` geo→force, `forcegeo.ts` force→geo, each behind a section-menu row + modal). Parallel to `app/`. Model + code map: `kex2d/AGENTS.md`
+- `packages/core/`: Rust physics, graph, `.kex` binary persistence and handle-based FFI. Layer order: sim → graph → nodes → track → persistence → ffi. Frontends never leak into core.
+- `plugins/blender/`: Blender 4.2+ addon. `kexedit/` is the required addon package name; `ffi.py` mirrors core persistence and alone touches ctypes.
+- `app/`: placeholder for the Shallot web editor, not implemented.
+- `kex2d/`: Shallot + Svelte + canvas2D prototype. Canonical geo/force segment chain; section/run compatibility still feeds evaluation and some interactions. Read `kex2d/AGENTS.md` before working there. It is separate from the Rust/Blender implementation.
 
 ## Rules
 
-`.claude/rules/` holds the per-area conventions. `fidelity.md` carries no `paths:` and is always in force — the modeling law: what must be physically accurate (anything touching rider forces or track shape), what collapses into game-simple representations, and the independent-models-converging verification standard. The rest are path-scoped; globs match the path from the repo root, not your cwd:
+Always read `.claude/rules/fidelity.md`: rider forces and track shape require physical accuracy, proven references and independent-model convergence. Other rules are selected by repo-root-relative paths, not cwd:
 
 - `plugins/blender/**/*` → `.claude/rules/blender.md`
 - `packages/core/**/*` → `.claude/rules/core.md`
@@ -19,41 +19,21 @@ Roller coaster editor using Force Vector Design (FVD).
 - `kex2d/harness/**/*`, `kex2d/tests/harness.test.ts` → `.claude/rules/kex2d-harness.md`
 - `kex2d/src/**/*`, `kex2d/tests/**/*` → `.claude/rules/kex2d-map.md`
 
-Read the ones whose globs match the files you're editing. Claude Code loads them for you on a matching read; other runtimes read them from this index. Each rule's `paths:` frontmatter is the source of truth — edit it first, then mirror it here, in order.
+Read matching rules explicitly outside Claude Code. Rule `paths:` frontmatter owns this index; keep both aligned. Public `CLAUDE.md` files import their adjacent entry.
 
-## Architecture
+## Build and verify
 
-```
-app (shallot + UI) → core (rust/wasm)
-blender (python)   → core (rust/cdylib via FFI)
-```
+From this root:
 
-Core is the shared truth. Frontends never leak into core.
-
-## Core Modules
-
-sim → graph → nodes → track → persistence → ffi
-
-sim is pure math (zero deps). Each layer only depends on layers to its left. FFI is feature-gated.
-
-## Build
-
-```bash
-plugins/blender/scripts/build_lib.sh           # host platform
-plugins/blender/scripts/build_lib.sh windows   # cross-compile DLL (mingw, runs from Linux/WSL)
-plugins/blender/scripts/build_lib.sh all       # host + Windows
-```
-
-`build_lib.sh` builds the Rust crate and copies the artifact + `.kex` fixtures into `plugins/blender/kexedit/{lib,fixtures}/` (both gitignored — single source of truth lives in `packages/core/`).
-
-Set `KEXEDIT_DEV_INSTALL=path1[:path2]` to also rsync the addon dir to a Blender extensions location after building. Useful for syncing into a Windows-side Blender from WSL where cross-filesystem symlinks don't behave.
-
-## Verify
-
-```bash
-cd packages/core && cargo test
-cd packages/core && cargo clippy
+```sh
+plugins/blender/scripts/build_lib.sh
+plugins/blender/scripts/build_lib.sh windows # mingw, Linux/WSL
+plugins/blender/scripts/build_lib.sh all
+cd packages/core && cargo test && cargo clippy
 cd plugins/blender && uvx pytest tests/ -v
-cd kex2d && bun check && bun test   # the default gate (~12s); corpus oracles + labs run by path
-cd kex2d && bun run capture   # Playwright UI screenshots → harness/shots/ (display-gated)
+cd kex2d && bun run test && bun run check
 ```
+
+The build script copies the library and core fixtures to ignored addon `lib/` and `fixtures/`; never commit those copies. `KEXEDIT_DEV_INSTALL=path1[:path2]` also rsyncs to local Blender extension installs. Restart Blender fully after replacing a Windows DLL.
+
+In `kex2d`, run `bun run surface-budget` explicitly after instruction/process-check changes. It discovers instruction files and process checks, refuses growth, and lowers its baseline only on a passing reduction. It is not part of read-only `check`.

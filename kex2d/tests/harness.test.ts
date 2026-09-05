@@ -1,6 +1,15 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
     boolEnv,
@@ -37,6 +46,7 @@ import {
     type DeclaredEntry,
 } from "../harness/declared";
 import { provisioned, provisionKey, stalePrune } from "../harness/wsl";
+import { type Baseline, readSurface } from "../harness/surface-budget";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
 // honesty rests on: whether a run merges or WIPES the shot set, whether the host reinstalls, and
@@ -1645,6 +1655,202 @@ describe("resolveHistory — a machine-stable path, never a per-checkout one", (
             rmSync(root, { recursive: true, force: true });
         }
     });
+});
+
+describe("surface-budget — portable production refusals and monotone baseline", () => {
+    const implementation = readFileSync(
+        join(import.meta.dir, "../harness/surface-budget.ts"),
+        "utf8",
+    );
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8"));
+    const initial: Baseline = {
+        version: 1,
+        files: { "AGENTS.md": { bytes: 12, maxParagraphChars: 5 } },
+        totalBytes: 12,
+        processChecks: [],
+    };
+    function fixture(
+        body: (f: {
+            root: string;
+            put: (path: string, text: string) => void;
+            save: (value: Baseline) => void;
+            bytes: () => string;
+            run: (...args: string[]) => { exit: number; output: string };
+        }) => void,
+    ): void {
+        const root = mkdtempSync(join(tmpdir(), "kex2d-surface-"));
+        const baselinePath = join(root, "kex2d/harness/surface-budget.json");
+        const put = (path: string, text: string) => {
+            mkdirSync(dirname(join(root, path)), { recursive: true });
+            writeFileSync(join(root, path), text);
+        };
+        put("AGENTS.md", "alpha\n\nbeta\n");
+        put("kex2d/harness/surface-budget.ts", implementation);
+        const save = (value: Baseline) => writeFileSync(baselinePath, JSON.stringify(value));
+        save(structuredClone(initial));
+        try {
+            body({
+                root,
+                put,
+                save,
+                bytes: () => readFileSync(baselinePath, "utf8"),
+                run: (...args) => {
+                    const child = Bun.spawnSync(
+                        [
+                            process.execPath,
+                            ...pkg.scripts["surface-budget"].split(" ").slice(1),
+                            ...args,
+                        ],
+                        {
+                            cwd: join(root, "kex2d"),
+                        },
+                    );
+                    return {
+                        exit: child.exitCode,
+                        output: child.stdout.toString() + child.stderr.toString(),
+                    };
+                },
+            });
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    }
+    test("manifest command runs outside the checkout without private imports; unchanged is byte-identical", () => {
+        expect(pkg.scripts["surface-budget"]).toBe("bun run harness/surface-budget.ts");
+        fixture((f) => {
+            const before = f.bytes();
+            expect(f.run().exit).toBe(0);
+            expect(f.bytes()).toBe(before);
+            expect(readSurface(f.root)).toEqual({
+                files: initial.files,
+                totalBytes: 12,
+                processChecks: [],
+            });
+        });
+    });
+    for (const [name, edit, expected] of [
+        [
+            "file bytes",
+            (b: Baseline) => {
+                b.totalBytes = 99;
+                b.files["AGENTS.md"]!.maxParagraphChars = 99;
+            },
+            "file bytes: AGENTS.md",
+        ],
+        [
+            "aggregate bytes",
+            (b: Baseline) => {
+                b.files["AGENTS.md"] = { bytes: 99, maxParagraphChars: 99 };
+            },
+            "total bytes",
+        ],
+        ["paragraph growth despite byte reduction", (_b: Baseline) => {}, "paragraph: AGENTS.md"],
+    ] as const) {
+        test(`refuses ${name} independently and never writes the baseline`, () =>
+            fixture((f) => {
+                const b = structuredClone(initial);
+                edit(b);
+                f.save(b);
+                f.put(
+                    "AGENTS.md",
+                    name === "paragraph growth despite byte reduction"
+                        ? "alpha beta\n"
+                        : "alpha\n\nbeta!\n",
+                );
+                const before = f.bytes();
+                const result = f.run();
+                expect(result.exit).toBe(1);
+                expect(result.output.match(/\[FAIL\].*/g)).toEqual([`[FAIL] ${expected}`]);
+                expect(f.bytes()).toBe(before);
+            }));
+    }
+    for (const path of [
+        ".claude/rules/new.md",
+        ".claude/skills/new/SKILL.md",
+        ".claude/commands/plant.md",
+        "nested/deeper/AGENTS.md",
+        "layers/structure.md",
+        "nested/context.md",
+    ]) {
+        test(`discovers and refuses unlisted ${path}`, () =>
+            fixture((f) => {
+                f.save({ ...initial, totalBytes: 999 });
+                f.put(path, "new\n");
+                const before = f.bytes();
+                const result = f.run();
+                expect(result.exit).toBe(1);
+                expect(result.output.match(/\[FAIL\].*/g)).toEqual([
+                    `[FAIL] unlisted instruction: ${path}`,
+                ]);
+                expect(f.bytes()).toBe(before);
+            }));
+    }
+    test("discovers process checks by harness location and imports, not all product tests", () =>
+        fixture((f) => {
+            f.put("kex2d/tests/track.test.ts", 'import { test } from "bun:test";');
+            expect(readSurface(f.root).processChecks).toEqual([]);
+            for (const path of [
+                "kex2d/harness/new.test.ts",
+                "kex2d/tests/arbitrary.test.ts",
+                "kex2d/tests/harness.test.ts",
+            ]) {
+                f.put(path, 'import { readSurface } from "../harness/surface-budget";');
+                const before = f.bytes();
+                const result = f.run();
+                expect(result.exit).toBe(1);
+                expect(result.output).toContain(`[FAIL] unlisted process check: ${path}`);
+                expect(f.bytes()).toBe(before);
+                rmSync(join(f.root, path));
+            }
+        }));
+    test("process replacement refuses even at the same count", () =>
+        fixture((f) => {
+            f.save({ ...initial, processChecks: ["kex2d/tests/harness.test.ts"] });
+            f.put("kex2d/harness/replacement.test.ts", "");
+            const before = f.bytes();
+            expect(f.run().exit).toBe(1);
+            expect(f.bytes()).toBe(before);
+        }));
+    test("successful reduction removes deleted members and ceilings; second pass is identical", () =>
+        fixture((f) => {
+            f.save({
+                ...initial,
+                files: { ...initial.files, "CLAUDE.md": { bytes: 8, maxParagraphChars: 8 } },
+                totalBytes: 20,
+                processChecks: ["kex2d/tests/harness.test.ts"],
+            });
+            f.put("AGENTS.md", "a\n");
+            expect(f.run().exit).toBe(0);
+            const lowered = f.bytes();
+            expect(JSON.parse(lowered)).toEqual({
+                version: 1,
+                files: { "AGENTS.md": { bytes: 2, maxParagraphChars: 2 } },
+                totalBytes: 2,
+                processChecks: [],
+            });
+            expect(f.run().exit).toBe(0);
+            expect(f.bytes()).toBe(lowered);
+        }));
+    test("CLAUDE pointers count separately, physical aliases once", () =>
+        fixture((f) => {
+            f.put("CLAUDE.md", "@AGENTS.md\n");
+            symlinkSync(join(f.root, "AGENTS.md"), join(f.root, "context.md"));
+            const reading = readSurface(f.root);
+            expect(Object.keys(reading.files)).toEqual(["AGENTS.md", "CLAUDE.md"]);
+            expect(reading.totalBytes).toBe(23);
+        }));
+    test("missing or invalid baseline and seed arguments cannot initialize or replace it", () =>
+        fixture((f) => {
+            const before = f.bytes();
+            expect(f.run("--seed").exit).toBe(1);
+            expect(f.bytes()).toBe(before);
+            f.put("kex2d/harness/surface-budget.json", '{"version":1}');
+            expect(f.run().exit).toBe(1);
+            expect(f.bytes()).toBe('{"version":1}');
+            rmSync(join(f.root, "kex2d/harness/surface-budget.json"));
+            expect(f.run().exit).toBe(1);
+            expect(existsSync(join(f.root, "kex2d/harness/surface-budget.json"))).toBe(false);
+        }));
 });
 
 describe("kex2d-harness.md's Recorded distribution section says what trend.ts implements", () => {
