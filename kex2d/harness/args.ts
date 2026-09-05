@@ -242,7 +242,7 @@ export interface Verdict {
  * an iteration signal (`mutate.ts`'s pairings read coupling off exit codes — read the count off its
  * own `PAIRS` array, never off a number written here), not a gate
  * decision, so a selective run with a nonzero exit still fails with `"Playwright exited N"` —
- * the same behavior `mutate.ts` and the `freshness` script have always seen. Deciding field:
+ * the same behavior `mutate.ts` and `bun run capture -- -g "__kex hook freshness"` see. Deciding field:
  * `selective` — a selective run never reaches the declared-set check.
  *
  * Fail-closed on every way a flow can be MISSING from the set: no exit at all, an unaccounted-for
@@ -278,8 +278,8 @@ function failureOf(
     if (exitCode !== 0) {
         // A selective run's red is an iteration signal, not a gate decision — the declared set
         // applies only to full runs. Deciding field: `selective` — a selective run never reaches
-        // the declared-set check, so `mutate.ts`'s coupling reads and the `freshness` script are
-        // unchanged.
+        // the declared-set check, so `mutate.ts`'s coupling reads and
+        // `bun run capture -- -g "__kex hook freshness"` are unchanged.
         if (selective) return `Playwright exited ${exitCode}`;
         // A full red run: check every failed title against the declared set. Deciding field:
         // `testTitle(t)` — the title, not the raw `file:line` line — the roster's identity key.

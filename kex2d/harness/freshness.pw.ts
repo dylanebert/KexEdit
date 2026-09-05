@@ -107,7 +107,7 @@
 // `stripKfPx` position arm cannot witness it because the keyframe position does not depend on
 // the strip layout.
 //
-// Usage: bun run freshness
+// Usage: bun run capture -- -g "__kex hook freshness"
 
 import { test, expect, kexCall, seedHill, frameTimeline, frames } from "./flow";
 
