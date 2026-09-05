@@ -3,9 +3,6 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
-    "bin": {
-        "kex2d": "./src/cli.ts"
-    },
     "scripts": {
         "dev": "vite",
         "build": "vite build",
@@ -15,9 +12,8 @@
         "capture": "bun run harness/capture.ts",
         "harness:deps": "[ -d harness/node_modules/@playwright/test ] || bun install --cwd harness --frozen-lockfile",
         "mutate": "bun run harness/mutate.ts",
-        "freshness": "bun run harness/capture.ts -- -g \"__kex hook freshness\"",
         "trend": "bun run harness/trend.ts",
-        "check": "bun run harness:deps && bun run format && tsc && svelte-check && biome check",
+        "check": "bun run harness:deps && tsc && svelte-check && biome check",
         "format": "biome check --write"
     },
     "dependencies": {

@@ -395,8 +395,14 @@ cd kex2d && bun check && bun test   # the default gate (~12s); corpus oracles + 
 cd kex2d && bun run capture   # UI screenshots → harness/shots/ (display-gated)
 ```
 
-**Toolchain pin:** `typescript` 6.0.3 + `svelte-check` 4.7.3 — svelte-check crashes on TypeScript 7
-(the native Go port lacks the `ts.sys` API it needs). Revisit when it ships TS7 support.
+`bun run check` provisions harness dependencies, then verifies with `tsc`, `svelte-check`, and
+one read-only `biome check`. `bun run format` is the separate Biome writer.
+
+**Dual TypeScript toolchain:** local `node_modules/.bin/tsc` resolves to `@typescript/native`
+(the native TypeScript compiler). `svelte-check` instead resolves the JavaScript `typescript`
+package for its compiler API, including `ts.sys`, which the native compiler does not expose.
+Keep both dependencies: the CLI type-check and Svelte diagnostics use different implementations.
+Read the installed resolution and lockfile rather than assuming their patch versions match.
 
 Physics is gated against an independent oracle, not self-consistency; the ECS + substrate layers
 are covered device-free, so the unit suite has no real-GPU leg. Tiers, the f64 mirror + RK4
