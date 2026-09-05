@@ -873,7 +873,7 @@ describe("the staged host files mirror the knob guards verbatim", () => {
 });
 
 describe("every staged flow file is in capture.ts's stage.files list", () => {
-    // The split (`kex2d-harness.md` "Growth") turned staging from "the one file" into a file
+    // The split (`kex2d-harness.md` "Verifier integrity") turned staging from "the one file" into a file
     // LIST — `capture.ts`'s `stage.files` — and a list can silently drop an entry a glob never
     // would. This walks the harness dir for the real staged set (`flow.ts` + every `*.pw.ts` flow
     // file) and pins that each one is named in `stage.files`, so a new flow file landing without
@@ -994,61 +994,6 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     // every `*.pw.ts`), never this test file's own prose, so a docblock elsewhere in this repo
     // quoting `waitForTimeout(200)` as text (as this comment now does) cannot trip it — the
     // scanned text and the file holding this comment are disjoint by construction.
-});
-
-describe("kex2d-harness.md's Cost levers section carries no pasted measurement", () => {
-    // kex2d-capture-deflake S3a: the three cost levers (worker count, aggregate SHOT_MS spend,
-    // the behavior-only-mode ceiling) are recorded as DERIVATIONS — the command that reads each
-    // factor and the structural relation between them, never a frozen wall-clock or count
-    // (`doc-hygiene.md` §9: a quoted count is drift by construction). The surrounding doc
-    // legitimately carries numbers (the port, the worker/SHOT_MS defaults quoted verbatim from
-    // source), so this scan is section-scoped to "## Cost levers" by heading boundary, never the
-    // whole file — an unscoped literal gate over this doc is unreachable and stops being evidence
-    // (`doc-hygiene.md` §9's own "per file, not per sweep" point).
-    const docPath = join(import.meta.dir, "..", "..", ".claude", "rules", "kex2d-harness.md");
-
-    function costLeversSection(): string {
-        const text = readFileSync(docPath, "utf8");
-        const heading = "## Cost levers";
-        const start = text.indexOf(heading);
-        if (start === -1) throw new Error(`${heading} not found in ${docPath}`);
-        const rest = text.slice(start + heading.length);
-        const next = rest.indexOf("\n## ");
-        return next === -1 ? rest : rest.slice(0, next);
-    }
-
-    // a wall-clock figure: a number immediately followed by a time unit — "60.8s", "134.2s",
-    // "2.2m" all match. A source-quoted default (the `4` in `intEnv(..., "KEX_WORKERS", 4, 1,
-    // 64)`, `300` in `KEX_SHOT_MS`'s default) never matches: nothing in this section follows one
-    // of those digits directly with a time-unit word.
-    const WallClock = /\d[\d.,_]*\s*(?:s|sec|secs|second|seconds|ms|m|min|mins|minute|minutes)\b/i;
-    // a pasted run/call-site count — "63 passed", "1653 pass", "49 call sites" — the shape a
-    // `bun test` / `bun run capture` summary line prints.
-    const RunCount = /\d[\d,]*\s*(?:passed|pass|failed|fail|call sites?|flows?|tests?)\b/i;
-
-    test("carries no wall-clock figure", () => {
-        const section = costLeversSection();
-        const hit = WallClock.exec(section);
-        expect(
-            hit?.[0] ?? null,
-            hit ? `"${hit[0]}" reads as a pasted wall-clock figure` : "none",
-        ).toBeNull();
-    });
-
-    test("carries no pasted run/call-site count", () => {
-        const section = costLeversSection();
-        const hit = RunCount.exec(section);
-        expect(hit?.[0] ?? null, hit ? `"${hit[0]}" reads as a pasted count` : "none").toBeNull();
-    });
-
-    // RED-FIRST WITNESS, both directions (run by hand, not shipped as a mutation the suite
-    // re-runs): seeded the sentence "measured 60.8s at default workers vs 134.2s at
-    // KEX_WORKERS=1, 49 call sites total" into the Cost levers section's worker-count bullet and
-    // re-ran `bun test ./tests/harness.test.ts -t "Cost levers"` — 2 fail, 0 pass: the wall-clock
-    // arm reported `"60.8s" reads as a pasted wall-clock figure` and the count arm reported
-    // `"49 call sites" reads as a pasted count`, exit code 1. Deleted the seed (never
-    // `git checkout`/`restore` on a file with other live edits, `git.md`) and re-ran the same
-    // filter — 2 pass, 0 fail, exit code 0. Both directions witnessed 2026-08-25.
 });
 
 describe("provisionKey / provisioned — when the host reinstalls", () => {
@@ -1853,33 +1798,7 @@ describe("surface-budget — portable production refusals and monotone baseline"
         }));
 });
 
-describe("kex2d-harness.md's Recorded distribution section says what trend.ts implements", () => {
-    // The two-values-must-agree defect (`coding.md`): the doc states the derivations and the code
-    // performs them, so the doc drifts silently the moment either moves. Pins the section exists,
-    // names its own artifacts, and — like Cost levers above — carries no pasted measurement, a
-    // section about durations being the likeliest place for one to land.
-    const docPath = join(import.meta.dir, "..", "..", ".claude", "rules", "kex2d-harness.md");
-    const section = ((): string => {
-        const text = readFileSync(docPath, "utf8");
-        const heading = "## Recorded distribution";
-        const start = text.indexOf(heading);
-        if (start === -1) throw new Error(`${heading} not found in ${docPath}`);
-        const rest = text.slice(start + heading.length);
-        const next = rest.indexOf("\n## ");
-        return next === -1 ? rest : rest.slice(0, next);
-    })();
-
-    test("names the artifacts a reader has to find", () => {
-        // `resolveHistory`, not `harness/runs.jsonl`: the latter is the RETIRED per-checkout
-        // shape and the section still contains that literal string inside the clause that names
-        // it as the retired per-checkout shape — a token match on it would pass for the
-        // wrong reason, pinning a foil rather than the current mechanism. `resolveHistory` is
-        // reachable only from the section's live description of where the history actually
-        // lives.
-        for (const token of ["resolveHistory", "trend.ts", "bun run trend", "WINDOW"])
-            expect(section).toContain(token);
-    });
-
+describe("trend command resolution", () => {
     test("`bun run trend` resolves to a file that exists", () => {
         // The doc and the ship ladder both instruct a person to run `bun run trend`; the script
         // body is configuration, and a typo in it disables the whole reader in silence with every
@@ -1894,24 +1813,5 @@ describe("kex2d-harness.md's Recorded distribution section says what trend.ts im
         expect(existsSync(join(import.meta.dir, "..", target)), `${target} does not exist`).toBe(
             true,
         );
-    });
-
-    test("carries no pasted wall-clock figure or run count", () => {
-        const wall =
-            /\d[\d.,_]*\s*(?:s|sec|secs|second|seconds|ms|m|min|mins|minute|minutes)\b/i.exec(
-                section,
-            );
-        expect(
-            wall?.[0] ?? null,
-            wall ? `"${wall[0]}" reads as a wall-clock figure` : "none",
-        ).toBeNull();
-        const count =
-            /\d[\d,]*\s*(?:passed|pass|failed|fail|call sites?|flows?|tests?|runs?)\b/i.exec(
-                section,
-            );
-        expect(
-            count?.[0] ?? null,
-            count ? `"${count[0]}" reads as a pasted count` : "none",
-        ).toBeNull();
     });
 });

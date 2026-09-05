@@ -1,8 +1,8 @@
 // kex2d's GEO-authoring + viewport capture flows. Shared helpers, the `__kex` typed hook, and the
-// boot fixture live in `./flow` (the staged helpers module, `kex2d-harness.md` "Growth") — this
+// boot fixture live in `./flow` (the staged helpers module, `kex2d-harness.md` "Verifier integrity") — this
 // file, `force.pw.ts`, `section.pw.ts`, and `lab.pw.ts` are the staged flow files that import it.
 // The boot-fixture pageerror-gate pin below must stay the FIRST test in THIS file (`kex2d-harness.md`
-// "The pageerror gate") — it needs no ordering relative to the other staged flow files, only within
+// "Flow-authoring laws") — it needs no ordering relative to the other staged flow files, only within
 // its own.
 
 import {
@@ -466,7 +466,7 @@ test("geo authoring flow", async ({ page, boot }) => {
     // it steps SLIDE (∥ the frozen 2→4 chord) and OFFSET (⊥) instead of orbiting node 2 — `chordNudge`
     // is unit-covered; the wiring is not. `axes()` mirrors `src/manipulator.ts chordFrame`'s
     // slide/offset projection verbatim (this file is staged standalone and imports nothing from
-    // `src/`, `kex2d-harness.md` "Standalone staging") over the SAME section-0-identity-frame poses
+    // `src/`, `kex2d-harness.md` "Verifier integrity") over the SAME section-0-identity-frame poses
     // the tip block above reads — `v` is the FIXED +90° rotation of `u`, NEVER sign-picked toward
     // the node (the stage-2 adversarial-pass fix: a sign-pick rebuilt every pointermove flips the
     // reported offset the instant a drag crosses the chord). `poses()` is section-local WORLD

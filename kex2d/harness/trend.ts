@@ -228,8 +228,8 @@ export function parseHistory(text: string, label: string = "runs.jsonl"): RunRec
  *
  * The default `path` (`HISTORY`) is now a machine-stable location every worktree on the host
  * shares, and this append takes no lock. What makes that safe is the GPU bridge being one
- * machine-level seat, so captures on this host never overlap at all — NOT `kex2d-harness.md`'s
- * "one capture at a time per port", which permits a second session on another port and would put
+ * machine-level seat (`kex2d-harness.md`), so captures on this host never overlap at all — NOT
+ * merely one capture per port, which permits a second session on another port and would put
  * two sanctioned writers on this one file. Neither is enforced here. `appendFileSync` racing a
  * second concurrent writer would interleave two partial lines, and `parseHistory` throws loud on
  * the resulting malformed line for every consumer, not just the racing pair. Do not add a lock

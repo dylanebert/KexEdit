@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, type Page, test as base } from "@playwright/test";
 
 // kex2d's capture-flow staged helpers module. Past ~28 flows the harness rule (`kex2d-harness.md`
-// "Growth") calls for splitting the single `shot.pw.ts` into staged flow files + one staged helpers
+// "Verifier integrity") describes splitting the single `shot.pw.ts` into staged flow files + one staged helpers
 // module — this file. Every flow boots the page, drives one authoring surface through REAL pointer
 // and keyboard events, asserts the resulting state through the DEV-only `window.__kex` hook
 // (src/main.ts — read-only for the asserts; it performs an op only where a gesture can't reach the
