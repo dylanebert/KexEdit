@@ -729,10 +729,12 @@ describe("hand-checked v4 lane shapes", () => {
         // the committed strip is [2, 14) value 10 with keyframes (2,10) (6,18) (10,8) (14,12):
         // three adjacent segments, each owning both handles, no gap and no overlap.
         const lanes = migratedLanes("velocity/multi-keyframe-strip.kex");
+        // Cubic, not Linear: a strip-born span baked as the Cubic curve `profile.segment`
+        // reads for a missing tag, so that is the tag the migration must mint.
         expect(lanes.velocity).toEqual([
-            { id: 0, start: 2, end: 6, ease: Easing.Linear, entry: 10, exit: 18 },
-            { id: 1, start: 6, end: 10, ease: Easing.Linear, entry: 18, exit: 8 },
-            { id: 2, start: 10, end: 14, ease: Easing.Linear, entry: 8, exit: 12 },
+            { id: 0, start: 2, end: 6, ease: Easing.Cubic, entry: 10, exit: 18 },
+            { id: 1, start: 6, end: 10, ease: Easing.Cubic, entry: 18, exit: 8 },
+            { id: 2, start: 10, end: 14, ease: Easing.Cubic, entry: 8, exit: 12 },
         ]);
         expect(laneExclusive(lanes.velocity)).toBe(true);
         // and the single force run of that fixture is one flat segment, entry key owned.
@@ -771,7 +773,7 @@ describe("hand-checked v4 lane shapes", () => {
     test("velocity/keyframeless-strip.kex: one constant segment, entry === exit === value", () => {
         const lanes = migratedLanes("velocity/keyframeless-strip.kex");
         expect(lanes.velocity).toEqual([
-            { id: 0, start: 3, end: 9, ease: Easing.Linear, entry: 11, exit: 11 },
+            { id: 0, start: 3, end: 9, ease: Easing.Cubic, entry: 11, exit: 11 },
         ]);
     });
 
@@ -845,9 +847,9 @@ describe("hand-checked v4 lane shapes", () => {
         state.step(0);
         const emitted = JSON.parse(saveDocument(state)).lanes;
         expect(emitted.velocity).toEqual([
-            { id: 0, start: 2, end: 6, ease: Easing.Linear, entry: 10, exit: 18 },
-            { id: 1, start: 6, end: 10, ease: Easing.Linear, entry: 18, exit: 8 },
-            { id: 2, start: 10, end: 14, ease: Easing.Linear, entry: 8, exit: 12 },
+            { id: 0, start: 2, end: 6, ease: Easing.Cubic, entry: 10, exit: 18 },
+            { id: 1, start: 6, end: 10, ease: Easing.Cubic, entry: 18, exit: 8 },
+            { id: 2, start: 10, end: 14, ease: Easing.Cubic, entry: 8, exit: 12 },
         ]);
         expect(emitted.force).toEqual([
             { id: 3, start: 0, end: 20, ease: Easing.Cubic, entry: 1, exit: 1 },

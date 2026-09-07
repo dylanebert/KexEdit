@@ -561,7 +561,7 @@ export function edgeStrips(
         start: number;
         end: number;
         value: number;
-        keyframes?: { s: number; v: number }[];
+        keyframes?: { s: number; v: number; ease?: number }[];
     }[],
 ): StripSpec[] | undefined {
     if (rows.length === 0) return undefined;
@@ -585,7 +585,7 @@ export function edgeStrips(
         if (r.keyframes && r.keyframes.length > 0) {
             // pre-evaluate the span's curve per edge on the force-curve machinery
             // (`profile.sampleForce`), so `stripOverride` is a lookup, not an evaluation.
-            const points = r.keyframes.map((k) => ({ s: k.s, g: k.v }));
+            const points = r.keyframes.map((k) => ({ s: k.s, g: k.v, ease: k.ease }));
             const values = new Float32Array(end - lo);
             for (let k = lo; k < end; k++) {
                 // a station-0 degenerate row has lo = −1, so `cum[-1]` is undefined; the `?? 0`
@@ -625,12 +625,17 @@ export function stripsForStep(ecs: State, offset: number, step: Step): StripSpec
 export function velocityRows(
     rows: readonly LaneSegment[],
     offset: number,
-): { start: number; end: number; value: number; keyframes: { s: number; v: number }[] }[] {
+): {
+    start: number;
+    end: number;
+    value: number;
+    keyframes: { s: number; v: number; ease?: number }[];
+}[] {
     const out: {
         start: number;
         end: number;
         value: number;
-        keyframes: { s: number; v: number }[];
+        keyframes: { s: number; v: number; ease?: number }[];
     }[] = [];
     for (const r of ordered(rows)) {
         const entry = entryValue(Lane.Velocity, rows, r) as number | undefined;
@@ -639,8 +644,10 @@ export function velocityRows(
             start: r.start - offset,
             end: r.end - offset,
             value: entry,
+            // the record's own tag governs its span, exactly as a force record's governs `g`:
+            // `profile.segment` reads the LEADING key's `ease` (missing = Cubic).
             keyframes: [
-                { s: r.start - offset, v: entry },
+                { s: r.start - offset, v: entry, ease: r.ease },
                 { s: r.end - offset, v: r.exit },
             ],
         });
