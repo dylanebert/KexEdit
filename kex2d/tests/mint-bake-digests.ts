@@ -109,16 +109,29 @@ function toV3(text: string): {
     };
 }
 
-/** the whole published bake of one reference input, as a sha256 over every SoA `chain`
- *  publishes. Pure: no ECS, no v4 document, no bake read. */
-export function digestOf(text: string): string {
+/** the reference bake of one input: `chain(v3Payloads(v1\u2013v3 text))`. Pure — no ECS, no v4
+ *  document, no bake read — which is what keeps it computable after the store cuts over. */
+export function referenceChain(text: string): ReturnType<typeof chain> {
     const { track, segments, strips, v0 } = toV3(text);
     const p = v3Payloads({
         track: { ...track, ...(v0 === undefined ? {} : { v0 }) },
         segments,
         strips,
     });
-    const c = chain(p.entry, p.sections, MAX_SAMPLES, p.friction, p.resistance);
+    return chain(p.entry, p.sections, MAX_SAMPLES, p.friction, p.resistance);
+}
+
+/** a sha256 over every SoA a bake publishes — the one hash the digest file records and every
+ *  arm compares against, so the reference and a live bake are hashed by identical rules. */
+export function digestOfChain(c: {
+    count: number;
+    posX: Float32Array;
+    posY: Float32Array;
+    theta: Float32Array;
+    v: Float32Array;
+    fN: Float32Array;
+    ds: Float32Array;
+}): string {
     const count = Math.min(c.count, MAX_SAMPLES);
     const edges = Math.max(0, count - 1);
     const h = createHash("sha256");
@@ -137,9 +150,19 @@ export function digestOf(text: string): string {
     return h.digest("hex");
 }
 
+/** the reference bake digest of one input text. */
+export function digestOf(text: string): string {
+    return digestOfChain(referenceChain(text));
+}
+
 /** the reference bake digest of one fixture NAME, resolving its input per {@link referenceInput}. */
 export async function referenceDigest(name: string): Promise<string> {
     return digestOf(await Bun.file(referenceInput(name)).text());
+}
+
+/** the reference BAKE of one fixture name, resolving its input per {@link referenceInput}. */
+export async function referenceBake(name: string): Promise<ReturnType<typeof referenceChain>> {
+    return referenceChain(await Bun.file(referenceInput(name)).text());
 }
 
 if (import.meta.main) {

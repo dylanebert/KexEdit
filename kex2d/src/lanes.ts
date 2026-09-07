@@ -156,6 +156,13 @@ export function laneRefusals<H>(
     return out;
 }
 
+/** whether a velocity handle is a speed a march may be prescribed: finite and strictly
+ *  positive. A zero or negative prescription is not a slow track, it is a march with no
+ *  direction, which is why this refuses rather than clamps. */
+export function validStripValue(v: number): boolean {
+    return Number.isFinite(v) && v > 0;
+}
+
 /** the lane's display name, used in refusal messages only. */
 export function laneName(lane: Lane): string {
     return lane === Lane.Velocity ? "velocity" : lane === Lane.Force ? "force" : "geo";

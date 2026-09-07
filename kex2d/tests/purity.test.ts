@@ -58,32 +58,7 @@ import { describe, expect, test } from "bun:test";
 
 const srcRoot = join(import.meta.dir, "..", "src");
 
-test("spliceRunMembers mutation phase has no projection-backed read", () => {
-    const source = readFileSync(join(srcRoot, "track.ts"), "utf8");
-    const start = source.indexOf("export function spliceRunMembers");
-    const firstMutation = source.indexOf("// First mutation:", start);
-    const lastMutation = source.indexOf("refreshRunEntryForce(ecs, runId);", firstMutation);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(firstMutation).toBeGreaterThan(start);
-    expect(lastMutation).toBeGreaterThan(firstMutation);
-    const transaction = source.slice(firstMutation, lastMutation);
-    expect(transaction).not.toContain("rebuildRunProjection");
-    expect(transaction).not.toContain("sections(");
-    expect(transaction).not.toContain("sectionAt(");
-});
-
-const AUTHORED_COMPONENTS = [
-    "Track",
-    "Segment",
-    "TrackStart",
-    "Section",
-    "Handle",
-    "Force",
-    "ForceBoundary",
-    "Strip",
-    "StripKeyframe",
-    "OneShot",
-] as const;
+const AUTHORED_COMPONENTS = ["Track", "LaneRecord"] as const;
 const WRITE_RE = new RegExp(`\\b(?:${AUTHORED_COMPONENTS.join("|")})\\.\\w+\\.set\\(`, "g");
 const GESTURE_RE = /\b(?:begin\w*|commit\w*|cancel)\(/;
 const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch"]);
@@ -410,11 +385,16 @@ test("every live @temporary source symbol has an adapter-inventory row", () => {
             symbols.push(symbol!);
         }
     }
-    expect(symbols.length).toBeGreaterThan(0);
+    // BOTH directions, and an empty set is a real state: S2e-i retired every adapter with the
+    // substrate it adapted, so the inventory holds no rows. A tag without a row fails, and a row
+    // naming a symbol nothing tags fails too — which is what keeps the file from outliving the
+    // adapters it describes.
     for (const symbol of symbols)
         expect(inventory, `missing adapter inventory row for ${symbol}`).toMatch(
             new RegExp("\\| `[^`]*\\b" + symbol + "\\b[^`]*` \\|"),
         );
+    const rows = [...inventory.matchAll(/^\| `([^`]+)` \|/gm)].map((m) => m[1]!);
+    expect(rows.sort()).toEqual([...new Set(symbols)].sort());
 });
 
 describe("authored-component writer census — no second write path", () => {
@@ -425,45 +405,32 @@ describe("authored-component writer census — no second write path", () => {
         expect(sites.some((s) => s.file === "doc.ts")).toBe(true);
     });
 
-    test("foreign velocity writers route only through canonical command setters", () => {
-        const velocity = new Set(["Segment", "TrackStart", "Strip", "StripKeyframe", "OneShot"]);
-        const sites = writeSites().filter((site) => velocity.has(site.text.split(".")[0]!));
-        expect(sites).toHaveLength(0);
+    test("no file outside track.ts/history.ts writes an authored column", () => {
+        // S2e-i made the lane setters the only authored writers, so the census has no
+        // legitimate foreign write left at all — the whole vocabulary is `LaneRecord.*.set` and
+        // `Track.*.set`, and both live in `track.ts`. `doc.ts`'s load path is the one exception
+        // the arms below name.
+        const foreign = writeSites().filter((s) => s.file !== "doc.ts");
+        expect(foreign).toHaveLength(0);
+        // and the surviving command verbs go through the setters, not the columns.
         const commands = readFileSync(join(srcRoot, "commands.ts"), "utf8");
-        expect(commands).toContain("applyVelocitySegmentOp");
-        expect(commands).toContain("setStrip(ecs, op.id, op.start, op.end, op.value)");
-        expect(commands).toContain("setStripKeyframe(ecs, op.id, op.s, op.v)");
-        expect(commands).toContain("setOneShotValue(ecs, os.id, op.value)");
-        // the start class's owner is the one-shot ENTITY, and the S2d4 address is a read the
-        // `track.ts` read path (`entrySpeed`) already routes through. A command-layer write
-        // gated on the pointer instead of the entity can mint a second start owner, so the
-        // arm pins the entity gate here and the behaviour in `commands.test.ts`.
-        expect(commands).not.toContain("StartVelocity.v(ecs) !== undefined");
+        expect(commands).toContain("setTrackFriction(trackEid, op.value)");
+        expect(commands).toContain("setTrackResistance(trackEid, op.value)");
+        expect(commands).toContain("landDomain(h, ecs, op.value)");
+        // the start speed's owner is the `Track.v0` column, read through one accessor.
         const track = readFileSync(join(srcRoot, "track.ts"), "utf8");
-        expect(track).toContain("return StartVelocity.v(ecs) ?? V0;");
-    });
-
-    test("foreign geometry writers route through the canonical position setter", () => {
-        // `controls.ts` no longer authors geometry at all — the canvas control wiring retired
-        // with the pose UX (`retired/pose-ux`), so the drag/nudge call-count arm has no
-        // population left and is dropped rather than re-pointed at a surviving stand-in. The
-        // census arm below still covers the file: were a write to reappear there outside a
-        // `history` gesture, it reds here. `commands.ts` is the live geometry writer.
-        const commands = readFileSync(join(srcRoot, "commands.ts"), "utf8");
-        expect(writeSites().filter((s) => s.file === "commands.ts")).toHaveLength(0);
-        expect(writeSites().filter((s) => s.file === "controls.ts")).toHaveLength(0);
-        expect(commands).toContain("setHandlePosition(ecs, eid, op.x, op.y)");
+        expect(track).toContain("return v > 0 ? v : V0;");
     });
 
     test("positive control: the walker masks comments and climbs to a gestured caller", () => {
         const source = `
-            // Handle.pos.set(eid, 1, 2)
-            function write(eid: number): void { Handle.pos.set(eid, 3, 4); }
+            // LaneRecord.exit.set(eid, 1)
+            function write(eid: number): void { LaneRecord.exit.set(eid, 3); }
             function gesture(eid: number): void { beginMove(); write(eid); commit(); }
         `;
         const sites = sitesIn("control.ts", source);
         expect(sites).toHaveLength(1);
-        expect(sites[0].text).toBe("Handle.pos.set(");
+        expect(sites[0].text).toBe("LaneRecord.exit.set(");
         expect(sites[0].gestured).toBe(true);
 
         const productionSites = writeSites();
@@ -472,12 +439,8 @@ describe("authored-component writer census — no second write path", () => {
         expect(productionSites.some((s) => s.file === "doc.ts" && !s.gestured)).toBe(true);
         // The migrated force value/easing owner must remain in the census rather than
         // letting the force-authoring arm pass vacuously on station-only `Force` writes.
-        expect(AUTHORED_COMPONENTS).toContain("ForceBoundary");
-        expect(AUTHORED_COMPONENTS).toContain("Segment");
-        expect(AUTHORED_COMPONENTS).toContain("TrackStart");
-        expect(AUTHORED_COMPONENTS).toContain("Strip");
-        expect(AUTHORED_COMPONENTS).toContain("StripKeyframe");
-        expect(AUTHORED_COMPONENTS).toContain("OneShot");
+        expect(AUTHORED_COMPONENTS).toContain("LaneRecord");
+        expect(AUTHORED_COMPONENTS).toContain("Track");
     });
 
     test("every un-gestured write-site lives in doc.ts, and doc.ts actually has one", () => {

@@ -112,7 +112,7 @@ export const FORCE_LEN = 24; // MIRRORS src/track.ts DEFAULT_FORCE_LEN (= EXTEND
 // which is the one PERSISTENT state the domain conversion cannot run on (its arc↔time window reads
 // samples that were never written), so it is how a flow reaches the grayed ruler row.
 export const SAMPLE_BUDGET_M = 2048;
-export const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the knob orbit (see `knobCenter` below)
+export const RADIAL_R = 46; // MIRRORS src/radial.ts RADIAL_R — the knob orbit
 export const TIP_REACH = 68; // TIP_H (56) + TIP_GAP (12) — Timeline.svelte, the vertical room a popover needs
 export const GROW_LO = -3; // Timeline.svelte GROW_CAP[0] = BAND[0] (−2) − GROW_HEADROOM (1) — the growth floor
 // The shipped manipulator snap quanta as the popover DISPLAYS them — src/settings.ts
@@ -130,138 +130,55 @@ export const SNAP_DEG_MAX = "180";
 // a drift between the two shows up as a flow calling a member this type doesn't have, TS-checked
 // here but not cross-validated against `main.ts`'s literal by any test.
 export interface Kex {
-    append(kind: number): number;
+    activeKind(): string | null;
     cam(): [number, number, number];
     cartArc(): number | null;
-    convert(): void;
-    convertAt(i: number): void;
-    deleteAt(i: number): boolean;
-    // the chart's arclength->axis lens (`Timeline.svelte`'s `dOf`) -- S6's own oracle: called
-    // before a drag to read the table the gesture will freeze.
+    // the chart's arclength→axis lens (`Timeline.svelte`'s `dOf`).
     dOf(u: number): number;
-    // `dOf`'s extent-trim twin (S6b): EXTRAPOLATES past the bake's own end at the live exit speed,
-    // instead of `dOf`'s own clamp -- called before a trim to read the projection the gesture will
-    // freeze.
+    // `dOf`'s extent-trim twin: EXTRAPOLATES past the bake's own end at the live exit speed.
     dOfTrim(u: number): number;
     domain(): string;
-    editing(): boolean;
-    forceCount(): number;
-    forceEases(): number[];
-    forceSelActive(): number | null;
-    forceSelIds(): number[];
-    forceU(): { id: number; section: number; s: number; g: number; u: number }[];
-    forceMarkerAt(i: number): { x: number; y: number } | null;
-    forces(): { id: number; s: number; g: number }[];
+    end(): number;
     friction(): number;
-    ghostPx(): { x0: number; x1: number }[];
+    guides(): { ray: boolean; angle: string | null; length: string | null };
     gRange(): [number, number];
-    vRange(): [number, number];
-    vFit(): [number, number];
+    infeasibleSpan(): { first: number; count: number; section: number | null; head: number };
+    lanes(): {
+        velocity: { id: number; start: number; end: number; ease: number; exit: number }[];
+        force: { id: number; start: number; end: number; ease: number; exit: number }[];
+        geo: { id: number; start: number; end: number; ease: number; exit: number }[];
+    };
+    load(text: string): void;
+    parked(): boolean;
+    resistance(): number;
+    runs(): { id: number; kind: number; start: number; length: number }[];
+    sandboxDepth(): number | null;
+    save(): string;
+    setV0(v: number): void;
+    // the first-infeasible sample's own axis reading, or null off a feasible bake.
+    stallU(): number | null;
+    startAt(): { x: number; y: number } | null;
+    tTotal(): number;
+    undoDepth(): number;
+    // `dOf`'s inverse — see its own doc.
+    uOf(d: number): number;
+    // the chart's own addressable-span end on the active axis.
+    uTotal(): number;
+    v0(): number;
     valueAxes(): {
         gRange: [number, number];
         gFit: [number, number];
         vRange: [number, number];
         vFit: [number, number];
     };
-    stripKfPx(): { id: number; x: number; y: number }[];
-    stripPx(): { id: number; x0: number; x1: number }[];
-    hoverForceId(): number | null;
-    guides(): { ray: boolean; angle: string | null; length: string | null };
-    infeasibleSpan(): { first: number; count: number; section: number | null; head: number };
-    entries(): { x: number; y: number; theta: number; v: number }[];
-    kind(): number;
-    landing(): boolean;
-    lockedCount(): number;
-    sandboxDepth(): number | null;
-    nodeAt(order: number): { x: number; y: number } | null;
-    nodeCount(): number;
-    nodeSelOrders(): number[];
-    pinning(): boolean;
-    parked(): boolean;
-    placeForce(s: number, g: number): number;
-    placeForceAt(section: number, s: number, g: number): number;
-    placeStripKf(stripId: number, s: number, v: number): number;
-    widenStrip(stripId: number, start: number, end: number): void;
-    addStripAt(start: number, end: number, value: number): number | null;
-    deleteStripId(id: number): void;
-    poses(): number[][];
-    resistance(): number;
-    sectionCount(): number;
-    sectionForceCounts(): number[];
-    sectionSelIds(): number[];
-    sectionIds(): number[];
-    sectionKinds(): number[];
-    sectionLengths(): number[];
-    seedForceBump(): void;
-    seedForceStress(): void;
-    seedHill(): void;
-    seedTwinHill(): void;
-    selectEnd(): void;
-    selectedOrder(): number | null;
-    activeKind(): string | null;
-    setLen(i: number, len: number): void;
-    setV0(v: number): void;
-    selectedSection(): number | null;
-    selectedStrip(): number | null;
-    stripSelIds(): number[];
-    stripKfSelIds(): number[];
-    stripKfSelActive(): number | null;
-    stripsOf(i: number): { id: number; start: number; end: number; value: number }[];
-    stripKeyframesOf(stripId: number): { id: number; s: number; v: number }[];
-    oneShot(): { id: number; value: number } | null;
-    oneShotPx(): number;
-    oneShotSelected(): boolean;
-    // the velocity-strip header band's own hit-classification, mirrored verbatim from
-    // `strip-hit.ts`'s `StripHit` (a type-only shape, no runtime import — the standalone-staging
-    // law above): the geometric PARTITION a pointer position resolves to, the condition
-    // `render()` itself reads to choose the fill. Await this rather than a fixed frame count
-    // before probing pixels for the visual differential.
-    bandHit():
-        | { kind: "endpoint"; id: number; edge: "start" | "end" }
-        | { kind: "body"; id: number }
-        | { kind: "empty" };
-    vAtD(d: number): number;
-    spanMidAt(i: number): { x: number; y: number } | null;
-    startAt(): { x: number; y: number } | null;
-    tTotal(): number;
-    tangent(): { mode: number; inX: number; inY: number; outX: number; outY: number } | null;
-    tangentHandles(): { side: string; x: number; y: number }[];
-    undoDepth(): number;
-    // `dOf`'s inverse -- see its own doc.
-    uOf(d: number): number;
-    // the chart's own addressable-span end on the active axis (bounded past a stall in Time, S2
-    // finding 13) -- distinct from `tTotal`, the bake's unbounded total.
-    uTotal(): number;
-    // the first-infeasible sample's own axis reading, or null off a feasible bake -- the stall
-    // `uTotal` clamps against in Time domain.
-    stallU(): number | null;
-    v0(): number;
+    vFit(): [number, number];
+    vRange(): [number, number];
     xView(): [number, number];
 }
 
-// The one typed accessor every flow calls `__kex` through, instead of an ad-hoc `(window as
-// any).__kex.foo()` cast at each call site: a single method name + its args cross into the page,
-// typed end to end by `Kex` above. One round trip per call, matching what the casts did before.
-// The one place that stays a raw inline cast is a batched in-page read (several `__kex` calls in
-// one `page.evaluate`, to save round trips) — this helper is for the single-accessor case.
-export async function forcePointAt(page: Page, index: number): Promise<{ x: number; y: number }> {
-    const [rows, [, scale], [gLo, gHi], body, clip] = await Promise.all([
-        kexCall(page, "forceU"),
-        kexCall(page, "xView"),
-        kexCall(page, "gRange"),
-        page.locator(".dock .body").boundingBox(),
-        page.locator(".clip").first().boundingBox(),
-    ]);
-    const row = rows[index];
-    if (!row || !body || !clip) throw new Error(`force station ${index} not projected`);
-    const top = body.y + CHART_TOP;
-    const bottom = body.y + body.height - CHART_BOT_PAD;
-    return {
-        x: clip.x + row.u * scale,
-        y: top + (1 - (row.g - gLo) / (gHi - gLo)) * (bottom - top),
-    };
-}
-
+// The one typed accessor every flow calls `__kex` through, instead of an ad-hoc
+// `(window as any).__kex.foo()` cast at each call site: a single method name + its args cross
+// into the page, typed end to end by `Kex` above. One round trip per call.
 export function kexCall<K extends keyof Kex>(
     page: Page,
     method: K,
@@ -330,120 +247,6 @@ export function frames(page: Page, n = 1): Promise<void> {
     return Promise.race([ran, stalled]).finally(() => clearTimeout(timer));
 }
 
-// Where a canvas node sits on the page, waited to a real POST-BAKE value — for ops that RESPAWN
-// nodes, and only those.
-//
-// `__kex.nodeAt` resolves a node through `Handle.sample` — the bake's node→sample map — and
-// `controls.ts`'s `pickNode` shares that lookup. Raw setup pokes (`seedHill`) and every snapshot
-// restore that respawns nodes (an undo of an extend/delete) land SYNCHRONOUSLY, but the map they
-// invalidate is only rebuilt when `BakeSystem` runs on the next frame; until then a freshly spawned
-// handle's `sample` still reads 0, so EVERY node reports the track origin. `nodeCount` and
-// `tTotal > 0` are both satisfied by the synchronous write, so neither is a bake-readiness condition
-// — a right-click placed on their evidence lands on empty space and opens no menu (the `.nodemenu`
-// flake; measured 1/10 by logging `nodeAt(6)` against `startAt()` right before the chain-end
-// right-click). Being off the origin is exactly the condition the pointer needs, so poll
-// for it and never cache a node point across a respawning edit.
-//
-// It establishes NOTHING after an IN-PLACE write (`restoreNodes`: a move/nudge undo, a gesture
-// cancel) — `Handle.sample` is untouched there, so the predicate is already true against the
-// pre-undo bake and this hands back a stale point. Wait on the bake landing on the expected
-// geometry instead (the group-nudge undo, `viewport multiselect flow`).
-export async function nodePoint(page: Page, order: number): Promise<{ x: number; y: number }> {
-    // the polled read is the one that gets RETURNED — re-reading after the poll would hand back a
-    // second, unvalidated evaluation (a fresh edit landing between the two is exactly the stale
-    // point this helper exists to prevent).
-    let seen: { x: number; y: number } | null = null;
-    await expect
-        .poll(async () => {
-            const [p, origin] = await Promise.all([
-                kexCall(page, "nodeAt", order),
-                kexCall(page, "startAt"),
-            ]);
-            seen = p && origin && Math.hypot(p.x - origin.x, p.y - origin.y) > 1 ? p : null;
-            return seen !== null;
-        })
-        .toBe(true);
-    const pt: { x: number; y: number } | null = seen;
-    if (!pt) throw new Error(`node ${order} never left the track origin — the bake never landed`);
-    return pt;
-}
-
-// Seed the shaped hill AND wait for it to bake.
-//
-// `seedHill` pokes components raw (test setup, not authoring), so it lands synchronously — while
-// `tTotal` still answers with the DEFAULT FLAT SEED's own bake, which is already > 0 on load. So
-// `await expect.poll(tTotal).toBeGreaterThan(0)` after the poke proves nothing, and whatever reads
-// the bake next gets the flat seed: `append`/`convert` seed a force section from the RECOVERED
-// ENTRY FORCE, so racing them produced two different tracks run to run (the `viewport kind color
-// shot` captured a feasible 6.0s spiral instead of the insufficient-velocity tail it exists to
-// show — caught by the shot flipping between otherwise-identical runs). Wait out the flat bake
-// first so the ride time MOVING is the hill's own bake landing.
-//
-// `hook` picks WHICH seed: the default single hill, or `seedTwinHill` — two of them back to back,
-// the shape the invoked-solve flow converts (one hill solves in ~0.1s, under a single frame of
-// modal). Same bake wait either way.
-export async function seedHill(
-    page: Page,
-    hook: "seedHill" | "seedTwinHill" = "seedHill",
-): Promise<void> {
-    const tTotal = (): Promise<number> => kexCall(page, "tTotal");
-    await expect.poll(tTotal).toBeGreaterThan(0); // the flat seed's bake, before the poke
-    const flat = await tTotal();
-    await kexCall(page, hook);
-    await expect.poll(tTotal).not.toBe(flat); // …and now the hill's
-}
-
-// The page-coordinate center of a selected node's polar manipulator knob, waited to a box that
-// really belongs to THAT node.
-//
-// The ring's knob buttons are DOM, positioned from the per-RAF tick — so when the selection MOVES
-// from one node to another, `.manip-*` keeps the PREVIOUS node's ring position for a frame while
-// `__kex.selectedOrder` already answers with the new one (selection is written synchronously). A box
-// read on that evidence is hundreds of px away (measured: 573 px, exactly the old node's ring), and
-// pressing there lands on empty canvas — an armed marquee, which DESELECTS on release. That is the
-// geo flow's vanishing `.snap-readout`: 4/10 failures at 4 workers, and the drag never touched the
-// knob at all. `.rbtn.manip` centers on its ring point, so "on this node's ring" is the honest
-// condition; it also subsumes the appear-from-nothing case Playwright's own auto-wait covers.
-//
-// ON the ring, not within reach of it: a knob center orbits at exactly `RADIAL_R` (`.rbtn.manip` is
-// `translate(-50%,-50%)` onto `manipKnobs`' ring point, which is `nodeAt` + a `ringSlot` offset of
-// that magnitude), so the honest predicate is |dist − RADIAL_R| < tol. A one-sided `dist > 70` would
-// accept an adjacent node's ring anywhere out to 116px — the stale-ring failure this exists to catch
-// measured 573px, but nothing bounds it that far.
-// layout rounding only: both boxes' edges land on the device pixel grid (0.5px at
-// deviceScaleFactor 2) on both axes, so the radius can move ~1px; 2px is well inside a 46px orbit.
-export const RING_TOL = 2;
-export async function knobCenter(
-    page: Page,
-    cb: { x: number; y: number },
-    order: number,
-    axis: "length" | "angle",
-): Promise<{ x: number; y: number }> {
-    const n = await nodePoint(page, order);
-    const knob = page.locator(`.manip-${axis}`);
-    let seen: { x: number; y: number } | null = null;
-    await expect
-        .poll(async () => {
-            const b = await knob.boundingBox();
-            if (!b) return false;
-            const c = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-            const r = Math.hypot(c.x - (cb.x + n.x), c.y - (cb.y + n.y));
-            if (Math.abs(r - RADIAL_R) > RING_TOL) return false;
-            seen = c;
-            return true;
-        })
-        .toBe(true);
-    const c: { x: number; y: number } | null = seen;
-    if (!c) throw new Error(`the ${axis} knob never landed on node ${order}'s ring`);
-    return c;
-}
-
-// Appending a section PANS the timeline to reveal the new clip — the x-axis is a document
-// axis, so a content edit never rescales/refits it (kex2d-ux-foundations stage C). The
-// overflowing track then scrolls earlier clips off-screen, so this frames the whole chain
-// back into view via a real zoom-out wheel (explicit navigation — `zoomAt` clamps the
-// zoom-out to the whole-track fit), the way an author would after an append. Positional
-// `.clip.nth()` locators below rely on every section being on-screen.
 export async function frameTimeline(page: Page): Promise<void> {
     const bb = await page.locator(".dock .body").boundingBox();
     if (!bb) throw new Error("timeline body not laid out");
@@ -456,11 +259,11 @@ export async function frameTimeline(page: Page): Promise<void> {
     // last clip and its right edge says nothing about the new one. The count closes that gap; the
     // two edges close the other one, since culling is OVERLAP-based (a clip hanging off either end
     // of the body is still rendered, still counted, and still not fully on-screen).
-    const sections = await kexCall(page, "sectionCount");
+    const runs = (await kexCall(page, "runs")).length;
     const clips = page.locator(".clip");
     await expect
         .poll(async () => {
-            if ((await clips.count()) !== sections) return false;
+            if ((await clips.count()) !== runs) return false;
             const first = await clips.first().boundingBox();
             const last = await clips.last().boundingBox();
             if (!first || !last) return false;

@@ -46,7 +46,6 @@ import {
     writeHover,
 } from "../src/editor";
 import { modeKeyAct } from "../src/keys";
-import { StaleConvert } from "../src/geoforce";
 
 // the selection substrate: a per-kind set + active member, single-select the size-1 case. these are
 // pure editor-state tests — the select* APIs touch no ECS (only the SelectionHook does; its
@@ -861,17 +860,6 @@ test("a diverged convert reads as a failure — nothing was landed", () => {
 
 test("a cancel says nothing at all and logs nothing", () => {
     expect(solveFailed(new Error("cancelled"), true)).toEqual({ notice: null, detail: null });
-});
-
-test("a stale answer reads as its own plain sentence, with the internals kept for the console", () => {
-    // pinned against the REAL class: the mapping matches it by `name` (importing it would pull the
-    // conversion tier onto editor.ts's graph), so this is what keeps the two in step.
-    const { notice, detail } = solveFailed(new StaleConvert(3), false);
-    expect(notice).toEqual({
-        kind: "error",
-        text: "The track changed while the solve ran. Nothing changed.",
-    });
-    expect(detail).toContain("section 3 changed during the solve"); // the raw message, for us
 });
 
 test("any other failure reads as one sentence, never the thrown message", () => {

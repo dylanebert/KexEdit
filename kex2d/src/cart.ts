@@ -1,7 +1,7 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { arcToTime, type Mapping, timeToArc } from "./timeline";
 import { cumulativeArclength } from "./stats";
-import { bakeOut, samples, sectionSpans, toLocal, Track } from "./track";
+import { bakeOut, samples, runSpans, toLocal, Track } from "./track";
 
 /** a content-anchored park position: the section (stable id) the parked playhead is
  *  glued to, and its `offset` within that section — section-local arclength (m). the
@@ -93,8 +93,8 @@ type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
  *  the coordinate lens's `toLocal`, re-shaped into the cart's Park (offset = the local s).
  *  clamps to the track ends. null with no baked sections. */
 export function resolvePark(ecs: State, eid: number, cumS: number): Park | null {
-    const loc = toLocal(sectionSpans(ecs, eid), cumS);
-    return loc ? { section: loc.section, offset: loc.s } : null;
+    const loc = toLocal(runSpans(ecs, eid), cumS);
+    return loc ? { section: loc.run, offset: loc.s } : null;
 }
 
 /** the parked anchor's cumulative arclength on the current bake: its section's live
@@ -103,7 +103,7 @@ export function resolvePark(ecs: State, eid: number, cumS: number): Park | null 
  *  clamp). null when the anchor section is gone (a delete / undo-of-append) — the caller
  *  re-resolves from the last cumulative s (`parkS`). */
 export function parkArc(ecs: State, eid: number, park: Park): number | null {
-    const sp = sectionSpans(ecs, eid).find((x) => x.id === park.section);
+    const sp = runSpans(ecs, eid).find((x) => x.id === park.section);
     if (!sp) return null;
     return sp.offset + Math.min(park.offset, sp.len);
 }

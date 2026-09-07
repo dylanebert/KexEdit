@@ -18,22 +18,12 @@
  *  mutation. `stats`/`dump`/`validate` load + bake (`track.BakeSystem`) and read pure derived
  *  state (`stats.ts`/`forcelimits.ts`); `fmt` never touches an ECS at all — `doc.parseDocument` +
  *  `doc.serializeDocument` are pure text↔document, the canonicalization the round-trip oracle
- *  pins (`serialize(parse(text)) === text`). `new` seeds through `track.TrackPlugin`'s own
- *  `initialize` (the exact call `tests/track.test.ts` uses for "a NEW authored document"), not a
- *  hand-rolled seed — the one seed the UI's own boot path runs. */
+ *  pins (`serialize(parse(text)) === text`). `new` seeds through `track.seedTrack`, the one seed
+ *  a fresh document takes. */
 
 import { existsSync } from "node:fs";
 import { State } from "@dylanebert/shallot";
-import {
-    applyForceSegmentOp,
-    applyOp,
-    applyVelocitySegmentOp,
-    isForceSegmentOp,
-    isVelocitySegmentOp,
-    type Op,
-    type OpResult,
-    type Refusal,
-} from "./commands";
+import { applyOp, type Op, type OpResult, type Refusal } from "./commands";
 import {
     loadDocument,
     parseDocument,
@@ -44,7 +34,7 @@ import {
 import { checkForceLimits, DEFAULT_PROFILE } from "./forcelimits";
 import { createHistory } from "./history";
 import { computeStats } from "./stats";
-import { bakeOut, BakeSystem, samples, Track, trackEntity, TrackPlugin } from "./track";
+import { bakeOut, BakeSystem, samples, seedTrack, Track, trackEntity } from "./track";
 
 export interface CliResult {
     exitCode: number;
@@ -225,11 +215,7 @@ async function cmdEdit(file: string, opsText: string): Promise<CliResult> {
             continue;
         }
         try {
-            const result = isForceSegmentOp(op)
-                ? applyForceSegmentOp(state, h, op)
-                : isVelocitySegmentOp(op)
-                  ? applyVelocitySegmentOp(state, h, op)
-                  : applyOp(state, h, op as Op);
+            const result = applyOp(state, h, op as Op);
             results.push(result);
             if (result.refusals.length > 0) anyRefusal = true;
         } catch (e) {
@@ -265,15 +251,15 @@ async function cmdFmt(file: string): Promise<CliResult> {
     return okResult({ changed: canonical !== text, bytes: canonical.length });
 }
 
-/** seed a fresh document through `TrackPlugin`'s own `initialize` (`track.ts`'s `seed`) — the
- *  exact seed the app's boot path runs (`main.ts`'s `run({ plugins: [... TrackPlugin ...] })`),
- *  not a hand-rolled duplicate. Refuses to clobber an existing file unless `--force`, since this
- *  is the one verb that doesn't require the target to already exist. */
+/** seed a fresh document through `track.seedTrack` — one force record at the default g, the
+ *  authoring coefficients, and the default start speed. Refuses to clobber an existing file
+ *  unless `--force`, since this is the one verb that doesn't require the target to already
+ *  exist. S2e-ii re-keys this onto a `scenarios.ts` v3 document migrated forward. */
 async function cmdNew(file: string, force: boolean): Promise<CliResult> {
     if (!force && existsSync(file))
         return errResult(1, "fileExists", `${file} already exists; pass --force to overwrite`);
     const state = new State();
-    await TrackPlugin.initialize?.(state);
+    seedTrack(state);
     await Bun.write(file, saveDocument(state));
     return okResult({ created: file });
 }

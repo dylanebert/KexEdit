@@ -1,8 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { State } from "@dylanebert/shallot";
-import { keyframeActs, nodeActs, sectionActs } from "../src/acts";
 import {
     BINDINGS,
     type Binding,
@@ -1346,78 +1344,6 @@ describe("the menu grammar — every builder, every state", () => {
         expect(orphans, "MenulessBindings entries for a decider-reachable binding").toEqual([]);
     });
 
-    // ── the naming→behavior bridge (kex2d-act-factory stage 2). `Acts` above closes "does this
-    // act's row show the right hint", and the reachability assert closes "does every binding fire
-    // SOME act" — neither says the act a decider names still points at a live BODY. Since sub-stage
-    // 1's hoist, a document act's body lives in a `src/acts.ts` factory record (`sectionActs`,
-    // `nodeActs`, `keyframeActs`); a decider's return type is already `Extract<keyof
-    // XMenuActions, …>`, which the factory's own `Pick<...>` return type ties to at compile time —
-    // but `bun test` runs no type checker, so this is the runtime twin of that guarantee, and it's
-    // read off the factory's OWN keys (never a hand-typed list, the whole seam's law): a factory
-    // that silently drops a key it's supposed to carry (an `as` cast past the Pick, a stale
-    // literal) fails here even though `bun check` would have caught the source. Reuses
-    // `driveKeyAct` — the proven driver, not a fabricated pair — over the SAME per-surface state
-    // matrices the reachability assert above already builds.
-    //
-    // `kex2d-shortcuts` stage 3 widens the census into a UNION: `sectionKeyAct` now also emits
-    // `solve`/`solveShape`/`pinEnter`, and `modeKeyAct` emits `pinSolve` — none a key of
-    // `sectionActs`'s record, because they're `App.svelte`'s own CHROME acts (a modal gate + an
-    // `AbortController`, `editor-ui.md` Menus' act-BODY seam, residual clause 2). `App.svelte`
-    // can't be `import`ed by `bun test` (a `.svelte` file, no plain module export), so the chrome
-    // set is read from its `chromeActs` factory's OWN declared return type by a SOURCE PARSE —
-    // never a hand-typed second list (the declared-registry law; the deleted `menu ▸ label` map is
-    // precedent for exactly this drift) — and driven BOTH directions with a positive control per
-    // direction, below.
-    // `App.svelte`'s `chromeActs` factory hosted these four (a modal gate + an AbortController)
-    // and this census read its declared return type by source parse. The conversion modal and the
-    // pin panel retired with the pose UX (`retired/pose-ux`), so there is no host to parse: the
-    // deciders still EMIT the four as descriptors, and S3 re-hosts them over lanes. The set is
-    // declared here meanwhile, and the reverse direction below still holds it honest — a name no
-    // decider emits reds, so the list cannot quietly outlive the deciders that name it.
-    const RetiredChrome = new Set(["pinEnter", "pinSolve", "solve", "solveShape"]);
-    const chromeActNames = (): Set<string> => RetiredChrome;
-
-    test("every emitted act names a key of its surface's PRODUCTION factory record (acts.ts), or a declared chrome act", () => {
-        const dummy = new State();
-        const sectionKeys = new Set(Object.keys(sectionActs(dummy, -1)));
-        const nodeKeysSet = new Set(Object.keys(nodeActs(dummy, -1)));
-        const keyframeKeys = new Set(Object.keys(keyframeActs(dummy)));
-        const chromeSet = chromeActNames();
-        const chromeEmitted = new Set<string>();
-        let checked = 0;
-        const assertIn = (act: string, keys: Set<string>, factory: string): void => {
-            checked++;
-            if (chromeSet.has(act)) {
-                chromeEmitted.add(act);
-                return;
-            }
-            expect(
-                keys.has(act),
-                `"${act}" is not a key of ${factory}'s record or the declared chrome set`,
-            ).toBe(true);
-        };
-        for (const { act } of driveKeyAct(sectionKeyAct, sectionKeyStates))
-            assertIn(act, sectionKeys, "sectionActs");
-        for (const { act } of driveKeyAct(modeKeyAct, modeKeyStates))
-            assertIn(act, sectionKeys, "sectionActs"); // `pinExit` lives in `sectionActs`
-        for (const { act } of driveKeyAct(nodeKeyActMulti, nodeKeyStatesMulti))
-            assertIn(act, nodeKeysSet, "nodeActs");
-        for (const { act } of driveKeyAct(nodeKeyActSingle, nodeKeyStatesSingle))
-            assertIn(act, nodeKeysSet, "nodeActs");
-        for (const { act } of driveKeyAct(forceKeyAct, forceKeyStates))
-            assertIn(act, keyframeKeys, "keyframeActs");
-        // the positive control every driver in this suite carries: proves the loop above actually
-        // walked live pairs rather than vacuously passing over zero.
-        expect(checked, "no decider ever emitted an act to check").toBeGreaterThan(0);
-        // the REVERSE direction: every declared chrome act is actually reachable from SOME
-        // decider — an orphan declaration (a name in `chromeActs`'s return type no decider ever
-        // emits) would sit undetected by the forward loop above, which only ever narrows the set.
-        expect(
-            [...chromeSet].filter((a) => !chromeEmitted.has(a)),
-            "chromeActs names with no reachable decider",
-        ).toEqual([]);
-    });
-
     test("`shortcut` is present iff a keyboard binding invokes that row's action", () => {
         // `Handles` is double-click — a pointer gesture is not a shortcut, so it declares nothing.
         cachedActByPath = undefined;
@@ -1960,63 +1886,6 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
 // keeping a private body. Two of the three homes are `.svelte` and unreachable from `bun test` at
 // all — this is what pins that the hoist actually landed there, not just that `keys.ts`/`menus.ts`
 // name the right acts.
-describe("acts.ts source census — every home reaches its factory", () => {
-    const srcRoot = join(import.meta.dir, "..", "src");
-    const src = (file: string): string => readFileSync(join(srcRoot, file), "utf8");
-    // recursive — a flat `readdirSync` sees only the top level, so a future nested module would be
-    // invisible to the census below while it stayed green (the declared-registry law's own clause).
-    function collectSrc(dir: string, prefix = ""): string[] {
-        return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-            if (entry.isDirectory()) return collectSrc(join(dir, entry.name), rel);
-            return entry.name.endsWith(".ts") || entry.name.endsWith(".svelte") ? [rel] : [];
-        });
-    }
-    const srcFiles = collectSrc(srcRoot).filter((f) => f !== "acts.ts"); // acts.ts IS the factory
-
-    // the declared population: which files call which factory. Both directions checked below — an
-    // undeclared file calling a factory fails just as hard as a declared home that stopped.
-    // Every home emptied with the pose UX (`retired/pose-ux`): the context menus, their keyboard
-    // twins and the chart's keyframe menu all went with the gestures that summoned them, so the
-    // factories are descriptor-only until S3 re-homes them over lane rows. The census still runs
-    // both directions over the empty declaration, which is the direction that matters now: any
-    // file that starts calling a factory without joining this list reds.
-    const FactoryHomes: Record<"sectionActs" | "nodeActs" | "keyframeActs", string[]> = {
-        sectionActs: [],
-        nodeActs: [],
-        keyframeActs: [],
-    };
-
-    // What this census does and does NOT prove: it proves a file MENTIONS its factory. It does not
-    // prove the keydown handler dispatches through it, that the builder passes it, or that no
-    // private twin sits beside it — that wiring is gated by the capture flows alone (the key-act
-    // seam's one surviving limit, `editor-ui.md` Menus). The spread-last law is what keeps a twin
-    // from winning if one is ever written.
-    test("each declared home calls its factory, and no undeclared file does", () => {
-        for (const [factory, homes] of Object.entries(FactoryHomes)) {
-            const pattern = `${factory}(`;
-            const calling = srcFiles.filter((f) => src(f).includes(pattern));
-            expect(calling.sort(), `files calling ${pattern}`).toEqual([...homes].sort());
-        }
-    });
-
-    // positive control (the declared-registry law's own clause: the control must exercise the
-    // SCANNER, not just the set comparison). It drives `collectSrc` itself — a wrong root, a dead
-    // extension filter, or a recursion that stopped recursing fails HERE, rather than being caught
-    // by luck upstairs when a blind walk's `[]` misses the non-empty declaration.
-    test("positive control: the walk reaches the homes it censuses", () => {
-        expect(srcFiles).toContain("App.svelte");
-        expect(srcFiles).toContain("Timeline.svelte");
-        expect(srcFiles).toContain("controls.ts");
-        // a floor, not the exact count: the walk must be reading the whole module tree, not one
-        // lucky directory entry.
-        expect(srcFiles.length).toBeGreaterThan(30);
-        // the scanner reads real text, not an empty string per file: `menus.ts` names every
-        // factory's own act record, so a walk that returned blanks would miss this.
-        expect(src("menus.ts").includes("SectionMenuActions")).toBe(true);
-    });
-});
-
 // `menuRows` is a public seam other menus will call, so its edge cases are pinned directly rather
 // than left to the corpus above (which reaches none of them: no shipping builder authors a
 // separator at a group boundary or an empty menu). Correct by construction, not by the oracle's
