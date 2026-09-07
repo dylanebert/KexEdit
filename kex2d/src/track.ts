@@ -165,6 +165,14 @@ function rowOf(eid: number): LaneSegment {
     };
 }
 
+/** one record and the lane it lives in, addressed by stable id — the read every gesture opens
+ *  on (`history.ts` snapshots the row, writes through the setters, restores the row). */
+export function recordOf(ecs: State, id: number): { lane: Lane; row: LaneSegment } | undefined {
+    const eid = recordAt(ecs, id);
+    if (eid === null) return undefined;
+    return { lane: LaneRecord.lane.get(eid) as Lane, row: rowOf(eid) };
+}
+
 /** one lane's records, in span order (`lanes.ordered`). */
 export function laneRows(ecs: State, lane: Lane): LaneSegment[] {
     const rows: LaneSegment[] = [];

@@ -11,12 +11,29 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
+import type { Lane, LaneSegment } from "./lanes";
+import type { Easing } from "./profile";
 import type { Domain } from "./section";
 import {
+    createRecord,
+    deleteRecord,
+    endColumn,
+    entrySpeed,
+    type LaneRefusal,
+    laneOrderOf,
+    type LaneWrite,
+    recordOf,
+    setEnd,
+    setOrder as writeLaneOrder,
+    setRecordEase,
+    setRecordHandle,
+    setRecordSpan,
+    setV0,
     setTrackDomain,
     setTrackFriction,
     setTrackResistance,
     trackDomain,
+    trackEntity,
     type TrackFrictionState,
     trackFrictionState,
     type TrackResistanceState,
@@ -189,5 +206,150 @@ export function landDomain(h: History, ecs: State, target: Domain): void {
         h,
         { apply: () => setTrackDomain(ecs, target), reverse: () => setTrackDomain(ecs, source) },
         pre,
+    );
+}
+
+// ── lane gestures ───────────────────────────────────────────────────────────────
+//
+// The authored verbs, one per gesture class the timeline performs, all of them over `track.ts`'s
+// lane setters — which are the only authored writers, so a gesture never touches a column
+// itself (`tests/purity.test.ts` is the census). Structural verbs (`addRecord`, `removeRecord`)
+// bracket internally and land one entry; continuous verbs open with `begin*`, let the caller
+// write through the setter every frame, and coalesce on `commit` (or revert on `cancel`).
+//
+// A refusal is the setter's, not the gesture's: an opener that would author an illegal span
+// simply never lands, because the setter declines the write and the gesture's `same` reads no
+// change. Every verb below returns the setter's own outcome so the caller can name the guard.
+
+/** author one record in `lane` and land it as one undo entry. Returns the setter's outcome, so a
+ *  refusal (overlap, floor, duplicate id) names its guard and nothing is recorded. */
+export function addRecord(
+    h: History,
+    ecs: State,
+    lane: Lane,
+    row: Omit<LaneSegment, "id"> & { id?: number },
+): LaneWrite {
+    const pre = selHook?.snapshot(ecs);
+    const write = createRecord(ecs, lane, row);
+    if (write.id === null) return write;
+    const id = write.id;
+    const landed: LaneSegment = { ...row, id };
+    record(
+        h,
+        {
+            // the id travels with the entry, so a redo re-spawns the SAME record a selection
+            // snapshot or a later edit addresses — an allocator-fresh id would alias.
+            apply: () => void createRecord(ecs, lane, landed),
+            reverse: () => void deleteRecord(ecs, id),
+        },
+        pre,
+    );
+    return write;
+}
+
+/** delete one record and land it as one undo entry. False when there was no such record. */
+export function removeRecord(h: History, ecs: State, id: number): boolean {
+    const found = recordOf(ecs, id);
+    if (!found) return false;
+    const pre = selHook?.snapshot(ecs);
+    const { lane, row } = found;
+    if (!deleteRecord(ecs, id)) return false;
+    record(
+        h,
+        {
+            apply: () => void deleteRecord(ecs, id),
+            reverse: () => void createRecord(ecs, lane, row),
+        },
+        pre,
+    );
+    return true;
+}
+
+/** open a gesture on one of a record's two handles — the value chip drag or typed edit. The
+ *  snapshot carries handle OWNERSHIP as well as the value: disowning an entry (`undefined`) is
+ *  an authoring outcome, so undo has to put the ownership back, not just a number. */
+export function beginHandle(ecs: State, id: number, which: "entry" | "exit"): void {
+    begin<{ value: number | undefined }>(
+        () => {
+            const found = recordOf(ecs, id);
+            if (!found) return undefined;
+            return { value: which === "exit" ? found.row.exit : found.row.entry };
+        },
+        (st) => void setRecordHandle(ecs, id, which, st.value),
+        (a, b) => a.value === b.value,
+    );
+}
+
+/** open a gesture on a record's span. One opener for the two span gestures the timeline drives —
+ *  {@link beginEdge}'s resize and {@link beginBody}'s move — because both write exactly the two
+ *  columns `setRecordSpan` owns, so they snapshot and restore the same state. */
+function beginSpan(ecs: State, id: number): void {
+    begin<{ start: number; end: number }>(
+        () => {
+            const found = recordOf(ecs, id);
+            if (!found) return undefined;
+            return { start: found.row.start, end: found.row.end };
+        },
+        (st) => void setRecordSpan(ecs, id, st.start, st.end),
+        (a, b) => a.start === b.start && a.end === b.end,
+    );
+}
+
+/** open an edge drag: one end of the span moves, the other holds (resize). */
+export function beginEdge(ecs: State, id: number): void {
+    beginSpan(ecs, id);
+}
+
+/** open a body drag: both ends move together (move). */
+export function beginBody(ecs: State, id: number): void {
+    beginSpan(ecs, id);
+}
+
+/** land a record's easing tag as one undo entry — a chip click is a single write, never a drag. */
+export function setEase(h: History, ecs: State, id: number, ease: Easing): LaneWrite {
+    const found = recordOf(ecs, id);
+    if (!found) return setRecordEase(ecs, id, ease); // the setter owns the not-found refusal
+    const before = found.row.ease as Easing;
+    const write = setRecordEase(ecs, id, ease);
+    if (write.id === null || before === ease) return write;
+    record(h, {
+        apply: () => void setRecordEase(ecs, id, ease),
+        reverse: () => void setRecordEase(ecs, id, before),
+    });
+    return write;
+}
+
+/** open a gesture on the ruler's end handle. The snapshot is the raw `end` COLUMN, so unpinning
+ *  (writing 0, the follow rule) undoes back to the pinned number rather than to whatever the
+ *  content happened to resolve to. A pin below a lane's content is `setEnd`'s refusal: the write
+ *  never lands, so the gesture reads no change and records nothing. */
+export function beginEnd(ecs: State): void {
+    begin<{ end: number }>(
+        () => (trackEntity(ecs) === null ? undefined : { end: endColumn(ecs) }),
+        (st) => void setEnd(ecs, st.end),
+        (a, b) => a.end === b.end,
+    );
+}
+
+/** land a lane-order swap as one undo entry. A non-permutation is `setOrder`'s refusal. */
+export function setOrder(h: History, ecs: State, order: readonly Lane[]): LaneRefusal[] {
+    const before = laneOrderOf(ecs);
+    const refusals = writeLaneOrder(ecs, order);
+    if (refusals.length > 0) return refusals;
+    const after = laneOrderOf(ecs);
+    if (before.every((lane, i) => lane === after[i])) return refusals;
+    record(h, {
+        apply: () => void writeLaneOrder(ecs, after),
+        reverse: () => void writeLaneOrder(ecs, before),
+    });
+    return refusals;
+}
+
+/** open a gesture on the track's start speed. Below {@link MIN_V0} is `setV0`'s refusal. */
+export function beginV0(ecs: State): void {
+    begin<{ v0: number }>(
+        () => (trackEntity(ecs) === null ? undefined : { v0: entrySpeed(ecs) }),
+        (st) => void setV0(ecs, st.v0),
+        (a, b) => a.v0 === b.v0,
     );
 }
