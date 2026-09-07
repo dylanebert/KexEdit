@@ -128,13 +128,9 @@ const launch = (args: string[]): ReturnType<typeof runPlaywright> =>
                 "bun.lock",
                 "capture.pw.config.ts",
                 "flow.ts",
-                "geo.pw.ts",
-                "force.pw.ts",
-                "section.pw.ts",
-                "lab.pw.ts",
-                "affordance.pw.ts",
-                "freshness.pw.ts",
-                "substrate.pw.ts",
+                // No `*.pw.ts` flow is staged: every pose-era flow drove a retired gesture and
+                // went with it (`retired/pose-ux`). S3 adds one flow per shipped lane gesture,
+                // after the person's check-in on that gesture (spec `kex2d-segment-gestures`).
             ],
             clean: ["shots", "test-results"],
             // the config collects by glob, so a flow file this repo deleted must not survive in the

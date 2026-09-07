@@ -23,7 +23,7 @@ import {
     sections,
     Track,
 } from "./track";
-import { Canvas2D, marquee, resize, snapGuides, viewTransform } from "./view";
+import { Canvas2D, resize, snapGuides, viewTransform } from "./view";
 
 const HANDLE_R = 6;
 const HANDLE_R_SEL = 9;
@@ -753,25 +753,6 @@ const SnapGuideSystem: System = {
     },
 };
 
-/** the viewport marquee (box-select) rect — a screen-space overlay drawn over everything in the
- *  neutral guide register (the same gray the snap ray wears): a faint fill + a thin border. lives
- *  in `view.marquee`, set by the controls each move past the dead zone and cleared on release. */
-const MarqueeDrawSystem: System = {
-    group: "draw",
-    update(): void {
-        const { ctx } = Canvas2D;
-        if (!ctx || !marquee.rect) return;
-        const { minX, minY, maxX, maxY } = marquee.rect;
-        ctx.save();
-        ctx.fillStyle = "rgba(154, 160, 166, 0.10)"; // COLOR_GUIDE_RAY at low alpha
-        ctx.strokeStyle = COLOR_GUIDE_RAY;
-        ctx.lineWidth = 1;
-        ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
-        ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-        ctx.restore();
-    },
-};
-
 export const RenderPlugin: Plugin = {
     name: "Render",
     systems: [
@@ -783,6 +764,5 @@ export const RenderPlugin: Plugin = {
         HandleDrawSystem,
         TangentDrawSystem,
         SnapGuideSystem,
-        MarqueeDrawSystem,
     ],
 };

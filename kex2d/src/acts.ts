@@ -2,6 +2,7 @@ import type { State } from "@dylanebert/shallot";
 import {
     closeContext,
     editor,
+    endPin,
     enterTangentEdit,
     exitTangentEdit,
     type PinSession,
@@ -31,7 +32,6 @@ import {
     trimTrack,
 } from "./history";
 import type { KeyframeMenuActions, NodeMenuActions, SectionMenuActions } from "./menus";
-import { exitPinMode } from "./pin";
 import { alignTangent, mirrorTangent, TangentMode } from "./spline";
 import { stitchNode } from "./tangents";
 import {
@@ -319,9 +319,13 @@ export function sectionActs(
             closeContext();
             resetSection(history, ecs, subject);
         },
+        // the mode's own driver retired with the pose UX (`retired/pose-ux`), so this closes
+        // the session through `editor.endPin` — the one close choke point — rather than through
+        // the deleted `pin.exitPinMode`. Unreachable until pin returns over lanes: nothing opens
+        // a session any more.
         pinExit: () => {
             closeContext();
-            exitPinMode(ecs);
+            endPin();
         },
     };
 }

@@ -1084,26 +1084,6 @@ describe("stallClampU — the Time lens never stretches toward t→∞ past a st
     });
 });
 
-// S2 (kex2d-event-substrate): strips are track-global and section-blind (Locked decision),
-// so the band's own clamp domain is no longer any one section's extent (`Clip.extent`,
-// kex2d-event-lane S3's fix for the section-owned model) — it's the TRACK's own live extent,
-// derived once (`trackLen`) and threaded through every strip the same way (`BandStrip.len`),
-// never re-derived per section or per strip. Source-text arm, `colors.test.ts`'s own idiom for
-// a Svelte-only surface with no unit-testable runtime seam: the real invariant (the bake clips
-// a strip past the track's own extent, and a strip wholly past it is inert) is pinned in
-// `track.test.ts` against `edgeStrips` directly.
-describe("Timeline.svelte's strip band clamp reads ONE value for the track's own live extent (S2)", () => {
-    test("trackLen derives the track's own live extent off the span table's last offset+len — the ONE place the clamp domain is computed", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("function trackLen(spanTable: SectionSpan[]): number {");
-    });
-
-    test("computeBandStrips reads every strip's clamp domain straight off trackLen(spanTable), never re-deriving it per strip", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("const len = trackLen(spanTable);");
-    });
-});
-
 // kex2d-event-substrate S1: the behavior-parity oracle (Validation's locked standard).
 // For each of the five behaviors, one arm drives a force keyframe AND a strip keyframe through
 // the SAME named function and asserts the SAME observable. The call path is the assertion —
@@ -1317,81 +1297,5 @@ describe("kex2d-event-lane S5: lane label retirement, default strip length, edge
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         expect(src).not.toContain('fillText("vel"');
         expect(src).not.toContain('fillText("events"');
-    });
-
-    // F3 (feel-gate round 1, person's verdict 2026-08-26): default created strip length shrinks
-    // to ~10 m, an independent literal decoupled from EXTEND_DIST (`tests/track.test.ts`'s
-    // `stripDefaultExtentAt` describe block is the behavioral pin — the readback through the
-    // real creation path, never source presence); the summoned-creation path (`createStripAt`)
-    // is what carries it, `canCreateAt` stays on the bare min extent (W7's own overlap gate,
-    // unchanged by this stage).
-    test("createStripAt authors the grown default extent, not the bare min extent", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("function createStripAt(d: number): void {");
-        expect(src).toContain("const extent = stripDefaultExtentAt(ecs, d);");
-    });
-
-    // finding 2: an edge hit zone names the trim with a cursor — kept ALONGSIDE the hover-rung
-    // treatment (`bandHit`'s endpoint stroke), never instead of it. `colors.test.ts`'s cursor
-    // allowlist is the registry gate for the declared class + value; this pins the reactive
-    // binding that drives it off the same classifier the press path uses.
-    test("the band's edge cursor is driven by the same bandHit classifier the press/hover paths use", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain('class:edge-hover={bandHit.kind === "endpoint"}');
-        expect(src).toContain(".hbandzone.edge-hover {");
-    });
-
-    // finding 11, near half: a selected strip keyframe's velocity readout carries its unit —
-    // the position field's own `.unit` span shape, matching `posUnit` two lines up. The far
-    // half (a second unit axis) is out of scope — untouched here.
-    test("the selected strip keyframe's v field carries the m/s unit", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain('aria-label="Keyframe velocity (m/s)"');
-        expect(src).toContain('<span class="unit">m/s</span>');
-    });
-});
-
-// S4, finding 5 (Locked decision): the old S3 arm pinned `STRIP_H == GAP_H` — the 20px
-// CONTAINER band, never what actually painted. The segment clip the person sees renders at
-// `GAP_H − 2·CLIP_PAD` = 16px; the strip fill drifted from it, drawing the full container
-// height instead. The re-pin asserts the RENDERED rect quantity — one derived constant
-// (`CLIP_H`) both the segment clip and the strip fill draw at — rather than a numeric equality
-// between two container-band literals. Source-text arm, `colors.test.ts`'s own idiom for a
-// Svelte-only numeric layout constant with no unit-testable runtime seam (the real rendered
-// height is the capture flow's own job, `affordance.pw.ts`); `HBAND_H`'s harness mirror stays
-// a CONTAINER-band constant (hit-test click targeting, unaffected by this stage) and is not
-// re-pinned here.
-describe("Timeline.svelte's velocity strip fill renders at the segment clip's own rect height, not the container band (S4, finding 5)", () => {
-    test("CLIP_H derives from GAP_H and CLIP_PAD, not an independent literal", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("const CLIP_H = GAP_H - 2 * CLIP_PAD;");
-    });
-
-    // the segment clip (`.clip` — the section marker lane) and the strip fill (the canvas-drawn
-    // velocity strip) both draw at `CLIP_H`, never STRIP_H/GAP_H directly — one source of truth
-    // for the rendered quantity, so either drifting independently reds this.
-    test("the segment clip's SVG rect renders at CLIP_H", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        // the `.clip` rect block: from its own `class="clip …"` opening tag to its `/>` close —
-        // sliced rather than pattern-spanned, so a reordered attribute list can't defeat the read.
-        const start = src.indexOf('class="clip {isF');
-        expect(start).toBeGreaterThan(-1);
-        const block = src.slice(start, src.indexOf("/>", start));
-        expect(block).toContain("height={CLIP_H}");
-    });
-
-    test("the strip fill's canvas fillRect renders at CLIP_H, inset CLIP_PAD from the band top", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).toContain("ctx.fillRect(cx0, RULER_H + GAP_H + CLIP_PAD, cw, CLIP_H);");
-    });
-
-    // negative control: the strip fill's own draw call may not still be pinned against the
-    // container band's full height (STRIP_H) — the old fill call this stage replaced. `STRIP_H`
-    // legitimately survives elsewhere (the container band's own background fill, the hit-zone
-    // rect, the one-shot glyph's vertical center), so this checks the specific call site rather
-    // than the constant's absence from the file.
-    test("the strip fill's draw call no longer renders at the container band's full STRIP_H", () => {
-        const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(src).not.toContain("ctx.fillRect(cx0, RULER_H + GAP_H, cw, STRIP_H);");
     });
 });

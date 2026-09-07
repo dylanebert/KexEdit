@@ -716,9 +716,12 @@ describe("declaredCorpusViolations — the ownership arm", () => {
             evidence: { at: "2026-08-28T00:00:00.000Z", head: "aaaaaaa", branch: "kex2d-test/s1" },
         };
         const violations = declaredCorpusViolations(root, [good]);
-        // the owner is live (git-history check passes); the title matches a staged test, so the
-        // complete corpus check reports no violation.
-        expect(violations).toEqual([]);
+        // the owner is live, so the ownership half reports nothing. The title half cannot be
+        // exercised beside it any more: no `*.pw.ts` flow is staged (`retired/pose-ux`), so every
+        // title reds on the staged-title arm below regardless of its owner. Assert the ownership
+        // half alone, which is what this arm is for; S3 restores the paired case with its first
+        // lane flow.
+        expect(violations.some((v) => v.reason.includes("names nothing live"))).toBe(false);
     });
 
     test("a declared title matching no test in stage.files reds", () => {
@@ -961,12 +964,10 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
         expect(real.length).toBeGreaterThan(0);
     });
 
-    test("at least one file carries the lawful SHOT_MS form (the exclusion names a real member)", () => {
-        const hasShotMs = real.some((name) =>
-            readFileSync(join(harnessDir, name), "utf8").includes("waitForTimeout(SHOT_MS)"),
-        );
-        expect(hasShotMs).toBe(true);
-    });
+    // the "a real member carries the lawful SHOT_MS form" arm retired with the flows themselves
+    // (`retired/pose-ux`): with no `*.pw.ts` staged there is no member to name. The violation arm
+    // below still runs over the staged set, empty or not, and S3's first flow restores the
+    // positive member.
 
     test("no staged flow file carries a waitForTimeout whose argument is not SHOT_MS", () => {
         const violations = nonShotSleeps();
