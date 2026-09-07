@@ -25,6 +25,7 @@
 import { State } from "@dylanebert/shallot";
 import type { Refusal } from "./commands";
 import { history } from "./history";
+import { type LaneSegment, type Lanes, emptyLanes } from "./lanes";
 import { Easing } from "./profile";
 import { Domain } from "./section";
 import { TangentMode, type Tangent } from "./spline";
@@ -35,7 +36,6 @@ import {
     MIN_FORCE_LEN,
     MIN_V0,
     type NodeState,
-    type OneShotSnapshot,
     refreshVelocityRunMembers,
     reserveIds,
     restoreAll,
@@ -59,8 +59,18 @@ import {
  *  load; a v1 file's geo tangents (`DocNode.tangent`) are untouched, a structurally distinct key
  *  on a distinct entity. migrations stay cheap by design (one function per version step, applied
  *  in sequence). */
-/** Frozen flat segment wire. Future authored-shape changes require a version bump. */
-export const CURRENT_VERSION = 3;
+/** v3 → v4 (`kex2d-segment-gestures` S1) opens the LANE substrate on the wire: `lanes.velocity`,
+ *  `lanes.force` and `lanes.geo` of two-handle {@link LaneSegment} records, the track-level
+ *  `track.end` (absent/0 = follow the longest lane) and `track.v0` replacing the `oneShot`
+ *  array. `migrations[3]` derives every lane record from the v3 payload document-to-document
+ *  (no ECS, no bake) and moves the one-shot's value onto `track.v0`.
+ *
+ *  **Bridged until S2.** The v4 wire still carries the v3 `segments`/`strips` payload beside the
+ *  lanes, and the ECS load/save path still reads THAT payload: the live store speaks lanes only
+ *  from S2 (spec Approach 2), so S1 writes the new grammar alongside the authoritative old one
+ *  rather than cutting the store over inside a wire stage. S2 deletes `segments`/`strips` from
+ *  this file and makes `lanes` the only authored payload. */
+export const CURRENT_VERSION = 4;
 
 // ── wire types (post-parse, post-migration — always shaped exactly like this) ────────────────
 
@@ -69,6 +79,14 @@ export interface DocTrack {
     domain: number;
     friction: number;
     resistance: number;
+    /** authored track end in metres of arclength. Absent (or 0) means FOLLOW: the end is the
+     *  longest lane's last exit (`lanes.trackEnd`). No ECS column backs this until S2, so
+     *  `docFromEcs` never emits it and a file carrying it round-trips it unchanged. */
+    end?: number;
+    /** authored initial speed (m/s), replacing v3's `oneShot` array. Absent means no authored
+     *  start speed: the entry speed falls back to `track.V0`, exactly as an absent one-shot
+     *  does today (`track.entrySpeed`). */
+    v0?: number;
 }
 
 export interface DocGeoTangent {
@@ -133,17 +151,192 @@ export interface DocStrip {
     keyframes: DocStripKeyframe[];
 }
 
-export interface DocOneShot {
-    id: number;
-    value: number;
-}
-
 export interface Kex2dDocument {
     version: number;
     track: DocTrack;
+    /** the canonical v4 authored substrate: independent per-parameter lanes of two-handle
+     *  segments (`lanes.ts`). */
+    lanes: Lanes;
+    /** @temporary S2 — the v3 chain payload the live ECS still loads from. */
     segments: DocSegment[];
+    /** @temporary S2 — the v3 velocity payload the live ECS still loads from; `lanes.velocity`
+     *  is derived from it and carries the same authored content in the new grammar. */
     strips: DocStrip[];
+    /** @temporary S2 — the track-start one-shot's surviving identity; its value is `track.v0`. */
     oneShot: DocOneShot[];
+}
+
+/** @temporary S2 — the track-start one-shot's stable IDENTITY, and nothing else: `track.v0`
+ *  replaced its value in v4, but the ECS still addresses the row by id until S2 retires
+ *  `OneShot`, and dropping the id would renumber it across a save → load cycle. */
+export interface DocOneShot {
+    id: number;
+}
+
+// ── lane derivation (pure: v3 payload → v4 lanes) ───────────────────────────────────────────
+//
+// One function shared by `migrations[3]` (a v3 file's lanes) and `docFromEcs` (the live ECS's
+// lanes, read off the same v3 payload it already emits), so the two can never disagree and a
+// migrated document is a fixed point of a save.
+//
+// **The arclength axis, and its one bridged limit.** Velocity strips are already TRACK-GLOBAL
+// arclength, so the velocity lane migrates exactly. A force run's own extent is authored
+// (`extent`), but a run's OFFSET along the track is the sum of the preceding runs' lengths — and
+// a GEO run's length is bake-derived (`track.segmentSpans` sums published `bakeOut.ds`; spec
+// Locked decision: "geo extent is read from the baked edge ... never a position chord"). A
+// document-to-document migration has no bake, so it cannot resolve a geo run's length. Rather
+// than write a chord-derived lie, a geo run contributes ZERO to the axis here and every geo lane
+// record carries an empty `[station, station)` span meaning "extent not authored — derived by the
+// bake". A force run's emitted span is therefore exact on an all-force document and PROVISIONAL
+// downstream of a geo run; S2's `deriveRuns` re-anchors both from the live bake when the store is
+// cut over to lanes, which is why the authoritative v3 payload is still carried beside them.
+
+/** the boundary value list for one strip: the strip's own span ends plus every keyframe strictly
+ *  inside it, deduplicated and ordered. Splitting here is the whole "strip → adjacent segments"
+ *  rule (spec Locked decision). */
+function stripBoundaries(st: DocStrip): number[] {
+    const inner = st.keyframes
+        .map((k) => k.s)
+        .filter((s) => s > st.start && s < st.end)
+        .sort((a, b) => a - b);
+    const out: number[] = [st.start];
+    for (const s of inner) if (s !== out[out.length - 1]) out.push(s);
+    if (st.end !== out[out.length - 1]) out.push(st.end);
+    return out;
+}
+
+/** the speed a strip prescribes AT station `s`: a keyframe sitting exactly there (highest id
+ *  wins, matching the emitter's own id ordering), else the strip's own `value` — which is what a
+ *  KEYFRAMELESS strip has everywhere, so such a strip migrates to one constant segment with
+ *  `entry === exit === value`. */
+function stripValueAt(st: DocStrip, s: number): number {
+    let best: DocStripKeyframe | undefined;
+    for (const k of st.keyframes) if (k.s === s && (!best || k.id > best.id)) best = k;
+    return best ? best.v : st.value;
+}
+
+/** every velocity lane record for one strip: one per adjacent `[boundary, boundary)` span, each
+ *  owning its entry (a v3 strip authors a value at every one of its own boundaries, so nothing
+ *  is inferred). */
+function velocityLane(strips: DocStrip[], nextId: () => number): LaneSegment[] {
+    const out: LaneSegment[] = [];
+    for (const st of strips) {
+        if (!(st.start < st.end)) continue;
+        const bounds = stripBoundaries(st);
+        for (let i = 0; i + 1 < bounds.length; i++) {
+            out.push({
+                id: nextId(),
+                start: bounds[i]!,
+                end: bounds[i + 1]!,
+                ease: Easing.Linear,
+                entry: stripValueAt(st, bounds[i]!),
+                exit: stripValueAt(st, bounds[i + 1]!),
+            });
+        }
+    }
+    return out;
+}
+
+/** the v3 payload's runs, in chain order: contiguous same-`run` members, each carrying the run's
+ *  kind, its members and its terminal extent (0 for a geo run, whose extent is bake-derived). */
+function runsOf(segments: DocSegment[]): { kind: number; members: DocSegment[]; extent: number }[] {
+    const ordered = segments.slice().sort((a, b) => a.order - b.order);
+    const out: { kind: number; members: DocSegment[]; extent: number }[] = [];
+    for (const member of ordered) {
+        const last = out[out.length - 1];
+        const head = last?.members[0];
+        if (last && head && head.run === member.run && head.kind === member.kind) {
+            last.members.push(member);
+        } else {
+            out.push({ kind: member.kind, members: [member], extent: 0 });
+        }
+    }
+    for (const run of out) {
+        if (run.kind !== SectionKind.Force) continue;
+        for (const member of run.members)
+            if (member.extent !== undefined) run.extent = member.extent;
+    }
+    return out;
+}
+
+/** the force and geo lane records for one v3 payload, walked along the chain's arclength axis
+ *  (see the module note above for the geo-extent limit). */
+function chainLanes(
+    segments: DocSegment[],
+    nextId: () => number,
+): { force: LaneSegment[]; geo: LaneSegment[] } {
+    const force: LaneSegment[] = [];
+    const geo: LaneSegment[] = [];
+    let cursor = 0;
+    for (const run of runsOf(segments)) {
+        if (run.kind === SectionKind.Force) {
+            const keys = run.members
+                .flatMap((m) => m.points)
+                .slice()
+                .sort((a, b) => a.s - b.s || a.id - b.id);
+            if (keys.length > 0) {
+                // A key AT station 0 is the run's entry handle, not a terminating one; every
+                // other key terminates the span reaching it. A trailing stretch with no key
+                // dwells at the last exit (`lanes.inferredEntry`), which is emitted as a real
+                // flat segment so the run's whole authored extent stays covered.
+                const entryKey = keys.filter((k) => k.s <= 0).pop();
+                const inner = keys.filter((k) => k.s > 0 && k.s <= run.extent);
+                let prior = 0;
+                let held = entryKey ?? inner[0];
+                for (const key of inner) {
+                    if (key.s === prior) continue;
+                    force.push({
+                        id: nextId(),
+                        start: cursor + prior,
+                        end: cursor + key.s,
+                        ease: key.boundary.ease,
+                        ...(prior === 0 && entryKey ? { entry: entryKey.boundary.g } : {}),
+                        exit: key.boundary.g,
+                    });
+                    prior = key.s;
+                    held = key;
+                }
+                if (prior < run.extent && held) {
+                    force.push({
+                        id: nextId(),
+                        start: cursor + prior,
+                        end: cursor + run.extent,
+                        ease: held.boundary.ease,
+                        ...(prior === 0 && entryKey ? { entry: entryKey.boundary.g } : {}),
+                        exit: held.boundary.g,
+                    });
+                }
+            }
+            cursor += run.extent;
+        } else {
+            // Geo: one record per member, each terminating at that member's own boundary node.
+            // The span is empty because a geo extent is bake-derived, never authored (above).
+            for (const member of run.members) {
+                const nodes = member.nodes.slice().sort((a, b) => a.order - b.order);
+                const exitNode = nodes[nodes.length - 1];
+                const entryNode = nodes.find((n) => n.order === 0);
+                geo.push({
+                    id: nextId(),
+                    start: cursor,
+                    end: cursor,
+                    ease: Easing.Linear,
+                    ...(entryNode ? { entry: entryNode.theta } : {}),
+                    exit: exitNode ? exitNode.theta : 0,
+                });
+            }
+        }
+    }
+    return { force, geo };
+}
+
+/** every lane of a v3 payload, in one shared id namespace (velocity, then force, then geo) so a
+ *  lane record's identity is unique across the whole document. */
+export function lanesFromChain(segments: DocSegment[], strips: DocStrip[]): Lanes {
+    let next = 0;
+    const nextId = () => next++;
+    const velocity = velocityLane(strips, nextId);
+    const { force, geo } = chainLanes(segments, nextId);
+    return { velocity, force, geo };
 }
 
 // ── ECS → document ─────────────────────────────────────────────────────────────────────────
@@ -195,10 +388,6 @@ function toDocStrip(st: StripSnapshot): DocStrip {
     };
 }
 
-function toDocOneShot(o: OneShotSnapshot): DocOneShot {
-    return { id: o.id, value: o.value };
-}
-
 /** the whole live document — every authored ECS component, canonically ordered. `snapshotAll`
  *  supplies sections/strips/one-shot (already section-order / node-order sorted; force
  *  points/strips/keyframes re-sorted here from their bake-order `s`/`start` reads to their
@@ -216,20 +405,24 @@ export function docFromEcs(ecs: State): Kex2dDocument {
                   friction: Track.friction.get(trackEid),
                   resistance: Track.resistance.get(trackEid),
               };
+    const segments = (() => {
+        const ordered = snap.segments.slice().sort((a, b) => a.order - b.order);
+        return ordered.map((member, index) =>
+            toDocSegment(member, ordered[index + 1]?.run !== member.run),
+        );
+    })();
+    const strips = snap.strips
+        .slice()
+        .sort((a, b) => a.id - b.id)
+        .map(toDocStrip);
+    const v0 = snap.oneShot[0]?.value;
     return {
         version: CURRENT_VERSION,
-        track,
-        segments: (() => {
-            const ordered = snap.segments.slice().sort((a, b) => a.order - b.order);
-            return ordered.map((member, index) =>
-                toDocSegment(member, ordered[index + 1]?.run !== member.run),
-            );
-        })(),
-        strips: snap.strips
-            .slice()
-            .sort((a, b) => a.id - b.id)
-            .map(toDocStrip),
-        oneShot: snap.oneShot.map(toDocOneShot),
+        track: { ...track, ...(v0 === undefined ? {} : { v0 }) },
+        lanes: lanesFromChain(segments, strips),
+        segments,
+        strips,
+        oneShot: snap.oneShot.map((o) => ({ id: o.id })),
     };
 }
 
@@ -293,7 +486,13 @@ export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
             value: st.value,
             keyframes: st.keyframes.map((k) => ({ id: k.id, s: k.s, v: k.v })),
         })),
-        oneShot: doc.oneShot.map((o) => ({ id: o.id, value: o.value })),
+        // Bridged until S2: the value comes from `track.v0`, the identity from the surviving
+        // `oneShot` row. No `v0` means no row, exactly as an absent v3 `oneShot` did:
+        // `entrySpeed` falls back to `V0`.
+        oneShot:
+            doc.track.v0 === undefined
+                ? []
+                : doc.oneShot.map((o) => ({ id: o.id, value: doc.track.v0 as number })),
     };
 }
 
@@ -397,6 +596,11 @@ export function serializeDocument(doc: Kex2dDocument): string {
         "{",
         `  "version": ${doc.version},`,
         `  "track": ${emitFlat(doc.track)},`,
+        `  "lanes": {`,
+        `    "velocity": ${emitFlatArray("    ", doc.lanes.velocity)},`,
+        `    "force": ${emitFlatArray("    ", doc.lanes.force)},`,
+        `    "geo": ${emitFlatArray("    ", doc.lanes.geo)}`,
+        `  },`,
         `  "segments": ${emitBlockArray("  ", doc.segments.map(renderSection))},`,
         `  "strips": ${emitBlockArray("  ", doc.strips.map(renderStrip))},`,
         `  "oneShot": ${emitFlatArray("  ", doc.oneShot)}`,
@@ -591,14 +795,6 @@ function validateStrip(v: unknown, i: number): DocStrip {
     };
 }
 
-function validateOneShot(v: unknown, i: number): DocOneShot {
-    const path = `oneShot[${i}]`;
-    if (!isPlainObject(v)) fail(`${path} is not an object`);
-    if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
-    if (!isFiniteNumber(v.value)) fail(`${path}.value is missing or not a finite number`);
-    return { id: v.id as number, value: v.value as number };
-}
-
 function validateTrack(v: unknown): DocTrack {
     if (!isPlainObject(v)) fail("track is missing or not an object");
     for (const k of ["ds", "friction", "resistance"] as const) {
@@ -606,12 +802,65 @@ function validateTrack(v: unknown): DocTrack {
     }
     if (!isInt(v.domain) || (v.domain !== Domain.Distance && v.domain !== Domain.Time))
         fail("track.domain is missing or not a valid Domain (0 or 1)");
+    for (const k of ["end", "v0"] as const) {
+        if (v[k] !== undefined && !isFiniteNumber(v[k])) fail(`track.${k} is not a finite number`);
+    }
     return {
         ds: v.ds as number,
         domain: v.domain as number,
         friction: v.friction as number,
         resistance: v.resistance as number,
+        ...(v.end === undefined ? {} : { end: v.end as number }),
+        ...(v.v0 === undefined ? {} : { v0: v.v0 as number }),
     };
+}
+
+/** one lane record's structural shape. `entry` is genuinely optional (its absence is the
+ *  "reads the predecessor or the lane rule" case, `lanes.entryValue`) and is refused only when
+ *  present and non-finite; `exit` is always owned and always required. */
+function validateOneShot(v: unknown, i: number): DocOneShot {
+    const path = `oneShot[${i}]`;
+    if (!isPlainObject(v)) fail(`${path} is not an object`);
+    if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
+    // v4 moved the value to `track.v0`; a surviving `value` key is a mis-stamped v3 file.
+    if (v.value !== undefined)
+        fail(`${path}.value is not a valid field on a v${CURRENT_VERSION} one-shot (use track.v0)`);
+    return { id: v.id as number };
+}
+
+function validateLaneSegment(v: unknown, lane: string, i: number): LaneSegment {
+    const path = `lanes.${lane}[${i}]`;
+    if (!isPlainObject(v)) fail(`${path} is not an object`);
+    if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
+    for (const k of ["start", "end", "exit"] as const) {
+        if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
+    }
+    if (
+        !isInt(v.ease) ||
+        (v.ease !== Easing.Linear && v.ease !== Easing.Cubic && v.ease !== Easing.Quintic)
+    )
+        fail(`${path}.ease is missing or not a valid Easing (0, 1, or 2)`);
+    if (v.entry !== undefined && !isFiniteNumber(v.entry))
+        fail(`${path}.entry is present but not a finite number`);
+    return {
+        id: v.id as number,
+        start: v.start as number,
+        end: v.end as number,
+        ease: v.ease as number,
+        ...(v.entry === undefined ? {} : { entry: v.entry as number }),
+        exit: v.exit as number,
+    };
+}
+
+function validateLanes(v: unknown): Lanes {
+    if (!isPlainObject(v)) fail("lanes is missing or not an object");
+    const out = emptyLanes();
+    for (const lane of ["velocity", "force", "geo"] as const) {
+        const rows = v[lane];
+        if (!Array.isArray(rows)) fail(`lanes.${lane} is missing or not an array`);
+        out[lane] = rows.map((r, i) => validateLaneSegment(r, lane, i));
+    }
+    return out;
 }
 
 /** the full structural validator — every field type-checked, every required key present,
@@ -627,6 +876,7 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     const doc: Kex2dDocument = {
         version: raw.version as number,
         track,
+        lanes: validateLanes(raw.lanes),
         segments: raw.segments.map((s, i) => validateSegment(s, i)),
         strips: raw.strips.map((s, i) => validateStrip(s, i)),
         oneShot: raw.oneShot.map((o, i) => validateOneShot(o, i)),
@@ -837,13 +1087,11 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
             message: `track.resistance (${doc.track.resistance}) must be finite and non-negative`,
         });
 
-    for (const o of doc.oneShot) {
-        if (o.value < MIN_V0)
-            refusals.push({
-                guard: "minStartSpeed",
-                message: `the track-start speed ${o.value} is below the minimum ${MIN_V0}`,
-            });
-    }
+    if (doc.track.v0 !== undefined && doc.track.v0 < MIN_V0)
+        refusals.push({
+            guard: "minStartSpeed",
+            message: `the track-start speed ${doc.track.v0} is below the minimum ${MIN_V0}`,
+        });
 
     return refusals;
 }
@@ -976,6 +1224,41 @@ function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknow
     return { ...rest, version: 3, segments };
 }
 
+/** v3 → v4 (`kex2d-segment-gestures` S1): open the lane substrate on the wire.
+ *
+ *  Pure document-to-document, and total on a well-shaped v3 file: it derives `lanes` from the v3
+ *  `segments`/`strips` payload through {@link lanesFromChain} (the same derivation `docFromEcs`
+ *  runs, so a migrated file is a fixed point of a save), moves the one-shot's value onto
+ *  `track.v0`, and drops the `oneShot` array. The v3 payload itself is carried through unchanged
+ *  — the ECS still loads from it until S2 (see {@link CURRENT_VERSION}).
+ *
+ *  Tolerant of a malformed shape, like every step before it: a non-array `segments`/`strips` or a
+ *  non-object entry passes through and derives no lanes rather than throwing, leaving
+ *  `validateDocument` (which runs AFTER migration, on the CURRENT_VERSION shape) the one place
+ *  that reports the malformed field. */
+function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
+    const { oneShot, ...rest } = doc;
+    const rawTrack = isPlainObject(rest.track) ? rest.track : {};
+    const rows = Array.isArray(oneShot) ? oneShot : [];
+    const first = rows[0];
+    const v0 = isPlainObject(first) && isFiniteNumber(first.value) ? first.value : undefined;
+    const wellShaped =
+        Array.isArray(rest.segments) &&
+        Array.isArray(rest.strips) &&
+        rest.segments.every(isPlainObject) &&
+        rest.strips.every(isPlainObject);
+    const lanes = wellShaped
+        ? lanesFromChain(rest.segments as DocSegment[], rest.strips as DocStrip[])
+        : emptyLanes();
+    return {
+        ...rest,
+        version: 4,
+        track: { ...rawTrack, ...(v0 === undefined ? {} : { v0 }) },
+        lanes,
+        oneShot: rows.map((o) => (isPlainObject(o) ? { id: o.id } : o)),
+    };
+}
+
 /** a single forward migration step: takes a raw doc at some version and returns one it stamps at
  *  a higher version. */
 export type MigrationStep = (doc: Record<string, unknown>) => Record<string, unknown>;
@@ -986,6 +1269,7 @@ export type MigrationStep = (doc: Record<string, unknown>) => Record<string, unk
 const migrations: Record<number, MigrationStep> = {
     1: dropForceTangent,
     2: sectionsToSegments,
+    3: chainToLanes,
 };
 
 /** walk a raw parsed object forward from its declared `version` to `CURRENT_VERSION`, one

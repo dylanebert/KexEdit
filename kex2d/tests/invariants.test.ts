@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { checkDocumentSemantics, loadDocument, parseDocument, saveDocument } from "../src/doc";
+import {
+    CURRENT_VERSION,
+    checkDocumentSemantics,
+    loadDocument,
+    parseDocument,
+    saveDocument,
+} from "../src/doc";
 import { BakeSystem, snapshotAll, trackEntity } from "../src/track";
 
 // the document-boundary invariant validation: `parseDocument`'s
@@ -95,7 +101,7 @@ describe("document-boundary invariant validation: the shared green fixture", () 
         state.addSystem(BakeSystem);
         loadDocument(state, text);
         const migrated = saveDocument(state);
-        expect(JSON.parse(migrated).version).toBe(3);
+        expect(JSON.parse(migrated).version).toBe(CURRENT_VERSION);
         expect(JSON.parse(migrated).segments).toBeArray();
         const state2 = new State();
         state2.addSystem(BakeSystem);
