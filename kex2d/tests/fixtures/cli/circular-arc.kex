@@ -34,8 +34,5 @@
       "points": []
     }
   ],
-  "strips": [],
-  "oneShot": [
-    {"id":0}
-  ]
+  "strips": []
 }

@@ -73,6 +73,11 @@ import {
  *  this file and makes `lanes` the only authored payload. */
 export const CURRENT_VERSION = 4;
 
+/** the stable id a loaded start speed takes. `track.v0` carries no identity of its own — it is
+ *  one authored number — so every load mints the same address for it, which keeps a
+ *  save → load → save cycle a fixed point rather than renumbering the row. */
+const START_SPEED_ID = 0;
+
 // ── wire types (post-parse, post-migration — always shaped exactly like this) ────────────────
 
 export interface DocTrack {
@@ -163,15 +168,6 @@ export interface Kex2dDocument {
     /** @temporary S2 — the v3 velocity payload the live ECS still loads from; `lanes.velocity`
      *  is derived from it and carries the same authored content in the new grammar. */
     strips: DocStrip[];
-    /** @temporary S2 — the track-start one-shot's surviving identity; its value is `track.v0`. */
-    oneShot: DocOneShot[];
-}
-
-/** @temporary S2 — the track-start one-shot's stable IDENTITY, and nothing else: `track.v0`
- *  replaced its value in v4, but the ECS still addresses the row by id until S2 retires
- *  `OneShot`, and dropping the id would renumber it across a save → load cycle. */
-export interface DocOneShot {
-    id: number;
 }
 
 // ── lane derivation (pure: v3 payload → v4 lanes) ───────────────────────────────────────────
@@ -476,7 +472,6 @@ export function docFromEcs(ecs: State): Kex2dDocument {
         lanes: lanesFromChain(segments, strips, track.ds),
         segments,
         strips,
-        oneShot: snap.oneShot.map((o) => ({ id: o.id })),
     };
 }
 
@@ -540,13 +535,11 @@ export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
             value: st.value,
             keyframes: st.keyframes.map((k) => ({ id: k.id, s: k.s, v: k.v })),
         })),
-        // Bridged until S2: the value comes from `track.v0`, the identity from the surviving
-        // `oneShot` row. No `v0` means no row, exactly as an absent v3 `oneShot` did:
-        // `entrySpeed` falls back to `V0`.
-        oneShot:
-            doc.track.v0 === undefined
-                ? []
-                : doc.oneShot.map((o) => ({ id: o.id, value: doc.track.v0 as number })),
+        // `track.v0` is the whole start speed: it carries the value, and its presence alone
+        // authors the row. The wire holds no identity — a start speed is one authored number,
+        // not a document entity — so a load mints the canonical id, deterministically, and an
+        // absent `v0` authors nothing (`entrySpeed` then falls back to `V0`).
+        oneShot: doc.track.v0 === undefined ? [] : [{ id: START_SPEED_ID, value: doc.track.v0 }],
     };
 }
 
@@ -656,8 +649,7 @@ export function serializeDocument(doc: Kex2dDocument): string {
         `    "geo": ${emitFlatArray("    ", doc.lanes.geo)}`,
         `  },`,
         `  "segments": ${emitBlockArray("  ", doc.segments.map(renderSection))},`,
-        `  "strips": ${emitBlockArray("  ", doc.strips.map(renderStrip))},`,
-        `  "oneShot": ${emitFlatArray("  ", doc.oneShot)}`,
+        `  "strips": ${emitBlockArray("  ", doc.strips.map(renderStrip))}`,
         "}",
     ];
     return `${lines.join("\n")}\n`;
@@ -872,16 +864,6 @@ function validateTrack(v: unknown): DocTrack {
 /** one lane record's structural shape. `entry` is genuinely optional (its absence is the
  *  "reads the predecessor or the lane rule" case, `lanes.entryValue`) and is refused only when
  *  present and non-finite; `exit` is always owned and always required. */
-function validateOneShot(v: unknown, i: number): DocOneShot {
-    const path = `oneShot[${i}]`;
-    if (!isPlainObject(v)) fail(`${path} is not an object`);
-    if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
-    // v4 moved the value to `track.v0`; a surviving `value` key is a mis-stamped v3 file.
-    if (v.value !== undefined)
-        fail(`${path}.value is not a valid field on a v${CURRENT_VERSION} one-shot (use track.v0)`);
-    return { id: v.id as number };
-}
-
 function validateLaneSegment(v: unknown, lane: string, i: number): LaneSegment {
     const path = `lanes.${lane}[${i}]`;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
@@ -925,15 +907,15 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     const track = validateTrack(raw.track);
     if (!Array.isArray(raw.segments)) fail("segments is missing or not an array");
     if (!Array.isArray(raw.strips)) fail("strips is missing or not an array");
-    if (!Array.isArray(raw.oneShot)) fail("oneShot is missing or not an array");
-    if (raw.oneShot.length > 1) fail("oneShot carries more than one entry (at most one may exist)");
+    // v4 retired the one-shot array: the start speed is `track.v0` and nothing else.
+    if (raw.oneShot !== undefined)
+        fail(`oneShot is not a valid field on a v${CURRENT_VERSION} document (use track.v0)`);
     const doc: Kex2dDocument = {
         version: raw.version as number,
         track,
         lanes: validateLanes(raw.lanes),
         segments: raw.segments.map((s, i) => validateSegment(s, i)),
         strips: raw.strips.map((s, i) => validateStrip(s, i)),
-        oneShot: raw.oneShot.map((o, i) => validateOneShot(o, i)),
     };
     const ids = new Set<number>();
     const orders = new Set<number>();
@@ -1313,7 +1295,6 @@ function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
         version: 4,
         track: { ...rawTrack, ...(v0 === undefined ? {} : { v0 }) },
         lanes,
-        oneShot: rows.map((o) => (isPlainObject(o) ? { id: o.id } : o)),
     };
 }
 
@@ -1412,7 +1393,7 @@ export function loadDocument(ecs: State, text: string): void {
         force: doc.segments.flatMap((s) => s.points.map((p) => p.id)),
         strip: doc.strips.map((st) => st.id),
         stripKeyframe: doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
-        oneShot: doc.oneShot.map((o) => o.id),
+        oneShot: [START_SPEED_ID],
     });
     const snap = docToTrackSnapshot(doc);
     reserveIds({ section: snap.segments.map((s) => s.id) });

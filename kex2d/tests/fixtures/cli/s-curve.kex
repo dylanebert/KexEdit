@@ -106,8 +106,5 @@
       "points": []
     }
   ],
-  "strips": [],
-  "oneShot": [
-    {"id":3}
-  ]
+  "strips": []
 }

@@ -48,6 +48,8 @@ import {
     allStrips,
     stripKeyframes,
     MIN_FORCE_LEN,
+    type TrackSnapshot,
+    entrySpeed,
 } from "../src/track";
 
 // the document boundary (spec `kex2d-serialization`): save → load → bake must be byte-identical
@@ -74,6 +76,13 @@ function scenarioTrack(s: (typeof scenarios)[number]): { state: State; eid: numb
 
 /** a flat two-node geo track (the plugin's own seed shape) — the rejection-arm fixture, where
  *  the exact geometry doesn't matter, only that it survives a refused load untouched. */
+/** a track snapshot with the start speed's session address normalised to the id a load mints.
+ *  v4's wire holds the start speed as `track.v0` and no identity, so a save → load renumbers
+ *  the row; its authored VALUE is what round-trips. */
+function withMintedStartSpeed(snap: TrackSnapshot): TrackSnapshot {
+    return { ...snap, oneShot: snap.oneShot.map((o) => ({ ...o, id: 0 })) };
+}
+
 function flatTrack(): { state: State; eid: number } {
     const state = new State();
     state.addSystem(BakeSystem);
@@ -132,7 +141,9 @@ function stableVelocitySnapshot(state: State, run: number, strip: number) {
         },
         strips: allStrips(state).map(({ eid: _eid, ...row }) => row),
         keys: stripKeyframes(state, strip).map(({ eid: _eid, ...row }) => row),
-        oneShot: (({ eid: _eid, ...row }) => row)(entryOneShot(state)!),
+        // the start speed's VALUE, not its session address: v4's wire carries `track.v0` and
+        // mints the address on load (`doc.ts`'s `START_SPEED_ID`).
+        oneShot: entryOneShot(state)!.value,
     };
 }
 
@@ -191,7 +202,10 @@ describe("round-trip over the scenarios.ts corpus", () => {
 
             // authored-state deep equality (TrackSnapshot) — every section/node/point/strip/
             // one-shot the document carries, plus the four Track scalars.
-            expect(snapshotAll(b)).toEqual(authored);
+            expect(withMintedStartSpeed(snapshotAll(b))).toEqual(withMintedStartSpeed(authored));
+            expect(snapshotAll(b).oneShot.map((o) => o.value)).toEqual(
+                authored.oneShot.map((o) => o.value),
+            );
 
             // bakeOut/samples arrays byte-identical.
             expect(bakedArrays(bEid)).toEqual(baked);
@@ -427,7 +441,12 @@ describe("f32 exactness: emit/parse/Math.fround round-trips identical bits", () 
         expect(bits(Track.ds.get(bEid))).toBe(dsBits);
         expect(bits(Track.friction.get(bEid))).toBe(frictionBits);
         expect(bits(Track.resistance.get(bEid))).toBe(resistanceBits);
-        expect(snapshotAll(b)).toEqual(authored);
+        // v4 carries the start speed as `track.v0` alone, so a load mints its session address
+        // rather than restoring one: the authored VALUE round-trips, the address need not.
+        expect(withMintedStartSpeed(snapshotAll(b))).toEqual(withMintedStartSpeed(authored));
+        expect(snapshotAll(b).oneShot.map((o) => o.value)).toEqual(
+            authored.oneShot.map((o) => o.value),
+        );
     });
 });
 
@@ -847,7 +866,6 @@ describe("frozen flat-v3 wire", () => {
             ],
             strips: [],
             lanes: emptyLanes(),
-            oneShot: [],
         });
         const state = new State();
         state.addSystem(BakeSystem);
@@ -882,7 +900,6 @@ describe("frozen flat-v3 wire", () => {
             ],
             strips: [],
             lanes: emptyLanes(),
-            oneShot: [],
         };
         const mutations = [
             {
@@ -920,6 +937,48 @@ describe("frozen flat-v3 wire", () => {
     });
 });
 
+describe("the start speed is `track.v0` and nothing else", () => {
+    test("`track.v0` alone authors the start speed and survives a save", () => {
+        // The retired `oneShot` array used to carry the identity a load resolved the value
+        // through, so a document holding `v0` with an empty array authored NO start speed and
+        // lost `v0` on the way back out. `track.v0` is now self-sufficient.
+        const wire = serializeDocument({
+            version: CURRENT_VERSION,
+            track: { ds: 0.5, domain: 0, friction: 0, resistance: 0, v0: 17.5 },
+            segments: [
+                {
+                    id: 0,
+                    order: 0,
+                    kind: SectionKind.Geo,
+                    run: 0,
+                    node: 2,
+                    nodes: [
+                        { order: 0, x: 0, y: 0, theta: 0 },
+                        { order: 1, x: 12, y: 0, theta: 0 },
+                    ],
+                    points: [],
+                },
+            ],
+            strips: [],
+            lanes: emptyLanes(),
+        });
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, wire);
+        expect(entrySpeed(state)).toBe(17.5);
+        expect(entryOneShot(state)?.value).toBe(17.5);
+        expect(parseDocument(saveDocument(state)).track.v0).toBe(17.5);
+    });
+
+    test("a surviving `oneShot` array is a mis-stamped file and is refused by name", () => {
+        const raw = JSON.parse(
+            readFileSync(join(import.meta.dir, "fixtures", "cli", "hill-auto.kex"), "utf8"),
+        );
+        raw.oneShot = [{ id: 0 }];
+        expect(() => parseDocument(JSON.stringify(raw))).toThrow(/oneShot .*track\.v0/);
+    });
+});
+
 describe("saveDocument / loadDocument on a no-op cycle", () => {
     test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
         const { state, eid } = flatTrack();
@@ -930,7 +989,16 @@ describe("saveDocument / loadDocument on a no-op cycle", () => {
         loadDocument(state, saveDocument(state));
         state.step(0);
 
-        expect(snapshotAll(state)).toEqual(before);
+        expect(withMintedStartSpeed(snapshotAll(state))).toEqual(withMintedStartSpeed(before));
+        expect(snapshotAll(state).oneShot.map((o) => o.value)).toEqual(
+            before.oneShot.map((o) => o.value),
+        );
+        // and a SECOND cycle is a true fixed point, address included, because the mint is
+        // deterministic — the property the wire identity used to carry.
+        const once = saveDocument(state);
+        loadDocument(state, once);
+        state.step(0);
+        expect(snapshotAll(state)).toEqual(withMintedStartSpeed(before));
         // the Track ENTITY itself survives a load untouched (`restoreAll` only respawns
         // sections/handles/forces/strips/keyframes/one-shot, never the Track entity) — `eid` is
         // still the live track's own id.
@@ -1018,7 +1086,8 @@ describe("v4 migration sweep", () => {
                 const oneShot = (raw.oneShot ?? []) as { value?: number }[];
                 expect((migrated.track as { v0?: number }).v0).toBe(oneShot[0]?.value);
             }
-            for (const row of migrated.oneShot as object[]) expect(row).not.toHaveProperty("value");
+            // v4 retires the array outright: the start speed is `track.v0` and nothing else.
+            expect(migrated).not.toHaveProperty("oneShot");
         });
     }
 });
