@@ -3,18 +3,18 @@
  *  authored track state — so they persist to `localStorage` (the PlayCanvas/Figma model — sticky
  *  per user, per origin) as one small JSON object under `SNAP_KEY`.
  *
- *  Today that's the two **manipulator** snap quanta — the angle grid and the chord-length grid the
- *  polar controls resolve through. `magnet.ts` reads this singleton per quantize, so an edited
- *  value takes effect on the next drag with nothing to re-wire, and the tool rail's magnet popover
+ *  Today that's the two **manipulator** snap quanta — the angle grid and the chord-length grid a
+ *  drag resolves through. A consumer reads this singleton per quantize, so an edited value takes
+ *  effect on the next drag with nothing to re-wire, and the tool rail's snap popover
  *  (`Timeline.svelte`) is the surface that writes it. Two deliberate boundaries: the timeline's
  *  force grids (`S_GRID`/`G_GRID`, `timeline.ts`) stay named constants — the manipulator quanta are
  *  the ones an author varies (Figma's precedent: configurable nudge, hardcoded rotation snap) — and
- *  `LENGTH_MIN` (`magnet.ts`) is a different quantity, the floor a chord can never collapse below,
+ *  `RECORD_FLOOR` (`lanes.ts`) is a different quantity, the floor a span can never collapse below,
  *  not a grid.
  *
  *  Both quanta clamp to a RANGE, not just a floor: a floor alone lets a typed extreme persist (it's
  *  in storage, so it survives the reload) and collapse the control — past a 180° grid every angle
- *  rounds to one direction, and a 100 m+ length grid quantizes every chord onto the `LENGTH_MIN`
+ *  rounds to one direction, and a 100 m+ length grid quantizes every chord onto the `RECORD_FLOOR`
  *  floor. The ceilings exist for recoverability, not precision.
  *
  *  The clamps are pure (and the load path's only shape guard); storage is the one impure edge and
@@ -35,7 +35,7 @@ export const LENGTH_STEP_DEFAULT = 1;
 /** the finest configurable chord-length grid: 0.1 m. */
 export const LENGTH_STEP_MIN = 0.1;
 /** the coarsest configurable chord-length grid: 100 m — beyond any section scale, so it bounds the
- *  same collapse (every chord quantizing to the `LENGTH_MIN` floor) without bounding real authoring. */
+ *  same collapse (every chord quantizing to the `RECORD_FLOOR` floor) without bounding real authoring. */
 export const LENGTH_STEP_MAX = 100;
 
 /** the `localStorage` key the whole preference object lives under. */
@@ -49,7 +49,7 @@ export interface SnapSteps {
     length: number;
 }
 
-/** the LIVE quanta — the one source of truth `magnet.ts` quantizes against. Read it, never copy it
+/** the LIVE quanta — the one source of truth a quantizer reads. Read it, never copy it
  *  into a captured constant: the whole point is that a field edit lands on the next gesture. */
 export const snapSteps: SnapSteps = {
     angle: ANGLE_STEP_DEFAULT,

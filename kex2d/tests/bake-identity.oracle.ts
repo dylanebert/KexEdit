@@ -341,7 +341,9 @@ describe("the frozen bake digests", () => {
 
     test("the reference input of a v4 fixture is its frozen v3 twin, never the v4 file", () => {
         // the reference must stay computable once `segments`/`strips` leave the v4 wire.
-        expect(referenceInput("cli/hill-explicit.kex")).toEndWith("fixtures/v3/cli/hill-explicit.kex");
+        expect(referenceInput("cli/hill-explicit.kex")).toEndWith(
+            "fixtures/v3/cli/hill-explicit.kex",
+        );
         expect(referenceInput("force/keyless.kex")).toEndWith("fixtures/force/keyless.kex");
     });
 

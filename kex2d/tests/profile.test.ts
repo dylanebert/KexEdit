@@ -569,7 +569,6 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
         "section.ts":
             "the σ-index lookup `fN[round(σ/ds)]` (the Distance closure) — an index, not a pairing",
         "spline.ts": "the geo variable-chord rule — a different domain, not a force pairing",
-        "magnet.ts": "snap/grid quantizers — not edge counts",
         "timeline.ts": "snap/grid quantizers — not edge counts",
         "fvdlab.ts": "lab sample count, not production",
         "collocatelab.ts": "lab sample count, not production",
@@ -588,7 +587,6 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
         "profile.ts": 1,
         "section.ts": 1,
         "spline.ts": 1,
-        "magnet.ts": 3,
         "timeline.ts": 4,
         "fvdlab.ts": 1,
         "collocatelab.ts": 1,
@@ -597,7 +595,7 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
         const global = new RegExp(RoundShape.source, "g");
         const rawTotal = srcFiles.reduce((sum, f) => sum + (src(f).match(global)?.length ?? 0), 0);
         const declaredTotal = Object.values(RoundShapeCounts).reduce((a, b) => a + b, 0);
-        expect(declaredTotal).toBe(12);
+        expect(declaredTotal).toBe(9);
         expect(rawTotal).toBe(declaredTotal);
     });
 

@@ -68,11 +68,11 @@ describe("flat split → exhaustive prune", () => {
 
     // What a document converts to is a frozen contract, so the conversion quantum is the
     // core's own constant and `settings.ts` — the localStorage-backed per-user preference
-    // home — must stay out of its module graph, worker bundle included. `magnet.ts` is the
+    // home — must stay out of its module graph, worker bundle included. `main.ts` is the
     // walker's positive control: it DOES read the live preference, so a walker that finds
     // nothing anywhere would fail there first.
     test("the conversion core's module graph never reaches the preference home", () => {
-        expect(reach("magnet.ts")).toContain("settings.ts");
+        expect(reach("main.ts")).toContain("settings.ts");
         const core = reach("refine.ts");
         expect(core).toContain("polish.ts");
         expect(core).not.toContain("settings.ts");

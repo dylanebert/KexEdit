@@ -153,7 +153,7 @@ import { DEFAULT_G, Easing } from "../src/profile";
 import { velocityCurve } from "../src/cart";
 import { yFit } from "../src/timeline";
 import { scenarios } from "../src/scenarios";
-import { LENGTH_MIN } from "../src/magnet";
+import { RECORD_FLOOR } from "../src/lanes";
 import { Domain, evalGeo } from "../src/section";
 import { editTangent, type Node, sampleChain, type Tangent, TangentMode } from "../src/spline";
 import { GOLDEN } from "./helpers/golden";
@@ -2479,9 +2479,9 @@ describe("Track.domain (view lens, S6)", () => {
             setStickyLen(SectionKind.Force, EXTEND_DIST); // don't leak past the file
         });
 
-        test("a degenerate geo commit floors at LENGTH_MIN, its own gesture's floor", () => {
+        test("a degenerate geo commit floors at RECORD_FLOOR, its own gesture's floor", () => {
             setStickyLen(SectionKind.Geo, 0.001);
-            expect(stickyLen(SectionKind.Geo)).toBe(LENGTH_MIN);
+            expect(stickyLen(SectionKind.Geo)).toBe(RECORD_FLOOR);
             setStickyLen(SectionKind.Geo, EXTEND_DIST); // module state: don't leak past the file
         });
 

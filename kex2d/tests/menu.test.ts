@@ -2102,9 +2102,9 @@ describe("menus.ts module graph — the builders import nothing impure", () => {
         readFileSync(join(import.meta.dir, "..", "src", file), "utf8").includes(`"${spec}"`);
 
     test("the graph reaches the pure atoms and stops there", () => {
-        // `magnet.ts` is the walker's positive control: it DOES reach the preference home, so a
+        // `main.ts` is the walker's positive control: it DOES reach the preference home, so a
         // walker that found nothing anywhere would fail here first.
-        expect(reach("magnet.ts")).toContain("settings.ts");
+        expect(reach("main.ts")).toContain("settings.ts");
         const graph = reach("menus.ts");
         expect([...graph].sort()).toEqual([
             "bake.ts",

@@ -1,7 +1,7 @@
 import { f32, type Plugin, sparse, type State, type System, u32, vec2 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
 import type { GeofitBake } from "./geofit";
-import { LENGTH_MIN } from "./magnet";
+import { RECORD_FLOOR } from "./lanes";
 import {
     DEFAULT_G,
     Easing,
@@ -1303,7 +1303,7 @@ export function stickyLen(kind: SectionKind, _domain: Domain = Domain.Distance):
 }
 
 /** record a committed length gesture as that kind's new sticky append default, clamped to the
- *  floor its own gesture holds — `LENGTH_MIN` for a geo chord, `MIN_FORCE_LEN` for an extent
+ *  floor its own gesture holds — `RECORD_FLOOR` for a geo chord, `MIN_FORCE_LEN` for an extent
  *  trim — so a degenerate commit can't poison the next append. A non-finite value is ignored
  *  (a degenerate frame has no length to remember). `domain` is accepted (and ignored) so
  *  callers passing `trackDomain(ecs)` still compile. */
@@ -1313,7 +1313,7 @@ export function setStickyLen(
     _domain: Domain = Domain.Distance,
 ): void {
     if (!Number.isFinite(length)) return;
-    if (kind === SectionKind.Geo) stickyGeoChord = Math.max(LENGTH_MIN, length);
+    if (kind === SectionKind.Geo) stickyGeoChord = Math.max(RECORD_FLOOR, length);
     else stickyForceExtent = Math.max(MIN_FORCE_LEN, length);
 }
 

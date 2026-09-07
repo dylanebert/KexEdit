@@ -82,8 +82,9 @@ function toV3(text: string): {
     v0: number | undefined;
 } {
     let doc0 = JSON.parse(text) as Record<string, unknown>;
-    let v = doc0.version;
-    if (typeof v !== "number") throw new Error("reference input carries no version");
+    const first = doc0.version;
+    if (typeof first !== "number") throw new Error("reference input carries no version");
+    let v: number = first;
     while (v < V3) {
         const step = preLaneMigrations[v];
         if (!step) throw new Error(`version ${v} has no migration path to v${V3}`);
@@ -144,9 +145,6 @@ export async function referenceDigest(name: string): Promise<string> {
 if (import.meta.main) {
     const out: Record<string, string> = {};
     for (const name of digestCorpus()) out[name] = await referenceDigest(name);
-    writeFileSync(
-        join(fixtures, "v3", "bake-digests.json"),
-        `${JSON.stringify(out, null, 4)}\n`,
-    );
+    writeFileSync(join(fixtures, "v3", "bake-digests.json"), `${JSON.stringify(out, null, 4)}\n`);
     console.log(`minted bake-digests.json over ${Object.keys(out).length} fixtures`);
 }
