@@ -193,10 +193,9 @@ const stripDoc = TEMPLATE.strips[0];
 const KF40 = stripDoc.keyframes.find((k) => k.s === 40)?.id;
 const KF60 = stripDoc.keyframes.find((k) => k.s === 60)?.id;
 if (KF40 === undefined || KF60 === undefined) throw new Error("template: missing a strip keyframe");
-// v4 carries the start speed's VALUE as `track.v0` and only its identity on the `oneShot` row.
-const OS = TEMPLATE.oneShot[0]?.id;
-if (OS === undefined || TEMPLATE.track.v0 === undefined)
-    throw new Error("template: missing the one-shot");
+// v4 carries the whole start speed as `track.v0`; the row's id is minted by the load.
+if (TEMPLATE.track.v0 === undefined) throw new Error("template: missing the one-shot");
+const OS = 0;
 
 function fixture(): State {
     const state = new State();

@@ -23,6 +23,7 @@
  *  geo yields to the force lane. */
 
 import { DEFAULT_G } from "./profile";
+import type { Tangent } from "./spline";
 
 /** the three authored parameters of a 2D track. Values are the wire's own lane keys' order and
  *  are not stored in a record — a segment knows its lane by the array it lives in. */
@@ -43,10 +44,12 @@ export enum Lane {
  *  the entry reads the abutting predecessor's exit or the lane's inferred value. `ease` is the
  *  `Easing` tag shaping the run from entry to exit.
  *
- *  Per-lane reading of `entry`/`exit`: velocity holds a speed in m/s, force holds a normal-force
- *  multiple in g, geo holds the boundary node's local exit heading in radians (its position and
- *  tangent stay on the geo payload until S2 folds them in). */
-export interface LaneSegment {
+ *  Per-lane reading of `entry`/`exit`: velocity holds a speed in m/s and force a normal-force
+ *  multiple in g — both scalars — while GEO holds a whole {@link NodePose}, because a track's
+ *  shape at a boundary is a position, a heading and an optional explicit tangent, not one number.
+ *  `H` is that handle type; the span laws below never read it, so they are one implementation
+ *  over every lane. */
+export interface LaneSegment<H = number> {
     /** stable identity — survives undo/restore, never an entity id. */
     id: number;
     start: number;
@@ -54,15 +57,30 @@ export interface LaneSegment {
     /** `Easing` tag (`profile.ts`) between `entry` and `exit`. */
     ease: number;
     /** present only when this segment OWNS its entry handle. */
-    entry?: number;
-    exit: number;
+    entry?: H;
+    exit: H;
 }
+
+/** a geo boundary handle: the authored node pose at one end of a geo segment, in the frame of
+ *  its maximal abutting group's first entry (the Locked decision's own frame, which is today's
+ *  run frame). `theta` is the node's local exit heading in radians; `tangent` is the explicit
+ *  in/out pair when the node is not `Auto`. */
+export interface NodePose {
+    x: number;
+    y: number;
+    theta: number;
+    tangent?: Tangent;
+}
+
+/** the geo lane's record type: two-handle spans whose handles are node poses. `ease` is inert
+ *  on this lane — a geo span's shape comes from its handles' tangents, not an easing tag. */
+export type GeoLaneSegment = LaneSegment<NodePose>;
 
 /** every lane of one track, keyed by parameter. */
 export interface Lanes {
     velocity: LaneSegment[];
     force: LaneSegment[];
-    geo: LaneSegment[];
+    geo: GeoLaneSegment[];
 }
 
 /** an empty lane set — the shape a document with nothing authored carries. */
@@ -72,7 +90,7 @@ export function emptyLanes(): Lanes {
 
 /** the lane's members in span order, ties broken by stable id so the ordering is total and
  *  independent of the caller's array order. Never mutates the input. */
-export function ordered(segments: readonly LaneSegment[]): LaneSegment[] {
+export function ordered<H>(segments: readonly LaneSegment<H>[]): LaneSegment<H>[] {
     return segments.slice().sort((a, b) => a.start - b.start || a.end - b.end || a.id - b.id);
 }
 
@@ -82,8 +100,8 @@ export function ordered(segments: readonly LaneSegment[]): LaneSegment[] {
  *  (`a.end === b.start`) is NOT an overlap and stays legal; a zero-length probe (`start >= end`)
  *  intersects nothing. `exceptId` lets a move/resize gesture ask the question about its own
  *  candidate span without colliding with the record it is about to replace. */
-export function segmentOverlapped(
-    segments: readonly LaneSegment[],
+export function segmentOverlapped<H>(
+    segments: readonly LaneSegment<H>[],
     start: number,
     end: number,
     exceptId?: number,
@@ -99,7 +117,7 @@ export function segmentOverlapped(
 /** the lane's own exclusivity law, as a predicate over a whole lane: no two members overlap.
  *  Abutting members pass; a member with `start >= end` is degenerate and reported separately by
  *  {@link laneRefusals}. */
-export function laneExclusive(segments: readonly LaneSegment[]): boolean {
+export function laneExclusive<H>(segments: readonly LaneSegment<H>[]): boolean {
     const rows = ordered(segments);
     for (let i = 1; i < rows.length; i++) {
         if (rows[i]!.start < rows[i - 1]!.end) return false;
@@ -110,9 +128,9 @@ export function laneExclusive(segments: readonly LaneSegment[]): boolean {
 /** every violated law in one lane, named the way `doc.ts`'s document-boundary census names its
  *  guards (`{guard, message}`) so a refusal here keys on the same vocabulary a setter's refusal
  *  does. Empty when the lane is well-formed. */
-export function laneRefusals(
+export function laneRefusals<H>(
     lane: Lane,
-    segments: readonly LaneSegment[],
+    segments: readonly LaneSegment<H>[],
 ): { guard: string; message: string }[] {
     const out: { guard: string; message: string }[] = [];
     const name = laneName(lane);
@@ -180,23 +198,25 @@ export function inferredEntry(
  *
  *  `undefined` means the lane prescribes nothing at that boundary (velocity dissipating, geo
  *  yielding), which is a real answer and not a missing one. */
-export function entryValue(
+export function entryValue<H>(
     lane: Lane,
-    segments: readonly LaneSegment[],
-    segment: LaneSegment,
-): number | undefined {
+    segments: readonly LaneSegment<H>[],
+    segment: LaneSegment<H>,
+): H | number | undefined {
     if (segment.entry !== undefined) return segment.entry;
-    let abutting: LaneSegment | undefined;
+    let abutting: LaneSegment<H> | undefined;
     for (const s of segments) {
         if (s.id === segment.id) continue;
         if (s.end === segment.start && (!abutting || s.id > abutting.id)) abutting = s;
     }
     if (abutting) return abutting.exit;
-    return inferredEntry(lane, segments, segment.start);
+    // only the FORCE lane infers across a gap, and its handles are scalars — the other lanes
+    // answer `undefined` before the cast is ever reached.
+    return inferredEntry(lane, segments as readonly LaneSegment[], segment.start);
 }
 
 /** the last station any member of `segments` reaches, or 0 for an empty lane. */
-export function laneExit(segments: readonly LaneSegment[]): number {
+export function laneExit<H>(segments: readonly LaneSegment<H>[]): number {
     let end = 0;
     for (const s of segments) if (s.end > end) end = s.end;
     return end;

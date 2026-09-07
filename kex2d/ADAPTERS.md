@@ -4,10 +4,8 @@ Every live `@temporary` adapter in `src/` has an exit class. This inventory is r
 
 | Symbol | Exit class | Exit |
 |---|---|---|
-| `DocOneShot` | retirement | Remove with the v3 `oneShot` array once `track.v0` is the only start-speed carrier. |
 | `segments` | migration compatibility | Remove the v3 chain payload from the wire when the ECS loads from `lanes`. |
 | `strips` | migration compatibility | Remove the v3 velocity payload from the wire when `lanes.velocity` is the authored owner. |
-| `oneShot` | retirement | Remove the surviving start-speed identity row with `OneShot` itself. |
 | `RunProjectionRow` | derived `@plumbing` evaluation projection | Retag as permanent evaluator plumbing after segment interaction no longer consumes run compatibility. |
 | `RunProjectionRow.stations` | authored owner | Retain as the conserved run-local station frame; remove the adapter annotation when run projection retires. |
 | `rebuildRunProjection` | derived `@plumbing` evaluation projection | Retag as evaluator plumbing or replace with the final segment-to-payload projection. |

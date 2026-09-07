@@ -1,8 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { loadDocument, parseDocument } from "../src/doc";
 import { State } from "@dylanebert/shallot";
 import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import * as projection from "../src/projection";
+import type { GeoLaneSegment, LaneSegment, Lanes } from "../src/lanes";
 import {
+    deriveRuns,
     rebuildForceProjection,
     rebuildRunProjection,
     rebuildSectionProjection,
@@ -11,6 +16,7 @@ import {
 import {
     addNode,
     authoredHash,
+    BakeSystem,
     createForcePoint,
     createSection,
     createTrack,
@@ -29,7 +35,9 @@ import {
     setSectionLength,
     runToken,
     sectionToken,
+    sectionWindows,
     sections,
+    trackDs,
     TrackStart,
 } from "../src/track";
 
@@ -257,4 +265,220 @@ test("a segment-only extent edit invalidates the authored bake hash", () => {
     const before = authoredHash(ecs);
     setSectionLength(ecs, id, 25);
     expect(authoredHash(ecs)).not.toBe(before);
+});
+
+// ── deriveRuns: the lane → evaluator partition ──────────────────────────────────────────────
+
+/** a geo record: its handles are node poses (`lanes.NodePose`), the shape the geo lane stores. */
+function geoSeg(id: number, start: number, end: number): GeoLaneSegment {
+    return { id, start, end, ease: Easing.Linear, exit: { x: end, y: 0, theta: 0 } };
+}
+
+function laneSeg(
+    id: number,
+    start: number,
+    end: number,
+    exit: number,
+    ease: Easing = Easing.Cubic,
+    entry?: number,
+): LaneSegment {
+    return { id, start, end, ease, exit, ...(entry === undefined ? {} : { entry }) };
+}
+
+test("geo abutting groups are the geo runs and every uncovered stretch is a force run", () => {
+    const lanes: Lanes = {
+        velocity: [],
+        // two abutting geo records, a gap, then one more: two geo runs.
+        force: [laneSeg(10, 12, 20, 2)],
+        geo: [geoSeg(0, 0, 5), geoSeg(1, 5, 12), geoSeg(2, 20, 26)],
+    };
+    const runs = deriveRuns(lanes, 0);
+    expect(runs.map((r) => [r.kind, r.start, r.length, r.segmentIds])).toEqual([
+        [SectionKind.Geo, 0, 12, [0, 1]],
+        [SectionKind.Force, 12, 8, [10]],
+        [SectionKind.Geo, 20, 6, [2]],
+    ]);
+    // the run identity is its first member's lane id, which is what `runInfo` keys on.
+    expect(runs.map((r) => r.id)).toEqual([0, 10, 2]);
+    // conserved run-local member stations, run length appended — never a sum of extents.
+    expect(runs[0]!.stations).toEqual([0, 5, 12]);
+});
+
+test("a force run with no authored record still bakes, under an id no lane record holds", () => {
+    const lanes: Lanes = { velocity: [], force: [], geo: [geoSeg(7, 0, 10)] };
+    const runs = deriveRuns(lanes, 25);
+    expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([
+        [SectionKind.Geo, 0, 10],
+        [SectionKind.Force, 10, 15],
+    ]);
+    expect(runs[1]!.segmentIds).toEqual([]);
+    expect(runs[1]!.points).toEqual([]);
+    expect(runs[1]!.id).toBeGreaterThan(7);
+    expect(runs[1]!.stations).toEqual([0, 15]);
+});
+
+test("a pinned end extends the trailing force run; follow reads the longest lane", () => {
+    const lanes: Lanes = {
+        velocity: [laneSeg(3, 0, 40, 12)],
+        force: [],
+        geo: [geoSeg(0, 0, 9)],
+    };
+    expect(deriveRuns(lanes, 0).map((r) => r.length)).toEqual([9, 31]);
+    expect(deriveRuns(lanes, 60).map((r) => r.length)).toEqual([9, 51]);
+});
+
+test("force keys read the leading record's easing and the successor's owned entry", () => {
+    const lanes: Lanes = {
+        velocity: [],
+        geo: [],
+        force: [
+            laneSeg(0, 0, 5, 1.5, Easing.Quintic, 0.5),
+            laneSeg(1, 5, 10, 3, Easing.Linear),
+            // an authored discontinuity: the successor owns an entry at the shared station.
+            laneSeg(2, 10, 14, 4, Easing.Cubic, -1),
+        ],
+    };
+    expect(deriveRuns(lanes, 0)[0]!.points).toEqual([
+        { s: 0, g: 0.5, ease: Easing.Quintic },
+        { s: 5, g: 1.5, ease: Easing.Linear },
+        { s: 10, g: -1, ease: Easing.Cubic },
+        { s: 14, g: 4, ease: Easing.Cubic },
+    ]);
+});
+
+test("a record opening a lane gap without an owned entry authors no key at its start", () => {
+    const lanes: Lanes = { velocity: [], geo: [], force: [laneSeg(0, 6, 12, 3, Easing.Linear)] };
+    const run = deriveRuns(lanes, 20)[0]!;
+    expect(run.points).toEqual([{ s: 12, g: 3, ease: Easing.Linear }]);
+    // the run's own clamps, not a borrowed exit at the gap boundary.
+    expect(materializeRunForceClamps(run.points, run.length)).toEqual([
+        { s: 0, g: 3, ease: Easing.Linear },
+        { s: 12, g: 3, ease: Easing.Linear },
+        { s: 20, g: 3, ease: Easing.Linear },
+    ]);
+});
+
+test("derived run stations are read from the records, never summed from member extents", () => {
+    // `a + (b - a) !== b` in f64, so a station rebuilt by accumulating extents misses the
+    // authored boundary — the conserved-frame law (`kex2d-map.md`: never re-sum run stations).
+    const a = 12.1;
+    const b = 30.3;
+    expect(a - 0 + (b - a)).not.toBe(b);
+    const lanes: Lanes = {
+        velocity: [],
+        force: [],
+        geo: [geoSeg(0, 0, a), geoSeg(1, a, b), geoSeg(2, b, 44)],
+    };
+    const run = deriveRuns(lanes, 0)[0]!;
+    expect(run.stations).toEqual([0, a, b, 44]);
+    expect(run.length).toBe(44);
+});
+
+// ── the lane partition against the loaded chain, over the whole fixture corpus ──────────────
+
+/** every committed `.kex` fixture outside the frozen `v2`/`v3` migration inputs and the
+ *  deliberately malformed `invariants/*-red` corpus — the documents that actually load. */
+function loadableFixtures(): string[] {
+    const root = join(import.meta.dir, "fixtures");
+    const out: string[] = [];
+    for (const dir of ["", "cli", "force", "invariants", "velocity"]) {
+        const abs = dir === "" ? root : join(root, dir);
+        if (!existsSync(abs)) continue;
+        for (const name of readdirSync(abs)) {
+            if (!name.endsWith(".kex") || name.endsWith("-red.kex")) continue;
+            out.push(dir === "" ? name : `${dir}/${name}`);
+        }
+    }
+    return out.sort();
+}
+
+test("an unpinned end follows the longest lane, past the authored shape", () => {
+    // `velocity/past-live-extent.kex` authors a strip out to 46 m over 40 m of force runs. The
+    // retired chain ended at 40 and the strip's tail was inert; under the Locked decision the
+    // document runs to the last exit on ANY lane, so the derived track reaches 46.
+    const doc = parseDocument(
+        readFileSync(join(import.meta.dir, "fixtures", "velocity", "past-live-extent.kex"), "utf8"),
+    );
+    const runs = deriveRuns(doc.lanes, doc.track.end ?? 0);
+    expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([[SectionKind.Force, 0, 46]]);
+    expect(Math.max(...doc.lanes.force.map((r) => r.end))).toBe(40);
+});
+
+test("derived lane runs reproduce the loaded chain's geometry partition and force profile", () => {
+    const names = loadableFixtures();
+    // pin the population: a narrowed scan must not pass as a clean sweep.
+    expect(names.length).toBeGreaterThanOrEqual(24);
+    for (const name of names) {
+        const text = readFileSync(join(import.meta.dir, "fixtures", name), "utf8");
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, text);
+        state.step(0);
+
+        const doc = parseDocument(text);
+        const derived = deriveRuns(doc.lanes, doc.track.end ?? 0);
+        const windows = sectionWindows(state);
+        const chainRuns = rebuildRunProjection(state);
+        const ds = trackDs(state);
+
+        // Geo runs are the lanes' own maximal abutting groups, so they survive one-for-one at
+        // the chain's own offsets and derived lengths. Two ADJACENT force runs carry no authored
+        // seam in the lane model (the Locked decision derives the union chain), so they merge —
+        // which is why the force arm below compares the PROFILE across the merge rather than the
+        // partition, and why it is the arm that holds the bake.
+        const geo = (kind: number) => kind === SectionKind.Geo;
+        expect(
+            derived.filter((r) => geo(r.kind)).map((r) => r.start),
+            name,
+        ).toEqual(
+            chainRuns
+                .map((r, i) => [r, windows[i]!] as const)
+                .filter(([r]) => geo(r.kind))
+                .map(([, w]) => w.offset),
+        );
+        expect(
+            derived.filter((r) => geo(r.kind)).map((r) => r.length),
+            name,
+        ).toEqual(
+            chainRuns
+                .map((r, i) => [r, windows[i]!] as const)
+                .filter(([r]) => geo(r.kind))
+                .map(([, w]) => w.len),
+        );
+
+        for (const run of derived) {
+            if (run.kind !== SectionKind.Force) continue;
+            const covered = chainRuns
+                .map((r, i) => ({ r, w: windows[i]! }))
+                .filter(
+                    ({ r, w }) =>
+                        r.kind === SectionKind.Force &&
+                        w.offset >= run.start &&
+                        w.offset < run.start + run.length,
+                );
+            const want: number[] = [];
+            for (const { r } of covered) {
+                const dense = forceDense(
+                    state,
+                    r.segmentIds,
+                    r.stations,
+                    r.length,
+                    resolveStep(r.length, ds),
+                );
+                want.push(...dense);
+            }
+            const got = forceProfile(
+                materializeRunForceClamps(run.points, run.length),
+                resolveStep(run.length, ds),
+            );
+            // Compare over the CHAIN's own extent. A lane may reach past it — an unpinned end
+            // follows the longest lane (Locked decision), and `velocity/past-live-extent.kex`
+            // has a strip beyond the authored shape — and that tail is new track the retired
+            // chain never baked, so it is outside what a bake-identity comparison can say.
+            expect(
+                Array.from(got.subarray(0, want.length)),
+                `${name} force run at ${run.start}`,
+            ).toEqual(want);
+        }
+    }
 });
