@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadDocument, parseDocument } from "../src/doc";
 import { State } from "@dylanebert/shallot";
-import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
+import { Easing, forceProfile, type ForcePoint, resolveStep, sampleForce } from "../src/profile";
 import * as projection from "../src/projection";
 import type { GeoLaneSegment, LaneSegment, Lanes } from "../src/lanes";
 import {
@@ -472,6 +472,22 @@ test("an unpinned end follows the longest lane, past the authored shape", () => 
     const runs = deriveRuns(doc.lanes, doc.track.end ?? 0);
     expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([[SectionKind.Force, 0, 46]]);
     expect(Math.max(...doc.lanes.force.map((r) => r.end))).toBe(40);
+
+    // and the tail past the last force exit is a force GAP that DWELLS at that exit (the
+    // Locked decision: "the stretch under it bakes as a force gap dwelling at the last exit"),
+    // never a hole and never a re-clamp to `DEFAULT_G` by some other route. The 16 m/s velocity
+    // span that grew the track authors speed there, not force.
+    const run = runs[0]!;
+    expect(run.points.at(-1)).toEqual({ s: 40, g: 1, ease: Easing.Cubic });
+    const clamped = materializeRunForceClamps(run.points, run.length);
+    // the run's own trailing clamp carries the dwell value; its tag governs nothing past the
+    // last key, so `materializeRunForceClamps` stamps the neutral Linear.
+    expect(clamped.at(-1)).toEqual({ s: 46, g: 1, ease: Easing.Linear });
+    // every station across the tail reads the dwell value, not just its two ends.
+    // (the curve solve carries a bezier residual, so the dwell is exact to solver precision).
+    for (const s of [40, 42, 44, 46]) expect(sampleForce(clamped, s)).toBeCloseTo(1, 12);
+    expect(Math.max(...doc.lanes.velocity.map((r) => r.end))).toBe(46);
+    expect(doc.lanes.velocity.some((r) => r.exit === 16)).toBe(true);
 });
 
 test("derived lane runs reproduce the loaded chain's geometry partition and force profile", () => {
