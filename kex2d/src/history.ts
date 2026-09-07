@@ -70,54 +70,12 @@ export function createHistory(): History {
 /** the app's single history. tests build their own via `createHistory`. */
 export const history = createHistory();
 
-// ── the sandbox redirect (kex2d-optimize-mode stage 7) ────────────────────────────
-// while an pin mode is open, EVERY recording lands in the mode's sandbox history instead of
-// the outer stack — structural containment (belt-and-suspenders with the editing lockdown: an
-// edit that slipped a guard still can't touch outer history). the editor sets it on mode open
-// and clears it on close (`beginPin`/`endPin`); the one outer record while a mode is
-// open — the Solve landing — runs after the close, so it lands outer by ordering.
-let redirect: History | null = null;
-export function redirectHistory(h: History | null): void {
-    redirect = h;
-    resumed = false;
-}
-
-// whether the open sandbox was RESUMED by undoing a landed Solve (the landing's own `enter`
-// closure marks it): a redo at the sandbox's end then falls through to the outer redo — the
-// re-land — so Ctrl+Shift+Z right after the reopening Ctrl+Z does what the sandbox contract
-// promises ("redo re-lands and closes"). a NEW in-mode edit forks the experiment and clears the
-// offer (`record`, the same edit-invalidates-redo law); in-mode undo/redo of the restored
-// entries keep it, so walking the resumed experiment and returning to its end still re-lands.
-let resumed = false;
-export function markResumedLanding(): void {
-    resumed = true;
-}
-export function resumedLanding(): boolean {
-    return resumed;
-}
-
 /** push an already-applied command (the do-path mutated live data first), with the pre-command
  *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
 export function record(h: History, cmd: Command, pre?: unknown): void {
-    const t = redirect ?? h;
-    if (t === redirect) resumed = false; // a new in-mode edit forks off the re-land offer
-    t.undo.push({ cmd, pre });
-    // the redirect target (a sandbox) is EXEMPT from eviction: its Exit discards by replaying
-    // reverses and its landing freezes the stacks whole, so evicting an entry silently breaks
-    // both byte-identity guarantees (the stage-4 eviction hazard, resurfaced by the close
-    // review). a sandbox is bounded by its mode's lifetime — it grows, then dies with the mode.
-    if (t !== redirect && t.undo.length > MAX_UNDO) t.undo.shift();
-    t.redo.length = 0; // a new edit invalidates the redo branch
-}
-
-/** push an already-applied command onto `h` DIRECTLY, bypassing any live redirect — the landing
- *  seam: a Solve's outcome entry belongs to the outer history even though a sandbox is (or was
- *  just) the redirect target. structural, so the guarantee doesn't hang on call ordering between
- *  the mode close and the record (the close-review's template hazard). */
-export function recordOuter(h: History, cmd: Command, pre?: unknown): void {
     h.undo.push({ cmd, pre });
     if (h.undo.length > MAX_UNDO) h.undo.shift();
-    h.redo.length = 0;
+    h.redo.length = 0; // a new edit invalidates the redo branch
 }
 
 export function undo(h: History, ecs: State): void {
@@ -197,10 +155,9 @@ export function cancel(): void {
 // ── friction / drag (Coulomb loss + quadratic drag coefficients) ───────────────
 
 /** open a gesture on the track's friction field (scrub or typed edit), snapshotting
- *  `Track.friction`. `trackFrictionState` reads `undefined` both for a gone track and the
- *  in-mode lockdown (`track.trackEditable`), so `begin` refuses to open on either — the
- *  gesture-open suspenders to `setTrackFriction`'s own write-side belt. commit coalesces the
- *  live writes into one entry; a no-change release records nothing. */
+ *  `Track.friction`. `trackFrictionState` reads `undefined` for a gone track, so `begin` refuses
+ *  to open there. commit coalesces the live writes into one entry; a no-change release records
+ *  nothing. */
 export function beginFriction(trackEid: number): void {
     begin(
         () => trackFrictionState(trackEid),

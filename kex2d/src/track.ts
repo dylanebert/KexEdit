@@ -439,9 +439,6 @@ export const EXTEND_DIST = 24;
  *  a shape span answer different questions. */
 export const STRIP_DEFAULT_LEN = 10;
 
-/** the shortest force span the timeline lets a gesture author (m). */
-export const MIN_FORCE_LEN = 2;
-
 /** the track's initial anchor: a level start at the origin. World position is cosmetic in this
  *  2D prototype (the view auto-frames); the authored variable is the start speed. */
 function startEntry(v0: number): Entry {
@@ -1022,12 +1019,6 @@ export function trackResistanceState(trackEid: number): TrackResistanceState | u
 /** {@link setTrackFriction}'s drag-coefficient twin. */
 export function setTrackResistance(trackEid: number, resistance: number): void {
     Track.resistance.set(trackEid, resistance);
-}
-
-/** whether the track-global coefficients may be edited right now. Always, at S2e-i: the pin
- *  session that used to lock them is retired with the node substrate. */
-export function trackEditable(): boolean {
-    return true;
 }
 
 export { Lane, RECORD_FLOOR } from "./lanes";

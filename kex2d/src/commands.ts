@@ -12,13 +12,7 @@
 import type { State } from "@dylanebert/shallot";
 import { beginFriction, beginResistance, commit, type History, landDomain } from "./history";
 import type { Domain } from "./section";
-import {
-    setTrackFriction,
-    setTrackResistance,
-    trackEditable,
-    trackEntity,
-    validCoefficient,
-} from "./track";
+import { setTrackFriction, setTrackResistance, trackEntity, validCoefficient } from "./track";
 
 /** one violated setter guard: the guard's own name (stable across callers — the CLI's JSON
  *  error surface and the differential/refusal tests both key on it) plus a human-readable
@@ -81,7 +75,6 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
                 );
             const trackEid = trackEntity(ecs);
             if (trackEid === null) return refused("trackNotFound", "no track exists");
-            if (!trackEditable()) return refused("trackEditable", "the track is not editable");
             beginFriction(trackEid);
             setTrackFriction(trackEid, op.value);
             commit(h);
@@ -96,7 +89,6 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
                 );
             const trackEid = trackEntity(ecs);
             if (trackEid === null) return refused("trackNotFound", "no track exists");
-            if (!trackEditable()) return refused("trackEditable", "the track is not editable");
             beginResistance(trackEid);
             setTrackResistance(trackEid, op.value);
             commit(h);
