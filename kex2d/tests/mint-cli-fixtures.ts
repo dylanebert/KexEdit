@@ -37,7 +37,19 @@ function scenarioDocument(s: (typeof scenarios)[number]): string {
     return saveDocument(state);
 }
 
+/** the one scenario that mints no committed v4 fixture: its Mirror tangents sit at the bezier
+ *  control offset where `spline.hermite` reads a velocity, so the claimed circle bakes ~1 m
+ *  near-cusps that no ≥1 m pitch record represents and `migrations[3]` refuses it at the record
+ *  floor (spec `kex2d-segment-gestures` Validation 2 and 9). Its frozen v3 file stays under
+ *  `tests/fixtures/v3/cli/` as the live refusal witness, and the scenario itself stays in
+ *  `scenarios.ts` for the locked goldens. */
+const REFUSED = "loop-explicit";
+
 for (const s of scenarios) {
+    if (s.name === REFUSED) {
+        console.log(`skipped ${s.name}.kex (refused by migrations[3] at the record floor)`);
+        continue;
+    }
     const path = new URL(`./fixtures/cli/${s.name}.kex`, import.meta.url);
     await Bun.write(path, scenarioDocument(s));
     console.log(`minted ${s.name}.kex`);

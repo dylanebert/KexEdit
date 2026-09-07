@@ -23,7 +23,6 @@
  *  geo yields to the force lane. */
 
 import { DEFAULT_G } from "./profile";
-import type { Tangent } from "./spline";
 
 /** the three authored parameters of a 2D track. Values are the wire's own lane keys' order and
  *  are not stored in a record — a segment knows its lane by the array it lives in. */
@@ -32,7 +31,7 @@ export enum Lane {
     Velocity = 0,
     /** demanded normal force: today's force runs, `ForceBoundary.g`. */
     Force = 1,
-    /** track shape: today's geo runs and `Handle` nodes, pitch by position and tangent. */
+    /** track shape: the authored PITCH angle (absolute unwrapped world heading, radians). */
     Geo = 2,
 }
 
@@ -44,11 +43,10 @@ export enum Lane {
  *  the entry reads the abutting predecessor's exit or the lane's inferred value. `ease` is the
  *  `Easing` tag shaping the run from entry to exit.
  *
- *  Per-lane reading of `entry`/`exit`: velocity holds a speed in m/s and force a normal-force
- *  multiple in g — both scalars — while GEO holds a whole {@link NodePose}, because a track's
- *  shape at a boundary is a position, a heading and an optional explicit tangent, not one number.
- *  `H` is that handle type; the span laws below never read it, so they are one implementation
- *  over every lane. */
+ *  Every lane's handles are ONE SCALAR (spec Locked decision "geo is pitch as a parameter"):
+ *  velocity holds a speed in m/s, force a normal-force multiple in g, and geo a PITCH angle —
+ *  an absolute unwrapped world heading in radians, so no frame column travels with a record.
+ *  `H` is that handle type, kept generic because the span laws below never read it. */
 export interface LaneSegment<H = number> {
     /** stable identity — survives undo/restore, never an entity id. */
     id: number;
@@ -61,26 +59,12 @@ export interface LaneSegment<H = number> {
     exit: H;
 }
 
-/** a geo boundary handle: the authored node pose at one end of a geo segment, in the frame of
- *  its maximal abutting group's first entry (the Locked decision's own frame, which is today's
- *  run frame). `theta` is the node's local exit heading in radians; `tangent` is the explicit
- *  in/out pair when the node is not `Auto`. */
-export interface NodePose {
-    x: number;
-    y: number;
-    theta: number;
-    tangent?: Tangent;
-}
-
-/** the geo lane's record type: two-handle spans whose handles are node poses. `ease` is inert
- *  on this lane — a geo span's shape comes from its handles' tangents, not an easing tag. */
-export type GeoLaneSegment = LaneSegment<NodePose>;
-
-/** every lane of one track, keyed by parameter. */
+/** every lane of one track, keyed by parameter. All three hold the same record shape — the
+ *  substrate is one scalar span grammar, not three. */
 export interface Lanes {
     velocity: LaneSegment[];
     force: LaneSegment[];
-    geo: GeoLaneSegment[];
+    geo: LaneSegment[];
 }
 
 /** an empty lane set — the shape a document with nothing authored carries. */
@@ -173,7 +157,10 @@ export function laneName(lane: Lane): string {
  *    the evaluator's own march owns the speed there.
  *  - **force** dwells at the last authored exit at or before `station`, and at `DEFAULT_G`
  *    before any segment exists.
- *  - **geo** yields to the force lane: it prescribes no shape of its own, so `undefined`.
+ *  - **geo** yields to the force lane: it prescribes no shape of its own, so `undefined`. The
+ *    heading across a geo gap is not this module's to answer — the evaluator's own march owns
+ *    it (`forward.step` sweeps θ from the demanded force there), which is exactly why a gap in
+ *    the geo lane derives as a FORCE run rather than as a pitch run with an inferred handle.
  *
  *  `segments` need not be sorted. */
 export function inferredEntry(
@@ -238,4 +225,23 @@ export function endPinnable(lanes: Lanes, end: number): boolean {
     if (end === 0) return true;
     if (!Number.isFinite(end) || end < 0) return false;
     return end >= trackEnd(lanes, 0);
+}
+
+/** the lane priority order — a permutation of every {@link Lane}, top to bottom, which is what
+ *  `track.order` carries and `projection.deriveRuns` reads as priority (spec Locked decision
+ *  "geo and force overlap: store both, lane order drives"). An absent order means the default
+ *  `[Geo, Force, Velocity]`.
+ *
+ *  Refuses anything that is not a PERMUTATION: a short list, a repeat, an unknown lane. A
+ *  partial order would silently give one lane no rank, which is a different document from the
+ *  one the file claims. */
+export function laneOrder(order: readonly unknown[]): Lane[] | undefined {
+    const lanes = [Lane.Velocity, Lane.Force, Lane.Geo];
+    if (order.length !== lanes.length) return undefined;
+    const seen = new Set<number>();
+    for (const v of order) {
+        if (typeof v !== "number" || !lanes.includes(v as Lane) || seen.has(v)) return undefined;
+        seen.add(v);
+    }
+    return order as Lane[];
 }

@@ -1,6 +1,6 @@
 import type { State } from "@dylanebert/shallot";
 import { entryValue, Lane, type LaneSegment, type Lanes, ordered, trackEnd } from "./lanes";
-import { type Easing, type ForcePoint, sampleForce } from "./profile";
+import { Easing, type ForcePoint, sampleForce } from "./profile";
 import { SectionKind } from "./section";
 import { Force, ForceBoundary, Segment } from "./track";
 
@@ -35,7 +35,8 @@ export function rebuildSegmentProjection(ecs: State): SegmentProjectionRow[] {
 /** @temporary S3–S7 — one stable evaluator payload over contiguous canonical segments. */
 export interface RunProjectionRow extends SegmentProjectionRow {
     segmentIds: number[];
-    /** @temporary S3–S7 — conserved run-local boundary stations, including entry zero. */
+    /** @temporary S3–S7 — conserved run-local member entry stations, run extent appended, so
+     *  `stations.length === segmentIds.length + 1` on every run. */
     stations: number[];
 }
 
@@ -121,35 +122,52 @@ export const rebuildSectionProjection = rebuildRunProjection;
 // threads is readable without an ECS, which is what makes the bake-identity oracle and the
 // headless CLI read one rule rather than two.
 
-/** one evaluator run derived from the lanes: a maximal stretch of track of a single
+/** one evaluator run derived from the lanes: a maximal stretch of track under a single
  *  {@link SectionKind}, carrying the lane records that fall inside it.
  *
- *  `id` is the run's stable identity — its first member's lane-segment id — and is what
- *  `runInfo`/`sectionInfo` key on. `stations` holds each member's run-local entry station with
- *  the run length appended, exactly the conserved frame `RunProjectionRow.stations` published;
- *  member extents are never summed to rebuild it. `points` is the run's authored force profile
- *  in run-local arclength, empty on a geo run. */
+ *  `id` is the run's stable identity — its first member's lane-segment id, or a synthetic one
+ *  above every authored id when the run's first record opened before the run. `stations` holds
+ *  each member's run-local entry station with the run length appended, exactly the conserved
+ *  frame `RunProjectionRow.stations` publishes; member extents are never summed to rebuild it.
+ *  `points` is the run's authored profile in RUN-LOCAL arclength — normal force (g) on a force
+ *  run, pitch (absolute unwrapped world heading, radians) on a geo one, since both shape lanes
+ *  hold scalars and read one generic path. `openEase` is the opening record's easing, which is
+ *  what `section.evalPitch` gives the span from the run's entry heading to the first key. */
 export interface DerivedRun {
     id: number;
     kind: SectionKind;
     /** absolute track-global entry station (m). */
     start: number;
-    /** the run's extent (m); for a geo run this is the sum of its members' derived spans. */
+    /** the run's extent (m). */
     length: number;
     segmentIds: number[];
     stations: number[];
     points: ForcePoint[];
+    /** the opening record's `Easing` tag; `Linear` on a memberless run. */
+    openEase: Easing;
 }
 
-/** the force-lane keys one force run publishes, in run-local arclength.
+/** the keys one lane's records publish inside a run, in run-local arclength.
  *
- *  A boundary station carries ONE value and ONE easing tag, because the evaluator's profile is a
- *  keyframe list. At a station where a record both ends and another begins, the successor's
- *  OWNED entry wins the value (an authored discontinuity resolves forward) and otherwise the
- *  predecessor's exit stands; the easing is always the LEADING record's, because
- *  `profile.ts` gives the leading keyframe's tag the following segment (the Blender F-curve
- *  convention). A run-terminal key's tag governs nothing and is carried through unread. */
-function forcePoints(rows: readonly LaneSegment[], runStart: number): ForcePoint[] {
+ *  Most boundary stations carry ONE value and ONE easing tag, because the evaluator's profile is
+ *  a keyframe list, and the easing is always the LEADING record's, because `profile.ts` gives
+ *  the leading keyframe's tag the following segment (the Blender F-curve convention). A
+ *  run-terminal key's tag governs nothing and is carried through unread.
+ *
+ *  **An authored discontinuity is TWO keys at one station, exit then entry** (spec Locked
+ *  decision; architect Answer, 2026-09-07, S2d): where a successor owns an entry that differs
+ *  from the predecessor's exit, the author asked for a step, and a single key cannot say that —
+ *  keeping only the successor's value silently rewrites the predecessor's whole span to arrive
+ *  somewhere it never authored. Two keys honour the predecessor's owned exit up to the station
+ *  and let the successor's value govern from it on; the zero-width span between them changes no
+ *  sample, because `profile.sampleForce` and `forceProfile` already skip one.
+ *
+ *  Where the successor owns no entry the predecessor's exit stands alone: the lane dwells into
+ *  the successor (force) or the march's incoming heading opens it (geo).
+ *
+ *  One implementation over BOTH shape lanes: force keys are g and pitch keys are radians, and
+ *  neither this nor `profile.sampleForce` reads the unit. */
+function lanePoints(rows: readonly LaneSegment[], runStart: number): ForcePoint[] {
     const startsAt = new Map<number, LaneSegment>();
     const stations: number[] = [];
     for (const r of rows) {
@@ -166,24 +184,29 @@ function forcePoints(rows: readonly LaneSegment[], runStart: number): ForcePoint
         // A gap's opening boundary is not an authored key: the lane dwells there
         // (`lanes.inferredEntry`) and `materializeRunForceClamps` supplies the run's own clamp.
         if (!leading && !trailing) continue;
-        // A record that opens a span without owning its entry authors no key there: the lane
-        // dwells into it and the run's own clamp supplies the value.
-        const g = leading?.entry ?? trailing?.exit;
+        const ease = (leading ?? trailing)!.ease as Easing;
+        const owned = leading?.entry;
+        const prior = trailing?.exit;
+        if (owned !== undefined && prior !== undefined && owned !== prior)
+            out.push({ s: station - runStart, g: prior, ease });
+        const g = owned ?? prior;
         if (g === undefined) continue;
-        out.push({ s: station - runStart, g, ease: (leading ?? trailing)!.ease as Easing });
+        out.push({ s: station - runStart, g, ease });
     }
     return out;
 }
 
-/** the value one force record's OWN curve reaches at absolute station `station`.
+/** the value one record's OWN curve reaches at absolute station `station`.
  *
- *  This is what a cut reads. When a geo group cuts a force record, each side of the cut is a
- *  window over the SAME authored curve, so the boundary the cut mints carries that curve's value
- *  there — never the record's far handle borrowed across the geo run, which would step the
- *  profile at the seam and change the bake. The record's entry is its own entry law
- *  (`lanes.entryValue`: owned, else the abutting predecessor's exit, else the lane's dwell). */
-function curveAt(lane: readonly LaneSegment[], record: LaneSegment, station: number): number {
-    const entry = entryValue(Lane.Force, lane, record) as number;
+ *  This is what a cut reads. When the driving lane's group cuts a driven record, each side of
+ *  the cut is a window over the SAME authored curve, so the boundary the cut mints carries that
+ *  curve's value there — never the record's far handle borrowed across the intervening run,
+ *  which would step the profile at the seam and change the bake. `entry` is the value the
+ *  record's own lane entry law resolved to (`lanes.entryValue`: owned, else the abutting
+ *  predecessor's exit, else the lane's dwell), and it is a PRECONDITION here: a record whose
+ *  entry law is undefined has no curve to read, only an exit the march walks toward, which is
+ *  why {@link clipToWindow} never asks. */
+function curveAt(entry: number, record: LaneSegment, station: number): number {
     return sampleForce(
         [
             { s: record.start, g: entry, ease: record.ease as Easing },
@@ -193,35 +216,50 @@ function curveAt(lane: readonly LaneSegment[], record: LaneSegment, station: num
     );
 }
 
-/** one force record as it is seen INSIDE the window `[start, stop)` of one derived run.
+/** one record as it is seen INSIDE the window `[start, stop)` of one derived run.
  *
  *  A record wholly inside its run passes through unchanged. A record the window cuts is
  *  narrowed to the overlap and the cut boundary becomes an OWNED handle carrying
  *  {@link curveAt}'s value, so every key the run publishes lands inside `[0, length]` and every
- *  window of a cut record agrees with its neighbours on the shared curve. */
+ *  window of a cut record agrees with its neighbours on the shared curve.
+ *
+ *  **A record whose entry law is undefined keeps an undefined entry, cut or not.** That is a geo
+ *  record opening off a gap: the heading it starts from is the one the incoming march arrives
+ *  with, which no authored handle knows and this partition must not invent. Minting a flat entry
+ *  at the exit value there would author a constant-heading opening the document never asked for
+ *  — a straight stretch in place of the ramp the run actually bakes (spec `kex2d-segment-gestures`
+ *  architect Answer, 2026-09-07, S2d, finding (d)). */
 function clipToWindow(
-    lane: readonly LaneSegment[],
+    lane: Lane,
+    rows: readonly LaneSegment[],
     record: LaneSegment,
     start: number,
     stop: number,
 ): LaneSegment {
     const lo = Math.max(record.start, start);
     const hi = Math.min(record.end, stop);
-    const entry = lo > record.start ? curveAt(lane, record, lo) : record.entry;
+    const law = entryValue(lane, rows, record) as number | undefined;
+    const entry =
+        lo > record.start
+            ? law === undefined
+                ? undefined
+                : curveAt(law, record, lo)
+            : record.entry;
     return {
         id: record.id,
         start: lo,
         end: hi,
         ease: record.ease,
         ...(entry === undefined ? {} : { entry }),
-        exit: hi < record.end ? curveAt(lane, record, hi) : record.exit,
+        exit: hi < record.end && law !== undefined ? curveAt(law, record, hi) : record.exit,
     };
 }
 
-/** the maximal abutting groups of one lane's ordered records — the "maximal abutting group"
- *  the Locked decision names as the frame geo node positions live in. */
-function abuttingGroups<H>(rows: readonly LaneSegment<H>[]): LaneSegment<H>[][] {
-    const groups: LaneSegment<H>[][] = [];
+/** the maximal abutting groups of one lane's ordered records — the stretches the DRIVING shape
+ *  lane cuts the track at (spec Locked decision "geo and force overlap: store both, lane order
+ *  drives"). */
+function abuttingGroups(rows: readonly LaneSegment[]): LaneSegment[][] {
+    const groups: LaneSegment[][] = [];
     for (const r of ordered(rows)) {
         const last = groups[groups.length - 1];
         if (last && last[last.length - 1]!.end === r.start) last.push(r);
@@ -230,19 +268,32 @@ function abuttingGroups<H>(rows: readonly LaneSegment<H>[]): LaneSegment<H>[][] 
     return groups;
 }
 
+/** the default lane order, top to bottom — the priority an absent `track.order` means. */
+export const DEFAULT_ORDER: readonly Lane[] = [Lane.Geo, Lane.Force, Lane.Velocity];
+
 /** derive the evaluator's run partition from the authored lanes.
  *
- *  The geo lane owns shape wherever it has a record (Locked decision: "geo and force overlap:
- *  store both, geo drives"), so its maximal abutting groups are the geo runs and every stretch
- *  of `[0, trackEnd)` they leave uncovered is a force run. A force run gathers the force-lane
- *  records inside it as its members; one with no record at all is still baked (the force lane
- *  dwells across a gap) and takes a synthetic identity above every authored lane id so it can
- *  never collide with one.
+ *  **Lane order is priority.** Of the two SHAPE lanes (geo and force) the one standing higher in
+ *  `order` DRIVES: its maximal abutting groups are the cuts, and the lower lane is driven
+ *  wherever those groups cover it — its records survive intact in the authored lanes and are
+ *  simply not read there. Velocity never competes for shape, so its position in `order` changes
+ *  nothing in this partition. Where the driving lane has no span the driven one drives over its
+ *  own groups, and where neither lane has a span the track is a FORCE run dwelling at the last
+ *  exit — a force gap is always well-defined track.
  *
- *  `end` is `Track.end` — 0 meaning follow the longest lane, `lanes.trackEnd`'s own rule. */
-export function deriveRuns(lanes: Lanes, end: number): DerivedRun[] {
+ *  Every emitted run has a unique id: a run whose first record OPENS there takes that record's
+ *  lane id, and every other run takes a synthetic id above every authored one.
+ *
+ *  `end` is `Track.end` — 0 meaning follow the longest lane, `lanes.trackEnd`'s own rule.
+ *  `order` defaults to {@link DEFAULT_ORDER}. */
+export function deriveRuns(
+    lanes: Lanes,
+    end: number,
+    order: readonly Lane[] = DEFAULT_ORDER,
+): DerivedRun[] {
     const total = trackEnd(lanes, end);
-    const geoGroups = abuttingGroups(lanes.geo).filter((g) => g[0]!.start < total);
+    const geoAbove = order.indexOf(Lane.Geo) <= order.indexOf(Lane.Force);
+    const geo = ordered(lanes.geo);
     const force = ordered(lanes.force);
     let synthetic =
         Math.max(
@@ -253,49 +304,71 @@ export function deriveRuns(lanes: Lanes, end: number): DerivedRun[] {
         ) + 1;
 
     const runs: DerivedRun[] = [];
-    const emitForce = (start: number, stop: number): void => {
+
+    /** one run over `[start, stop)` gathering `lane`'s records; `kind` is the lane's own. */
+    const emit = (lane: Lane, start: number, stop: number): void => {
         if (!(start < stop)) return;
-        const members = force.filter((r) => r.start < stop && start < r.end);
-        const rows = members.map((r) => clipToWindow(force, r, start, stop));
+        const rows0 = lane === Lane.Geo ? geo : force;
+        const members = rows0.filter((r) => r.start < stop && start < r.end);
+        const rows = members.map((r) => clipToWindow(lane, rows0, r, start, stop));
         // Run identity is the first member's lane id, but only when that member OPENS here: a
-        // record a geo group cut already spent its id on the window it started in, so a
+        // record another group cut already spent its id on the window it started in, so a
         // continuation window takes a synthetic id above every authored one and no two derived
         // runs can ever collide. The test is the AUTHORED start, not the clipped one.
         const head = members[0];
         const opens = head !== undefined && head.start >= start;
         // Every member's own entry station, run-local, with the run length appended — the
-        // conserved frame. A run whose first member opens after the run start dwells into it,
-        // so station 0 is that implicit leading dwell's entry and the member's own entry
-        // follows it; the frame is never rebuilt by summing extents.
-        const stations = rows.map((r) => r.start - start);
-        if (stations[0] !== 0) stations.unshift(0);
+        // conserved frame, never rebuilt by summing extents.
         runs.push({
             id: opens ? head.id : synthetic++,
-            kind: SectionKind.Force,
+            kind: lane === Lane.Geo ? SectionKind.Geo : SectionKind.Force,
             start,
             length: stop - start,
             segmentIds: rows.map((r) => r.id),
-            stations: [...stations, stop - start],
-            points: forcePoints(rows, start),
+            stations: [...rows.map((r) => r.start - start), stop - start],
+            points: lanePoints(rows, start),
+            openEase: (rows[0]?.ease ?? Easing.Linear) as Easing,
         });
     };
 
+    // The partition is stated once, as the stretches the GEO lane is actually read over: every
+    // other stretch is a force run. That framing is what keeps force runs MAXIMAL under either
+    // order — a force group's own boundary is not a cut, because the force lane bakes across it
+    // unchanged (S2a decision: adjacent force runs merge), and splitting there would re-grid the
+    // run under `resolveStep` for nothing.
+    const span = (g: readonly LaneSegment[]): [number, number] => [
+        g[0]!.start,
+        g[g.length - 1]!.end,
+    ];
+    // where geo is driven, the force lane's groups take the overlap away from it and only the
+    // remainder — the stretch the higher lane leaves uncovered — is still read as geo.
+    const covers = geoAbove ? [] : abuttingGroups(force).map(span);
+    const geoWindows: [number, number][] = [];
+    for (const group of abuttingGroups(geo)) {
+        let pieces: [number, number][] = [span(group)];
+        for (const [cs, ce] of covers) {
+            pieces = pieces.flatMap(([a, b]): [number, number][] => {
+                const lo = Math.max(a, cs);
+                const hi = Math.min(b, ce);
+                if (!(lo < hi)) return [[a, b]];
+                const out: [number, number][] = [];
+                if (a < lo) out.push([a, lo]);
+                if (hi < b) out.push([hi, b]);
+                return out;
+            });
+        }
+        geoWindows.push(...pieces);
+    }
+    geoWindows.sort((a, b) => a[0] - b[0]);
+
     let cursor = 0;
-    for (const group of geoGroups) {
-        emitForce(cursor, group[0]!.start);
-        const start = group[0]!.start;
-        const stop = Math.min(group[group.length - 1]!.end, total);
-        runs.push({
-            id: group[0]!.id,
-            kind: SectionKind.Geo,
-            start,
-            length: stop - start,
-            segmentIds: group.map((r) => r.id),
-            stations: [...group.map((r) => r.start - start), stop - start],
-            points: [],
-        });
+    for (const [start, end0] of geoWindows) {
+        const stop = Math.min(end0, total);
+        if (!(cursor < stop) || !(start < total)) continue;
+        emit(Lane.Force, cursor, start);
+        emit(Lane.Geo, Math.max(cursor, start), stop);
         cursor = stop;
     }
-    emitForce(cursor, total);
+    emit(Lane.Force, cursor, total);
     return runs;
 }

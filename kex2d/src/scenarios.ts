@@ -167,10 +167,14 @@ function hillExplicit(): Scenario {
 }
 
 function loopExplicit(): Scenario {
-    // a vertical loop authored with explicit `Mirror` tangents at the standard
-    // cubic-bezier circle-approximation length (`4/3·tan(π/8)·r`) — 4 quadrant segments
-    // reach near-exact circularity, the explicit-bezier counterpart to `fullLoop`'s
-    // 8-segment arc-rule version.
+    // a vertical loop authored with explicit `Mirror` tangents at the standard CUBIC-BEZIER
+    // circle-approximation length (`4/3·tan(π/8)·r`). `spline.hermite` reads a stored tangent as
+    // a VELOCITY, which is three times the equivalent bezier control offset, so the quadrants do
+    // not bake as the circle the construction names: each quadrant node becomes a ~1 m-radius
+    // near-cusp reading ~38 g, against `fullLoop`'s 6.0 g at the same speed. This scenario is
+    // therefore a near-cusp STRESS INPUT, not a circle — kept verbatim because the goldens over
+    // it are locked, and it is the corpus's live witness for a sub-quantum feature no pitch
+    // record can represent (spec `kex2d-segment-gestures`, architect Answer 2026-09-07).
     const r = 10;
     const len = (4 / 3) * Math.tan(Math.PI / 8) * r;
     // the straight lead/tail chords match the quadrant tangent length itself — a

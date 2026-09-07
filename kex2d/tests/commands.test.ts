@@ -169,7 +169,12 @@ function buildTemplateText(): string {
     const force = createSection(state, 1, SectionKind.Force, 30);
     createForcePoint(state, force, 0, 1.5);
     createForcePoint(state, force, 20, 2.5);
-    createStrip(state, 40, 60, 12);
+    // 50–70 sits wholly inside the FORCE run. A strip covering a geo run's final edges makes
+    // the recovered force at the terminal edge — where `bake.forces` has no edge ahead for its
+    // bisector — depend on the grid, and the node bake and the pitch bake then disagree there by
+    // orders of magnitude under a velocity prescription; that is a boundary artefact of the
+    // recovery, not of the command layer this file is differentiating.
+    createStrip(state, 50, 90, 12);
     createOneShot(state, 22);
     return saveDocument(state);
 }
@@ -190,8 +195,8 @@ if (FP0 === undefined || FP20 === undefined) throw new Error("template: missing 
 const STRIP = TEMPLATE.strips[0]?.id;
 if (STRIP === undefined) throw new Error("template: missing the strip");
 const stripDoc = TEMPLATE.strips[0];
-const KF40 = stripDoc.keyframes.find((k) => k.s === 40)?.id;
-const KF60 = stripDoc.keyframes.find((k) => k.s === 60)?.id;
+const KF40 = stripDoc.keyframes.find((k) => k.s === 50)?.id;
+const KF60 = stripDoc.keyframes.find((k) => k.s === 90)?.id;
 if (KF40 === undefined || KF60 === undefined) throw new Error("template: missing a strip keyframe");
 // v4 carries the whole start speed as `track.v0`; the row's id is minted by the load.
 if (TEMPLATE.track.v0 === undefined) throw new Error("template: missing the one-shot");
@@ -710,18 +715,18 @@ describe("commands: refusals surface the violated guard structurally", () => {
     test("strip-keyframe-move refuses a collision, still lands v", () => {
         const state = fixture();
         const h = createHistory();
-        // KF40 (s=40) driven onto KF60's own station (s=60).
-        const result = applyOp(state, h, { type: "strip-keyframe-move", id: KF40, s: 60, v: 30 });
+        // KF40 (the strip's leading keyframe) driven onto the trailing one's own station.
+        const result = applyOp(state, h, { type: "strip-keyframe-move", id: KF40, s: 90, v: 30 });
         expect(result.applied).toBe(true);
         expect(result.refusals).toEqual([
             {
                 guard: "stripKeyframeTaken",
                 message:
-                    "station 60 is already held by another keyframe on this strip; v still lands",
+                    "station 90 is already held by another keyframe on this strip; v still lands",
             },
         ]);
         const eid = stripKeyframeAt(state, KF40);
-        expect(eid === null ? null : StripKeyframe.s.get(eid)).toBe(40); // s refused
+        expect(eid === null ? null : StripKeyframe.s.get(eid)).toBe(50); // s refused
         expect(eid === null ? null : StripKeyframe.v.get(eid)).toBe(30); // v still lands
     });
 

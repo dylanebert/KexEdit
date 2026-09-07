@@ -1,11 +1,11 @@
-import { expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadDocument, parseDocument } from "../src/doc";
 import { State } from "@dylanebert/shallot";
 import { Easing, forceProfile, type ForcePoint, resolveStep, sampleForce } from "../src/profile";
 import * as projection from "../src/projection";
-import type { GeoLaneSegment, LaneSegment, Lanes } from "../src/lanes";
+import { Lane, type LaneSegment, type Lanes } from "../src/lanes";
 import {
     deriveRuns,
     rebuildForceProjection,
@@ -269,9 +269,10 @@ test("a segment-only extent edit invalidates the authored bake hash", () => {
 
 // ── deriveRuns: the lane → evaluator partition ──────────────────────────────────────────────
 
-/** a geo record: its handles are node poses (`lanes.NodePose`), the shape the geo lane stores. */
-function geoSeg(id: number, start: number, end: number): GeoLaneSegment {
-    return { id, start, end, ease: Easing.Linear, exit: { x: end, y: 0, theta: 0 } };
+/** a geo record: its handles are PITCH angles in radians, the same scalar shape the force lane
+ *  carries — one substrate over both shape lanes. */
+function geoSeg(id: number, start: number, end: number, exit = 0): LaneSegment {
+    return { id, start, end, ease: Easing.Linear, exit };
 }
 
 function laneSeg(
@@ -314,7 +315,8 @@ test("a force run with no authored record still bakes, under an id no lane recor
     expect(runs[1]!.segmentIds).toEqual([]);
     expect(runs[1]!.points).toEqual([]);
     expect(runs[1]!.id).toBeGreaterThan(7);
-    expect(runs[1]!.stations).toEqual([0, 15]);
+    // one station per member plus the run extent: a memberless run publishes only its extent.
+    expect(runs[1]!.stations).toEqual([15]);
 });
 
 test("a pinned end extends the trailing force run; follow reads the longest lane", () => {
@@ -341,9 +343,19 @@ test("force keys read the leading record's easing and the successor's owned entr
     expect(deriveRuns(lanes, 0)[0]!.points).toEqual([
         { s: 0, g: 0.5, ease: Easing.Quintic },
         { s: 5, g: 1.5, ease: Easing.Linear },
+        // the discontinuity is TWO keys at the shared station, exit then entry: the
+        // predecessor's owned exit is honoured up to 10 and the successor's value governs from
+        // it on. A single key here would rewrite [5, 10) to arrive at −1, which the author
+        // never asked for.
+        { s: 10, g: 3, ease: Easing.Cubic },
         { s: 10, g: -1, ease: Easing.Cubic },
         { s: 14, g: 4, ease: Easing.Cubic },
     ]);
+    // and the zero-width span changes no sample: the profile still reads the predecessor's
+    // ramp right up to the station and the successor's value at it.
+    const pts = deriveRuns(lanes, 0)[0]!.points;
+    expect(sampleForce(pts, 9.999)).toBeCloseTo(3, 2);
+    expect(sampleForce(pts, 10)).toBe(-1);
 });
 
 test("a record opening a lane gap without an owned entry authors no key at its start", () => {
@@ -438,10 +450,12 @@ test("every derived run id is unique, synthetic where a member started before th
 });
 
 test("a gap-leading force run reports its member's entry station, not just the run bounds", () => {
-    // a record at 6–12 inside a run over [0, 20): the run dwells from 0, so the member's own
-    // entry station 6 is a real boundary of the conserved frame and must be published.
+    // a record at 6–12 inside a run over [0, 20): the member's own entry station 6 is a real
+    // boundary of the conserved frame and must be published. The frame is one station per
+    // member plus the run extent — the leading dwell is not a member, so it mints no station
+    // (spec architect Answer, 2026-09-07, folded at `c9087e20`).
     const lanes: Lanes = { velocity: [], geo: [], force: [laneSeg(0, 6, 12, 3, Easing.Linear)] };
-    expect(deriveRuns(lanes, 20)[0]!.stations).toEqual([0, 6, 20]);
+    expect(deriveRuns(lanes, 20)[0]!.stations).toEqual([6, 20]);
 });
 
 // ── the lane partition against the loaded chain, over the whole fixture corpus ──────────────
@@ -567,4 +581,139 @@ test("derived lane runs reproduce the loaded chain's geometry partition and forc
             ).toEqual(want);
         }
     }
+});
+
+// ── conflict resolution: lane order is priority (spec Validation 10) ─────────────────────────
+
+/** the six permutations of the three lanes, split by which SHAPE lane stands higher. Velocity
+ *  never competes for shape, so its rank is the axis the partition must be BLIND to — which is
+ *  only readable by iterating it, not by asserting one order. */
+const GEO_ABOVE: readonly Lane[][] = [
+    [Lane.Geo, Lane.Force, Lane.Velocity],
+    [Lane.Geo, Lane.Velocity, Lane.Force],
+    [Lane.Velocity, Lane.Geo, Lane.Force],
+];
+const FORCE_ABOVE: readonly Lane[][] = [
+    [Lane.Force, Lane.Geo, Lane.Velocity],
+    [Lane.Force, Lane.Velocity, Lane.Geo],
+    [Lane.Velocity, Lane.Force, Lane.Geo],
+];
+
+describe("conflict resolution: the higher shape lane drives", () => {
+    /** the four span cases of the truth table, over the window [10, 20) of a 40 m track. Each
+     *  carries a force record at [0, 30) or none, and a geo group at [10, 20) or none, so the
+     *  product is spans × order. */
+    const cases = {
+        both: {
+            velocity: [],
+            force: [laneSeg(0, 0, 30, 4, Easing.Linear, 1)],
+            geo: [geoSeg(5, 10, 20, 0.4)],
+        },
+        geoOnly: { velocity: [], force: [], geo: [geoSeg(5, 10, 20, 0.4)] },
+        forceOnly: { velocity: [], force: [laneSeg(0, 0, 30, 4, Easing.Linear, 1)], geo: [] },
+        neither: { velocity: [], force: [], geo: [] },
+    } satisfies Record<string, Lanes>;
+
+    /** the partition as (kind, start, length) triples — what "who cuts" is actually visible as. */
+    const partition = (lanes: Lanes, order: readonly Lane[]) =>
+        deriveRuns(lanes, 40, order).map((r) => [r.kind, r.start, r.length]);
+
+    test("velocity's rank changes nothing in the partition, in either shape order", () => {
+        // the axis the instrument must be blind to. Iterated, not assumed: a `deriveRuns` that
+        // read `order[0]` alone would pass a single-order arm and fail here.
+        for (const [name, lanes] of Object.entries(cases)) {
+            for (const group of [GEO_ABOVE, FORCE_ABOVE]) {
+                const first = partition(lanes, group[0]!);
+                for (const order of group.slice(1))
+                    expect(partition(lanes, order), `${name} @ ${order}`).toEqual(first);
+            }
+        }
+    });
+
+    test("the truth table: cuts follow the higher shape lane", () => {
+        const geoUp = GEO_ABOVE[0]!;
+        const forceUp = FORCE_ABOVE[0]!;
+        // both lanes span the window: whoever is higher owns it, and the other lane's stretch
+        // there is not read. This pair is the live foil — the same document, two orders.
+        expect(partition(cases.both, geoUp)).toEqual([
+            [SectionKind.Force, 0, 10],
+            [SectionKind.Geo, 10, 10],
+            [SectionKind.Force, 20, 20],
+        ]);
+        expect(partition(cases.both, forceUp)).toEqual([[SectionKind.Force, 0, 40]]);
+        // one lane only: the lane that has a span drives it whatever the order says, because
+        // priority resolves a conflict and there is none.
+        for (const order of [geoUp, forceUp]) {
+            expect(partition(cases.geoOnly, order)).toEqual([
+                [SectionKind.Force, 0, 10],
+                [SectionKind.Geo, 10, 10],
+                [SectionKind.Force, 20, 20],
+            ]);
+            expect(partition(cases.forceOnly, order)).toEqual([[SectionKind.Force, 0, 40]]);
+            // neither lane: the track is still well-defined — one force run dwelling at the
+            // last exit (`DEFAULT_G` before any), never a hole.
+            expect(partition(cases.neither, order)).toEqual([[SectionKind.Force, 0, 40]]);
+        }
+    });
+
+    test("the driven lane's records survive intact and are simply not read under a cut", () => {
+        const before = structuredClone(cases.both);
+        const geoRuns = deriveRuns(cases.both, 40, GEO_ABOVE[0]!);
+        const forceRuns = deriveRuns(cases.both, 40, FORCE_ABOVE[0]!);
+        // authoring is never rewritten by the partition — the driven record is still there.
+        expect(cases.both).toEqual(before);
+        // under geo-above, the force record is driven across [10, 20): its id appears in the
+        // two force windows either side and in no run covering the geo group.
+        const covering = geoRuns.find((r) => r.kind === SectionKind.Geo)!;
+        expect(covering.segmentIds).toEqual([5]);
+        expect(geoRuns.filter((r) => r.segmentIds.includes(0)).map((r) => r.start)).toEqual([
+            0, 20,
+        ]);
+        // swap the order and the driven stretch moves to the OTHER lane: the geo record is now
+        // read by nothing at all, and the force record spans the whole track unbroken.
+        expect(forceRuns.flatMap((r) => r.segmentIds)).toEqual([0]);
+        expect(forceRuns.some((r) => r.kind === SectionKind.Geo)).toBe(false);
+    });
+});
+
+// ── the two S2d repairs, each with its own arm (spec S2d punch list item 4) ──────────────────
+
+test("a geo record whose entry law is undefined keeps an undefined entry when the window cuts it", () => {
+    // the geo lane yields to force across a gap, so a geo record opening off one has NO entry
+    // law: the heading it starts from is whatever the incoming march arrives with. A force
+    // group above it cuts the record, and the cut must not mint a flat owned entry at the exit
+    // value — that would author a straight stretch in place of the ramp the run bakes.
+    const lanes: Lanes = {
+        velocity: [],
+        force: [laneSeg(0, 0, 12, 2, Easing.Linear, 2)],
+        geo: [geoSeg(7, 6, 30, 0.5)],
+    };
+    const runs = deriveRuns(lanes, 30, [Lane.Force, Lane.Geo, Lane.Velocity]);
+    const geoRun = runs.find((r) => r.kind === SectionKind.Geo)!;
+    // the record is cut at 12 (the force group's end) and opens the geo run there owning
+    // nothing, so the run publishes only its exit key and `evalPitch` seeds at the march's own
+    // incoming heading.
+    expect(geoRun.start).toBe(12);
+    expect(geoRun.points).toEqual([{ s: 18, g: 0.5, ease: Easing.Linear }]);
+});
+
+test("an authored discontinuity survives a run boundary as two keys, not one", () => {
+    // the repair's own arm, at the composition site: the derived run — not `lanePoints` in
+    // isolation — must publish both the predecessor's owned exit and the successor's owned
+    // entry at the shared station.
+    const lanes: Lanes = {
+        velocity: [],
+        geo: [],
+        force: [laneSeg(0, 0, 10, 2, Easing.Linear, 1), laneSeg(1, 10, 20, 5, Easing.Linear, -3)],
+    };
+    const pts = deriveRuns(lanes, 20)[0]!.points;
+    expect(pts.filter((p) => p.s === 10).map((p) => p.g)).toEqual([2, -3]);
+    // …and where the successor's entry AGREES with the predecessor's exit there is no step, so
+    // the station keeps its single key — the two-key form is the discontinuity, not the norm.
+    const flush: Lanes = {
+        velocity: [],
+        geo: [],
+        force: [laneSeg(0, 0, 10, 2, Easing.Linear, 1), laneSeg(1, 10, 20, 5, Easing.Linear, 2)],
+    };
+    expect(deriveRuns(flush, 20)[0]!.points.filter((p) => p.s === 10)).toHaveLength(1);
 });

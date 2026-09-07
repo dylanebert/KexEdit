@@ -186,3 +186,81 @@ export function rk4Time(
 
     return out;
 }
+
+/**
+ * RK4 oracle of the **prescribed-heading** ODE — the continuous model
+ * `section.evalPitch` discretizes (spec `kex2d-segment-gestures` Validation 8).
+ * Here θ is not a state variable but a given function of arclength, so the
+ * system integrated in `s` is
+ *
+ *   dx/ds = cos θ(s)
+ *   dy/ds = sin θ(s)
+ *   d(v²)/ds = −2g·sin θ(s) − 2·(μ·g·|F_n| + c·v²)
+ *
+ * with the recovered normal force `F_n(s) = θ′(s)·v²/g + cos θ(s)` — the
+ * continuum form of what `bake.forces` reads back off the swept geometry, and
+ * the quantity `forward.loss` dissipates against, so friction and drag enter
+ * this oracle through exactly the same law the kernel's recovery uses. θ′ is
+ * taken by a centred difference of `theta` at `h = 1e-6` m, which is
+ * independent of the kernel's own discrete turn.
+ *
+ * v² is the integrated state (not `v`): the kernel's energy update is written
+ * in v², so integrating the same quantity keeps the comparison free of a
+ * chain-rule re-derivation. Returns `SampleState` at `σ = i·ds`, with θ read
+ * from the prescribed function so the oracle's heading column is the DEMANDED
+ * one; the kernel's is the geometry-recovered one, which is what makes the
+ * agreement between them evidence rather than a restatement.
+ */
+export function rk4Pitch(
+    x0: number,
+    y0: number,
+    v0: number,
+    N: number,
+    ds: number,
+    theta: (sigma: number) => number,
+    g: number = G,
+    friction = 0,
+    resistance = 0,
+    options: RK4Options = {},
+): SampleState[] {
+    const h = options.dt ?? Math.min(1e-3, ds / 64);
+    const eps = 1e-6;
+    const dTheta = (sg: number) => (theta(sg + eps) - theta(sg - eps)) / (2 * eps);
+
+    const deriv = (sg: number, vSq: number) => {
+        const th = theta(sg);
+        const fN = (dTheta(sg) * vSq) / g + Math.cos(th);
+        return [
+            Math.cos(th),
+            Math.sin(th),
+            -2 * g * Math.sin(th) - 2 * (friction * g * Math.abs(fN) + resistance * vSq),
+        ] as const;
+    };
+
+    const out: SampleState[] = new Array(N);
+    let x = x0;
+    let y = y0;
+    let vSq = v0 * v0;
+    let sigma = 0;
+    out[0] = [x, y, theta(0), v0];
+
+    const stepBy = (step: number): void => {
+        const k1 = deriv(sigma, vSq);
+        const k2 = deriv(sigma + 0.5 * step, vSq + 0.5 * step * k1[2]);
+        const k3 = deriv(sigma + 0.5 * step, vSq + 0.5 * step * k2[2]);
+        const k4 = deriv(sigma + step, vSq + step * k3[2]);
+        x += (step / 6) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+        y += (step / 6) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+        vSq += (step / 6) * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]);
+        sigma += step;
+    };
+
+    for (let i = 1; i < N; i++) {
+        const target = i * ds;
+        while (sigma + h < target) stepBy(h);
+        if (sigma < target) stepBy(target - sigma);
+        sigma = target;
+        out[i] = [x, y, theta(target), Math.sqrt(Math.max(vSq, 0))];
+    }
+    return out;
+}

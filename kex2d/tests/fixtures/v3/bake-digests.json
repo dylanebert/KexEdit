@@ -1,0 +1,13 @@
+{
+    "cli/circular-arc.kex": "4520ffbccf3f9f5b59d8418d7ab6cc70ff65ef78fff41a31be550f25e03fdba8",
+    "cli/double-hump.kex": "9348cb3f0f31940137bc0db80bf361570f3787f875f10d15335cda32c20c873b",
+    "cli/full-loop.kex": "3fbc58d428a78c9c1bded5ab24b38c3556b5186c70268c1e216cdab836298546",
+    "cli/hill-auto.kex": "d6c97f2c1e3c3cb2fb56e4ff9420ad9df19b40a9267cff3014b5e08aaf4b6692",
+    "cli/hill-explicit.kex": "d7cd85cec979ea7d363c122db591dac4c53bdcf3351c1832d26b806f10b57c0a",
+    "cli/loop-explicit.kex": "4d3d9040e7fa7deb6272bcf87d882b8cac3c0cc3bc0c9942bcd55efa728c7f4d",
+    "cli/parabola-hill.kex": "5773f86002890648dbd95b64e481df5b1afb29427d5251a3bfb0c6c24572daef",
+    "cli/s-curve.kex": "e65669768ac836aec2d4350fcba7122609e325edcdd27cfc0dbbd37bdd762005",
+    "cli/straight-fillet.kex": "f14978f56373a4f39e5edf93fc708b50f4244151da5111a8351684b31105d105",
+    "cli/valley-explicit.kex": "7c0828ab7f1b4b3bf938566b71efcb2fe6843156e67e1df5b58ef4d8781fe9df",
+    "hill-explicit-golden.kex": "d7cd85cec979ea7d363c122db591dac4c53bdcf3351c1832d26b806f10b57c0a"
+}

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
@@ -13,8 +13,10 @@ import {
     parseDocument,
     saveDocument,
     serializeDocument,
+    v3Payloads,
 } from "../src/doc";
 import { Lane, emptyLanes, entryValue, laneExclusive } from "../src/lanes";
+import { chain } from "../src/section";
 import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { TangentMode } from "../src/spline";
@@ -48,6 +50,7 @@ import {
     allStrips,
     stripKeyframes,
     MIN_FORCE_LEN,
+    MAX_SAMPLES,
     type TrackSnapshot,
     entrySpeed,
 } from "../src/track";
@@ -181,7 +184,22 @@ test("maximally trimmed velocity-unioned document reloads exactly", () => {
 });
 
 describe("round-trip over the scenarios.ts corpus", () => {
+    // `loop-explicit` is the one scenario that cannot round-trip through v4: its Mirror tangents
+    // sit at the bezier control offset where `spline.hermite` reads a velocity, so the claimed
+    // circle bakes ~1 m near-cusps that no ≥1 m pitch record represents, and the geo lane's own
+    // migration refuses it at the record floor (spec `kex2d-segment-gestures` Validation 2 and
+    // 9). Its refusal is asserted below rather than silently dropped.
+    const Refused = "loop-explicit";
+
+    test(`${Refused}: saving refuses with a remedy naming the retired build`, () => {
+        const a = scenarioTrack(scenarios.find((x) => x.name === Refused)!);
+        a.state.step(0);
+        expect(() => saveDocument(a.state)).toThrow(/retired\/pose-ux/);
+        expect(() => saveDocument(a.state)).toThrow(/cannot be fitted to pitch records/);
+    });
+
     for (const s of scenarios) {
+        if (s.name === Refused) continue;
         test(`${s.name}: save → load → bake is byte-identical`, () => {
             const a = scenarioTrack(s);
             a.state.step(0);
@@ -224,10 +242,14 @@ describe("a document with strips, a force section, and an explicit geo tangent r
         addNode(state, geo, 0, 0);
         spawnNode(state, geo, 1, 40, 8, 0.2, {
             mode: TangentMode.Free,
-            inX: 10,
-            inY: -1,
-            outX: 12,
-            outY: 3,
+            // Free stores the two sides independently; they share a DIRECTION here, so the
+            // node is smooth. A C0 corner or a tangent much shorter than its chord makes a
+            // near-cusp, which is a sub-quantum feature `migrations[3]` refuses — and this arm
+            // is about the wire, not the fit.
+            inX: 28,
+            inY: 5.6,
+            outX: 32,
+            outY: 6.4,
         });
         addNode(state, geo, 80, 0);
         spliceGeoMembers(state, geo);
@@ -570,9 +592,9 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         addNode(state, sec, 0, 0);
         spawnNode(state, sec, 1, 20, 4, 0, {
             mode: TangentMode.Free,
-            inX: 5,
+            inX: 14,
             inY: 0,
-            outX: 5,
+            outX: 14,
             outY: 0,
         });
         createOneShot(state, 22);
@@ -621,7 +643,7 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
         createTrack(state);
         const geo = createSection(state, 0, SectionKind.Geo, 0);
         addNode(state, geo, 0, 0);
-        const geoTangent = { mode: TangentMode.Free, inX: 5, inY: 0, outX: 5, outY: 0 };
+        const geoTangent = { mode: TangentMode.Free, inX: 14, inY: 0, outX: 14, outY: 0 };
         spawnNode(state, geo, 1, 20, 4, 0, geoTangent);
         const force = createSection(state, 1, SectionKind.Force, 30);
         createForcePoint(state, force, 0, 1.5, Easing.Cubic);
@@ -766,13 +788,23 @@ describe("frozen v2 migration corpus", () => {
         "cli/full-loop.kex",
         "cli/hill-auto.kex",
         "cli/hill-explicit.kex",
-        "cli/loop-explicit.kex",
         "cli/parabola-hill.kex",
         "cli/s-curve.kex",
         "cli/straight-fillet.kex",
         "cli/valley-explicit.kex",
         "hill-explicit-golden.kex",
     ];
+
+    test("cli/loop-explicit.kex is refused, at v2 exactly as at v3", async () => {
+        // the refusal is a property of the SCENARIO, not of the version it is frozen at: the
+        // near-cusps are in the node chain every version of the file carries.
+        const text = await Bun.file(
+            new URL("./fixtures/v2/cli/loop-explicit.kex", import.meta.url),
+        ).text();
+        const state = new State();
+        state.addSystem(BakeSystem);
+        expect(() => loadDocument(state, text)).toThrow(/retired\/pose-ux/);
+    });
 
     for (const name of valid) {
         test(`${name}: v2 migrates once and canonical v3 is a fixed point`, async () => {
@@ -812,7 +844,9 @@ describe("frozen v2 migration corpus", () => {
             "validCoefficient-red.kex",
             "validStripValue-red.kex",
         ];
-        expect(valid.length + malformed.length).toBe(26);
+        // +1: `cli/loop-explicit.kex` is frozen here too, and is asserted above as a refusal
+        // rather than listed among the documents that migrate.
+        expect(valid.length + malformed.length + 1).toBe(26);
         for (const name of malformed) {
             const frozen = await Bun.file(
                 new URL(`./fixtures/v2/invariants/${name}`, import.meta.url),
@@ -1059,12 +1093,90 @@ function loadableCorpus(): string[] {
     );
 }
 
+/** every committed fixture that actually BAKES: the whole set minus the frozen `v2/`/`v3/`
+ *  migration inputs and the deliberately malformed `invariants/*-red` corpus. The same
+ *  population `tests/bake-identity.oracle.ts` pins. */
+function bakeableCorpus(): string[] {
+    return fixtureCorpus().filter(
+        (p) => !p.includes("/v2/") && !p.includes("/v3/") && !p.endsWith("-red.kex"),
+    );
+}
+
+/** **The premise every fit number in S2d is read through** (spec `kex2d-segment-gestures` S2d
+ *  punch list item 0): `doc.v3Payloads` is the PURE twin of the payload `track.ts`'s `BakeSystem`
+ *  assembles from the live ECS, and `migrations[3]` learns each geo run's realized shape by
+ *  running `section.chain` over it. If the two builders disagree on anything — the start speed,
+ *  a strip's edge frame, a run's step pairing — every deviation the pitch fit reports is measured
+ *  against the wrong bake, silently. That is exactly how the stage's first fit numbers came out
+ *  of a document whose start speed had defaulted to `V0` instead of carrying the file's own, so
+ *  this arm stands permanently rather than as a one-off probe. It is also the premise
+ *  `tests/fixtures/v3/bake-digests.json` is minted under. */
+describe("the pure v3 payload builder is the live bake", () => {
+    const corpus = bakeableCorpus();
+
+    /** the live published bake, as plain numbers over the published sample count. `t` is the
+     *  arc-to-time table `chain` does not build, so it is not part of this comparison; every SoA
+     *  `chain` does publish is. */
+    function livebake(text: string) {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, text);
+        state.step(0);
+        const eid = trackEntity(state);
+        if (eid === null) throw new Error("no track after load");
+        const count = Track.count.get(eid);
+        const s = samples.get(eid);
+        const out = bakeOut.get(eid);
+        if (!s || !out) throw new Error("track buffers missing");
+        const edges = Math.max(0, count - 1);
+        return {
+            count,
+            posX: Array.from(s.posX.subarray(0, count)),
+            posY: Array.from(s.posY.subarray(0, count)),
+            theta: Array.from(s.theta.subarray(0, count)),
+            v: Array.from(out.v.subarray(0, count)),
+            fN: Array.from(out.fN.subarray(0, edges)),
+            ds: Array.from(out.ds.subarray(0, edges)),
+        };
+    }
+
+    test("the population is the whole bakeable committed corpus", () => {
+        // pin the population: a narrowed or empty walk must not read as a clean sweep. Thirty,
+        // not thirty-one: `cli/loop-explicit.kex` is refused by `migrations[3]` and mints no v4
+        // fixture (spec Validation 2's S2d population, 16 + 14).
+        expect(corpus.length).toBe(30);
+    });
+
+    for (const path of corpus) {
+        const name = path.slice(path.indexOf("fixtures/"));
+        test(`${name}: chain(v3Payloads(doc)) is byte-identical to the live bake`, () => {
+            const text = readFileSync(path, "utf8");
+            const live = livebake(text);
+            const p = v3Payloads(parseDocument(text));
+            const c = chain(p.entry, p.sections, MAX_SAMPLES, p.friction, p.resistance);
+            const count = Math.min(c.count, MAX_SAMPLES);
+            const edges = Math.max(0, count - 1);
+            expect({
+                count,
+                posX: Array.from(c.posX.subarray(0, count)),
+                posY: Array.from(c.posY.subarray(0, count)),
+                theta: Array.from(c.theta.subarray(0, count)),
+                v: Array.from(c.v.subarray(0, count)),
+                fN: Array.from(c.fN.subarray(0, edges)),
+                ds: Array.from(c.ds.subarray(0, edges)),
+            }).toEqual(live);
+            // and a real bake happened — two empty bakes would satisfy the equality above.
+            expect(live.count).toBeGreaterThan(1);
+        });
+    }
+});
+
 describe("v4 migration sweep", () => {
     const corpus = fixtureCorpus();
 
     test("the corpus is the whole committed fixture set", () => {
         // population floor: a narrowed walk (a typo'd root, a swallowed recursion) cannot pass.
-        expect(corpus.length).toBe(82);
+        expect(corpus.length).toBe(81);
         expect(corpus.some((p) => p.includes("/velocity/"))).toBe(true);
         expect(corpus.some((p) => p.includes("/force/"))).toBe(true);
         expect(corpus.some((p) => p.includes("/cli/"))).toBe(true);
@@ -1075,6 +1187,13 @@ describe("v4 migration sweep", () => {
         test(`${name} migrates forward to v${CURRENT_VERSION}`, () => {
             const raw = JSON.parse(readFileSync(path, "utf8"));
             expect(raw.version).toBeLessThanOrEqual(CURRENT_VERSION);
+            if (name.endsWith("cli/loop-explicit.kex")) {
+                // the one named refusal in the corpus: its near-cusps are sub-quantum, so the
+                // geo lane cannot represent them and `migrations[3]` refuses rather than
+                // shipping a fit that misrepresents the document.
+                expect(() => migrate(raw)).toThrow(/retired\/pose-ux/);
+                return;
+            }
             const migrated = migrate(raw);
             expect(migrated.version).toBe(CURRENT_VERSION);
             // the lane substrate is present and shaped on every migrated document, malformed
@@ -1115,22 +1234,26 @@ describe("hand-checked v4 lane shapes", () => {
         expect(lanes.geo).toEqual([]);
     });
 
-    test("a geo record carries its boundary node's whole pose, explicit tangent included", () => {
-        // `hill-explicit` authors an explicit tangent on its crest node, so the geo lane must
-        // carry position, heading AND that tangent — a heading-only handle cannot rebuild the
-        // shape, which is what makes the geo lane self-sufficient on the wire.
+    test("cli/circular-arc.kex: an Auto-reflect arc fits one Linear record per node pair", () => {
         // read the FROZEN v3 source, so `migrations[3]` itself is under test rather than the
         // already-migrated committed file's parser round trip.
+        const lanes = migratedLanes("v3/cli/circular-arc.kex");
+        // one record per NODE PAIR — the arc's two Auto-reflect segments — each tagged Linear,
+        // which on a constant-radius arc is the exact curve (a constant turn rate).
+        expect(lanes.geo.map((r) => r.ease)).toEqual([Easing.Linear, Easing.Linear]);
+        // the handles are PITCH — absolute unwrapped world headings in radians — so the record
+        // opens at the entry heading and closes at the heading the bake recovered at the tail
+        // node, and no frame column travels with it.
+        expect(lanes.geo[0]!.start).toBe(0);
+        expect(typeof lanes.geo[0]!.exit).toBe("number");
+        expect(lanes.geo[0]!.entry).toBeCloseTo(0, 2);
+    });
+
+    test("an explicit-tangent group fits pitch records within both budgets", () => {
         const lanes = migratedLanes("v3/cli/hill-explicit.kex");
-        expect(lanes.geo[0]!.entry).toEqual({ x: 0, y: 0, theta: 0 });
-        const crest = lanes.geo.find((r) => r.exit.tangent !== undefined);
-        expect(crest?.exit).toEqual({
-            x: 56,
-            y: 11,
-            theta: 0,
-            tangent: { mode: TangentMode.Aligned, inX: 9, inY: 0, outX: 9, outY: 0 },
-        });
-        // and every geo record's pose survives the emitter → parser round trip verbatim.
+        expect(lanes.geo.length).toBeGreaterThan(0);
+        for (const r of lanes.geo) expect(Number.isFinite(r.exit)).toBe(true);
+        // and every geo record survives the emitter → parser round trip verbatim.
         const doc = parseDocument(
             readFileSync(join(import.meta.dir, "fixtures", "cli", "hill-explicit.kex"), "utf8"),
         );
@@ -1168,16 +1291,9 @@ describe("hand-checked v4 lane shapes", () => {
         const lanes = migratedLanes("force/all-easings.kex");
         // the fixture leads with a geo run, which claims lane id 0 (one shared id namespace,
         // walked velocity → chain order), so the force records start at 1.
-        // the geo record's handles are whole node poses, the shape the Wire v4 paragraph names.
+        // the geo record's handles are PITCH scalars, the shape the Wire v4 paragraph names.
         expect(lanes.geo).toEqual([
-            {
-                id: 0,
-                start: 0,
-                end: 3,
-                ease: Easing.Linear,
-                entry: { x: 0, y: 0, theta: 0 },
-                exit: { x: 3, y: 0, theta: 0 },
-            },
+            { id: 0, start: 0, end: 3, ease: Easing.Linear, entry: 0, exit: 0 },
         ]);
         // and the force run is anchored at the geo run's own derived length, not at zero.
         expect(lanes.force).toEqual([
@@ -1302,13 +1418,25 @@ describe("frozen v3 migration corpus", () => {
         "cli/full-loop.kex",
         "cli/hill-auto.kex",
         "cli/hill-explicit.kex",
-        "cli/loop-explicit.kex",
         "cli/parabola-hill.kex",
         "cli/s-curve.kex",
         "cli/straight-fillet.kex",
         "cli/valley-explicit.kex",
         "hill-explicit-golden.kex",
     ];
+
+    test("cli/loop-explicit.kex is refused, and its v3 file stays as the witness", async () => {
+        // the named refusal witness: kept frozen under `tests/fixtures/v3/` precisely so the
+        // refusal has a live document behind it, and minted into no v4 fixture
+        // (`tests/mint-cli-fixtures.ts` skips it by name).
+        const text = await Bun.file(
+            new URL("./fixtures/v3/cli/loop-explicit.kex", import.meta.url),
+        ).text();
+        expect(() => parseDocument(text)).toThrow(/retired\/pose-ux/);
+        expect(existsSync(new URL("./fixtures/cli/loop-explicit.kex", import.meta.url))).toBe(
+            false,
+        );
+    });
 
     for (const name of frozen) {
         test(`${name}: v3 migrates once and canonical v4 is a fixed point`, () => {
