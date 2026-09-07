@@ -34,9 +34,9 @@ Velocity records are track-global and survive structural edits without reseeding
 
 `geofit.ts` scores the candidate's actual adaptive document bake on absolute arclength over both station sets, never normalized spans. Keep invoke/landing runaway bounds at their owning constants. 
 
-`pin.ts`: sandbox; `optimize.ts`: only unlocked force ordinates change. Pin `(x,y,theta)`, never exit speed as a fourth constraint or DOF. Invoke-time Jacobian stall certificates do not certify the landing: `finalize` checks landed energy injection against its derived rounding floor. Freeze the lock ledger at invoke and require the same session plus live authored hash after await.
+`optimize.ts`: only unlocked force ordinates change; pin `(x,y,theta)`, never exit speed as a fourth DOF. A stall certificate does not certify the landing: `finalize` checks landed energy injection against its derived rounding floor, and an awaited answer needs the live authored hash.
 
-All in-mode records redirect to a non-evicting sandbox. Exit discards without changing outer undo/redo; Solve uses `recordOuter` for one entry whose undo reopens the draft, locks and sandbox. Downstream freezes until close. A paced landing is display-only and `bakeLive` must refuse it as authored truth. `history` never imports `editor`; injected selection hooks re-resolve stable identities after restore.
+`history.ts` holds the authored verbs and is the one recording path: structural verbs bracket internally, continuous ones open `begin*`, write through a setter every frame and coalesce on `commit`. A declined write leaves the state unmoved, so the release records nothing. Gestures snapshot the raw `end`/`order` COLUMNS: absence is not the default written out. `history` never imports `editor`; injected selection hooks re-resolve stable identities after restore.
 
 ## Hard gotchas
 

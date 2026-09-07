@@ -10,7 +10,7 @@ The authored track is three independent **lanes** — velocity, force, geo — o
 
 `ADAPTERS.md` is the test-read adapter inventory; it is empty.
 
-The store, the v4 wire and the derived partition have landed; the authoring VERBS have not. `history.ts` holds `record`/`undo`/`redo`/`begin`/`commit`/`cancel` plus friction, resistance and domain; `commands.ts`/`cli.ts` carry those three. Record verbs arrive at S2e-ii over the setters.
+The store, the v4 wire, the derived partition and the VERBS have landed; the timeline rebuild has not.
 
 The pose UX is retired to the kexedit tag `retired/pose-ux`: pin mode, canvas control wiring, the conversion UI and every capture flow. Authoring is headless through `commands.ts`/`cli.ts`. `Timeline.svelte` and the canvas draw the bake read-only; `controls.ts` is pan/zoom; `menus.ts`, `keys.ts` and `optimize.ts` are unwired libraries for the lane rebuild. Read the tag, never a copy.
 
@@ -22,9 +22,11 @@ The start position is fixed at the origin. Initial speed is the authored `Track.
 
 ## Authoring API
 
-`track.ts` owns authored state; its lane setters are the ONLY authored writers and refuse structurally — an overlap is declined, never clamped. `history.ts` owns snapshot/gesture edits. Use the setters inside gestures, never write authored columns from render/read paths. Structural helpers bracket internally; continuous edits use `begin*`, setter, then `commit` or `cancel`. Read signatures. Stable ids/addresses survive restore; raw entity ids do not.
+`track.ts` owns authored state; its lane setters are the ONLY authored writers and refuse structurally — an overlap is declined, never clamped. Stable ids survive restore; raw entity ids do not.
 
-`src/cli.ts` drives `src/commands.ts` over `.kex` JSON: `bun run cli -- new|edit|validate|stats|dump|fmt ...`. Derive operation payloads from the command types and CLI help. Commands share UI setters/history and report refusals.
+`history.ts` owns the verbs: add/delete per lane, handle, edge, body, ease, end, order, start speed. Use the setters inside gestures, never write authored columns from read paths. Structural helpers bracket internally; continuous edits use `begin*`, setter, then `commit` or `cancel`; a declined write records nothing. Read signatures.
+
+`src/cli.ts` drives `src/commands.ts` over `.kex` JSON: `bun run cli -- new|edit|validate|stats|dump|fmt ...`. Ops name a record by the stable id `dump` reports; `record-add` names its lane. `new` migrates the boot seed from v3. Derive payloads from the command types and CLI help. Commands share UI setters/history and report refusals.
 
 `doc.ts` validates before replacing ECS state; geometry-dependent guards use exact in-place rollback. A refused load leaves the document untouched; a successful load clears undo. Loading owns ECS, not interactive selection: an interactive load must reconcile that too. Never create two live `State`s with overlapping eids: module-scoped component storage aliases. `checkDocumentSemantics` assumes one document per process.
 
