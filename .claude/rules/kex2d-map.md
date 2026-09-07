@@ -10,7 +10,7 @@ Read `kex2d/AGENTS.md`. Paths are kex2d-relative; code owns APIs. Interaction: `
 
 ## Physics
 
-`section.ts` evaluates geo/force payloads and chains recovered exits. Geo nodes are placed rigidly in the entry frame; upstream edits carry downstream geometry, not world-frame force invariance. Payloads share a boundary sample. `projection.ts` derives evaluator runs from canonical segments.
+`section.ts` evaluates geo/force payloads and chains recovered exits. Geo nodes are placed rigidly in the entry frame; upstream edits carry downstream geometry, not world-frame force invariance. Payloads share a boundary sample. `projection.ts` derives evaluator runs from the lanes: the higher shape lane in `track.order` cuts, and a stretch neither shape lane covers is a force run dwelling at the last exit.
 
 `forward.ts` integrates demanded normal force with squared-speed energy updates; `bake.ts` recovers displayed force from geometry using continuous, unwrapped chord-bisector headings. `invertRange` is validation-only: its alternating tangent mode forbids using it for display recovery. Force payload exits use the recovered state too. Zero-length edges carry orientation and recover the stationary-cart force without division by zero.
 
@@ -22,17 +22,17 @@ Friction/drag make speed path-dependent; height-only conservation holds only at 
 
 `spline.ts`: Hermite interpolation and tangents. Auto tangents remain inferred, explicit vectors absolute. A node edit affects only its adjacent segments. Re-head the tip only on its own default move or append, never neighbor movement/deletion; role changes preserve authored headings and tangents. Read `exitHeading`, not stale Auto `theta`, when an explicit tangent controls direction. Reset returns creation state; node zero stays pinned.
 
-`track.ts`: authored ECS, setters, snapshots, bake publication. `segment.ts`: pure chain operations. Flat v4 `doc.ts` stores lane records, not caches; stable order/ids and f32-exact emission (including negative zero) round-trip. Never re-sum conserved run stations/extent from rounded members.
+`track.ts`: the lane store, its refusing setters, snapshots and bake publication; stations are f64, not f32. `lanes.ts`: the pure laws (exclusivity, entry inference, the record floor, the end rule). Flat v4 `doc.ts` stores lane records verbatim and never fits on save; stable ids and exact emission (negative zero included) round-trip.
 
 ## Velocity strips
 
-Velocity spans are track-global and survive structural edits without reseeding. `createStrip`/`setStrip` own overlap/minimum-edge refusal; abutting and boundary-crossing spans are legal. Clamp to neighbors rather than ripple or replace. Snapshot restore bypasses authoring guards to preserve old state exactly. `entrySpeed` reads `OneShot`; the track start is not a draggable node. `domain.ts` changes only the display lens; `timeline.ts` projects coordinates, frozen per gesture, with matched extrapolating inverses during extent growth.
+Velocity records are track-global and survive structural edits without reseeding; abutting and run-crossing spans are legal, overlap is refused. Each frames as ONE `edgeStrips` row, so abutting rows never average across their seam. Restore bypasses the setter guards: a migrated document may hold a record below the floor. `entrySpeed` reads `Track.v0`. `domain.ts` changes only the display lens; `timeline.ts` projects coordinates, frozen per gesture, with matched extrapolating inverses during extent growth.
 
 ## Invoked tools and history
 
 `force.ts`, `banded.ts`, `collocate.ts`, `fit.ts`, `polish.ts`, `refine.ts`: invoked optimization atoms. Conversion uses its own fixed quantum, never per-user snapping preferences. `convert.ts` consumes pool answers in ask order; cancellation terminates workers. Playback observes without re-solving; `census.ts` measures vocabulary at the caller's screen scale.
 
-`geoforce.ts`/`forcegeo.ts` land once through history, with concurrent/stale/cancel/refusal guards and exact undo. `geofit.ts` scores the candidate's actual adaptive document bake on absolute arclength over both station sets, never normalized spans. Keep invoke/landing runaway bounds at their owning constants. Provenance is a droppable cache: exact entry/token certification permits unchanged round-trip restore, never re-fit; destructive reset never stamps it.
+`geofit.ts` scores the candidate's actual adaptive document bake on absolute arclength over both station sets, never normalized spans. Keep invoke/landing runaway bounds at their owning constants. 
 
 `pin.ts`: sandbox; `optimize.ts`: only unlocked force ordinates change. Pin `(x,y,theta)`, never exit speed as a fourth constraint or DOF. Invoke-time Jacobian stall certificates do not certify the landing: `finalize` checks landed energy injection against its derived rounding floor. Freeze the lock ledger at invoke and require the same session plus live authored hash after await.
 
@@ -40,7 +40,7 @@ All in-mode records redirect to a non-evicting sandbox. Exit discards without ch
 
 ## Hard gotchas
 
-`controls.ts` attaches input on mount with teardown, never a module-level attached flag. `editor.ts` owns one selection set/active member. Tick-derived values lag: swallowing listeners must read live state, and reactive reads return primitives rather than a mutated singleton reference. `menus.ts`/`keys.ts` are pure descriptors; `acts.ts` owns shared document acts; `Menu.svelte` renders them. `render.ts`/`cart.ts` only read the bake.
+`controls.ts` attaches input on mount with teardown, never a module-level attached flag. `editor.ts` owns one selection set/active member. Tick-derived values lag: swallowing listeners must read live state, and reactive reads return primitives rather than a mutated singleton reference. `menus.ts`/`keys.ts` are pure descriptors; `Menu.svelte` renders them. `render.ts`/`cart.ts` only read the bake.
 
 Keep `tests/substrate.test.ts` (selection), `tests/purity.test.ts` (writes/adapters) and module-named behavioral tests. Physics authority is independent convergence: `tests/oracles/rk4.ts`, analytics and `tests/helpers/forward64.ts`, not self-consistency. Structural exactness checks sample the whole pre-op observable, not just counts or boundaries.
 

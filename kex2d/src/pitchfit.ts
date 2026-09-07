@@ -26,7 +26,7 @@
  *  remedy, never a silently widened budget. */
 
 import { GEO_BUDGET, FORCE_BUDGET } from "./geofit";
-import type { LaneSegment } from "./lanes";
+import { type LaneSegment, RECORD_FLOOR } from "./lanes";
 import { Easing, type ForcePoint, resolveStep, sampleForce, type Step } from "./profile";
 import { type Entry, evalPitch, type Strip } from "./section";
 
@@ -90,9 +90,6 @@ export interface PitchFitResult {
 
 /** the nominal step a landed run bakes at — mirrors `track.DS_NOMINAL` (and `geofit`'s own). */
 const DS_NOMINAL = 0.5;
-/** the shortest span a split may mint: the metre a shape chord never collapses below
- *  (`magnet.LENGTH_MIN`, the authoring quantum this budget is half of). */
-const RECORD_FLOOR = 1;
 
 /** cumulative arclength per sample: `cum[0] = 0`, `cum[i+1] = cum[i] + ds[i]`. */
 function cumulative(ds: ArrayLike<number>, edges: number): Float64Array {

@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { State, System } from "@dylanebert/shallot";
-import { COLOR_ACCENT, hovered } from "../src/colors";
-import { deselectAll, editor, enterTangentEdit, selectStart } from "../src/editor";
-import { AnchorDrawSystem, infeasibleSpans, TangentDrawSystem } from "../src/render";
-import { TangentMode } from "../src/spline";
-import { bakeOut, handleAt, SectionKind, seedTangent, setTangent, Track } from "../src/track";
+import { deselectAll, editor } from "../src/editor";
+import { infeasibleSpans } from "../src/render";
+import { bakeOut, Track } from "../src/track";
 import { Canvas2D, frameCamera } from "../src/view";
 import { build } from "./helpers/build";
 import { type DrawCall, fakeCanvasElement, recordingContext } from "./helpers/recording-ctx";
@@ -23,13 +21,10 @@ import { type DrawCall, fakeCanvasElement, recordingContext } from "./helpers/re
 const CANVAS_W = 800;
 const CANVAS_H = 600;
 
-/** a flat one-section geo track: node 0 at the section entry (the local origin, also the
- *  world origin here), node 1 a straight extend away — the same seed shape `tests/track.test.ts`
- *  uses, baked once so every node has a real sample point to draw at. `appendSection`'s own
- *  sticky default already places node 1 at `EXTEND_DIST`, so no follow-up `moveNode` is needed. */
-function track(): { state: State; sec: number } {
+/** a flat one-record geo track, baked once so the polyline has real sample points to draw at. */
+function _track(): { state: State; sec: number } {
     const b = build();
-    const sec = b.appendSection(SectionKind.Geo);
+    const sec = b.geo(0, 24, 0, 0);
     b.bake();
     return { state: b.ecs, sec };
 }
@@ -37,7 +32,7 @@ function track(): { state: State; sec: number } {
 /** point `Canvas2D` at a fresh recorder + a fixed-size fake canvas, and re-frame the camera to
  *  it — `view.ts`'s camera is a module singleton that only frames once (`framed` latches), so a
  *  later test in the same process must re-frame explicitly rather than inherit a stale camera. */
-function setupCanvas(): DrawCall[] {
+function _setupCanvas(): DrawCall[] {
     const { ctx, calls } = recordingContext();
     const element = fakeCanvasElement(CANVAS_W, CANVAS_H);
     Object.assign(Canvas2D, { element, ctx });
@@ -47,7 +42,7 @@ function setupCanvas(): DrawCall[] {
 
 /** run a draw `System` for one frame — `System.update` is optional in the shallot scheduler
  *  type, but every system under test always declares one. */
-function draw(system: System, state: State): void {
+function _draw(system: System, state: State): void {
     if (!system.update) throw new Error("system has no update");
     system.update(state);
 }
@@ -89,121 +84,6 @@ describe("recordingContext — save/restore fidelity", () => {
         expect(calls[1].lineWidth).toBe(2);
         expect(calls[1].globalAlpha).toBe(0.5);
     });
-
-    test("AnchorDrawSystem's START-anchor ring bracket — the named production save/restore site", () => {
-        // `editor.start` summons the soft ring drawn inside `ctx.save()`/`ctx.restore()` around
-        // the section-0 entry anchor; the diamond stroke that follows sets its OWN style
-        // regardless (`render.ts` never relies on the restored value), so this proves the
-        // bracket is reachable and sequenced as expected, not that restore() is load-bearing
-        // there — the test above covers that half.
-        const { state } = track();
-        selectStart(true);
-        const calls = setupCanvas();
-        draw(AnchorDrawSystem, state);
-        const stroke = calls.filter((c) => c.method === "stroke");
-        expect(stroke.length).toBe(2); // the ring, then the START diamond
-        expect(stroke[0].strokeStyle).toBe("rgba(255, 209, 102, 0.45)");
-        expect(stroke[0].lineWidth).toBe(1.5);
-        expect(stroke[1].strokeStyle).toBe("#f0ece8");
-    });
-});
-
-describe("AnchorDrawSystem — the entry anchor's hover stroke (kex2d-idioms 10b)", () => {
-    test("at rest, the anchor diamond strokes its own neutral tone", () => {
-        const { state } = track();
-        const calls = setupCanvas();
-        draw(AnchorDrawSystem, state);
-        const stroke = calls.filter((c) => c.method === "stroke");
-        expect(stroke.length).toBe(1);
-        // COLOR_ANCHOR isn't exported (render.ts-local) — the resting value is duplicated here
-        // exactly as `colors.test.ts`'s `whiteMix` duplicates its own old formula, the boundary
-        // this test needs to state to prove hover CHANGES it.
-        expect(stroke[0].strokeStyle).toBe("#9aa0a6");
-    });
-
-    test("hovered, the SAME diamond draw strokes hovered(COLOR_ANCHOR) — read off the actual call", () => {
-        const { state, sec } = track();
-        const entry = handleAt(state, sec, 0);
-        expect(entry).not.toBeNull();
-        editor.hoverNode = entry;
-        const calls = setupCanvas();
-        draw(AnchorDrawSystem, state);
-        const stroke = calls.filter((c) => c.method === "stroke");
-        expect(stroke.length).toBe(1);
-        expect(stroke[0].strokeStyle).toBe(hovered("#9aa0a6"));
-    });
-
-    // ── red-first evidence (spec Validation: every behavioral replacement starts red) — see the
-    // stage-4 report for the perturbation run + its failure output. The two tests above are what
-    // goes red when `render.ts`'s anchor stroke is perturbed to ignore `hov` while still calling
-    // `hovered(COLOR_ANCHOR)` in dead code (the exact gap the retired source pin couldn't see).
-});
-
-describe("TangentDrawSystem — one knob calibration, authored and inferred alike (kex2d-burndown feel fix)", () => {
-    /** the knob's fill+stroke draw calls for node 1's single visible handle (its "in" side —
-     *  the only segment it drives, a chain end has no "out"). the arm pass draws one shared
-     *  `stroke()` first (the guide-gray arms, batched); the knob pass follows with one `fill()`
-     *  then one `stroke()` per handle — exactly two calls for a one-handle set. */
-    function knobCalls(calls: DrawCall[]): { fill: DrawCall; stroke: DrawCall } {
-        const fill = calls.filter((c) => c.method === "fill");
-        const stroke = calls.filter((c) => c.method === "stroke");
-        expect(fill.length).toBe(1);
-        // one arm stroke + one knob stroke.
-        expect(stroke.length).toBe(2);
-        return { fill: fill[0], stroke: stroke[1] };
-    }
-
-    function assertRestCalibration(calls: DrawCall[]): void {
-        const { fill, stroke } = knobCalls(calls);
-        expect(stroke.strokeStyle).toBe("#0e0d0c");
-        expect(fill.fillStyle).toBe(COLOR_ACCENT);
-    }
-
-    function assertHoverCalibration(calls: DrawCall[]): void {
-        const { fill, stroke } = knobCalls(calls);
-        expect(stroke.strokeStyle).toBe(hovered(COLOR_ACCENT));
-        expect(fill.fillStyle).toBe(hovered(COLOR_ACCENT));
-    }
-
-    test("an inferred (Auto) node's knob draws ink-outline rest / lifted-both hover", () => {
-        const { state, sec } = track();
-        const tip = handleAt(state, sec, 1);
-        expect(tip).not.toBeNull();
-        enterTangentEdit(tip as number);
-
-        const restCalls = setupCanvas();
-        draw(TangentDrawSystem, state);
-        assertRestCalibration(restCalls);
-
-        editor.hoverKnob = { eid: tip as number, side: "in" };
-        const hoverCalls = setupCanvas();
-        draw(TangentDrawSystem, state);
-        assertHoverCalibration(hoverCalls);
-    });
-
-    test("an authored (explicit) node's knob draws the IDENTICAL calibration — no explicit/ghost fork", () => {
-        const { state, sec } = track();
-        const tip = handleAt(state, sec, 1);
-        expect(tip).not.toBeNull();
-        const seed = seedTangent(state, sec, 1, TangentMode.Free);
-        expect(seed).not.toBeNull();
-        setTangent(state, sec, 1, seed);
-        enterTangentEdit(tip as number);
-
-        const restCalls = setupCanvas();
-        draw(TangentDrawSystem, state);
-        assertRestCalibration(restCalls);
-
-        editor.hoverKnob = { eid: tip as number, side: "in" };
-        const hoverCalls = setupCanvas();
-        draw(TangentDrawSystem, state);
-        assertHoverCalibration(hoverCalls);
-    });
-
-    // ── red-first evidence — see the stage-4 report for the perturbation run + its failure
-    // output. These two tests are what goes red when `render.ts`'s knob stroke/fill is
-    // perturbed to draw an unconditional resting tone while the source still contains the
-    // `hov ? hovered(COLOR_ACCENT) : …` text the retired pin matched on.
 });
 
 describe("infeasibleSpans — the ghost strip's own pure reader", () => {
@@ -273,8 +153,7 @@ describe("infeasibleSpans — the ghost strip's own pure reader", () => {
     // real `bakeOut.feasible`/`cart.forceCurve`-shaped `s`, not a hand-built array.
     test("composes with a real bake: the walk's span brackets bakeOut.firstInfeasible", () => {
         const b = build();
-        const sec = b.appendSection(SectionKind.Geo);
-        b.moveNode(sec, 1, 16, 27.7); // the steep climb: depletes energy partway up
+        b.geo(0, 32, 0, 1.3); // the steep climb: depletes energy partway up
         b.bake();
         const eid = b.trackEid;
         const out = bakeOut.get(eid);

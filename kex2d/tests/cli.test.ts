@@ -8,14 +8,6 @@ import { applyOp, type Op } from "../src/commands";
 import { dispatch } from "../src/cli";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { createHistory } from "../src/history";
-import {
-    assertRunStructure,
-    createForcePoint,
-    createSection,
-    createTrack,
-    SectionKind,
-    snapshotRun,
-} from "../src/track";
 
 // the CLI's own suite: round-trip byte-identity over the committed
 // `.kex` fixture corpus (`tests/fixtures/cli/`, minted by `tests/mint-cli-fixtures.ts` from
@@ -144,7 +136,7 @@ describe("new: seeds a fresh document", () => {
             expect(created.exitCode).toBe(0);
             expect(existsSync(path)).toBe(true);
             const doc = parseDocument(readFileSync(path, "utf8"));
-            expect(doc.segments.length).toBeGreaterThan(0);
+            expect(doc.lanes.force.length).toBeGreaterThan(0);
 
             const clobber = await dispatch(["new", path]);
             expect(clobber.exitCode).toBe(1);
@@ -225,15 +217,15 @@ describe("semantic refusals surface named guards structured, not just a flattene
     test("stats (through loadTrackFile) surfaces the same named guard in a `refusals` field", async () => {
         setup();
         try {
-            const path = join(workdir, "minForceExtent.kex");
-            writeFileSync(path, await readInvariantFixture("minForceExtent-red.kex"));
+            const path = join(workdir, "segmentOverlapped.kex");
+            writeFileSync(path, await readInvariantFixture("segmentOverlapped-red.kex"));
             const result = await dispatch(["stats", path]);
             expect(result.exitCode).toBe(1);
             const payload = JSON.parse(result.stdout);
             expect(payload.error.guard).toBe("documentInvalid");
             expect(Array.isArray(payload.refusals)).toBe(true);
             expect(payload.refusals.map((r: { guard: string }) => r.guard)).toContain(
-                "minForceExtent",
+                "segmentOverlapped",
             );
         } finally {
             teardown();
@@ -243,8 +235,8 @@ describe("semantic refusals surface named guards structured, not just a flattene
     test("edit refuses a semantically invalid file with `refusals` naming the guard", async () => {
         setup();
         try {
-            const path = join(workdir, "stationTaken.kex");
-            writeFileSync(path, await readInvariantFixture("stationTaken-red.kex"));
+            const path = join(workdir, "segmentDegenerate.kex");
+            writeFileSync(path, await readInvariantFixture("segmentDegenerate-red.kex"));
             const result = await dispatch([
                 "edit",
                 path,
@@ -256,7 +248,7 @@ describe("semantic refusals surface named guards structured, not just a flattene
             expect(payload.error.guard).toBe("documentInvalid");
             expect(Array.isArray(payload.refusals)).toBe(true);
             expect(payload.refusals.map((r: { guard: string }) => r.guard)).toContain(
-                "stationTaken",
+                "segmentDegenerate",
             );
         } finally {
             teardown();
@@ -320,108 +312,6 @@ describe("edit: no second write path — a CLI-edited file reopened equals the o
             }
         });
     }
-
-    test("force create/move/ease/delete use the canonical segment surface", async () => {
-        setup();
-        try {
-            const state = new State();
-            createTrack(state);
-            const run = createSection(state, 0, SectionKind.Force, 10.1);
-            const entry = createForcePoint(state, run, 0, 1);
-            const terminal = createForcePoint(state, run, 7.7, 1);
-            const path = join(workdir, "force.kex");
-            writeFileSync(path, saveDocument(state));
-
-            const create = await dispatch([
-                "edit",
-                path,
-                "--ops",
-                JSON.stringify({ type: "force-create", section: run, s: 3.3, g: 2 }),
-            ]);
-            const created = JSON.parse(create.stdout).results[0].id as number;
-            expect(create.exitCode).toBe(0);
-
-            const edit = await dispatch([
-                "edit",
-                path,
-                "--ops",
-                JSON.stringify([
-                    { type: "force-ease", ids: [entry], ease: 2 },
-                    { type: "force-delete", ids: [created] },
-                    { type: "force-move", id: terminal, s: 4.4, g: 1.5 },
-                ]),
-            ]);
-            expect(edit.exitCode).toBe(0);
-
-            const reopened = new State();
-            loadDocument(reopened, readFileSync(path, "utf8"));
-            const snap = snapshotRun(reopened, run);
-            expect(snap.stations.at(-1)).toBe(10.1);
-            expect(snap.stations).toEqual([0, 4.4, 10.1]);
-        } finally {
-            teardown();
-        }
-    });
-
-    test("segment-author JSON dispatches every action and saves a reloadable fixed point", async () => {
-        setup();
-        try {
-            const state = new State();
-            createTrack(state);
-            const run = createSection(state, 0, SectionKind.Force, 30);
-            createForcePoint(state, run, 0, 1);
-            createForcePoint(state, run, 20, 2);
-            const path = join(workdir, "segment-author.kex");
-            writeFileSync(path, saveDocument(state));
-
-            const insertedResult = await dispatch([
-                "edit",
-                path,
-                "--ops",
-                JSON.stringify({
-                    type: "segment-author",
-                    edit: { action: "insert", segment: run, station: 10 },
-                }),
-            ]);
-            expect(insertedResult.exitCode).toBe(0);
-            const inserted = JSON.parse(insertedResult.stdout).results[0].id as number;
-
-            const result = await dispatch([
-                "edit",
-                path,
-                "--ops",
-                JSON.stringify([
-                    {
-                        type: "segment-author",
-                        edit: { action: "boundary-value", segment: inserted, value: 6 },
-                    },
-                    {
-                        type: "segment-author",
-                        edit: { action: "boundary-ease", segment: inserted, ease: 2 },
-                    },
-                    {
-                        type: "segment-author",
-                        edit: { action: "extent-ripple", segment: inserted, extent: 15 },
-                    },
-                    {
-                        type: "segment-author",
-                        edit: { action: "delete", segment: inserted },
-                    },
-                ]),
-            ]);
-            expect(result.exitCode).toBe(0);
-            expect(JSON.parse(result.stdout).results).toHaveLength(4);
-
-            const text = readFileSync(path, "utf8");
-            const reopened = new State();
-            loadDocument(reopened, text);
-            assertRunStructure(reopened);
-            expect(saveDocument(reopened)).toBe(text);
-            expect(snapshotRun(reopened, run).members.map((row) => row.id)).not.toContain(inserted);
-        } finally {
-            teardown();
-        }
-    });
 
     test("ops read from stdin when --ops is absent", async () => {
         setup();

@@ -25,7 +25,16 @@
 import { State } from "@dylanebert/shallot";
 import type { Refusal } from "./commands";
 import { history } from "./history";
-import { type LaneSegment, type Lanes, emptyLanes, laneOrder } from "./lanes";
+import {
+    emptyLanes,
+    Lane,
+    type LaneSegment,
+    type Lanes,
+    laneOrder,
+    laneRefusals,
+    trackEnd,
+    validStripValue,
+} from "./lanes";
 import { fitPitch } from "./pitchfit";
 import {
     Easing,
@@ -38,30 +47,26 @@ import {
 import { chain, Domain, type Entry, type Section, type SectionResult, type Strip } from "./section";
 import { type Node, sampleChain, TangentMode, type Tangent } from "./spline";
 import {
-    allStrips,
     createTrack,
     DS_NOMINAL,
     edgeStrips,
-    materializeRunForceClamps,
+    lanesOf,
     MAX_SAMPLES,
-    MIN_FORCE_LEN,
+    materializeRunForceClamps,
     MIN_V0,
-    V0,
-    type NodeState,
-    refreshVelocityRunMembers,
+    type RecordSnapshot,
     reserveIds,
     restoreAll,
-    type SectionSnapshot,
+    runsOf as derivedRunsOf,
+    trackDs,
     SectionKind,
-    stripCoversOneEdge,
-    stripOverlapped,
-    type StripSnapshot,
     snapshotAll,
     Track,
     trackEntity,
     type TrackSnapshot,
+    V0,
     validCoefficient,
-    validStripValue,
+    velocityRows,
 } from "./track";
 
 /** the document format's own version — forward-only migrations (below) bridge an older file up
@@ -83,11 +88,6 @@ import {
  *  rather than cutting the store over inside a wire stage. S2 deletes `segments`/`strips` from
  *  this file and makes `lanes` the only authored payload. */
 export const CURRENT_VERSION = 4;
-
-/** the stable id a loaded start speed takes. `track.v0` carries no identity of its own — it is
- *  one authored number — so every load mints the same address for it, which keeps a
- *  save → load → save cycle a fixed point rather than renumbering the row. */
-const START_SPEED_ID = 0;
 
 // ── wire types (post-parse, post-migration — always shaped exactly like this) ────────────────
 
@@ -178,14 +178,11 @@ export interface DocStrip {
 export interface Kex2dDocument {
     version: number;
     track: DocTrack;
-    /** the canonical v4 authored substrate: independent per-parameter lanes of two-handle
-     *  segments (`lanes.ts`). */
+    /** the whole authored substrate: independent per-parameter lanes of two-handle segments
+     *  (`lanes.ts`). The v3 `segments`/`strips` payload left the wire at S2e-i; a v4 text still
+     *  carrying those columns loads with them IGNORED (the lanes are the document), which is
+     *  what keeps a file written by the bridge build openable. */
     lanes: Lanes;
-    /** @temporary S2 — the v3 chain payload the live ECS still loads from. */
-    segments: DocSegment[];
-    /** @temporary S2 — the v3 velocity payload the live ECS still loads from; `lanes.velocity`
-     *  is derived from it and carries the same authored content in the new grammar. */
-    strips: DocStrip[];
 }
 
 // ── lane derivation (pure: v3 payload → v4 lanes) ───────────────────────────────────────────
@@ -275,6 +272,13 @@ function runsOf(segments: DocSegment[]): { kind: number; members: DocSegment[]; 
             if (member.extent !== undefined) run.extent = member.extent;
     }
     return out;
+}
+
+/** a wire tangent as the pure `spline.Tangent` the sampler reads. */
+function fromDocTangent(t: DocGeoTangent | undefined): Tangent | undefined {
+    return t
+        ? { mode: t.mode as TangentMode, inX: t.inX, inY: t.inY, outX: t.outX, outY: t.outY }
+        : undefined;
 }
 
 /** one geo run's nodes as the pure `spline.Node` list its sampler reads, in run-global order.
@@ -626,156 +630,68 @@ export function lanesFromChain(doc: {
 
 // ── ECS → document ─────────────────────────────────────────────────────────────────────────
 
-function toDocTangent(t: Tangent | undefined): DocGeoTangent | undefined {
-    return t ? { mode: t.mode, inX: t.inX, inY: t.inY, outX: t.outX, outY: t.outY } : undefined;
-}
-
-function toDocSegment(s: SectionSnapshot, terminal: boolean): DocSegment {
-    return {
-        id: s.id,
-        order: s.order,
-        kind: s.kind,
-        run: s.run,
-        ...(s.kind === SectionKind.Force
-            ? { station: s.runStation, ...(terminal ? { extent: s.runExtent } : {}) }
-            : { node: s.geoEndNode }),
-        nodes: s.nodes
-            .slice()
-            .sort((a, b) => a.order - b.order)
-            .map((n) => ({
-                order: n.order,
-                x: n.x,
-                y: n.y,
-                theta: n.theta,
-                tangent: toDocTangent(n.tangent),
-            })),
-        points: s.points
-            .slice()
-            .sort((a, b) => a.id - b.id)
-            .map((p) => ({
-                id: p.id,
-                s: s.runStation + p.s,
-                boundary: { g: p.g, ease: p.ease },
-            })),
-    };
-}
-
-function toDocStrip(st: StripSnapshot): DocStrip {
-    return {
-        id: st.id,
-        start: st.start,
-        end: st.end,
-        value: st.value,
-        keyframes: st.keyframes
-            .slice()
-            .sort((a, b) => a.id - b.id)
-            .map((k) => ({ id: k.id, s: k.s, v: k.v })),
-    };
-}
-
-/** the whole live document — every authored ECS component, canonically ordered. `snapshotAll`
- *  supplies sections/strips/one-shot (already section-order / node-order sorted; force
- *  points/strips/keyframes re-sorted here from their bake-order `s`/`start` reads to their
- *  stable `id`); the four `Track` scalars ride separately (`snapshotAll`'s `TrackSnapshot`
- *  carries no track-global column — `count` is bake output and stays out on purpose). */
+/** the whole live document — every authored lane record, canonically ordered, plus the
+ *  track-level scalars.
+ *
+ *  **It emits the STORED rows and never fits.** The lanes are the store now, so a save is a
+ *  transcription: no `lanesFromChain`, no `pitchfit`, nothing re-derived. That is what lets a
+ *  record no fit would accept — a 1 m pitch span turning 3 radians — save and round-trip
+ *  byte-identically (`tests/doc.test.ts`'s own arm), which a save that re-fitted could not
+ *  promise. `Track.count` stays out: it is bake output, not authored state. */
 export function docFromEcs(ecs: State): Kex2dDocument {
-    const snap = snapshotAll(ecs);
     const trackEid = trackEntity(ecs);
-    const track: DocTrack =
-        trackEid === null
-            ? { ds: DS_NOMINAL, domain: Domain.Distance, friction: 0, resistance: 0 }
-            : {
-                  ds: Track.ds.get(trackEid),
-                  domain: Track.domain.get(trackEid),
-                  friction: Track.friction.get(trackEid),
-                  resistance: Track.resistance.get(trackEid),
-              };
-    const segments = (() => {
-        const ordered = snap.segments.slice().sort((a, b) => a.order - b.order);
-        return ordered.map((member, index) =>
-            toDocSegment(member, ordered[index + 1]?.run !== member.run),
-        );
-    })();
-    const strips = snap.strips
-        .slice()
-        .sort((a, b) => a.id - b.id)
-        .map(toDocStrip);
-    const v0 = snap.oneShot[0]?.value;
-    const docTrack: DocTrack = { ...track, ...(v0 === undefined ? {} : { v0 }) };
+    const lanes = lanesOf(ecs);
+    if (trackEid === null)
+        return {
+            version: CURRENT_VERSION,
+            track: { ds: DS_NOMINAL, domain: Domain.Distance, friction: 0, resistance: 0 },
+            lanes,
+        };
+    const end = Track.end.get(trackEid);
+    const order = Track.order.get(trackEid);
+    const v0 = Track.v0.get(trackEid);
     return {
         version: CURRENT_VERSION,
-        track: docTrack,
-        lanes: lanesFromChain({ track: docTrack, segments, strips }),
-        segments,
-        strips,
+        track: {
+            ds: Track.ds.get(trackEid),
+            domain: Track.domain.get(trackEid),
+            friction: Track.friction.get(trackEid),
+            resistance: Track.resistance.get(trackEid),
+            ...(end === 0 ? {} : { end }),
+            ...(v0 === 0 ? {} : { v0 }),
+            ...(order === 0 ? {} : { order: unpackOrder(order) }),
+        },
+        lanes,
     };
+}
+
+/** the `Track.order` column's one u32, back to the wire's lane list. */
+function unpackOrder(packed: number): number[] {
+    return [(packed >> 4) & 3, (packed >> 2) & 3, packed & 3];
+}
+
+/** the wire's lane list, packed into the `Track.order` column. */
+function packOrder(order: readonly number[]): number {
+    return (order[0]! << 4) | (order[1]! << 2) | order[2]!;
 }
 
 // ── document → ECS ─────────────────────────────────────────────────────────────────────────
 
-function fromDocTangent(t: DocGeoTangent | undefined): Tangent | undefined {
-    return t
-        ? { mode: t.mode as TangentMode, inX: t.inX, inY: t.inY, outX: t.outX, outY: t.outY }
-        : undefined;
-}
-
-function fromDocSegment(s: DocSegment, length: number, runExtent: number): SectionSnapshot {
-    const station = s.station ?? 0;
-    return {
-        id: s.id,
-        order: s.order,
-        kind: s.kind as SectionKind,
-        length,
-        run: s.run,
-        runStation: station,
-        runExtent,
-        geoEndNode: s.node ?? s.nodes.at(-1)?.order ?? 0,
-        nodes: s.nodes.map(
-            (n): NodeState => ({
-                order: n.order,
-                x: n.x,
-                y: n.y,
-                theta: n.theta,
-                tangent: fromDocTangent(n.tangent),
-            }),
-        ),
-        points: s.points.map((p) => ({
-            id: p.id,
-            s: p.s - station,
-            g: p.boundary.g,
-            ease: p.boundary.ease as Easing,
-        })),
-    };
-}
-
-/** the document's sections/strips/one-shot, projected back onto `restoreAll`'s own
- *  `TrackSnapshot` shape — the four `Track` scalars are applied separately by the caller
- *  (`restoreAll` never touches the `Track` component itself). */
+/** the document's lane records, projected onto `restoreAll`'s own `TrackSnapshot` shape — the
+ *  track's `ds`, `domain` and coefficients are applied separately by the caller. */
 export function docToTrackSnapshot(doc: Kex2dDocument): TrackSnapshot {
-    const runExtents = new Map<number, number>();
-    for (const segment of doc.segments)
-        if (segment.extent !== undefined) runExtents.set(segment.run, segment.extent);
-    const segments = doc.segments.map((segment, index) => {
-        if (segment.kind === SectionKind.Geo) return fromDocSegment(segment, 0, 0);
-        const runExtent = runExtents.get(segment.run)!;
-        const terminal = doc.segments[index + 1]?.run !== segment.run;
-        const end = terminal ? runExtent : doc.segments[index + 1]!.station!;
-        return fromDocSegment(segment, Math.fround(end - segment.station!), runExtent);
-    });
+    const records: RecordSnapshot[] = [];
+    for (const [lane, rows] of [
+        [Lane.Velocity, doc.lanes.velocity],
+        [Lane.Force, doc.lanes.force],
+        [Lane.Geo, doc.lanes.geo],
+    ] as const)
+        for (const r of rows) records.push({ ...r, lane });
     return {
-        segments,
-        strips: doc.strips.map((st) => ({
-            id: st.id,
-            start: st.start,
-            end: st.end,
-            value: st.value,
-            keyframes: st.keyframes.map((k) => ({ id: k.id, s: k.s, v: k.v })),
-        })),
-        // `track.v0` is the whole start speed: it carries the value, and its presence alone
-        // authors the row. The wire holds no identity — a start speed is one authored number,
-        // not a document entity — so a load mints the canonical id, deterministically, and an
-        // absent `v0` authors nothing (`entrySpeed` then falls back to `V0`).
-        oneShot: doc.track.v0 === undefined ? [] : [{ id: START_SPEED_ID, value: doc.track.v0 }],
+        records,
+        end: doc.track.end ?? 0,
+        order: doc.track.order === undefined ? 0 : packOrder(doc.track.order),
+        v0: doc.track.v0 ?? 0,
     };
 }
 
@@ -825,51 +741,6 @@ function emitFlatArray(indent: string, items: unknown[]): string {
     return `[\n${inner}\n${indent}]`;
 }
 
-/** an array of already-rendered multi-line entity blocks (each a bare, un-indented string
- *  starting at `{` and ending at `}`, built by `renderSection`/`renderStrip` below) — indents
- *  every line of every block by `indent + "  "` and joins them, entity commas included. */
-function emitBlockArray(indent: string, blocks: string[]): string {
-    if (blocks.length === 0) return "[]";
-    const inner = blocks
-        .map((b) =>
-            b
-                .split("\n")
-                .map((l) => `${indent}  ${l}`)
-                .join("\n"),
-        )
-        .join(",\n");
-    return `[\n${inner}\n${indent}]`;
-}
-
-/** One flat canonical segment record, rendered at local indent zero. */
-function renderSection(sec: DocSegment): string {
-    return [
-        "{",
-        `  "id": ${sec.id},`,
-        `  "order": ${sec.order},`,
-        `  "kind": ${sec.kind},`,
-        `  "run": ${sec.run},`,
-        ...(sec.station === undefined ? [] : [`  "station": ${emitFlat(sec.station)},`]),
-        ...(sec.extent === undefined ? [] : [`  "extent": ${emitFlat(sec.extent)},`]),
-        ...(sec.node === undefined ? [] : [`  "node": ${sec.node},`]),
-        `  "nodes": ${emitFlatArray("  ", sec.nodes)},`,
-        `  "points": ${emitFlatArray("  ", sec.points)}`,
-        "}",
-    ].join("\n");
-}
-
-function renderStrip(st: DocStrip): string {
-    return [
-        "{",
-        `  "id": ${st.id},`,
-        `  "start": ${emitFlat(st.start)},`,
-        `  "end": ${emitFlat(st.end)},`,
-        `  "value": ${emitFlat(st.value)},`,
-        `  "keyframes": ${emitFlatArray("  ", st.keyframes)}`,
-        "}",
-    ].join("\n");
-}
-
 /** the canonical serializer: `serialize(parse(text)) === text` for every document this module
  *  produces (the round-trip oracle's idempotence leg) — no field this function reads is ever
  *  computed from anything but the document itself, so two calls on the same document always
@@ -883,9 +754,7 @@ export function serializeDocument(doc: Kex2dDocument): string {
         `    "velocity": ${emitFlatArray("    ", doc.lanes.velocity)},`,
         `    "force": ${emitFlatArray("    ", doc.lanes.force)},`,
         `    "geo": ${emitFlatArray("    ", doc.lanes.geo)}`,
-        `  },`,
-        `  "segments": ${emitBlockArray("  ", doc.segments.map(renderSection))},`,
-        `  "strips": ${emitBlockArray("  ", doc.strips.map(renderStrip))}`,
+        `  }`,
         "}",
     ];
     return `${lines.join("\n")}\n`;
@@ -1017,7 +886,7 @@ function validatePoint(v: unknown, path: string): DocPoint {
     };
 }
 
-function validateSegment(v: unknown, i: number): DocSegment {
+function _validateSegment(v: unknown, i: number): DocSegment {
     const path = `segments[${i}]`;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
     if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
@@ -1060,7 +929,7 @@ function validateStripKeyframe(v: unknown, path: string): DocStripKeyframe {
     return { id: v.id as number, s: v.s as number, v: v.v as number };
 }
 
-function validateStrip(v: unknown, i: number): DocStrip {
+function _validateStrip(v: unknown, i: number): DocStrip {
     const path = `strips[${i}]`;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
     if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
@@ -1172,65 +1041,17 @@ function validateLanes(v: unknown): Lanes {
  *  other order). Applied AFTER migration, so it only ever sees `CURRENT_VERSION` shape. */
 function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     if (!isInt(raw.version)) fail("version is missing or not an integer");
-    const track = validateTrack(raw.track);
-    if (!Array.isArray(raw.segments)) fail("segments is missing or not an array");
-    if (!Array.isArray(raw.strips)) fail("strips is missing or not an array");
     // v4 retired the one-shot array: the start speed is `track.v0` and nothing else.
     if (raw.oneShot !== undefined)
         fail(`oneShot is not a valid field on a v${CURRENT_VERSION} document (use track.v0)`);
-    const doc: Kex2dDocument = {
+    // `segments`/`strips` left the wire at S2e-i. A file written by the bridge build still
+    // carries them; they are IGNORED rather than refused, because the lanes beside them already
+    // say everything they said (spec S2e-i punch list item 3).
+    return {
         version: raw.version as number,
-        track,
+        track: validateTrack(raw.track),
         lanes: validateLanes(raw.lanes),
-        segments: raw.segments.map((s, i) => validateSegment(s, i)),
-        strips: raw.strips.map((s, i) => validateStrip(s, i)),
     };
-    const ids = new Set<number>();
-    const orders = new Set<number>();
-    for (const segment of doc.segments) {
-        if (ids.has(segment.id))
-            failGuard("duplicateId", `two or more segments share id ${segment.id}`);
-        if (orders.has(segment.order))
-            failGuard("duplicateSectionOrder", `two or more segments claim order ${segment.order}`);
-        ids.add(segment.id);
-        orders.add(segment.order);
-    }
-    const seenRuns = new Set<number>();
-    for (let i = 0; i < doc.segments.length; ) {
-        const first = doc.segments[i]!;
-        if (first.order !== i)
-            failGuard(
-                "duplicateSectionOrder",
-                "segments.order is not a bijection onto chain order",
-            );
-        if (seenRuns.has(first.run)) fail(`run ${first.run} is not contiguous`);
-        seenRuns.add(first.run);
-        if (first.id !== first.run)
-            fail(`run ${first.run}'s first record id does not equal its run id`);
-        let end = i + 1;
-        while (end < doc.segments.length && doc.segments[end]!.run === first.run) end++;
-        const records = doc.segments.slice(i, end);
-        if (records.some((record) => record.kind !== first.kind))
-            fail(`run ${first.run} mixes kinds`);
-        if (first.kind === SectionKind.Force) {
-            for (let j = 0; j < records.length; j++) {
-                if (j === 0 && records[j]!.station !== 0)
-                    fail(`force run ${first.run} does not start at station 0`);
-                if (j > 0 && records[j]!.station! <= records[j - 1]!.station!)
-                    fail(`force run ${first.run} stations are not strictly increasing`);
-                const terminal = j === records.length - 1;
-                if (terminal !== (records[j]!.extent !== undefined))
-                    fail(`force run ${first.run} has missing or duplicate terminal extent`);
-            }
-            const last = records.at(-1)!;
-            if (last.extent! <= last.station!)
-                fail(`force run ${first.run}'s terminal extent is not above its last station`);
-        } else if (records.some((record, j) => j > 0 && record.node! <= records[j - 1]!.node!)) {
-            fail(`geo run ${first.run} node orders are not strictly increasing`);
-        }
-        i = end;
-    }
-    return doc;
 }
 
 // ── semantic invariant validation (document-boundary guard census) ───────────────────────
@@ -1255,44 +1076,62 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
 // payload), and reads the predicates there. This throwaway state is never the caller's `ecs` —
 // `loadDocument`'s "untouched on refusal" guarantee holds by construction, not by rollback.
 
-function checkDuplicateIds(doc: Kex2dDocument): Refusal[] {
-    const refusals: Refusal[] = [];
-    const check = (category: string, ids: number[]) => {
-        const seen = new Set<number>();
-        for (const id of ids) {
-            if (seen.has(id))
-                refusals.push({
-                    guard: "duplicateId",
-                    message: `two or more ${category} share id ${id} — ids must be unique within their category`,
-                });
-            seen.add(id);
-        }
-    };
-    check(
-        "sections",
-        doc.segments.map((s) => s.id),
-    );
-    check(
-        "force points",
-        doc.segments.flatMap((s) => s.points.map((p) => p.id)),
-    );
-    check(
-        "strips",
-        doc.strips.map((st) => st.id),
-    );
-    check(
-        "strip keyframes",
-        doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
-    );
-    return refusals;
+/** every lane's records, paired with their lane — the census walks one list. */
+function allRecords(doc: Kex2dDocument): { lane: Lane; row: LaneSegment }[] {
+    return [
+        ...doc.lanes.velocity.map((row) => ({ lane: Lane.Velocity, row })),
+        ...doc.lanes.force.map((row) => ({ lane: Lane.Force, row })),
+        ...doc.lanes.geo.map((row) => ({ lane: Lane.Geo, row })),
+    ];
 }
 
 /** the pure, no-ECS half: every invariant checkable from the parsed document's own fields.
- *  Named per-guard, matching `track.ts`'s predicate names (or `commands.ts`'s `sectionKind`,
- *  where the guard is an affordance fence rather than a `track.ts` export) so a caller can
- *  branch on the reason without parsing the message, the same contract `commands.ts` keeps. */
+ *  Named per-guard, matching `lanes.laneRefusals`' names, so a caller can branch on the reason
+ *  without parsing the message.
+ *
+ *  **The census shrank at S2e-i, and that is a coverage decision, not a gap.** Six guards —
+ *  `duplicateSectionOrder`, `sectionKind`, `stationTaken`, `stripKeyframeTaken`,
+ *  `minNodeFloor`, `nodeZeroOrigin` — and their fixtures are gone because a two-handle record
+ *  CANNOT violate them: there is no chain order to collide, no per-run kind to mismatch a
+ *  payload against, no station list to double-book, no node chain to floor or to anchor at an
+ *  origin. Each named a property of the retired node/keyframe substrate, not of the lanes.
+ *  `minForceExtent` goes with them for a different reason, measured: it floored a force RUN's
+ *  authored extent, and a run is derived now — flooring the records instead refuses documents
+ *  that are legitimately authored (`force/sub-min-spacing.kex` migrates to a 0.1 m record, and
+ *  `force/f32-hostile-stations.kex` to sub-metre ones), so the whole claim retired with the run.
+ *
+ *  **The record floor is a SETTER refusal, not a document law**, and deliberately so: a gesture
+ *  may not author a span below `RECORD_FLOOR`, but a migrated document that already carries one
+ *  loads rather than being refused — the same asymmetry `restoreAll` has always had, since undo
+ *  restores already-accepted state without re-reading the guards. */
 export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
-    const refusals: Refusal[] = checkDuplicateIds(doc);
+    const refusals: Refusal[] = [];
+    const records = allRecords(doc);
+
+    const seen = new Set<number>();
+    for (const { row } of records) {
+        if (seen.has(row.id))
+            refusals.push({
+                guard: "duplicateId",
+                message: `two or more lane records share id ${row.id} — ids are unique across the whole document`,
+            });
+        seen.add(row.id);
+    }
+
+    for (const [lane, rows] of [
+        [Lane.Velocity, doc.lanes.velocity],
+        [Lane.Force, doc.lanes.force],
+        [Lane.Geo, doc.lanes.geo],
+    ] as const)
+        for (const r of laneRefusals(lane, rows)) refusals.push(r);
+
+    for (const { row } of records) {
+        if (!Number.isFinite(row.exit) || (row.entry !== undefined && !Number.isFinite(row.entry)))
+            refusals.push({
+                guard: "validHandle",
+                message: `lane record ${row.id} carries a non-finite handle`,
+            });
+    }
 
     if (doc.track.order !== undefined && laneOrder(doc.track.order) === undefined)
         refusals.push({
@@ -1300,91 +1139,28 @@ export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
             message: `track.order [${doc.track.order.join(", ")}] is not a permutation of the three lanes — a partial order would leave a lane unranked, which is a different document from the one this file claims`,
         });
 
-    if (doc.segments.length === 0)
+    if (records.length === 0)
         refusals.push({
             guard: "emptyTrack",
-            message: "a document must contain at least one section",
+            message: "a document must author at least one lane record",
         });
 
-    const orders = new Set<number>();
-    for (const segment of doc.segments) {
-        if (orders.has(segment.order))
-            refusals.push({
-                guard: "duplicateSectionOrder",
-                message: `two or more segments claim order ${segment.order}`,
-            });
-        orders.add(segment.order);
-    }
-
-    const runs = new Map<number, DocSegment[]>();
-    for (const segment of doc.segments) {
-        const records = runs.get(segment.run) ?? [];
-        records.push(segment);
-        runs.set(segment.run, records);
-    }
-    for (const [runId, records] of runs) {
-        const kind = records[0]!.kind;
-        const runNodes = records.flatMap((record) => record.nodes);
-        const runPoints = records.flatMap((record) => record.points);
-        if (kind === SectionKind.Geo) {
-            if (runPoints.length > 0)
-                refusals.push({
-                    guard: "sectionKind",
-                    message: `run ${runId} is geo but carries force points`,
-                });
-            if (runNodes.length < 2)
-                refusals.push({
-                    guard: "minNodeFloor",
-                    message: `run ${runId} has fewer than two nodes`,
-                });
-            const node0 = runNodes.find((node) => node.order === 0);
-            if (node0 && (node0.x !== 0 || node0.y !== 0 || node0.theta !== 0))
-                refusals.push({
-                    guard: "nodeZeroOrigin",
-                    message: `run ${runId}'s node 0 must sit at the local origin with heading 0`,
-                });
-        } else {
-            const extent = records.at(-1)!.extent!;
-            if (runNodes.length > 0)
-                refusals.push({
-                    guard: "sectionKind",
-                    message: `run ${runId} is force but carries geo nodes`,
-                });
-            if (extent < MIN_FORCE_LEN)
-                refusals.push({
-                    guard: "minForceExtent",
-                    message: `run ${runId}'s extent ${extent} is below ${MIN_FORCE_LEN}`,
-                });
-        }
-        const stations = new Set<number>();
-        for (const p of runPoints) {
-            const key = Math.fround(p.s);
-            if (stations.has(key))
-                refusals.push({
-                    guard: "stationTaken",
-                    message: `two or more force points on run ${runId} share station ${p.s}`,
-                });
-            stations.add(key);
-        }
-    }
-
-    for (const st of doc.strips) {
-        if (!validStripValue(st.value))
+    for (const r of doc.lanes.velocity)
+        if (!validStripValue(r.exit) || (r.entry !== undefined && !validStripValue(r.entry)))
             refusals.push({
                 guard: "validStripValue",
-                message: `strip ${st.id}'s value ${st.value} must be finite and strictly positive`,
+                message: `velocity record ${r.id}'s handles must be finite and strictly positive`,
             });
-        const stations = new Set<number>();
-        for (const k of st.keyframes) {
-            const key = Math.fround(k.s);
-            if (stations.has(key))
-                refusals.push({
-                    guard: "stripKeyframeTaken",
-                    message: `two or more keyframes on strip ${st.id} share station ${k.s}`,
-                });
-            stations.add(key);
-        }
-    }
+
+    if (
+        doc.track.end !== undefined &&
+        doc.track.end !== 0 &&
+        doc.track.end < trackEnd(doc.lanes, 0)
+    )
+        refusals.push({
+            guard: "endBelowContent",
+            message: `track.end ${doc.track.end} sits below the track's own content (${trackEnd(doc.lanes, 0)} m)`,
+        });
 
     if (!validCoefficient(doc.track.friction))
         refusals.push({
@@ -1418,23 +1194,19 @@ function readTrackScalars(trackEid: number) {
     };
 }
 
-/** a throwaway `State` carrying `doc`'s candidate document — never the caller's live `ecs`,
- *  never bake-ticked (the two geometry guards below are pure derivations off the authored
- *  payload, `track.ts`'s own docblocks on `sectionEdgeDs`/`stripCoversOneEdge`).
+/** a throwaway `State` carrying `doc`'s candidate document — never the caller's live `ecs`.
  *
  *  **Isolation contract: call only where no OTHER `State` is concurrently live in the
- *  process.** `track.ts`'s component storage is module-scoped and eid-indexed with no
- *  per-State bank (spec Residue) — two `State`s allocating the same eid alias the same
- *  storage slot, so building this scratch state while another live `ecs` exists can corrupt
- *  it. `loadDocument` never calls this for exactly that reason (its geometry check runs
- *  in-place on the caller's own `ecs`, with an in-place rollback); this path is for a caller
- *  validating a candidate file in isolation — a one-shot CLI `validate` invocation, a bare
- *  unit test — with no other `State` around to alias. */
+ *  process.** `track.ts`'s component storage is module-scoped and eid-indexed with no per-State
+ *  bank (`AGENTS.md` Hard gotchas) — two `State`s allocating the same eid alias the same
+ *  storage slot, so building this scratch state while another live `ecs` exists can corrupt it.
+ *  `loadDocument` never calls this for exactly that reason (its geometry check runs in-place on
+ *  the caller's own `ecs`, with an in-place rollback); this path is for a caller validating a
+ *  candidate file in isolation — a one-shot CLI `validate`, a bare unit test. */
 function buildScratchEcs(doc: Kex2dDocument): State {
     const ecs = new State();
     const trackEid = createTrack(ecs);
     restoreAll(ecs, docToTrackSnapshot(doc));
-    refreshVelocityRunMembers(ecs);
     Track.ds.set(trackEid, doc.track.ds);
     Track.domain.set(trackEid, doc.track.domain);
     Track.friction.set(trackEid, doc.track.friction);
@@ -1442,24 +1214,38 @@ function buildScratchEcs(doc: Kex2dDocument): State {
     return ecs;
 }
 
-/** the two guards that need a real (throwaway) ECS: strip overlap and the strip min-extent
- *  floor, both read off `track.ts`'s own exported predicates — the exact functions `setStrip`/
- *  `createStrip` check, not a doc-level reimplementation of the edge-range math. */
+/** the one guard that needs a real ECS: a velocity record must cover at least one EDGE of the
+ *  partition it lands in, resolved at each derived run's own step.
+ *
+ *  A record narrower than an edge prescribes nothing — `edgeStrips` maps its two boundaries onto
+ *  the same edge index and the point convention re-maps that onto the preceding edge, so the
+ *  authored span silently governs an edge it does not cover. That is a geometry question, not a
+ *  doc-level number: which edges exist depends on every run's `resolveStep`, so it is read here
+ *  off the same `stripsForStep` framing the bake threads. */
 function checkGeometryInvariants(ecs: State): Refusal[] {
-    const refusals: Refusal[] = [];
-    for (const st of allStrips(ecs)) {
-        if (stripOverlapped(ecs, st.start, st.end, st.id))
-            refusals.push({
-                guard: "stripOverlapped",
-                message: `strip ${st.id} [${st.start}, ${st.end}) overlaps another velocity strip`,
-            });
-        else if (!stripCoversOneEdge(ecs, st.start, st.end))
-            refusals.push({
-                guard: "minExtentFloor",
-                message: `strip ${st.id} [${st.start}, ${st.end}) covers no edge of the current bake`,
-            });
+    const rows = lanesOf(ecs).velocity;
+    if (rows.length === 0) return [];
+    const ds = trackDs(ecs);
+    const covered = new Set<number>();
+    let offset = 0;
+    for (const run of derivedRunsOf(ecs)) {
+        const step = resolveStep(run.length, ds);
+        const grid = new Float32Array(step.edges).fill(step.ds);
+        // one record at a time: the framing DROPS a row that falls wholly outside the run, so a
+        // surviving spec's array index is not the record's own and coverage cannot be read off a
+        // whole-lane framing.
+        for (const r of rows) {
+            const framed = edgeStrips(grid, step.edges, velocityRows([r], offset));
+            if (framed && framed.length > 0 && framed[0]!.end > framed[0]!.start) covered.add(r.id);
+        }
+        for (let i = 0; i < step.edges; i++) offset += grid[i]!;
     }
-    return refusals;
+    return rows
+        .filter((r) => !covered.has(r.id))
+        .map((r) => ({
+            guard: "minExtentFloor",
+            message: `velocity record ${r.id} [${r.start}, ${r.end}) covers no edge of the current partition`,
+        }));
 }
 
 /** the full document-boundary invariant check — every setter guard `restoreAll`'s spawn path
@@ -1607,10 +1393,19 @@ export type MigrationStep = (doc: Record<string, unknown>) => Record<string, unk
 
 /** forward-only migrations, keyed by the version they migrate FROM — `migrations[1]` takes a v1
  *  raw doc and returns a v2 one. The seam exists so a version bump costs one function, not a
- *  rewrite. */
-const migrations: Record<number, MigrationStep> = {
+ *  rewrite.
+ *
+ *  {@link preLaneMigrations} is the prefix that stops at the frozen v3 payload shape: the bake
+ *  digests (`tests/mint-bake-digests.ts`) read every fixture's own v1–v3 text as their reference
+ *  input, and that reference must stay computable after the store cuts over and
+ *  `segments`/`strips` leave the v4 wire. */
+export const preLaneMigrations: Record<number, MigrationStep> = {
     1: dropForceTangent,
     2: sectionsToSegments,
+};
+
+const migrations: Record<number, MigrationStep> = {
+    ...preLaneMigrations,
     3: chainToLanes,
 };
 
@@ -1690,16 +1485,10 @@ export function loadDocument(ecs: State, text: string): void {
     const docRefusals = checkDocInvariants(doc);
     if (docRefusals.length > 0) failSemantics(docRefusals);
 
-    // Reserve every identity carried by the wire before deterministic member synthesis.
-    reserveIds({
-        section: doc.segments.map((s) => s.id),
-        force: doc.segments.flatMap((s) => s.points.map((p) => p.id)),
-        strip: doc.strips.map((st) => st.id),
-        stripKeyframe: doc.strips.flatMap((st) => st.keyframes.map((k) => k.id)),
-        oneShot: [START_SPEED_ID],
-    });
+    // Reserve every identity the wire carried, so a `createRecord` right after a load cannot
+    // collide with one.
     const snap = docToTrackSnapshot(doc);
-    reserveIds({ section: snap.segments.map((s) => s.id) });
+    reserveIds({ record: snap.records.map((r) => r.id) });
 
     // the geometry half (`stripOverlapped`/`stripCoversOneEdge`) needs a REAL ecs to resolve a
     // section's chord length against — but it must be run in-place on THIS `ecs`, never a
@@ -1712,7 +1501,7 @@ export function loadDocument(ecs: State, text: string): void {
     const hadTrack = trackEntity(ecs) !== null;
     const rollbackSnap: TrackSnapshot = hadTrack
         ? snapshotAll(ecs)
-        : { segments: [], strips: [], oneShot: [] };
+        : { records: [], end: 0, order: 0, v0: 0 };
     let trackEid = trackEntity(ecs);
     const rollbackScalars = trackEid === null ? null : readTrackScalars(trackEid);
 
@@ -1723,9 +1512,6 @@ export function loadDocument(ecs: State, text: string): void {
     else Track.count.set(trackEid, 0);
 
     restoreAll(ecs, snap);
-    // Retained top-level velocity records union their stations back into the restored chain;
-    // this also refreshes geo edge membership and all load-derived velocity pointers.
-    refreshVelocityRunMembers(ecs);
     Track.ds.set(trackEid, doc.track.ds);
     Track.domain.set(trackEid, doc.track.domain);
     Track.friction.set(trackEid, doc.track.friction);

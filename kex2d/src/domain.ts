@@ -24,7 +24,7 @@
 import type { State } from "@dylanebert/shallot";
 import { type History, landDomain } from "./history";
 import type { Domain } from "./section";
-import { bakeLive, SectionKind, sectionInfo, sections, trackDomain } from "./track";
+import { bakeLive, runInfo, runsOf, SectionKind, trackDomain } from "./track";
 
 /** whether `convertDomain` can run at all. A flip is a pure view write now — it never touches
  * the store — but the ruler menu still grays a row it cannot honor: with no live bake, or a
@@ -38,9 +38,9 @@ import { bakeLive, SectionKind, sectionInfo, sections, trackDomain } from "./tra
  */
 export function convertible(ecs: State): boolean {
     if (!bakeLive(ecs)) return false;
-    for (const sec of sections(ecs)) {
-        if (sec.kind !== SectionKind.Force) continue;
-        const info = sectionInfo.get(sec.id);
+    for (const run of runsOf(ecs)) {
+        if (run.kind !== SectionKind.Force) continue;
+        const info = runInfo.get(run.id);
         if (!info || info.endSample <= info.startSample) return false;
     }
     return true;

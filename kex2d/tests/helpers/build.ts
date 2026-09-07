@@ -1,23 +1,31 @@
-// Shared test authoring builder: every test that needs a fixture track
-// authors it through `commands.ts`'s op vocabulary — the SAME dispatch layer the CLI
-// and the UI (via `track.ts` setters inside `history` gestures) share — rather than
-// poking `track.ts`'s raw entity-creation primitives (`createSection`, `addNode`,
-// `createForcePoint`, …) directly. Two things a raw-ECS fixture still legitimately does,
-// which this builder does too, because they aren't edits: `new State()` and
-// `createTrack(ecs)` (the bare Track entity — the CLI's `new` verb bootstraps the same
-// way, just via `TrackPlugin.initialize`'s richer default-section seed; a bare `createTrack`
-// with zero sections is what most existing fixtures actually want, since they build their
-// own section shape from there).
+// Shared test authoring builder: every test that needs a fixture track authors it through the
+// S2e-i lane setters — the ONLY authored writers — rather than assembling ECS rows by hand. Two
+// things a fixture still legitimately does, which this builder does too, because they aren't
+// edits: `new State()` and `createTrack(ecs)` (the bare Track entity, no records).
 //
-// A file testing `track.ts`'s setters or `commands.ts` itself directly (differential arms,
-// structural-op arms) is testing THIS layer, not authoring through it — those stay on raw
-// calls by design (`commands.test.ts`, `history.test.ts`, `ops.test.ts`, `track.test.ts`).
+// The three track-level verbs that survived the cutover (friction, resistance, domain) still go
+// through `commands.applyOp`, because that dispatch layer is what the CLI drives; the record
+// verbs re-appear there at S2e-ii and this builder moves onto them then.
 
 import { State } from "@dylanebert/shallot";
 import { applyOp, type Op, type OpResult } from "../../src/commands";
 import { createHistory, type History } from "../../src/history";
 import type { Domain } from "../../src/section";
-import { BakeSystem, createTrack, Handle, type SectionKind, trackEntity } from "../../src/track";
+import { Lane, type LaneSegment } from "../../src/lanes";
+import type { Easing } from "../../src/profile";
+import {
+    BakeSystem,
+    createRecord,
+    createTrack,
+    deleteRecord,
+    setEnd,
+    setOrder,
+    setRecordEase,
+    setRecordHandle,
+    setRecordSpan,
+    setV0,
+    trackEntity,
+} from "../../src/track";
 
 /** thrown when a builder convenience call's op is refused and the caller didn't opt into
  *  reading the refusal itself (`.op` for that) — a fixture author almost always wants a
@@ -34,8 +42,7 @@ export class BuildRefused extends Error {
 
 /** a headless fixture track, authored entirely through `applyOp` — one `history` instance,
  *  one `BakeSystem`-equipped `State`. Every convenience method applies one or more ops and
- *  returns the id a caller needs to keep authoring (a section id, a node's `Handle` eid, a
- *  force/strip/strip-keyframe/one-shot id) — the same stable ids `doc.ts` round-trips. */
+ *  returns the stable record id `doc.ts` round-trips. */
 export class Build {
     readonly ecs: State;
     readonly history: History;
@@ -67,112 +74,97 @@ export class Build {
         return eid;
     }
 
-    /** run the bake so `bakeOut`/`samples`/`sectionInfo` reflect the authored state so far —
+    /** run the bake so `bakeOut`/`samples`/`runInfo` reflect the authored state so far —
      *  every existing raw-ECS fixture's own `state.step(0)` call after building. */
     bake(): this {
         this.ecs.step(0);
         return this;
     }
 
-    // ── sections ───────────────────────────────────────────────────────────────────────
+    // ── lane records ───────────────────────────────────────────────────────────────────
 
-    /** append a new section (geo's default two-node flat seed, or force's two-keyframe
-     *  continuation seed) — `Timeline.svelte`'s own append gesture. */
-    appendSection(kind: SectionKind): number {
-        const id = this.op({ type: "append-section", kind }).id;
-        if (id === undefined) throw new Error("build: append-section returned no id");
-        return id;
+    /** author one record in `lane`, throwing on a refusal — a fixture author almost always
+     *  wants a refused setup call to fail loud rather than silently build a track that isn't
+     *  what the test thinks it is. Returns the record's stable id. */
+    record(lane: Lane, row: Omit<LaneSegment, "id">): number {
+        const w = createRecord(this.ecs, lane, row);
+        if (w.id === null)
+            throw new Error(`build: ${lane} record refused — ${JSON.stringify(w.refusals)}`);
+        return w.id;
     }
 
-    deleteSection(section: number): void {
-        this.op({ type: "delete-section", section });
+    /** a force record over `[start, end)`, owning both handles. */
+    force(
+        start: number,
+        end: number,
+        entry: number,
+        exit = entry,
+        ease: Easing = 0 as Easing,
+    ): number {
+        return this.record(Lane.Force, { start, end, ease, entry, exit });
     }
 
-    convertSection(section: number): void {
-        this.op({ type: "convert-section", section });
+    /** a geo (pitch) record over `[start, end)`, handles in radians. */
+    geo(
+        start: number,
+        end: number,
+        entry: number,
+        exit: number,
+        ease: Easing = 0 as Easing,
+    ): number {
+        return this.record(Lane.Geo, { start, end, ease, entry, exit });
     }
 
-    sectionLength(section: number, length: number): void {
-        this.op({ type: "section-length", section, length });
+    /** a velocity record over `[start, end)`, handles in m/s. */
+    velocity(
+        start: number,
+        end: number,
+        entry: number,
+        exit = entry,
+        ease: Easing = 0 as Easing,
+    ): number {
+        return this.record(Lane.Velocity, { start, end, ease, entry, exit });
     }
 
-    // ── geo nodes ──────────────────────────────────────────────────────────────────────
-
-    /** append one node at the section's tip, then place it at `(x, y)` — the compound every
-     *  hand-authored `addNode(state, sec, x, y)` fixture call becomes: `node-add` has no
-     *  position of its own (it seeds from the live heading, `extendTrack`'s doc), so the
-     *  follow-up `node-move` is what pins the exact fixture coordinate a raw `addNode` call
-     *  used to set directly. Returns the new node's `Handle` eid (order 0 is never reachable
-     *  here — it always exists from section creation; use `moveNode` to reposition it, and
-     *  even that refuses: node 0 is pinned at the local origin by design). */
-    addNode(section: number, x: number, y: number): number {
-        const eid = this.op({ type: "node-add", section }).id;
-        if (eid === undefined) throw new Error("build: node-add returned no id");
-        const order = Handle.order.get(eid);
-        this.op({ type: "node-move", section, order, x, y });
-        return eid;
+    span(id: number, start: number, end: number): void {
+        const w = setRecordSpan(this.ecs, id, start, end);
+        if (w.id === null) throw new Error(`build: span refused — ${JSON.stringify(w.refusals)}`);
     }
 
-    /** reposition an existing node by its order (never 0 — pinned at the local origin). */
-    moveNode(section: number, order: number, x: number, y: number): void {
-        this.op({ type: "node-move", section, order, x, y });
+    handle(id: number, which: "entry" | "exit", value: number | undefined): void {
+        const w = setRecordHandle(this.ecs, id, which, value);
+        if (w.id === null) throw new Error(`build: handle refused — ${JSON.stringify(w.refusals)}`);
     }
 
-    deleteNode(section: number): void {
-        this.op({ type: "node-delete", section });
+    ease(id: number, ease: Easing): void {
+        setRecordEase(this.ecs, id, ease);
     }
 
-    // ── force points ───────────────────────────────────────────────────────────────────
-
-    /** create a force keyframe at the given station/value directly — unlike a geo node,
-     *  `force-create` takes `(s, g)` up front, so no follow-up move is needed. */
-    addForce(section: number, s: number, g: number): number {
-        const id = this.op({ type: "force-create", section, s, g }).id;
-        if (id === undefined) throw new Error("build: force-create returned no id");
-        return id;
-    }
-
-    moveForce(id: number, s: number, g: number): void {
-        this.op({ type: "force-move", id, s, g });
-    }
-
-    deleteForces(ids: number[]): void {
-        this.op({ type: "force-delete", ids });
-    }
-
-    // ── velocity strips ────────────────────────────────────────────────────────────────
-
-    addStrip(start: number, end: number, value: number): number {
-        const id = this.op({ type: "strip-create", start, end, value }).id;
-        if (id === undefined) throw new Error("build: strip-create returned no id");
-        return id;
-    }
-
-    moveStrip(id: number, start: number, end: number, value: number): void {
-        this.op({ type: "strip-move", id, start, end, value });
-    }
-
-    addStripKeyframe(strip: number, s: number, v: number): number {
-        const id = this.op({ type: "strip-keyframe-create", strip, s, v }).id;
-        if (id === undefined) throw new Error("build: strip-keyframe-create returned no id");
-        return id;
-    }
-
-    moveStripKeyframe(id: number, s: number, v: number): void {
-        this.op({ type: "strip-keyframe-move", id, s, v });
-    }
-
-    deleteStripKeyframes(ids: number[]): void {
-        this.op({ type: "strip-keyframe-delete", ids });
+    remove(id: number): void {
+        deleteRecord(this.ecs, id);
     }
 
     // ── track scalars ──────────────────────────────────────────────────────────────────
 
-    /** create-or-move the track-start one-shot — `entrySpeed`'s own value — returns its id. */
-    startSpeed(value: number): number {
-        const id = this.op({ type: "start-speed", value }).id;
-        if (id === undefined) throw new Error("build: start-speed returned no id");
-        return id;
+    /** pin (or unpin, with 0) the track end. */
+    end(value: number): void {
+        const refusals = setEnd(this.ecs, value);
+        if (refusals.length > 0)
+            throw new Error(`build: end refused — ${JSON.stringify(refusals)}`);
+    }
+
+    /** write the lane priority, top to bottom. */
+    order(value: readonly Lane[]): void {
+        const refusals = setOrder(this.ecs, value);
+        if (refusals.length > 0)
+            throw new Error(`build: order refused — ${JSON.stringify(refusals)}`);
+    }
+
+    /** the authored start speed (m/s). */
+    startSpeed(value: number): void {
+        const refusals = setV0(this.ecs, value);
+        if (refusals.length > 0)
+            throw new Error(`build: start-speed refused — ${JSON.stringify(refusals)}`);
     }
 
     friction(value: number): void {
@@ -188,8 +180,8 @@ export class Build {
     }
 }
 
-/** one new headless fixture, `BakeSystem`-equipped, with a bare `Track` entity and zero
- *  sections — the starting point every builder-authored fixture below builds up from. */
+/** one new headless fixture, `BakeSystem`-equipped, with a bare `Track` entity and no records —
+ *  the starting point every builder-authored fixture builds up from. */
 export function build(): Build {
     return new Build();
 }

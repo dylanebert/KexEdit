@@ -41,20 +41,6 @@ import {
     zoomAt,
 } from "../src/timeline";
 import { V0 } from "../src/track";
-import { keyframeRoom, setForcePoint, setStripKeyframe } from "../src/track";
-import { State } from "@dylanebert/shallot";
-import {
-    BakeSystem,
-    createForcePoint,
-    createSection,
-    createStrip,
-    createStripKeyframe,
-    createTrack,
-    destroyStripKeyframe,
-    SectionKind,
-    sectionForces,
-    stripKeyframes,
-} from "../src/track";
 import { deselectAll, editor, selectForce, selectStripKf } from "../src/editor";
 
 // the distance-domain lead-out floor — most of these tests exercise the pure math over a
@@ -1201,53 +1187,6 @@ describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride o
             // cleanup runs regardless of failure — the editor singleton is module-global
             deselectAll();
         }
-    });
-
-    // ── overlap refusal ── both kinds read directional room through `keyframeRoom` (track.ts,
-    // S5b's Δd cap — the block-level drag mechanism this arm pins). The per-write exact-equality
-    // guard `setForcePoint`/`setStripKeyframe` carry internally (`stationTaken`/
-    // `stripKeyframeTaken`) is a SEPARATE, still-live safety net for a non-drag write (the typed
-    // field) — a station a person types in can land bit-exact on purpose, unlike a drag's
-    // continuous sampling, so that guard is asserted too, unchanged.
-    // RED before the S5b fix: `keyframeRoom` did not exist — the block-level drag check called
-    // `keyframeTaken`'s bit-exact equality test, unreachable once F2 deleted the extent clamp
-    // that used to saturate a drag onto a boundary sibling's exact station.
-    test("overlap refusal: `keyframeRoom` reads directional room for both force and strip kinds", () => {
-        // force: two keyframes in one section at s=5 and s=10
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 20);
-        const f0 = createForcePoint(state, sec, 5, 1);
-        createForcePoint(state, sec, 10, 1);
-        state.step(0);
-        // force: the room ahead of f0 (s=5) is 5 (the other key sits at s=10); nothing behind
-        expect(keyframeRoom(state, "force", sec, 5, new Set([f0]), 1)).toBe(5);
-        expect(keyframeRoom(state, "force", sec, 5, new Set([f0]), -1)).toBe(Infinity);
-        // setForcePoint's own exact-equality guard: refuses the s write but lands the g
-        setForcePoint(state, f0, 10, 2.5);
-        const fRow = sectionForces(state, sec).find((r) => r.id === f0);
-        expect(fRow?.s).toBe(5); // s held: overlap refused
-        expect(fRow?.g).toBe(2.5); // g still landed
-
-        // strip: two keyframes on one strip at s=8 and s=12
-        const _sec2 = createSection(state, 1, SectionKind.Force, 20);
-        const strip = createStrip(state, 5, 15, 8) as number;
-        // createStrip seeds two keyframes at start/end; clear them for a clean setup
-        const seeded = stripKeyframes(state, strip);
-        for (const s of seeded) destroyStripKeyframe(state, s.id);
-        // re-create with known positions
-        const sk0 = createStripKeyframe(state, strip, 8, 3);
-        createStripKeyframe(state, strip, 12, 5);
-        state.step(0);
-        // strip: the room ahead of sk0 (s=8) is 4 (the other key sits at s=12); nothing behind
-        expect(keyframeRoom(state, "strip", strip, 8, new Set([sk0]), 1)).toBe(4);
-        expect(keyframeRoom(state, "strip", strip, 8, new Set([sk0]), -1)).toBe(Infinity);
-        // setStripKeyframe's own exact-equality guard: refuses the s write but lands the v
-        setStripKeyframe(state, sk0, 12, 7);
-        const skRow = stripKeyframes(state, strip).find((r) => r.id === sk0);
-        expect(skRow?.s).toBe(8); // s held: overlap refused
-        expect(skRow?.v).toBe(7); // v still landed
     });
 
     // ── nudge ── both kinds nudge through `nudgeKeyframes` (timeline.ts).

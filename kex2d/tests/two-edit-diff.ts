@@ -3,24 +3,15 @@
  *  reshuffled file. Run: `bun run tests/two-edit-diff.ts` (no `package.json` script, same
  *  invoked-by-path convention as `tests/mint-goldens.ts`, `coding.md` Suite speed).
  *
- *  The two edits are deliberately unrelated fields on unrelated entities — a `Track` authored
- *  scalar (`friction`) and a one-shot's `value` — so a correct diff shows exactly two changed
+ *  The two edits are deliberately unrelated fields on unrelated rows — a `Track` authored scalar
+ *  (`friction`) and one lane record's exit handle — so a correct diff shows exactly two changed
  *  lines and nothing else moves (stable id ordering, `doc.ts`'s own Locked-decision emitter
  *  discipline: a value edit is a one-line diff). */
 
 import { State } from "@dylanebert/shallot";
 import { saveDocument } from "../src/doc";
-import {
-    BakeSystem,
-    createOneShot,
-    createSection,
-    createTrack,
-    SectionKind,
-    setOneShotValue,
-    spawnNode,
-    Track,
-} from "../src/track";
-import { scenarios } from "../src/scenarios";
+import { Lane } from "../src/lanes";
+import { BakeSystem, createRecord, createTrack, setRecordHandle, setV0, Track } from "../src/track";
 
 function unifiedDiff(before: string, after: string): string {
     const a = before.split("\n");
@@ -35,26 +26,20 @@ function unifiedDiff(before: string, after: string): string {
     return out.join("\n");
 }
 
-const s = scenarios.find((x) => x.name === "hill-explicit");
-if (!s) throw new Error("scenario not found");
-
 const state = new State();
 state.addSystem(BakeSystem);
 const eid = createTrack(state);
-Track.ds.set(eid, s.ds);
-const sec = createSection(state, 0, SectionKind.Geo, 0);
-s.nodes.forEach((n, i) => {
-    spawnNode(state, sec, i, n.x, n.y, n.theta, n.tangent);
-});
-const oneShotId = createOneShot(state, s.v0);
+setV0(state, 18);
+const a = createRecord(state, Lane.Force, { start: 0, end: 20, ease: 0, entry: 1, exit: 1.5 });
+createRecord(state, Lane.Velocity, { start: 4, end: 12, ease: 0, entry: 14, exit: 14 });
 state.step(0);
 
 const before = saveDocument(state);
 
 // edit 1 — a Track authored scalar.
 Track.friction.set(eid, 0.04);
-// edit 2 — an unrelated one-shot's value, through its own setter (not a raw component write).
-setOneShotValue(state, oneShotId, 25);
+// edit 2 — an unrelated record's exit handle, through its own setter (not a raw column write).
+setRecordHandle(state, a.id as number, "exit", 2.5);
 state.step(0);
 
 const after = saveDocument(state);

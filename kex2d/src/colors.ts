@@ -1,5 +1,5 @@
 import type { State } from "@dylanebert/shallot";
-import { SectionKind, sectionInfo, sections } from "./track";
+import { runInfo, runsOf, SectionKind } from "./track";
 
 /** the kind color language (`ui.md`): geo = cool blue, force = accent gold. Same values
  *  as App.svelte's `--geo`/`--accent`/`--guide` CSS custom properties (the clip strip's
@@ -154,7 +154,7 @@ function oklchToHex(l: number, c: number, h: number): string {
 }
 
 /** one span per baked section, in chain order: its stable id, kind, resolved kind
- *  color, and its sample range on the flat baked SoA (`sectionInfo`). Skips a section
+ *  color, and its sample range on the flat baked SoA (`runInfo`). Skips a run
  *  with no bake info yet (mid-bake / just-created). The shared substrate behind every
  *  kind-colored surface — the viewport polyline (render.ts), the timeline chart curve
  *  and navigator minimap (Timeline.svelte) — each walks these segments and does its
@@ -171,13 +171,13 @@ export interface KindSegment {
 
 export function kindSegments(ecs: State): KindSegment[] {
     const segs: KindSegment[] = [];
-    for (const sec of sections(ecs)) {
-        const info = sectionInfo.get(sec.id);
+    for (const run of runsOf(ecs)) {
+        const info = runInfo.get(run.id);
         if (!info) continue;
         segs.push({
-            id: sec.id,
-            kind: sec.kind,
-            color: kindColor(sec.kind),
+            id: run.id,
+            kind: run.kind,
+            color: kindColor(run.kind),
             startSample: info.startSample,
             endSample: info.endSample,
         });

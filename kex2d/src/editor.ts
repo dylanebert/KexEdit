@@ -11,18 +11,11 @@
 import type { State } from "@dylanebert/shallot";
 import { createHistory, type History, redirectHistory } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
-import {
-    entryOneShot,
-    forceAt,
-    Handle,
-    handleAt,
-    sectionAt,
-    setBakeFreeze,
-    setBakeLanding,
-    stripAt,
-    stripKeyframeAt,
-} from "./track";
-import type { TangentSide } from "./tangents";
+import { recordAt } from "./track";
+
+/** which end of a node's tangent a knob edits. The node substrate is retired at S2e-i; the type
+ *  survives as the selection's own shape until S3 rewrites the surfaces. */
+export type TangentSide = "in" | "out";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
  *  (the Blender/Unity hovered-surface model). */
@@ -487,23 +480,17 @@ export function beginLanding(
         // clear BOTH halves: a prior override left live under a null `editor.landing` would be
         // unreleasable (every skip listener guards on the landing) and bake every frame forever.
         editor.landing = null;
-        setBakeLanding(null);
         return;
     }
     const landing: Landing = { start: performance.now(), section: hold.section, moves };
+    void hold;
     editor.landing = landing;
-    setBakeLanding({
-        section: hold.section,
-        entry: hold.entry,
-        g: (id) => landingG(landing, id, performance.now()),
-    });
 }
 
 /** skip (or expire) the landing: the display snaps to the document's own values — the chart's
  *  diamond override and the bake-seam override clear together (one skip, whole display). */
 export function skipLanding(): void {
     editor.landing = null;
-    setBakeLanding(null);
 }
 
 /** the modal chrome's subject section, or null when no modal presentation holds (kex2d-idioms
@@ -696,7 +683,6 @@ export function beginPin(session: PinSession): void {
     editor.notice = null;
     sandboxH = createHistory();
     redirectHistory(sandboxH);
-    setBakeFreeze({ section: session.section, entry: session.freeze });
 }
 
 /** close pin mode: drop the stamp, the ghost, every lock, the sandbox, and the downstream
@@ -709,7 +695,6 @@ export function endPin(): void {
     editor.pinSolving = false;
     sandboxH = null;
     redirectHistory(null);
-    setBakeFreeze(null);
 }
 
 /** toggle a single force keyframe's lock — the basic lock/free gesture. a no-op outside a live
@@ -1459,43 +1444,15 @@ export const selectionHook = {
         if (_members.size === 0) return null;
         const members: MemberSnap[] = [];
         for (const m of _members.values()) {
-            if (m.kind === "node") {
-                if (!ecs.has(m.id, Handle)) continue; // drop a dead node
-                members.push({
-                    kind: "node",
-                    section: Handle.section.get(m.id),
-                    order: Handle.order.get(m.id),
-                    id: 0,
-                });
-            } else {
-                members.push({ kind: m.kind, section: 0, order: 0, id: m.id, owner: m.owner });
-            }
+            if (m.kind === "node") continue; // the node substrate is retired
+            members.push({ kind: m.kind, section: 0, order: 0, id: m.id, owner: m.owner });
         }
-        let active: ActiveSnap | null = null;
-        if (_active !== null) {
-            if (_active.kind === "node") {
-                if (ecs.has(_active.id, Handle))
-                    active = {
-                        kind: "node",
-                        section: Handle.section.get(_active.id),
-                        order: Handle.order.get(_active.id),
-                        id: 0,
-                    };
-            } else {
-                active = { kind: _active.kind, section: 0, order: 0, id: _active.id };
-            }
-        }
-        let tangentEdit: { section: number; order: number } | null = null;
-        if (editor.tangentEdit !== null && ecs.has(editor.tangentEdit, Handle))
-            tangentEdit = {
-                section: Handle.section.get(editor.tangentEdit),
-                order: Handle.order.get(editor.tangentEdit),
-            };
-        return {
-            members,
-            active,
-            tangentEdit,
-        };
+        const active =
+            _active === null || _active.kind === "node"
+                ? null
+                : { kind: _active.kind, section: 0, order: 0, id: _active.id };
+        void ecs;
+        return { members, active, tangentEdit: null };
     },
     restore(ecs: State, snap: unknown): void {
         editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
@@ -1508,48 +1465,21 @@ export const selectionHook = {
         }
         clearAllMembers();
         for (const m of s.members) {
-            if (m.kind === "node") {
-                const eid = handleAt(ecs, m.section, m.order); // re-resolve across the eid recycle
-                if (eid !== null) memberAdd("node", eid); // drop a member that didn't survive
-            } else if (m.kind === "force") {
-                if (forceAt(ecs, m.id) !== null) memberAdd("force", m.id);
-            } else if (m.kind === "section") {
-                if (sectionAt(ecs, m.id) !== null) memberAdd("section", m.id);
-            } else if (m.kind === "strip") {
-                if (stripAt(ecs, m.id) !== null) memberAdd("strip", m.id);
-            } else if (m.kind === "stripKf") {
-                if (stripKeyframeAt(ecs, m.id) !== null) memberAdd("stripKf", m.id, m.owner);
-            } else if (m.kind === "start") {
-                memberAdd("start", SINGLETON_ID);
-            } else if (m.kind === "oneShot") {
-                // the one-shot may have been deleted by whatever the undo/redo just replayed —
-                // singleton-shaped: add only when it survived.
-                if (entryOneShot(ecs)) memberAdd("oneShot", SINGLETON_ID);
-            }
+            if (m.kind === "start") memberAdd("start", SINGLETON_ID);
+            else if (m.kind === "node")
+                continue; // the node substrate is retired
+            // every other authored member is a lane record, addressed by its stable id: it
+            // survives the replay only when the record does.
+            else if (recordAt(ecs, m.id) !== null) memberAdd(m.kind, m.id, m.owner);
         }
         // restore the active member
-        if (s.active !== null) {
-            if (s.active.kind === "node") {
-                const eid = handleAt(ecs, s.active.section, s.active.order);
-                if (eid !== null && memberHas("node", eid)) _active = { kind: "node", id: eid };
-                else _active = lastMemberOfAny();
-            } else {
-                // `ActiveSnap` carries no owner field, but the member loop above already
-                // restored each member with its flag — so the active takes the map's own
-                // member object, keeping the stripKf owner every live write gives it
-                _active = _members.get(memberKey(s.active.kind, s.active.id)) ?? lastMemberOfAny();
-            }
+        if (s.active !== null && s.active.kind !== "node") {
+            // `ActiveSnap` carries no owner field, but the member loop above already restored
+            // each member with its flag — so the active takes the map's own member object.
+            _active = _members.get(memberKey(s.active.kind, s.active.id)) ?? lastMemberOfAny();
         } else {
             _active = lastMemberOfAny();
         }
-        // restore sub-modes — only when the selection is exactly the sub-mode's subject
-        if (s.tangentEdit !== null) {
-            const eid = handleAt(ecs, s.tangentEdit.section, s.tangentEdit.order);
-            const nv = kindView("node");
-            editor.tangentEdit =
-                eid !== null && nv.ids.size === 1 && nv.active === eid ? eid : null;
-        } else {
-            editor.tangentEdit = null;
-        }
+        editor.tangentEdit = null;
     },
 };

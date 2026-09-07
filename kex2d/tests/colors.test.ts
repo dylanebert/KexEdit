@@ -172,23 +172,11 @@ describe("token mirrors (App.svelte :root)", () => {
     });
 });
 
-describe("hover outline lift — a glyph's ink stroke joins its hovered tone (kex2d-idioms 10b)", () => {
-    test("render.ts derives every glyph hover stroke through hovered(), never a literal", () => {
-        // the color channel is hover's ONE channel: on hover a viewport glyph's dark ink stroke
-        // lifts to the same hovered() tone its fill wears — silhouette contrast without a size
-        // change. force markers resolve through the helper; the boundary anchor's own lift is
-        // now proven behaviorally (`tests/render.test.ts` reads the actual `strokeStyle` off a
-        // recorded draw call, not this source text — kex2d-followups follow-up 9).
-        const render = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
-        // presence, never an occurrence COUNT: a count breaks on a legitimate hoist into a local
-        // and passes on a tone computed and never used. What the lift DOES is pinned honestly by
-        // the harness ray-run off the real canvas (`harness/force.pw.ts` step 4b) — this only
-        // pins that the tone comes from the shared helper rather than a hand-written literal.
-        expect(render.includes("hovered(COLOR_FORCE)")).toBe(true);
-        // the grow channel is OUT (user feel verdict): no hover radius scaling anywhere.
-        expect(render.includes("HOVER_GROW")).toBe(false);
-    });
-});
+// The glyph hover-lift source pin retired with the glyphs: `render.ts` draws the bake polyline
+// and the cart at S2e-i, and force markers, node handles and tangent knobs went with the node
+// substrate. What the lift DOES is still pinned behaviorally where a glyph survives
+// (`tests/render.test.ts` reads a real `strokeStyle` off a recorded draw call); re-pointing a
+// source-text pin at a renderer that no longer draws the glyph would pin nothing.
 
 // the tangent-knob calibration (kex2d-burndown feel fix: one appearance, ink outline at rest,
 // hover lifts both channels, no explicit/ghost fork) used to be a source-pin regex over

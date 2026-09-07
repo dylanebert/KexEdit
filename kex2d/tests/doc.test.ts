@@ -9,50 +9,27 @@ import {
     loadDocument,
     migrate,
     type MigrationStep,
+    preLaneMigrations,
     numLit,
     parseDocument,
     saveDocument,
     serializeDocument,
-    v3Payloads,
 } from "../src/doc";
 import { Lane, emptyLanes, entryValue, laneExclusive } from "../src/lanes";
-import { chain } from "../src/section";
 import { DEFAULT_G, Easing } from "../src/profile";
-import { scenarios } from "../src/scenarios";
 import { TangentMode } from "../src/spline";
 import {
-    addNode,
-    assertRunStructure,
     bakeOut,
     BakeSystem,
-    createForcePoint,
-    createOneShot,
-    createSection,
-    createStrip,
-    createStripKeyframe,
+    createRecord,
     createTrack,
-    convertSection,
-    entryOneShot,
-    refreshVelocityRunMembers,
-    resetSection,
+    entrySpeed,
+    lanesOf,
     samples,
-    SectionKind,
-    segmentAt,
-    Segment,
-    setSegmentExtentRippled,
+    setV0,
     snapshotAll,
-    snapshotRun,
-    spawnNode,
-    spliceGeoMembers,
-    setSectionLength,
     Track,
     trackEntity,
-    allStrips,
-    stripKeyframes,
-    MIN_FORCE_LEN,
-    MAX_SAMPLES,
-    type TrackSnapshot,
-    entrySpeed,
 } from "../src/track";
 
 // the document boundary (spec `kex2d-serialization`): save → load → bake must be byte-identical
@@ -60,40 +37,27 @@ import {
 // idempotent (`serialize(parse(text)) === text`), f32 must survive the text form exactly, and a
 // rejected load must leave the live document untouched. Device-free — pure ECS + JSON, no GPU.
 
-/** a fresh geo track carrying a scenario's exact node list — `spawnNode` (not `addNode`) so the
- *  node's authored `theta`/`tangent` land byte-identical to the scenario's own values, matching
- *  what `evalGeo` (the scenario corpus's own oracle) would see. */
-function scenarioTrack(s: (typeof scenarios)[number]): { state: State; eid: number } {
+/** a fresh lane track: one geo record, one force record, one velocity record — the smallest
+ *  document that exercises all three lanes through the wire. */
+function laneTrack(): { state: State; eid: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    Track.ds.set(eid, s.ds);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    s.nodes.forEach((n, i) => {
-        spawnNode(state, sec, i, n.x, n.y, n.theta, n.tangent);
-    });
-    spliceGeoMembers(state, sec);
-    createOneShot(state, s.v0);
+    setV0(state, 22);
+    createRecord(state, Lane.Geo, { start: 0, end: 24, ease: 0, entry: 0, exit: 0.2 });
+    createRecord(state, Lane.Force, { start: 24, end: 44, ease: 1, entry: 1, exit: 1.4 });
+    createRecord(state, Lane.Velocity, { start: 4, end: 14, ease: 0, entry: 22, exit: 18 });
     return { state, eid };
 }
 
-/** a flat two-node geo track (the plugin's own seed shape) — the rejection-arm fixture, where
- *  the exact geometry doesn't matter, only that it survives a refused load untouched. */
-/** a track snapshot with the start speed's session address normalised to the id a load mints.
- *  v4's wire holds the start speed as `track.v0` and no identity, so a save → load renumbers
- *  the row; its authored VALUE is what round-trips. */
-function withMintedStartSpeed(snap: TrackSnapshot): TrackSnapshot {
-    return { ...snap, oneShot: snap.oneShot.map((o) => ({ ...o, id: 0 })) };
-}
-
+/** a flat one-record track — the rejection-arm fixture, where the exact geometry doesn't
+ *  matter, only that it survives a refused load untouched. */
 function flatTrack(): { state: State; eid: number } {
     const state = new State();
     state.addSystem(BakeSystem);
     const eid = createTrack(state);
-    const sec = createSection(state, 0, SectionKind.Geo, 0);
-    addNode(state, sec, 0, 0);
-    addNode(state, sec, 24, 0);
-    createOneShot(state, 22);
+    setV0(state, 22);
+    createRecord(state, Lane.Geo, { start: 0, end: 24, ease: 0, entry: 0, exit: 0 });
     return { state, eid };
 }
 
@@ -114,163 +78,28 @@ function bakedArrays(eid: number) {
     };
 }
 
-function velocityUnionTrack() {
-    const state = new State();
-    createTrack(state);
-    const run = createSection(state, 0, SectionKind.Force, 40);
-    for (const [station, g] of [
-        [0, 1],
-        [8, 1],
-        [20, 0],
-        [32, 1],
-        [40, 1],
-    ] as const)
-        createForcePoint(state, run, station, g);
-    const strip = createStrip(state, 2, 40, 8)!;
-    createStripKeyframe(state, strip, 20, 40);
-    createStripKeyframe(state, strip, 30, 3);
-    createOneShot(state, 25);
-    refreshVelocityRunMembers(state);
-    return { state, run, strip };
-}
-
-function stableVelocitySnapshot(state: State, run: number, strip: number) {
-    return {
-        run: {
-            ...snapshotRun(state, run),
-            members: snapshotRun(state, run).members.map(
-                ({ velocityBoundary: _pointer, ...member }) => member,
-            ),
-        },
-        strips: allStrips(state).map(({ eid: _eid, ...row }) => row),
-        keys: stripKeyframes(state, strip).map(({ eid: _eid, ...row }) => row),
-        // the start speed's VALUE, not its session address: v4's wire carries `track.v0` and
-        // mints the address on load (`doc.ts`'s `START_SPEED_ID`).
-        oneShot: entryOneShot(state)!.value,
-    };
-}
-
-test("velocity-unioned save and three reloads are an identity fixed point", () => {
-    const { state, run, strip } = velocityUnionTrack();
-    const station30 = snapshotRun(state, run).members.find(
-        (member) => member.runStation === 30,
-    )!.id;
+test("a three-lane save and three reloads are an identity fixed point", () => {
+    const { state } = laneTrack();
     let text = saveDocument(state);
+    const before = snapshotAll(state);
     for (let reload = 0; reload < 3; reload++) {
         loadDocument(state, text);
         expect(saveDocument(state)).toBe(text);
-        expect(snapshotRun(state, run).members.find((member) => member.runStation === 30)!.id).toBe(
-            station30,
-        );
+        expect(snapshotAll(state)).toEqual(before);
         text = saveDocument(state);
     }
-    expect(
-        stableVelocitySnapshot(state, run, strip).keys.find((key) => key.s === 30)?.id,
-    ).toBeDefined();
 });
 
-test("maximally trimmed velocity-unioned document reloads exactly", () => {
-    const { state, run, strip } = velocityUnionTrack();
-    const terminal = snapshotRun(state, run).members.find((member) => member.runStation === 32)!.id;
-    setSegmentExtentRippled(state, terminal, MIN_FORCE_LEN);
-    const before = stableVelocitySnapshot(state, run, strip);
-    const text = saveDocument(state);
-    loadDocument(state, text);
-    expect(saveDocument(state)).toBe(text);
-    expect(stableVelocitySnapshot(state, run, strip)).toEqual(before);
-    expect(allStrips(state)[0]!.end).toBeGreaterThan(
-        Segment.runExtent.get(segmentAt(state, snapshotRun(state, run).members[0]!.id)!),
-    );
-});
-
-describe("round-trip over the scenarios.ts corpus", () => {
-    // `loop-explicit` is the one scenario that cannot round-trip through v4: its Mirror tangents
-    // sit at the bezier control offset where `spline.hermite` reads a velocity, so the claimed
-    // circle bakes ~1 m near-cusps that no ≥1 m pitch record represents, and the geo lane's own
-    // migration refuses it at the record floor (spec `kex2d-segment-gestures` Validation 2 and
-    // 9). Its refusal is asserted below rather than silently dropped.
-    const Refused = "loop-explicit";
-
-    test(`${Refused}: saving refuses with a remedy naming the retired build`, () => {
-        const a = scenarioTrack(scenarios.find((x) => x.name === Refused)!);
+describe("a three-lane document round-trips through the wire", () => {
+    test("save → load → bake is byte-identical, and the text is a fixed point", () => {
+        const a = laneTrack();
         a.state.step(0);
-        expect(() => saveDocument(a.state)).toThrow(/retired\/pose-ux/);
-        expect(() => saveDocument(a.state)).toThrow(/cannot be fitted to pitch records/);
-    });
 
-    for (const s of scenarios) {
-        if (s.name === Refused) continue;
-        test(`${s.name}: save → load → bake is byte-identical`, () => {
-            const a = scenarioTrack(s);
-            a.state.step(0);
-
-            const text = saveDocument(a.state);
-            const authored = snapshotAll(a.state);
-            const baked = bakedArrays(a.eid);
-
-            // canonical idempotence: re-emitting a parsed document reproduces the same text.
-            expect(serializeDocument(parseDocument(text))).toBe(text);
-
-            const b = new State();
-            b.addSystem(BakeSystem);
-            loadDocument(b, text);
-            b.step(0);
-            const bEid = trackEntity(b);
-            if (bEid === null) throw new Error("no track after load");
-
-            // authored-state deep equality (TrackSnapshot) — every section/node/point/strip/
-            // one-shot the document carries, plus the four Track scalars.
-            expect(withMintedStartSpeed(snapshotAll(b))).toEqual(withMintedStartSpeed(authored));
-            expect(snapshotAll(b).oneShot.map((o) => o.value)).toEqual(
-                authored.oneShot.map((o) => o.value),
-            );
-
-            // bakeOut/samples arrays byte-identical.
-            expect(bakedArrays(bEid)).toEqual(baked);
-        });
-    }
-});
-
-describe("a document with strips, a force section, and an explicit geo tangent round-trips", () => {
-    function widerTrack(): { state: State; eid: number } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        Track.friction.set(eid, 0.03);
-        Track.resistance.set(eid, 3e-4);
-        const geo = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, geo, 0, 0);
-        spawnNode(state, geo, 1, 40, 8, 0.2, {
-            mode: TangentMode.Free,
-            // Free stores the two sides independently; they share a DIRECTION here, so the
-            // node is smooth. A C0 corner or a tangent much shorter than its chord makes a
-            // near-cusp, which is a sub-quantum feature `migrations[3]` refuses — and this arm
-            // is about the wire, not the fit.
-            inX: 28,
-            inY: 5.6,
-            outX: 32,
-            outY: 6.4,
-        });
-        addNode(state, geo, 80, 0);
-        spliceGeoMembers(state, geo);
-        const force = createSection(
-            state,
-            snapshotAll(state).segments.length,
-            SectionKind.Force,
-            30,
-        );
-        createForcePoint(state, force, 0, 1.5, Easing.Cubic);
-        createForcePoint(state, force, 15, 2.5, Easing.Quintic);
-        createStrip(state, 5, 25, 24);
-        createOneShot(state, 22);
-        return { state, eid };
-    }
-
-    test("save → load → bake is byte-identical, deep-equal, and idempotent", () => {
-        const a = widerTrack();
-        a.state.step(0);
         const text = saveDocument(a.state);
+        const authored = snapshotAll(a.state);
         const baked = bakedArrays(a.eid);
+
+        // canonical idempotence: re-emitting a parsed document reproduces the same text.
         expect(serializeDocument(parseDocument(text))).toBe(text);
 
         const b = new State();
@@ -280,76 +109,32 @@ describe("a document with strips, a force section, and an explicit geo tangent r
         const bEid = trackEntity(b);
         if (bEid === null) throw new Error("no track after load");
 
-        expect(saveDocument(b)).toBe(text);
+        // authored-state deep equality — every record and every track-level scalar.
+        expect(snapshotAll(b)).toEqual(authored);
+        // bakeOut/samples arrays byte-identical.
         expect(bakedArrays(bEid)).toEqual(baked);
     });
-});
 
-describe("conversion/reset conserve the frozen-v3 run frame", () => {
-    function fixedPoint(state: State): void {
-        assertRunStructure(state);
-        const saved = saveDocument(state);
-        const loaded = new State();
-        loadDocument(loaded, saved);
-        assertRunStructure(loaded);
-        expect(saveDocument(loaded)).toBe(saved);
-    }
-
-    test("force trim rebuilds before save and remains a reload/save fixed point", () => {
+    // **The dissolved constraint** (spec S2e-i punch list item 3): `docFromEcs` emits the stored
+    // rows and never fits, so a record NO fit would accept still saves and round-trips exactly.
+    // Red by routing the save through the fit: `lanesFromChain` cannot represent this record, so
+    // a save that re-derived would either refuse it or move it.
+    test("a 1 m pitch record turning 3 radians saves and round-trips byte-identically", () => {
         const state = new State();
+        state.addSystem(BakeSystem);
         createTrack(state);
-        const force = createSection(state, 0, SectionKind.Force, 30);
-        createForcePoint(state, force, 0, 1);
-        createForcePoint(state, force, 12, 2);
-        createForcePoint(state, force, 30, 1);
-        refreshVelocityRunMembers(state);
-        setSectionLength(state, force, 8);
-        fixedPoint(state);
-    });
+        setV0(state, 20);
+        createRecord(state, Lane.Geo, { start: 0, end: 1, ease: 0, entry: 0, exit: 3 });
+        createRecord(state, Lane.Force, { start: 1, end: 21, ease: 1, entry: 1, exit: 1 });
+        const text = saveDocument(state);
+        expect(text).toContain('"exit":3');
+        const authored = lanesOf(state).geo[0]!;
 
-    test("default geo→force, multi-edge geo→force, velocity-unioned force→geo, and resized-force reset", () => {
-        {
-            const state = new State();
-            createTrack(state);
-            const geo = createSection(state, 0, SectionKind.Geo, 0);
-            addNode(state, geo, 0, 0);
-            addNode(state, geo, 24, 0);
-            spliceGeoMembers(state, geo);
-            convertSection(state, geo);
-            fixedPoint(state);
-        }
-        {
-            const state = new State();
-            createTrack(state);
-            const geo = createSection(state, 0, SectionKind.Geo, 0);
-            addNode(state, geo, 0, 0);
-            addNode(state, geo, 12, 2);
-            addNode(state, geo, 30, 0);
-            spliceGeoMembers(state, geo);
-            convertSection(state, geo);
-            fixedPoint(state);
-        }
-        {
-            const state = new State();
-            createTrack(state);
-            const force = createSection(state, 0, SectionKind.Force, 30);
-            createForcePoint(state, force, 0, 1);
-            createForcePoint(state, force, 30, 1);
-            createStrip(state, 5, 20, 12);
-            refreshVelocityRunMembers(state);
-            convertSection(state, force);
-            fixedPoint(state);
-        }
-        {
-            const state = new State();
-            createTrack(state);
-            const force = createSection(state, 0, SectionKind.Force, 30);
-            createForcePoint(state, force, 0, 1);
-            createForcePoint(state, force, 30, 1);
-            setSectionLength(state, force, 41.25);
-            resetSection(state, force);
-            fixedPoint(state);
-        }
+        const b = new State();
+        b.addSystem(BakeSystem);
+        loadDocument(b, text);
+        expect(saveDocument(b)).toBe(text);
+        expect(lanesOf(b).geo[0]).toEqual(authored);
     });
 });
 
@@ -424,29 +209,29 @@ describe("f32 exactness: emit/parse/Math.fround round-trips identical bits", () 
         expect(() => numLit(Number.NEGATIVE_INFINITY)).toThrow(/non-finite/);
     });
 
-    test("through the real ECS write path: f32 columns survive a save→load cycle bit-identical", () => {
+    test("through the real ECS write path: the columns survive a save→load cycle bit-identical", () => {
         const rng = mulberry32(1234);
         const state = new State();
         state.addSystem(BakeSystem);
         const eid = createTrack(state);
-        const ds = Math.fround(0.5 + rng() * 0.5); // clear of MAX_SAMPLES for this node spread
+        const ds = Math.fround(0.5 + rng() * 0.5);
         Track.ds.set(eid, ds);
         Track.friction.set(eid, Math.fround(rng() * 0.1));
         Track.resistance.set(eid, Math.fround(rng() * 1e-3));
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        for (let i = 0; i < 8; i++) {
-            spawnNode(
-                state,
-                sec,
-                i + 1,
-                Math.fround((i + 1) * 15 + rng() * 5),
-                Math.fround((rng() - 0.5) * 10),
-                0,
-            );
-        }
-        spliceGeoMembers(state, sec);
-        createOneShot(state, 22);
+        setV0(state, 22);
+        // f64 stations: a station f32 CANNOT represent, so a column that silently narrowed
+        // would come back a different number and the round-trip below would fail.
+        const hostile = 40.12345678901234;
+        expect(Math.fround(hostile)).not.toBe(hostile);
+        createRecord(state, Lane.Geo, { start: 0, end: hostile, ease: 0, entry: 0, exit: 0.25 });
+        for (let i = 0; i < 8; i++)
+            createRecord(state, Lane.Force, {
+                start: hostile + i * 6,
+                end: hostile + (i + 1) * 6,
+                ease: 1,
+                entry: Math.fround(1 + rng() * 0.5),
+                exit: Math.fround(1 + rng() * 0.5),
+            });
         state.step(0);
 
         const text = saveDocument(state);
@@ -463,12 +248,8 @@ describe("f32 exactness: emit/parse/Math.fround round-trips identical bits", () 
         expect(bits(Track.ds.get(bEid))).toBe(dsBits);
         expect(bits(Track.friction.get(bEid))).toBe(frictionBits);
         expect(bits(Track.resistance.get(bEid))).toBe(resistanceBits);
-        // v4 carries the start speed as `track.v0` alone, so a load mints its session address
-        // rather than restoring one: the authored VALUE round-trips, the address need not.
-        expect(withMintedStartSpeed(snapshotAll(b))).toEqual(withMintedStartSpeed(authored));
-        expect(snapshotAll(b).oneShot.map((o) => o.value)).toEqual(
-            authored.oneShot.map((o) => o.value),
-        );
+        expect(snapshotAll(b)).toEqual(authored);
+        expect(lanesOf(b).geo[0]!.end).toBe(hostile);
     });
 });
 
@@ -535,15 +316,15 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         expect(snapshotAll(state)).toEqual(before);
     });
 
-    test("malformed shape (a node missing a required field) refuses and leaves the document untouched", () => {
+    test("malformed shape (a record missing a required field) refuses and leaves the document untouched", () => {
         const { state } = flatTrack();
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        delete doc.segments[0].nodes[0].theta;
+        delete doc.lanes.geo[0].exit;
         const bad = JSON.stringify(doc);
 
-        expect(() => loadDocument(state, bad)).toThrow(/nodes\[0\]\.theta/);
+        expect(() => loadDocument(state, bad)).toThrow(/lanes\.geo\[0\]\.exit/);
         expect(snapshotAll(state)).toEqual(before);
     });
 
@@ -566,45 +347,23 @@ describe("rejection arms: refuse with a named remedy, touch nothing", () => {
         expect(Track.domain.get(trackEntity(state) as number)).toBe(beforeDomain);
     });
 
-    test("an out-of-range force point ease refuses and leaves the document untouched", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Force, 30);
-        createForcePoint(state, sec, 5, 1.5, Easing.Cubic);
-        createOneShot(state, 22);
+    test("an out-of-range lane easing refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        doc.segments[0].points[0].boundary.ease = 999;
-        const bad = JSON.stringify(doc);
-
-        expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.boundary\.ease/);
+        doc.lanes.geo[0].ease = 999;
+        expect(() => loadDocument(state, JSON.stringify(doc))).toThrow(/ease/);
         expect(snapshotAll(state)).toEqual(before);
-        expect(trackEntity(state)).toBe(eid);
     });
 
-    test("an out-of-range explicit tangent mode refuses and leaves the document untouched", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const sec = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, sec, 0, 0);
-        spawnNode(state, sec, 1, 20, 4, 0, {
-            mode: TangentMode.Free,
-            inX: 14,
-            inY: 0,
-            outX: 14,
-            outY: 0,
-        });
-        createOneShot(state, 22);
+    test("a non-finite lane handle refuses and leaves the document untouched", () => {
+        const { state } = flatTrack();
         state.step(0);
         const before = snapshotAll(state);
         const doc = JSON.parse(saveDocument(state));
-        doc.segments[0].nodes[1].tangent.mode = 0; // 0 (Auto) is never a valid EXPLICIT tangent
-        const bad = JSON.stringify(doc);
-
-        expect(() => loadDocument(state, bad)).toThrow(/tangent\.mode/);
+        doc.lanes.geo[0].exit = "nope";
+        expect(() => loadDocument(state, JSON.stringify(doc))).toThrow(/exit/);
         expect(snapshotAll(state)).toEqual(before);
     });
 
@@ -638,95 +397,71 @@ describe("v1 → v2 migration: drops force-tangent keys, preserves geo tangents"
      *  anymore) — built from a real v2 document (`docFromEcs`) so every other field is
      *  authentically canonical, then downgraded to v1 by hand. */
     function v1TextWithForceTangent(): { text: string; geoTangent: DocGeoTangent } {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        createTrack(state);
-        const geo = createSection(state, 0, SectionKind.Geo, 0);
-        addNode(state, geo, 0, 0);
         const geoTangent = { mode: TangentMode.Free, inX: 14, inY: 0, outX: 14, outY: 0 };
-        spawnNode(state, geo, 1, 20, 4, 0, geoTangent);
-        const force = createSection(state, 1, SectionKind.Force, 30);
-        createForcePoint(state, force, 0, 1.5, Easing.Cubic);
-        createForcePoint(state, force, 15, 2.5, Easing.Quintic);
-        createOneShot(state, 22);
-
-        const doc = JSON.parse(saveDocument(state));
-        doc.version = 1;
-        // Collapse the current edge records back to the historical one-record-per-section v1
-        // shape before exercising both migrations.
-        const byRun = new Map<number, any[]>();
-        for (const segment of doc.segments) {
-            const rows = byRun.get(segment.run) ?? [];
-            rows.push(segment);
-            byRun.set(segment.run, rows);
-        }
-        doc.sections = [...byRun.values()].map((rows) => ({
-            id: rows[0].run,
-            order: rows[0].order,
-            kind: rows[0].kind,
-            length: rows.at(-1).extent ?? 0,
-            nodes: rows.flatMap((row) => row.nodes),
-            points: rows
-                .flatMap((row) => row.points)
-                .map((p: Record<string, unknown>) => {
-                    const boundary = p.boundary as { g: number; ease: number };
-                    return { id: p.id, s: p.s, g: boundary.g, ease: boundary.ease };
-                }),
-        }));
-        delete doc.segments;
-        // the pre-S3 explicit-handle shape: a mode + one stored (Δs, Δg) offset.
-        doc.sections[1].points[1].tangent = { mode: TangentMode.Free, out: { ds: 3, dg: -0.5 } };
+        const doc = {
+            version: 1,
+            track: { ds: 0.5, domain: 0, friction: 0, resistance: 0 },
+            sections: [
+                {
+                    id: 0,
+                    order: 0,
+                    kind: 0,
+                    length: 0,
+                    nodes: [
+                        { order: 0, x: 0, y: 0, theta: 0 },
+                        { order: 1, x: 20, y: 4, theta: 0, tangent: geoTangent },
+                    ],
+                    points: [],
+                },
+                {
+                    id: 1,
+                    order: 1,
+                    kind: 1,
+                    length: 30,
+                    nodes: [],
+                    points: [
+                        { id: 0, s: 0, g: 1.5, ease: Easing.Cubic },
+                        // the pre-S3 explicit-handle shape: a mode + one stored (Δs, Δg) offset.
+                        {
+                            id: 1,
+                            s: 15,
+                            g: 2.5,
+                            ease: Easing.Quintic,
+                            tangent: { mode: TangentMode.Free, out: { ds: 3, dg: -0.5 } },
+                        },
+                    ],
+                },
+            ],
+            strips: [],
+            oneShot: [{ id: 0, value: 22 }],
+        };
         return { text: JSON.stringify(doc), geoTangent };
     }
 
-    test("a v1 file's force-tangent key disappears on migration; its geo tangent survives", () => {
+    test("a v1 file's force-tangent key disappears at migrations[1]; its geo tangent survives", () => {
+        // read at the STEP, not at the loaded document: `segments`/`strips` left the v4 wire at
+        // S2e-i, so the shape this migration reshapes is only observable here.
         const { text, geoTangent } = v1TextWithForceTangent();
-        const doc = parseDocument(text);
-
-        const forcePoint = doc.segments[1].points[1] as unknown as Record<string, unknown>;
-        expect("tangent" in forcePoint).toBe(false);
-        expect(doc.segments[0].nodes[1].tangent).toEqual(geoTangent);
+        const v2 = preLaneMigrations[1]!(JSON.parse(text)) as {
+            version: number;
+            sections: { nodes: { tangent?: DocGeoTangent }[]; points: Record<string, unknown>[] }[];
+        };
+        expect(v2.version).toBe(2);
+        for (const point of v2.sections[1]!.points) expect("tangent" in point).toBe(false);
+        expect(v2.sections[0]!.nodes[1]!.tangent).toEqual(geoTangent);
     });
 
-    test("loading a v1 file with a force-tangent key stamps v2 and stabilizes on re-save", () => {
+    test("a v1 file with a force-tangent key loads and stabilizes on re-save", () => {
         const { text } = v1TextWithForceTangent();
         const state = new State();
         state.addSystem(BakeSystem);
         loadDocument(state, text);
-        const v2Text = saveDocument(state);
-        expect(JSON.parse(v2Text).version).toBe(CURRENT_VERSION);
-
-        // load→save stabilizes: the migrated form is a fixed point, not a one-time transform.
-        const state2 = new State();
-        state2.addSystem(BakeSystem);
-        loadDocument(state2, v2Text);
-        expect(saveDocument(state2)).toBe(v2Text);
-    });
-
-    test("a v2 write never carries a points[].tangent key, on any section", () => {
-        const { text } = v1TextWithForceTangent();
-        const state = new State();
-        state.addSystem(BakeSystem);
-        loadDocument(state, text);
-        const doc = JSON.parse(saveDocument(state));
-        for (const section of doc.segments) {
-            for (const point of section.points) expect("tangent" in point).toBe(false);
-        }
-    });
-
-    test("a v2 document carrying a stray points[].tangent key is malformed, refused by name", () => {
-        const { state } = flatTrack();
-        const sec = createSection(state, 1, SectionKind.Force, 30);
-        createForcePoint(state, sec, 5, 1);
-        state.step(0);
-        const before = snapshotAll(state);
-        const doc = JSON.parse(saveDocument(state));
-        expect(doc.version).toBe(CURRENT_VERSION);
-        doc.segments[1].points[0].tangent = { mode: TangentMode.Free };
-        const bad = JSON.stringify(doc);
-
-        expect(() => loadDocument(state, bad)).toThrow(/points\[0\]\.tangent/);
-        expect(snapshotAll(state)).toEqual(before);
+        const saved = saveDocument(state);
+        expect(JSON.parse(saved).version).toBe(CURRENT_VERSION);
+        const b = new State();
+        b.addSystem(BakeSystem);
+        loadDocument(b, saved);
+        expect(saveDocument(b)).toBe(saved);
     });
 });
 
@@ -755,29 +490,8 @@ describe("committed golden fixture: tests/fixtures/hill-explicit-golden.kex", ()
         // of any other test in this run having advanced the process-wide id counter.
         expect(saveDocument(b)).toBe(text);
 
-        // Capture b's bake BEFORE constructing a second State. `samples`/`bakeOut`
-        // (`track.ts:1108`/`1123`) are module-level Maps keyed by raw numeric entity id, and
-        // `track.ts:1123`'s own OWED note names the collision: two independent `State()`s both
-        // start id counting at 0, so `b` and a freshly-built `a` below both resolve to track
-        // entity 1 and share ONE map slot. `bakedArrays` already copies out of the typed arrays
-        // (`Array.from`), so reading it now, before `a.state.step(0)` overwrites that slot, is
-        // what makes the comparison below discriminate the FIXTURE's own bake rather than
-        // comparing `a`'s bake to itself through the shared slot (silently vacuous either way —
-        // proven by mutation: friction, a node's `x`, and the one-shot `value` each edited in the
-        // committed fixture text used to pass clean; this ordering reds on all three, witnessed
-        // 2026-08-28 by reverting the one-shot edit alone: `value: 22` -> `10` in the committed
-        // file, without touching the code below, failed with the expected diff, then the fixture
-        // was restored via `git show fe14c27:kex2d/tests/fixtures/hill-explicit-golden.kex`).
-        const bBaked = bakedArrays(bEid);
-
-        // the bake matches the scenario this fixture was minted from — bakedArrays carries no
-        // ids, so this comparison is unaffected by the loaded track's ids differing from a
-        // freshly-authored one's.
-        const s = scenarios.find((x) => x.name === "hill-explicit");
-        if (!s) throw new Error("scenario not found");
-        const a = scenarioTrack(s);
-        a.state.step(0);
-        expect(bBaked).toEqual(bakedArrays(a.eid));
+        // a real bake happened, so the round-trip above is not vacuous on an empty document.
+        expect(bakedArrays(bEid).count).toBeGreaterThan(1);
     });
 });
 
@@ -826,147 +540,28 @@ describe("frozen v2 migration corpus", () => {
         });
     }
 
-    test("all 26 pre-S2 fixtures are frozen, with the malformed corpus byte-identical", async () => {
+    test("all 18 pre-S2 fixtures are frozen at v2 or below", async () => {
+        // The `invariants/` corpus is authored at v4 from S2e-i on (its guards are lane laws,
+        // which no v2 document can express), so these frozen files are migration INPUTS only —
+        // they no longer twin a live fixture, and asserting they did would pin a relationship
+        // that ended with the node substrate.
         const malformed = [
             "duplicateId-red.kex",
-            "duplicateSectionOrder-red.kex",
             "emptyTrack-red.kex",
             "minExtentFloor-red.kex",
-            "minForceExtent-red.kex",
-            "minNodeFloor-red.kex",
             "minStartSpeed-red.kex",
-            "nodeZeroOrigin-red.kex",
-            "sectionKind-red.kex",
-            "stationTaken-red.kex",
-            "stripKeyframeTaken-red.kex",
-            "stripOverlapped-red.kex",
             "valid-green.kex",
             "validCoefficient-red.kex",
             "validStripValue-red.kex",
         ];
         // +1: `cli/loop-explicit.kex` is frozen here too, and is asserted above as a refusal
         // rather than listed among the documents that migrate.
-        expect(valid.length + malformed.length + 1).toBe(26);
+        expect(valid.length + malformed.length + 1).toBe(18);
         for (const name of malformed) {
             const frozen = await Bun.file(
                 new URL(`./fixtures/v2/invariants/${name}`, import.meta.url),
             ).text();
-            const live = await Bun.file(
-                new URL(`./fixtures/invariants/${name}`, import.meta.url),
-            ).text();
-            expect(frozen).toBe(live);
             expect(JSON.parse(frozen).version).toBeLessThanOrEqual(2);
-        }
-    });
-});
-
-describe("frozen flat-v3 wire", () => {
-    test("load → save → load preserves stable member ids and terminal residual", () => {
-        const wire = serializeDocument({
-            version: CURRENT_VERSION,
-            track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
-            segments: [
-                {
-                    id: 41,
-                    order: 0,
-                    kind: SectionKind.Force,
-                    run: 41,
-                    station: 0,
-                    nodes: [],
-                    points: [],
-                },
-                {
-                    id: 71,
-                    order: 1,
-                    kind: SectionKind.Force,
-                    run: 41,
-                    station: 11.25,
-                    extent: 30.000001907348633,
-                    nodes: [],
-                    points: [{ id: 91, s: 11.25, boundary: { g: 1, ease: Easing.Cubic } }],
-                },
-                {
-                    id: 60,
-                    order: 2,
-                    kind: SectionKind.Geo,
-                    run: 60,
-                    node: 1,
-                    nodes: [
-                        { order: 0, x: 0, y: 0, theta: 0 },
-                        { order: 1, x: 8, y: 2, theta: 0 },
-                    ],
-                    points: [],
-                },
-            ],
-            strips: [],
-            lanes: emptyLanes(),
-        });
-        const state = new State();
-        state.addSystem(BakeSystem);
-        loadDocument(state, wire);
-        const first = snapshotAll(state);
-        expect(first.segments.map((segment) => segment.id)).toEqual([41, 71, 60]);
-        expect(first.segments[1]!.length).toBe(Math.fround(30.000001907348633 - 11.25));
-        const canonical = saveDocument(state);
-        expect(
-            JSON.parse(canonical).segments.every((segment: object) => !("members" in segment)),
-        ).toBe(true);
-        loadDocument(state, canonical);
-        expect(snapshotAll(state)).toEqual(first);
-        expect(saveDocument(state)).toBe(canonical);
-    });
-
-    test("flat structural refusals happen before ECS writes", () => {
-        const base = {
-            version: CURRENT_VERSION,
-            track: { ds: 1, domain: 0, friction: 0, resistance: 0 },
-            segments: [
-                {
-                    id: 4,
-                    order: 0,
-                    kind: SectionKind.Force,
-                    run: 4,
-                    station: 0,
-                    extent: 10,
-                    nodes: [],
-                    points: [],
-                },
-            ],
-            strips: [],
-            lanes: emptyLanes(),
-        };
-        const mutations = [
-            {
-                name: "bijection",
-                change: (d: any) => {
-                    d.segments[0].order = 2;
-                },
-            },
-            {
-                name: "first record id",
-                change: (d: any) => {
-                    d.segments[0].run = 3;
-                },
-            },
-            {
-                name: "terminal extent",
-                change: (d: any) => {
-                    delete d.segments[0].extent;
-                },
-            },
-            {
-                name: "terminal extent",
-                change: (d: any) => {
-                    d.segments[0].extent = 0;
-                },
-            },
-        ];
-        for (const mutation of mutations) {
-            const candidate = structuredClone(base);
-            mutation.change(candidate);
-            expect(() => parseDocument(JSON.stringify(candidate))).toThrow(
-                new RegExp(mutation.name),
-            );
         }
     });
 });
@@ -979,28 +574,15 @@ describe("the start speed is `track.v0` and nothing else", () => {
         const wire = serializeDocument({
             version: CURRENT_VERSION,
             track: { ds: 0.5, domain: 0, friction: 0, resistance: 0, v0: 17.5 },
-            segments: [
-                {
-                    id: 0,
-                    order: 0,
-                    kind: SectionKind.Geo,
-                    run: 0,
-                    node: 2,
-                    nodes: [
-                        { order: 0, x: 0, y: 0, theta: 0 },
-                        { order: 1, x: 12, y: 0, theta: 0 },
-                    ],
-                    points: [],
-                },
-            ],
-            strips: [],
-            lanes: emptyLanes(),
+            lanes: {
+                ...emptyLanes(),
+                geo: [{ id: 0, start: 0, end: 12, ease: 0, entry: 0, exit: 0 }],
+            },
         });
         const state = new State();
         state.addSystem(BakeSystem);
         loadDocument(state, wire);
         expect(entrySpeed(state)).toBe(17.5);
-        expect(entryOneShot(state)?.value).toBe(17.5);
         expect(parseDocument(saveDocument(state)).track.v0).toBe(17.5);
     });
 
@@ -1023,19 +605,14 @@ describe("saveDocument / loadDocument on a no-op cycle", () => {
         loadDocument(state, saveDocument(state));
         state.step(0);
 
-        expect(withMintedStartSpeed(snapshotAll(state))).toEqual(withMintedStartSpeed(before));
-        expect(snapshotAll(state).oneShot.map((o) => o.value)).toEqual(
-            before.oneShot.map((o) => o.value),
-        );
-        // and a SECOND cycle is a true fixed point, address included, because the mint is
-        // deterministic — the property the wire identity used to carry.
+        expect(snapshotAll(state)).toEqual(before);
+        // and a SECOND cycle is a true fixed point.
         const once = saveDocument(state);
         loadDocument(state, once);
         state.step(0);
-        expect(snapshotAll(state)).toEqual(withMintedStartSpeed(before));
-        // the Track ENTITY itself survives a load untouched (`restoreAll` only respawns
-        // sections/handles/forces/strips/keyframes/one-shot, never the Track entity) — `eid` is
-        // still the live track's own id.
+        expect(snapshotAll(state)).toEqual(before);
+        // the Track ENTITY itself survives a load untouched (`restoreAll` only respawns lane
+        // records, never the Track entity) — `eid` is still the live track's own id.
         expect(trackEntity(state)).toBe(eid);
         expect(bakedArrays(eid)).toEqual(beforeBaked);
     });
@@ -1096,87 +673,18 @@ function loadableCorpus(): string[] {
 /** every committed fixture that actually BAKES: the whole set minus the frozen `v2/`/`v3/`
  *  migration inputs and the deliberately malformed `invariants/*-red` corpus. The same
  *  population `tests/bake-identity.oracle.ts` pins. */
-function bakeableCorpus(): string[] {
+function _bakeableCorpus(): string[] {
     return fixtureCorpus().filter(
         (p) => !p.includes("/v2/") && !p.includes("/v3/") && !p.endsWith("-red.kex"),
     );
 }
-
-/** **The premise every fit number in S2d is read through** (spec `kex2d-segment-gestures` S2d
- *  punch list item 0): `doc.v3Payloads` is the PURE twin of the payload `track.ts`'s `BakeSystem`
- *  assembles from the live ECS, and `migrations[3]` learns each geo run's realized shape by
- *  running `section.chain` over it. If the two builders disagree on anything — the start speed,
- *  a strip's edge frame, a run's step pairing — every deviation the pitch fit reports is measured
- *  against the wrong bake, silently. That is exactly how the stage's first fit numbers came out
- *  of a document whose start speed had defaulted to `V0` instead of carrying the file's own, so
- *  this arm stands permanently rather than as a one-off probe. It is also the premise
- *  `tests/fixtures/v3/bake-digests.json` is minted under. */
-describe("the pure v3 payload builder is the live bake", () => {
-    const corpus = bakeableCorpus();
-
-    /** the live published bake, as plain numbers over the published sample count. `t` is the
-     *  arc-to-time table `chain` does not build, so it is not part of this comparison; every SoA
-     *  `chain` does publish is. */
-    function livebake(text: string) {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        loadDocument(state, text);
-        state.step(0);
-        const eid = trackEntity(state);
-        if (eid === null) throw new Error("no track after load");
-        const count = Track.count.get(eid);
-        const s = samples.get(eid);
-        const out = bakeOut.get(eid);
-        if (!s || !out) throw new Error("track buffers missing");
-        const edges = Math.max(0, count - 1);
-        return {
-            count,
-            posX: Array.from(s.posX.subarray(0, count)),
-            posY: Array.from(s.posY.subarray(0, count)),
-            theta: Array.from(s.theta.subarray(0, count)),
-            v: Array.from(out.v.subarray(0, count)),
-            fN: Array.from(out.fN.subarray(0, edges)),
-            ds: Array.from(out.ds.subarray(0, edges)),
-        };
-    }
-
-    test("the population is the whole bakeable committed corpus", () => {
-        // pin the population: a narrowed or empty walk must not read as a clean sweep. Thirty,
-        // not thirty-one: `cli/loop-explicit.kex` is refused by `migrations[3]` and mints no v4
-        // fixture (spec Validation 2's S2d population, 16 + 14).
-        expect(corpus.length).toBe(30);
-    });
-
-    for (const path of corpus) {
-        const name = path.slice(path.indexOf("fixtures/"));
-        test(`${name}: chain(v3Payloads(doc)) is byte-identical to the live bake`, () => {
-            const text = readFileSync(path, "utf8");
-            const live = livebake(text);
-            const p = v3Payloads(parseDocument(text));
-            const c = chain(p.entry, p.sections, MAX_SAMPLES, p.friction, p.resistance);
-            const count = Math.min(c.count, MAX_SAMPLES);
-            const edges = Math.max(0, count - 1);
-            expect({
-                count,
-                posX: Array.from(c.posX.subarray(0, count)),
-                posY: Array.from(c.posY.subarray(0, count)),
-                theta: Array.from(c.theta.subarray(0, count)),
-                v: Array.from(c.v.subarray(0, count)),
-                fN: Array.from(c.fN.subarray(0, edges)),
-                ds: Array.from(c.ds.subarray(0, edges)),
-            }).toEqual(live);
-            // and a real bake happened — two empty bakes would satisfy the equality above.
-            expect(live.count).toBeGreaterThan(1);
-        });
-    }
-});
 
 describe("v4 migration sweep", () => {
     const corpus = fixtureCorpus();
 
     test("the corpus is the whole committed fixture set", () => {
         // population floor: a narrowed walk (a typo'd root, a swallowed recursion) cannot pass.
-        expect(corpus.length).toBe(81);
+        expect(corpus.length).toBe(68);
         expect(corpus.some((p) => p.includes("/velocity/"))).toBe(true);
         expect(corpus.some((p) => p.includes("/force/"))).toBe(true);
         expect(corpus.some((p) => p.includes("/cli/"))).toBe(true);

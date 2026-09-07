@@ -72,6 +72,17 @@ export function emptyLanes(): Lanes {
     return { velocity: [], force: [], geo: [] };
 }
 
+/** the shortest span any lane record may occupy, in metres.
+ *
+ *  One number, in one place: a record shorter than this is not an authoring gesture but a
+ *  degenerate span with no direction, and the same floor governs everywhere it is read — the
+ *  document boundary's `minExtentFloor` guard, the setters' span refusals, and the split the
+ *  pitch fit is allowed to mint (`pitchfit.ts`). The authoring budgets in `geofit.ts` are half
+ *  of it.
+ *
+ *  It is a floor, never a grid: nothing here quantizes. */
+export const RECORD_FLOOR = 1;
+
 /** the lane's members in span order, ties broken by stable id so the ordering is total and
  *  independent of the caller's array order. Never mutates the input. */
 export function ordered<H>(segments: readonly LaneSegment<H>[]): LaneSegment<H>[] {
@@ -143,6 +154,13 @@ export function laneRefusals<H>(
             });
     }
     return out;
+}
+
+/** whether a velocity handle is a speed a march may be prescribed: finite and strictly
+ *  positive. A zero or negative prescription is not a slow track, it is a march with no
+ *  direction, which is why this refuses rather than clamps. */
+export function validStripValue(v: number): boolean {
+    return Number.isFinite(v) && v > 0;
 }
 
 /** the lane's display name, used in refusal messages only. */

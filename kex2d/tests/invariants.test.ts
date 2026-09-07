@@ -23,17 +23,12 @@ import { BakeSystem, snapshotAll, trackEntity } from "../src/track";
 const INVARIANTS = [
     "emptyTrack",
     "duplicateId",
-    "duplicateSectionOrder",
-    "sectionKind",
-    "minNodeFloor",
-    "nodeZeroOrigin",
-    "minForceExtent",
-    "stationTaken",
+    "segmentOverlapped",
+    "segmentDegenerate",
+    "laneOrder",
     "validStripValue",
-    "stripKeyframeTaken",
     "validCoefficient",
     "minStartSpeed",
-    "stripOverlapped",
     "minExtentFloor",
 ] as const;
 
@@ -46,18 +41,11 @@ describe("document-boundary invariant validation: red fixtures", () => {
     for (const name of INVARIANTS) {
         test(`${name}: refused by name, live document untouched`, async () => {
             const text = await readFixture(`${name}-red.kex`);
-            const structural = new Set(["duplicateId", "duplicateSectionOrder", "sectionKind"]);
-            const doc = structural.has(name) ? null : parseDocument(text);
-
-            // Flat-shape guards refuse during parse, before an ECS exists. The remaining semantic
-            // guards retain the structured Refusal[] contract.
-            if (doc) {
-                const refusals = checkDocumentSemantics(doc);
-                expect(refusals.length).toBeGreaterThan(0);
-                expect(refusals.map((r) => r.guard)).toContain(name);
-            } else {
-                expect(() => parseDocument(text)).toThrow(new RegExp(name));
-            }
+            // every surviving guard is semantic: the v4 wire's structural pass reads shapes,
+            // and the lane laws are read over the parsed document.
+            const refusals = checkDocumentSemantics(parseDocument(text));
+            expect(refusals.length).toBeGreaterThan(0);
+            expect(refusals.map((r) => r.guard)).toContain(name);
 
             // and `loadDocument` refuses the same way, naming the guard in its thrown message,
             // touching an existing live document not at all (the green baseline pre-loaded).
@@ -102,7 +90,7 @@ describe("document-boundary invariant validation: the shared green fixture", () 
         loadDocument(state, text);
         const migrated = saveDocument(state);
         expect(JSON.parse(migrated).version).toBe(CURRENT_VERSION);
-        expect(JSON.parse(migrated).segments).toBeArray();
+        expect(JSON.parse(migrated).lanes).toBeObject();
         const state2 = new State();
         state2.addSystem(BakeSystem);
         loadDocument(state2, migrated);
@@ -112,10 +100,11 @@ describe("document-boundary invariant validation: the shared green fixture", () 
 
 describe("checkDocumentSemantics: the exported validation entry point", () => {
     test("skips the geometry pass when the doc-level pass already found something", async () => {
-        // duplicateId planted on the section category would make a scratch ECS load ambiguous
-        // (two entities racing for one stable id) — the geometry pass must not run over it.
+        // two records racing for one stable id would make a scratch ECS load ambiguous — the
+        // geometry pass must not run over it, so the doc-level refusal is what comes back.
         const text = await readFixture("duplicateId-red.kex");
-        expect(() => parseDocument(text)).toThrow(/duplicateId/);
+        const refusals = checkDocumentSemantics(parseDocument(text));
+        expect(refusals.map((r) => r.guard)).toEqual(["duplicateId"]);
     });
 
     test("a document with no violations returns an empty refusal list", async () => {
