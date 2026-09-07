@@ -1,6 +1,6 @@
 import type { State } from "@dylanebert/shallot";
-import { type LaneSegment, type Lanes, ordered, trackEnd } from "./lanes";
-import type { Easing, ForcePoint } from "./profile";
+import { entryValue, Lane, type LaneSegment, type Lanes, ordered, trackEnd } from "./lanes";
+import { type Easing, type ForcePoint, sampleForce } from "./profile";
 import { SectionKind } from "./section";
 import { Force, ForceBoundary, Segment } from "./track";
 
@@ -175,6 +175,49 @@ function forcePoints(rows: readonly LaneSegment[], runStart: number): ForcePoint
     return out;
 }
 
+/** the value one force record's OWN curve reaches at absolute station `station`.
+ *
+ *  This is what a cut reads. When a geo group cuts a force record, each side of the cut is a
+ *  window over the SAME authored curve, so the boundary the cut mints carries that curve's value
+ *  there — never the record's far handle borrowed across the geo run, which would step the
+ *  profile at the seam and change the bake. The record's entry is its own entry law
+ *  (`lanes.entryValue`: owned, else the abutting predecessor's exit, else the lane's dwell). */
+function curveAt(lane: readonly LaneSegment[], record: LaneSegment, station: number): number {
+    const entry = entryValue(Lane.Force, lane, record) as number;
+    return sampleForce(
+        [
+            { s: record.start, g: entry, ease: record.ease as Easing },
+            { s: record.end, g: record.exit, ease: record.ease as Easing },
+        ],
+        station,
+    );
+}
+
+/** one force record as it is seen INSIDE the window `[start, stop)` of one derived run.
+ *
+ *  A record wholly inside its run passes through unchanged. A record the window cuts is
+ *  narrowed to the overlap and the cut boundary becomes an OWNED handle carrying
+ *  {@link curveAt}'s value, so every key the run publishes lands inside `[0, length]` and every
+ *  window of a cut record agrees with its neighbours on the shared curve. */
+function clipToWindow(
+    lane: readonly LaneSegment[],
+    record: LaneSegment,
+    start: number,
+    stop: number,
+): LaneSegment {
+    const lo = Math.max(record.start, start);
+    const hi = Math.min(record.end, stop);
+    const entry = lo > record.start ? curveAt(lane, record, lo) : record.entry;
+    return {
+        id: record.id,
+        start: lo,
+        end: hi,
+        ease: record.ease,
+        ...(entry === undefined ? {} : { entry }),
+        exit: hi < record.end ? curveAt(lane, record, hi) : record.exit,
+    };
+}
+
 /** the maximal abutting groups of one lane's ordered records — the "maximal abutting group"
  *  the Locked decision names as the frame geo node positions live in. */
 function abuttingGroups<H>(rows: readonly LaneSegment<H>[]): LaneSegment<H>[][] {
@@ -212,16 +255,27 @@ export function deriveRuns(lanes: Lanes, end: number): DerivedRun[] {
     const runs: DerivedRun[] = [];
     const emitForce = (start: number, stop: number): void => {
         if (!(start < stop)) return;
-        const rows = force.filter((r) => r.start < stop && start < r.end);
+        const members = force.filter((r) => r.start < stop && start < r.end);
+        const rows = members.map((r) => clipToWindow(force, r, start, stop));
+        // Run identity is the first member's lane id, but only when that member OPENS here: a
+        // record a geo group cut already spent its id on the window it started in, so a
+        // continuation window takes a synthetic id above every authored one and no two derived
+        // runs can ever collide. The test is the AUTHORED start, not the clipped one.
+        const head = members[0];
+        const opens = head !== undefined && head.start >= start;
+        // Every member's own entry station, run-local, with the run length appended — the
+        // conserved frame. A run whose first member opens after the run start dwells into it,
+        // so station 0 is that implicit leading dwell's entry and the member's own entry
+        // follows it; the frame is never rebuilt by summing extents.
         const stations = rows.map((r) => r.start - start);
         if (stations[0] !== 0) stations.unshift(0);
         runs.push({
-            id: rows[0]?.id ?? synthetic++,
+            id: opens ? head.id : synthetic++,
             kind: SectionKind.Force,
             start,
             length: stop - start,
             segmentIds: rows.map((r) => r.id),
-            stations: [...stations.slice(0, Math.max(1, rows.length)), stop - start],
+            stations: [...stations, stop - start],
             points: forcePoints(rows, start),
         });
     };

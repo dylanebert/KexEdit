@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadDocument, parseDocument } from "../src/doc";
 import { State } from "@dylanebert/shallot";
-import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
+import { Easing, forceProfile, type ForcePoint, resolveStep, sampleForce } from "../src/profile";
 import * as projection from "../src/projection";
 import type { GeoLaneSegment, LaneSegment, Lanes } from "../src/lanes";
 import {
@@ -374,6 +374,76 @@ test("derived run stations are read from the records, never summed from member e
     expect(run.length).toBe(44);
 });
 
+// ── the geo cut through a force record (S2b punch list) ────────────────────────────────────
+
+test("a force record a geo group cuts keys its own curve's value at both cut stations", () => {
+    // the punch-list case: force [0, 30) under a geo group at [10, 20). The record is cut into
+    // two windows; each window's cut boundary carries the value the record's OWN curve reaches
+    // there, never the far handle borrowed across the geo run.
+    const lanes: Lanes = {
+        velocity: [],
+        force: [laneSeg(0, 0, 30, 4, Easing.Linear, 1)],
+        geo: [geoSeg(5, 10, 20)],
+    };
+    const runs = deriveRuns(lanes, 40);
+    expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([
+        [SectionKind.Force, 0, 10],
+        [SectionKind.Geo, 10, 10],
+        [SectionKind.Force, 20, 20],
+    ]);
+    // linear 1 g → 4 g over [0, 30): 2 g at 10 and 3 g at 20.
+    expect(runs[0]!.points).toEqual([
+        { s: 0, g: 1, ease: Easing.Linear },
+        { s: 10, g: 2, ease: Easing.Linear },
+    ]);
+    // the tail window opens on the same curve it was cut from, and closes on the record's own
+    // exit handle (the cut value is solved on the curve, so it carries the solver's residual).
+    expect(runs[2]!.points.map((p) => [p.s, p.ease])).toEqual([
+        [0, Easing.Linear],
+        [10, Easing.Linear],
+    ]);
+    expect(runs[2]!.points[0]!.g).toBeCloseTo(3, 12);
+    expect(runs[2]!.points[1]!.g).toBe(4);
+});
+
+test("no derived run emits a force key outside its own [0, length] window", () => {
+    const lanes: Lanes = {
+        velocity: [],
+        force: [laneSeg(0, 0, 30, 4, Easing.Cubic, 1), laneSeg(1, 32, 38, 2, Easing.Linear, 5)],
+        geo: [geoSeg(5, 10, 20)],
+    };
+    for (const run of deriveRuns(lanes, 40)) {
+        for (const p of run.points) {
+            expect(p.s, `run ${run.id} key at ${p.s} of [0, ${run.length}]`).toBeGreaterThanOrEqual(
+                0,
+            );
+            expect(p.s, `run ${run.id} key at ${p.s} of [0, ${run.length}]`).toBeLessThanOrEqual(
+                run.length,
+            );
+        }
+    }
+});
+
+test("every derived run id is unique, synthetic where a member started before the run", () => {
+    const lanes: Lanes = {
+        velocity: [],
+        force: [laneSeg(0, 0, 30, 4, Easing.Linear, 1)],
+        geo: [geoSeg(5, 10, 20)],
+    };
+    const ids = deriveRuns(lanes, 40).map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // the leading window keeps the record's own identity; the cut tail cannot claim it again.
+    expect(ids[0]).toBe(0);
+    expect(ids[2]).toBeGreaterThan(5);
+});
+
+test("a gap-leading force run reports its member's entry station, not just the run bounds", () => {
+    // a record at 6–12 inside a run over [0, 20): the run dwells from 0, so the member's own
+    // entry station 6 is a real boundary of the conserved frame and must be published.
+    const lanes: Lanes = { velocity: [], geo: [], force: [laneSeg(0, 6, 12, 3, Easing.Linear)] };
+    expect(deriveRuns(lanes, 20)[0]!.stations).toEqual([0, 6, 20]);
+});
+
 // ── the lane partition against the loaded chain, over the whole fixture corpus ──────────────
 
 /** every committed `.kex` fixture outside the frozen `v2`/`v3` migration inputs and the
@@ -402,6 +472,22 @@ test("an unpinned end follows the longest lane, past the authored shape", () => 
     const runs = deriveRuns(doc.lanes, doc.track.end ?? 0);
     expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([[SectionKind.Force, 0, 46]]);
     expect(Math.max(...doc.lanes.force.map((r) => r.end))).toBe(40);
+
+    // and the tail past the last force exit is a force GAP that DWELLS at that exit (the
+    // Locked decision: "the stretch under it bakes as a force gap dwelling at the last exit"),
+    // never a hole and never a re-clamp to `DEFAULT_G` by some other route. The 16 m/s velocity
+    // span that grew the track authors speed there, not force.
+    const run = runs[0]!;
+    expect(run.points.at(-1)).toEqual({ s: 40, g: 1, ease: Easing.Cubic });
+    const clamped = materializeRunForceClamps(run.points, run.length);
+    // the run's own trailing clamp carries the dwell value; its tag governs nothing past the
+    // last key, so `materializeRunForceClamps` stamps the neutral Linear.
+    expect(clamped.at(-1)).toEqual({ s: 46, g: 1, ease: Easing.Linear });
+    // every station across the tail reads the dwell value, not just its two ends.
+    // (the curve solve carries a bezier residual, so the dwell is exact to solver precision).
+    for (const s of [40, 42, 44, 46]) expect(sampleForce(clamped, s)).toBeCloseTo(1, 12);
+    expect(Math.max(...doc.lanes.velocity.map((r) => r.end))).toBe(46);
+    expect(doc.lanes.velocity.some((r) => r.exit === 16)).toBe(true);
 });
 
 test("derived lane runs reproduce the loaded chain's geometry partition and force profile", () => {
