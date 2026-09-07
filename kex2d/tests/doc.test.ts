@@ -1253,6 +1253,45 @@ describe("v4 canonical text is a fixed point", () => {
     }
 });
 
+describe("migrations[3] refuses a force key past its run's extent", () => {
+    /** a minimal well-formed v3 document: one force run over `extent`, with `keys` on it. */
+    function v3(extent: number, keys: { id: number; s: number }[]): string {
+        return JSON.stringify({
+            version: 3,
+            track: { ds: 0.5, domain: 0, friction: 0, resistance: 0 },
+            segments: [
+                {
+                    id: 0,
+                    order: 0,
+                    kind: 1,
+                    run: 0,
+                    station: 0,
+                    extent,
+                    nodes: [],
+                    points: keys.map((k) => ({ id: k.id, s: k.s, boundary: { g: 1, ease: 1 } })),
+                },
+            ],
+            strips: [],
+            oneShot: [],
+        });
+    }
+
+    test("a key inside the run migrates", () => {
+        const lanes = parseDocument(v3(20, [{ id: 0, s: 8 }])).lanes;
+        expect(lanes.force.map((r) => [r.start, r.end])).toEqual([
+            [0, 8],
+            [8, 20],
+        ]);
+    });
+
+    test("a key past the run's extent is refused, not silently dropped", () => {
+        // dropping it loses authored content while still producing a loadable document — the
+        // shape a migration must never mint (spec S2b punch list).
+        expect(() => parseDocument(v3(20, [{ id: 0, s: 26 }]))).toThrow(/26/);
+        expect(() => parseDocument(v3(20, [{ id: 0, s: 26 }]))).toThrow(/kex2d document:/);
+    });
+});
+
 describe("frozen v3 migration corpus", () => {
     // the pre-S1 v3 corpus, frozen under `tests/fixtures/v3/` exactly as `v2/` freezes the
     // pre-S2 one: a v3 file must keep migrating to canonical v4, and the canonical v4 it

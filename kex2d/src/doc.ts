@@ -1317,6 +1317,27 @@ function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknow
  *  non-object entry passes through and derives no lanes rather than throwing, leaving
  *  `validateDocument` (which runs AFTER migration, on the CURRENT_VERSION shape) the one place
  *  that reports the malformed field. */
+/** the one CONTENT refusal `migrations[3]` owns.
+ *
+ *  A v3 force run could carry a key past its own authored extent: the key still shaped
+ *  `sampleForce`'s profile, but it sat outside the run's partition. The lane grammar has no
+ *  place for it — every record is a `[start, end)` span inside its run — so migrating it means
+ *  choosing between dropping authored content and minting a record the run does not contain.
+ *  Neither is a migration's call, so this refuses instead, with the same named remedy every
+ *  other load-boundary rejection carries. Shape problems stay tolerated (`chainToLanes`'s own
+ *  docblock): this is reached only for a WELL-SHAPED v3 payload. */
+function refuseKeysPastRunExtent(segments: DocSegment[]): void {
+    for (const run of runsOf(segments)) {
+        if (run.kind !== SectionKind.Force) continue;
+        for (const key of run.members.flatMap((m) => m.points)) {
+            if (key.s > run.extent)
+                fail(
+                    `force key ${key.id} sits at station ${key.s}, past its run's extent ${run.extent} — a v3 key outside its own run cannot migrate to a lane record`,
+                );
+        }
+    }
+}
+
 function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
     const { oneShot, ...rest } = doc;
     const rawTrack = isPlainObject(rest.track) ? rest.track : {};
@@ -1328,6 +1349,7 @@ function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
         Array.isArray(rest.strips) &&
         rest.segments.every(isPlainObject) &&
         rest.strips.every(isPlainObject);
+    if (wellShaped) refuseKeysPastRunExtent(rest.segments as DocSegment[]);
     const lanes = wellShaped
         ? lanesFromChain(
               rest.segments as DocSegment[],
