@@ -2,7 +2,9 @@ import { expect, spyOn, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import * as projection from "../src/projection";
+import type { LaneSegment, Lanes } from "../src/lanes";
 import {
+    deriveRuns,
     rebuildForceProjection,
     rebuildRunProjection,
     rebuildSectionProjection,
@@ -257,4 +259,106 @@ test("a segment-only extent edit invalidates the authored bake hash", () => {
     const before = authoredHash(ecs);
     setSectionLength(ecs, id, 25);
     expect(authoredHash(ecs)).not.toBe(before);
+});
+
+// ── deriveRuns: the lane → evaluator partition ──────────────────────────────────────────────
+
+function laneSeg(
+    id: number,
+    start: number,
+    end: number,
+    exit: number,
+    ease: Easing = Easing.Cubic,
+    entry?: number,
+): LaneSegment {
+    return { id, start, end, ease, exit, ...(entry === undefined ? {} : { entry }) };
+}
+
+test("geo abutting groups are the geo runs and every uncovered stretch is a force run", () => {
+    const lanes: Lanes = {
+        velocity: [],
+        // two abutting geo records, a gap, then one more: two geo runs.
+        force: [laneSeg(10, 12, 20, 2)],
+        geo: [laneSeg(0, 0, 5, 0), laneSeg(1, 5, 12, 0), laneSeg(2, 20, 26, 0)],
+    };
+    const runs = deriveRuns(lanes, 0);
+    expect(runs.map((r) => [r.kind, r.start, r.length, r.segmentIds])).toEqual([
+        [SectionKind.Geo, 0, 12, [0, 1]],
+        [SectionKind.Force, 12, 8, [10]],
+        [SectionKind.Geo, 20, 6, [2]],
+    ]);
+    // the run identity is its first member's lane id, which is what `runInfo` keys on.
+    expect(runs.map((r) => r.id)).toEqual([0, 10, 2]);
+    // conserved run-local member stations, run length appended — never a sum of extents.
+    expect(runs[0]!.stations).toEqual([0, 5, 12]);
+});
+
+test("a force run with no authored record still bakes, under an id no lane record holds", () => {
+    const lanes: Lanes = { velocity: [], force: [], geo: [laneSeg(7, 0, 10, 0)] };
+    const runs = deriveRuns(lanes, 25);
+    expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([
+        [SectionKind.Geo, 0, 10],
+        [SectionKind.Force, 10, 15],
+    ]);
+    expect(runs[1]!.segmentIds).toEqual([]);
+    expect(runs[1]!.points).toEqual([]);
+    expect(runs[1]!.id).toBeGreaterThan(7);
+    expect(runs[1]!.stations).toEqual([0, 15]);
+});
+
+test("a pinned end extends the trailing force run; follow reads the longest lane", () => {
+    const lanes: Lanes = {
+        velocity: [laneSeg(3, 0, 40, 12)],
+        force: [],
+        geo: [laneSeg(0, 0, 9, 0)],
+    };
+    expect(deriveRuns(lanes, 0).map((r) => r.length)).toEqual([9, 31]);
+    expect(deriveRuns(lanes, 60).map((r) => r.length)).toEqual([9, 51]);
+});
+
+test("force keys read the leading record's easing and the successor's owned entry", () => {
+    const lanes: Lanes = {
+        velocity: [],
+        geo: [],
+        force: [
+            laneSeg(0, 0, 5, 1.5, Easing.Quintic, 0.5),
+            laneSeg(1, 5, 10, 3, Easing.Linear),
+            // an authored discontinuity: the successor owns an entry at the shared station.
+            laneSeg(2, 10, 14, 4, Easing.Cubic, -1),
+        ],
+    };
+    expect(deriveRuns(lanes, 0)[0]!.points).toEqual([
+        { s: 0, g: 0.5, ease: Easing.Quintic },
+        { s: 5, g: 1.5, ease: Easing.Linear },
+        { s: 10, g: -1, ease: Easing.Cubic },
+        { s: 14, g: 4, ease: Easing.Cubic },
+    ]);
+});
+
+test("a record opening a lane gap without an owned entry authors no key at its start", () => {
+    const lanes: Lanes = { velocity: [], geo: [], force: [laneSeg(0, 6, 12, 3, Easing.Linear)] };
+    const run = deriveRuns(lanes, 20)[0]!;
+    expect(run.points).toEqual([{ s: 12, g: 3, ease: Easing.Linear }]);
+    // the run's own clamps, not a borrowed exit at the gap boundary.
+    expect(materializeRunForceClamps(run.points, run.length)).toEqual([
+        { s: 0, g: 3, ease: Easing.Linear },
+        { s: 12, g: 3, ease: Easing.Linear },
+        { s: 20, g: 3, ease: Easing.Linear },
+    ]);
+});
+
+test("derived run stations are read from the records, never summed from member extents", () => {
+    // `a + (b - a) !== b` in f64, so a station rebuilt by accumulating extents misses the
+    // authored boundary — the conserved-frame law (`kex2d-map.md`: never re-sum run stations).
+    const a = 12.1;
+    const b = 30.3;
+    expect(a - 0 + (b - a)).not.toBe(b);
+    const lanes: Lanes = {
+        velocity: [],
+        force: [],
+        geo: [laneSeg(0, 0, a, 0), laneSeg(1, a, b, 0), laneSeg(2, b, 44, 0)],
+    };
+    const run = deriveRuns(lanes, 0)[0]!;
+    expect(run.stations).toEqual([0, a, b, 44]);
+    expect(run.length).toBe(44);
 });
