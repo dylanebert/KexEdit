@@ -11,12 +11,30 @@
  *  apply/reverse. */
 
 import type { State } from "@dylanebert/shallot";
+import type { Lane, LaneSegment } from "./lanes";
+import type { Easing } from "./profile";
 import type { Domain } from "./section";
 import {
+    createRecord,
+    deleteRecord,
+    endColumn,
+    entrySpeed,
+    type LaneRefusal,
+    laneOrderOf,
+    orderColumn,
+    type LaneWrite,
+    recordOf,
+    setEnd,
+    setOrder as writeLaneOrder,
+    setRecordEase,
+    setRecordHandle,
+    setRecordSpan,
+    setV0,
     setTrackDomain,
     setTrackFriction,
     setTrackResistance,
     trackDomain,
+    trackEntity,
     type TrackFrictionState,
     trackFrictionState,
     type TrackResistanceState,
@@ -70,54 +88,12 @@ export function createHistory(): History {
 /** the app's single history. tests build their own via `createHistory`. */
 export const history = createHistory();
 
-// ── the sandbox redirect (kex2d-optimize-mode stage 7) ────────────────────────────
-// while an pin mode is open, EVERY recording lands in the mode's sandbox history instead of
-// the outer stack — structural containment (belt-and-suspenders with the editing lockdown: an
-// edit that slipped a guard still can't touch outer history). the editor sets it on mode open
-// and clears it on close (`beginPin`/`endPin`); the one outer record while a mode is
-// open — the Solve landing — runs after the close, so it lands outer by ordering.
-let redirect: History | null = null;
-export function redirectHistory(h: History | null): void {
-    redirect = h;
-    resumed = false;
-}
-
-// whether the open sandbox was RESUMED by undoing a landed Solve (the landing's own `enter`
-// closure marks it): a redo at the sandbox's end then falls through to the outer redo — the
-// re-land — so Ctrl+Shift+Z right after the reopening Ctrl+Z does what the sandbox contract
-// promises ("redo re-lands and closes"). a NEW in-mode edit forks the experiment and clears the
-// offer (`record`, the same edit-invalidates-redo law); in-mode undo/redo of the restored
-// entries keep it, so walking the resumed experiment and returning to its end still re-lands.
-let resumed = false;
-export function markResumedLanding(): void {
-    resumed = true;
-}
-export function resumedLanding(): boolean {
-    return resumed;
-}
-
 /** push an already-applied command (the do-path mutated live data first), with the pre-command
  *  selection snapshot (`undefined` for a gesture, which leaves the selection alone). */
 export function record(h: History, cmd: Command, pre?: unknown): void {
-    const t = redirect ?? h;
-    if (t === redirect) resumed = false; // a new in-mode edit forks off the re-land offer
-    t.undo.push({ cmd, pre });
-    // the redirect target (a sandbox) is EXEMPT from eviction: its Exit discards by replaying
-    // reverses and its landing freezes the stacks whole, so evicting an entry silently breaks
-    // both byte-identity guarantees (the stage-4 eviction hazard, resurfaced by the close
-    // review). a sandbox is bounded by its mode's lifetime — it grows, then dies with the mode.
-    if (t !== redirect && t.undo.length > MAX_UNDO) t.undo.shift();
-    t.redo.length = 0; // a new edit invalidates the redo branch
-}
-
-/** push an already-applied command onto `h` DIRECTLY, bypassing any live redirect — the landing
- *  seam: a Solve's outcome entry belongs to the outer history even though a sandbox is (or was
- *  just) the redirect target. structural, so the guarantee doesn't hang on call ordering between
- *  the mode close and the record (the close-review's template hazard). */
-export function recordOuter(h: History, cmd: Command, pre?: unknown): void {
     h.undo.push({ cmd, pre });
     if (h.undo.length > MAX_UNDO) h.undo.shift();
-    h.redo.length = 0;
+    h.redo.length = 0; // a new edit invalidates the redo branch
 }
 
 export function undo(h: History, ecs: State): void {
@@ -197,10 +173,9 @@ export function cancel(): void {
 // ── friction / drag (Coulomb loss + quadratic drag coefficients) ───────────────
 
 /** open a gesture on the track's friction field (scrub or typed edit), snapshotting
- *  `Track.friction`. `trackFrictionState` reads `undefined` both for a gone track and the
- *  in-mode lockdown (`track.trackEditable`), so `begin` refuses to open on either — the
- *  gesture-open suspenders to `setTrackFriction`'s own write-side belt. commit coalesces the
- *  live writes into one entry; a no-change release records nothing. */
+ *  `Track.friction`. `trackFrictionState` reads `undefined` for a gone track, so `begin` refuses
+ *  to open there. commit coalesces the live writes into one entry; a no-change release records
+ *  nothing. */
 export function beginFriction(trackEid: number): void {
     begin(
         () => trackFrictionState(trackEid),
@@ -232,5 +207,154 @@ export function landDomain(h: History, ecs: State, target: Domain): void {
         h,
         { apply: () => setTrackDomain(ecs, target), reverse: () => setTrackDomain(ecs, source) },
         pre,
+    );
+}
+
+// ── lane gestures ───────────────────────────────────────────────────────────────
+//
+// The authored verbs, one per gesture class the timeline performs, all of them over `track.ts`'s
+// lane setters — which are the only authored writers, so a gesture never touches a column
+// itself (`tests/purity.test.ts` is the census). Structural verbs (`addRecord`, `removeRecord`)
+// bracket internally and land one entry; continuous verbs open with `begin*`, let the caller
+// write through the setter every frame, and coalesce on `commit` (or revert on `cancel`).
+//
+// A refusal is the setter's, not the gesture's: an opener that would author an illegal span
+// simply never lands, because the setter declines the write and the gesture's `same` reads no
+// change. Every verb below returns the setter's own outcome so the caller can name the guard.
+
+/** author one record in `lane` and land it as one undo entry. Returns the setter's outcome, so a
+ *  refusal (overlap, floor, duplicate id) names its guard and nothing is recorded. */
+export function addRecord(
+    h: History,
+    ecs: State,
+    lane: Lane,
+    row: Omit<LaneSegment, "id"> & { id?: number },
+): LaneWrite {
+    const pre = selHook?.snapshot(ecs);
+    const write = createRecord(ecs, lane, row);
+    if (write.id === null) return write;
+    const id = write.id;
+    const landed: LaneSegment = { ...row, id };
+    record(
+        h,
+        {
+            // the id travels with the entry, so a redo re-spawns the SAME record a selection
+            // snapshot or a later edit addresses — an allocator-fresh id would alias.
+            apply: () => void createRecord(ecs, lane, landed),
+            reverse: () => void deleteRecord(ecs, id),
+        },
+        pre,
+    );
+    return write;
+}
+
+/** delete one record and land it as one undo entry. False when there was no such record. */
+export function removeRecord(h: History, ecs: State, id: number): boolean {
+    const found = recordOf(ecs, id);
+    if (!found) return false;
+    const pre = selHook?.snapshot(ecs);
+    const { lane, row } = found;
+    if (!deleteRecord(ecs, id)) return false;
+    record(
+        h,
+        {
+            apply: () => void deleteRecord(ecs, id),
+            reverse: () => void createRecord(ecs, lane, row),
+        },
+        pre,
+    );
+    return true;
+}
+
+/** open a gesture on one of a record's two handles — the value chip drag or typed edit. The
+ *  snapshot carries handle OWNERSHIP as well as the value: disowning an entry (`undefined`) is
+ *  an authoring outcome, so undo has to put the ownership back, not just a number. */
+export function beginHandle(ecs: State, id: number, which: "entry" | "exit"): void {
+    begin<{ value: number | undefined }>(
+        () => {
+            const found = recordOf(ecs, id);
+            if (!found) return undefined;
+            return { value: which === "exit" ? found.row.exit : found.row.entry };
+        },
+        (st) => void setRecordHandle(ecs, id, which, st.value),
+        (a, b) => a.value === b.value,
+    );
+}
+
+/** open a gesture on a record's span. One opener for the two span gestures the timeline drives —
+ *  {@link beginEdge}'s resize and {@link beginBody}'s move — because both write exactly the two
+ *  columns `setRecordSpan` owns, so they snapshot and restore the same state. */
+function beginSpan(ecs: State, id: number): void {
+    begin<{ start: number; end: number }>(
+        () => {
+            const found = recordOf(ecs, id);
+            if (!found) return undefined;
+            return { start: found.row.start, end: found.row.end };
+        },
+        (st) => void setRecordSpan(ecs, id, st.start, st.end),
+        (a, b) => a.start === b.start && a.end === b.end,
+    );
+}
+
+/** open an edge drag: one end of the span moves, the other holds (resize). */
+export function beginEdge(ecs: State, id: number): void {
+    beginSpan(ecs, id);
+}
+
+/** open a body drag: both ends move together (move). */
+export function beginBody(ecs: State, id: number): void {
+    beginSpan(ecs, id);
+}
+
+/** land a record's easing tag as one undo entry — a chip click is a single write, never a drag. */
+export function setEase(h: History, ecs: State, id: number, ease: Easing): LaneWrite {
+    const found = recordOf(ecs, id);
+    if (!found) return setRecordEase(ecs, id, ease); // the setter owns the not-found refusal
+    const before = found.row.ease as Easing;
+    const write = setRecordEase(ecs, id, ease);
+    if (write.id === null || before === ease) return write;
+    record(h, {
+        apply: () => void setRecordEase(ecs, id, ease),
+        reverse: () => void setRecordEase(ecs, id, before),
+    });
+    return write;
+}
+
+/** open a gesture on the ruler's end handle. The snapshot is the raw `end` COLUMN, so unpinning
+ *  (writing 0, the follow rule) undoes back to the pinned number rather than to whatever the
+ *  content happened to resolve to. A pin below a lane's content is `setEnd`'s refusal: the write
+ *  never lands, so the gesture reads no change and records nothing. */
+export function beginEnd(ecs: State): void {
+    begin<{ end: number }>(
+        () => (trackEntity(ecs) === null ? undefined : { end: endColumn(ecs) }),
+        (st) => void setEnd(ecs, st.end),
+        (a, b) => a.end === b.end,
+    );
+}
+
+/** land a lane-order swap as one undo entry. The snapshot is the raw `order` COLUMN, not the
+ *  resolved priority: an absent column and the default written out are different documents, so
+ *  undoing the first swap on a fresh track has to restore ABSENCE. A non-permutation is
+ *  `setOrder`'s refusal. */
+export function setOrder(h: History, ecs: State, order: readonly Lane[]): LaneRefusal[] {
+    const column = orderColumn(ecs);
+    const before = column === 0 ? null : laneOrderOf(ecs);
+    const refusals = writeLaneOrder(ecs, order);
+    if (refusals.length > 0) return refusals;
+    const after = laneOrderOf(ecs);
+    if (orderColumn(ecs) === column) return refusals;
+    record(h, {
+        apply: () => void writeLaneOrder(ecs, after),
+        reverse: () => void writeLaneOrder(ecs, before),
+    });
+    return refusals;
+}
+
+/** open a gesture on the track's start speed. Below {@link MIN_V0} is `setV0`'s refusal. */
+export function beginV0(ecs: State): void {
+    begin<{ v0: number }>(
+        () => (trackEntity(ecs) === null ? undefined : { v0: entrySpeed(ecs) }),
+        (st) => void setV0(ecs, st.v0),
+        (a, b) => a.v0 === b.v0,
     );
 }

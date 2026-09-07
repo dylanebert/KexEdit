@@ -42,7 +42,6 @@ import {
     trackEnd,
 } from "./lanes";
 import {
-    DEFAULT_G,
     type Easing,
     type ForcePoint,
     forceProfile,
@@ -165,6 +164,14 @@ function rowOf(eid: number): LaneSegment {
     };
 }
 
+/** one record and the lane it lives in, addressed by stable id — the read every gesture opens
+ *  on (`history.ts` snapshots the row, writes through the setters, restores the row). */
+export function recordOf(ecs: State, id: number): { lane: Lane; row: LaneSegment } | undefined {
+    const eid = recordAt(ecs, id);
+    if (eid === null) return undefined;
+    return { lane: LaneRecord.lane.get(eid) as Lane, row: rowOf(eid) };
+}
+
 /** one lane's records, in span order (`lanes.ordered`). */
 export function laneRows(ecs: State, lane: Lane): LaneSegment[] {
     const rows: LaneSegment[] = [];
@@ -192,6 +199,14 @@ export function endColumn(ecs: State): number {
 /** the track's resolved end station (m) — the pinned value, or the longest lane's last exit. */
 export function trackEndOf(ecs: State): number {
     return trackEnd(lanesOf(ecs), endColumn(ecs));
+}
+
+/** the track's authored `order` column (0 = absent, the default governs), raw. {@link laneOrderOf}
+ *  resolves it; the gestures snapshot THIS, so undoing a swap restores absence rather than
+ *  writing the default out as an explicit permutation. */
+export function orderColumn(ecs: State): number {
+    const t = trackEntity(ecs);
+    return t === null ? 0 : Track.order.get(t);
 }
 
 /** the track's lane priority, top to bottom — the default when the column is absent or is not
@@ -374,11 +389,18 @@ export function setEnd(ecs: State, end: number): LaneRefusal[] {
     return [];
 }
 
-/** write the lane priority. Refuses anything that is not a permutation of the three lanes
- *  (`lanes.laneOrder`) — a partial order silently leaves one lane unranked. */
-export function setOrder(ecs: State, order: readonly number[]): LaneRefusal[] {
+/** write the lane priority, or CLEAR it with `null` — the order's own follow rule, mirroring
+ *  `setEnd(0)`: a cleared column means the default `[Geo, Force, Velocity]` governs and nothing
+ *  is authored, which is not the same document as the default written out explicitly. Refuses
+ *  anything that is not a permutation of the three lanes (`lanes.laneOrder`) — a partial order
+ *  silently leaves one lane unranked. */
+export function setOrder(ecs: State, order: readonly number[] | null): LaneRefusal[] {
     const t = trackEntity(ecs);
     if (t === null) return [{ guard: "noTrack", message: "no track to order" }];
+    if (order === null) {
+        Track.order.set(t, 0);
+        return [];
+    }
     const resolved = laneOrder(order);
     if (!resolved)
         return [
@@ -438,9 +460,6 @@ export const EXTEND_DIST = 24;
  *  2026-08-26. An independent literal, not derived from {@link EXTEND_DIST}: a speed control and
  *  a shape span answer different questions. */
 export const STRIP_DEFAULT_LEN = 10;
-
-/** the shortest force span the timeline lets a gesture author (m). */
-export const MIN_FORCE_LEN = 2;
 
 /** the track's initial anchor: a level start at the origin. World position is cosmetic in this
  *  2D prototype (the view auto-frames); the authored variable is the start speed. */
@@ -527,23 +546,6 @@ export function createTrack(ecs: State): number {
     return trackEid;
 }
 
-/** author a fresh document: one track with the physically-grounded coefficients, one 24 m force
- *  record at `DEFAULT_G`, and the default start speed. */
-export function seedTrack(ecs: State): number {
-    const trackEid = createTrack(ecs);
-    Track.friction.set(trackEid, DEFAULT_FRICTION);
-    Track.resistance.set(trackEid, DEFAULT_RESISTANCE);
-    Track.v0.set(trackEid, V0);
-    createRecord(ecs, Lane.Force, {
-        start: 0,
-        end: EXTEND_DIST,
-        ease: 0,
-        entry: DEFAULT_G,
-        exit: DEFAULT_G,
-    });
-    return trackEid;
-}
-
 // ── velocity framing ─────────────────────────────────────────────────────────
 
 /** resolve authored spans into the kernel's EDGE-INDEX form (`section.Strip`).
@@ -564,7 +566,7 @@ export function edgeStrips(
         start: number;
         end: number;
         value: number;
-        keyframes?: { s: number; v: number }[];
+        keyframes?: { s: number; v: number; ease?: number }[];
     }[],
 ): StripSpec[] | undefined {
     if (rows.length === 0) return undefined;
@@ -588,7 +590,7 @@ export function edgeStrips(
         if (r.keyframes && r.keyframes.length > 0) {
             // pre-evaluate the span's curve per edge on the force-curve machinery
             // (`profile.sampleForce`), so `stripOverride` is a lookup, not an evaluation.
-            const points = r.keyframes.map((k) => ({ s: k.s, g: k.v }));
+            const points = r.keyframes.map((k) => ({ s: k.s, g: k.v, ease: k.ease }));
             const values = new Float32Array(end - lo);
             for (let k = lo; k < end; k++) {
                 // a station-0 degenerate row has lo = −1, so `cum[-1]` is undefined; the `?? 0`
@@ -628,12 +630,17 @@ export function stripsForStep(ecs: State, offset: number, step: Step): StripSpec
 export function velocityRows(
     rows: readonly LaneSegment[],
     offset: number,
-): { start: number; end: number; value: number; keyframes: { s: number; v: number }[] }[] {
+): {
+    start: number;
+    end: number;
+    value: number;
+    keyframes: { s: number; v: number; ease?: number }[];
+}[] {
     const out: {
         start: number;
         end: number;
         value: number;
-        keyframes: { s: number; v: number }[];
+        keyframes: { s: number; v: number; ease?: number }[];
     }[] = [];
     for (const r of ordered(rows)) {
         const entry = entryValue(Lane.Velocity, rows, r) as number | undefined;
@@ -642,8 +649,10 @@ export function velocityRows(
             start: r.start - offset,
             end: r.end - offset,
             value: entry,
+            // the record's own tag governs its span, exactly as a force record's governs `g`:
+            // `profile.segment` reads the LEADING key's `ease` (missing = Cubic).
             keyframes: [
-                { s: r.start - offset, v: entry },
+                { s: r.start - offset, v: entry, ease: r.ease },
                 { s: r.end - offset, v: r.exit },
             ],
         });
@@ -1022,12 +1031,6 @@ export function trackResistanceState(trackEid: number): TrackResistanceState | u
 /** {@link setTrackFriction}'s drag-coefficient twin. */
 export function setTrackResistance(trackEid: number, resistance: number): void {
     Track.resistance.set(trackEid, resistance);
-}
-
-/** whether the track-global coefficients may be edited right now. Always, at S2e-i: the pin
- *  session that used to lock them is retired with the node substrate. */
-export function trackEditable(): boolean {
-    return true;
 }
 
 export { Lane, RECORD_FLOOR } from "./lanes";

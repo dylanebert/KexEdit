@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import { Lane, RECORD_FLOOR, trackEnd } from "../src/lanes";
-import { DEFAULT_G, Easing } from "../src/profile";
+import { Easing } from "../src/profile";
 import { DEFAULT_ORDER } from "../src/projection";
 import { Domain, SectionKind } from "../src/section";
 import {
@@ -32,7 +32,6 @@ import {
     restoreAll,
     runsOf,
     samples,
-    seedTrack,
     setEnd,
     setOrder,
     setRecordEase,
@@ -45,7 +44,6 @@ import {
     Track,
     trackDomain,
     trackEndOf,
-    trackEntity,
     V0,
 } from "../src/track";
 import { resolveStep } from "../src/profile";
@@ -399,17 +397,9 @@ describe("the bake gate", () => {
         expect(bakeLive(state)).toBe(false);
     });
 
-    test("a seeded document bakes: one force record at the default g", () => {
-        const state = new State();
-        state.addSystem(BakeSystem);
-        const eid = seedTrack(state);
-        state.step(0);
-        expect(lanesOf(state).force).toHaveLength(1);
-        expect(lanesOf(state).force[0]!.exit).toBe(DEFAULT_G);
-        expect(entrySpeed(state)).toBe(V0);
-        expect(Track.count.get(eid)).toBeGreaterThan(1);
-        expect(trackEntity(state)).toBe(eid);
-    });
+    // COVERAGE: the interim `seedTrack` arm retires with the function (S2e-ii punch list item
+    // 3). Its property — a freshly seeded document bakes into a live track — is now `cli new`'s,
+    // which seeds the retired boot track as a v3 document and migrates it (`tests/cli.test.ts`).
 });
 
 describe("the derived partition and the velocity framing", () => {

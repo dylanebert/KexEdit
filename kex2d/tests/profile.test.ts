@@ -507,7 +507,7 @@ describe("resolveStep — the ONE seam pairing a force section's edge count with
         // `bake.forces`'s degenerate-chord (stationary-cart) branch, which is a per-edge recovery
         // case, not a resolveStep case (verified: `evalForce(entry, [g], {edges: 1, ds: 0})` on
         // Distance yields `exit = {NaN, NaN, θ, NaN}`). No production caller can pass 0 anyway
-        // (`MIN_FORCE_LEN`, `minForceExtent` floor every write path), so the loud failure costs
+        // (the record floor and `deriveRuns` keep every run positive), so the loud failure costs
         // nothing reachable.
         expect(() => resolveStep(0, 0.5)).toThrow();
         expect(() => resolveStep(-1, 0.5)).toThrow();

@@ -243,7 +243,10 @@ function velocityLane(strips: DocStrip[], nextId: () => number): LaneSegment[] {
                 id: nextId(),
                 start: bounds[i]!,
                 end: bounds[i + 1]!,
-                ease: Easing.Linear,
+                // Cubic, not Linear: `profile.segment` reads a missing tag as Cubic, so a
+                // strip-born span baked as a Cubic curve on the retired store. A Linear mint
+                // would be a wire lie and move `velocity/*` off their digests.
+                ease: Easing.Cubic,
                 entry: stripValueAt(st, bounds[i]!),
                 exit: stripValueAt(st, bounds[i + 1]!),
             });

@@ -9,7 +9,7 @@
  *  never fights over its target. */
 
 import type { State } from "@dylanebert/shallot";
-import { createHistory, type History, redirectHistory } from "./history";
+import { createHistory, type History } from "./history";
 import type { OptimizeOutcome, UnreachableReason } from "./optimize";
 import { recordAt } from "./track";
 
@@ -682,7 +682,6 @@ export function beginPin(session: PinSession): void {
     editor.locked = new Set();
     editor.notice = null;
     sandboxH = createHistory();
-    redirectHistory(sandboxH);
 }
 
 /** close pin mode: drop the stamp, the ghost, every lock, the sandbox, and the downstream
@@ -694,7 +693,6 @@ export function endPin(): void {
     editor.locked.clear();
     editor.pinSolving = false;
     sandboxH = null;
-    redirectHistory(null);
 }
 
 /** toggle a single force keyframe's lock — the basic lock/free gesture. a no-op outside a live

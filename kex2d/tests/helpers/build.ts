@@ -3,9 +3,10 @@
 // things a fixture still legitimately does, which this builder does too, because they aren't
 // edits: `new State()` and `createTrack(ecs)` (the bare Track entity, no records).
 //
-// The three track-level verbs that survived the cutover (friction, resistance, domain) still go
-// through `commands.applyOp`, because that dispatch layer is what the CLI drives; the record
-// verbs re-appear there at S2e-ii and this builder moves onto them then.
+// Every verb goes through `commands.applyOp`, because that dispatch layer is what the CLI drives
+// and what `history.ts`'s gestures sit under — so a fixture is authored the way a person authors
+// one, and a builder call that stopped matching the op vocabulary fails loud here rather than
+// quietly authoring through a path no caller has.
 
 import { State } from "@dylanebert/shallot";
 import { applyOp, type Op, type OpResult } from "../../src/commands";
@@ -13,19 +14,14 @@ import { createHistory, type History } from "../../src/history";
 import type { Domain } from "../../src/section";
 import { Lane, type LaneSegment } from "../../src/lanes";
 import type { Easing } from "../../src/profile";
-import {
-    BakeSystem,
-    createRecord,
-    createTrack,
-    deleteRecord,
-    setEnd,
-    setOrder,
-    setRecordEase,
-    setRecordHandle,
-    setRecordSpan,
-    setV0,
-    trackEntity,
-} from "../../src/track";
+import { BakeSystem, createTrack, trackEntity } from "../../src/track";
+
+/** the op vocabulary's own lane names, so a builder call reads as the op it applies. */
+const LANE_NAMES = {
+    [Lane.Velocity]: "velocity",
+    [Lane.Force]: "force",
+    [Lane.Geo]: "geo",
+} as const;
 
 /** thrown when a builder convenience call's op is refused and the caller didn't opt into
  *  reading the refusal itself (`.op` for that) — a fixture author almost always wants a
@@ -87,10 +83,17 @@ export class Build {
      *  wants a refused setup call to fail loud rather than silently build a track that isn't
      *  what the test thinks it is. Returns the record's stable id. */
     record(lane: Lane, row: Omit<LaneSegment, "id">): number {
-        const w = createRecord(this.ecs, lane, row);
-        if (w.id === null)
-            throw new Error(`build: ${lane} record refused — ${JSON.stringify(w.refusals)}`);
-        return w.id;
+        const result = this.op({
+            type: "record-add",
+            lane: LANE_NAMES[lane],
+            start: row.start,
+            end: row.end,
+            ease: row.ease,
+            ...(row.entry === undefined ? {} : { entry: row.entry }),
+            exit: row.exit,
+        });
+        if (result.id === undefined) throw new Error("build: record-add applied without an id");
+        return result.id;
     }
 
     /** a force record over `[start, end)`, owning both handles. */
@@ -127,44 +130,36 @@ export class Build {
     }
 
     span(id: number, start: number, end: number): void {
-        const w = setRecordSpan(this.ecs, id, start, end);
-        if (w.id === null) throw new Error(`build: span refused — ${JSON.stringify(w.refusals)}`);
+        this.op({ type: "record-span", id, start, end });
     }
 
     handle(id: number, which: "entry" | "exit", value: number | undefined): void {
-        const w = setRecordHandle(this.ecs, id, which, value);
-        if (w.id === null) throw new Error(`build: handle refused — ${JSON.stringify(w.refusals)}`);
+        this.op({ type: "record-handle", id, which, ...(value === undefined ? {} : { value }) });
     }
 
     ease(id: number, ease: Easing): void {
-        setRecordEase(this.ecs, id, ease);
+        this.op({ type: "record-ease", id, ease });
     }
 
     remove(id: number): void {
-        deleteRecord(this.ecs, id);
+        this.op({ type: "record-delete", id });
     }
 
     // ── track scalars ──────────────────────────────────────────────────────────────────
 
     /** pin (or unpin, with 0) the track end. */
     end(value: number): void {
-        const refusals = setEnd(this.ecs, value);
-        if (refusals.length > 0)
-            throw new Error(`build: end refused — ${JSON.stringify(refusals)}`);
+        this.op({ type: "end", value });
     }
 
     /** write the lane priority, top to bottom. */
     order(value: readonly Lane[]): void {
-        const refusals = setOrder(this.ecs, value);
-        if (refusals.length > 0)
-            throw new Error(`build: order refused — ${JSON.stringify(refusals)}`);
+        this.op({ type: "order", value: value.map((lane) => LANE_NAMES[lane]) });
     }
 
     /** the authored start speed (m/s). */
     startSpeed(value: number): void {
-        const refusals = setV0(this.ecs, value);
-        if (refusals.length > 0)
-            throw new Error(`build: start-speed refused — ${JSON.stringify(refusals)}`);
+        this.op({ type: "start-speed", value });
     }
 
     friction(value: number): void {

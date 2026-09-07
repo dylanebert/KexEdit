@@ -329,7 +329,7 @@ export interface Step {
  *  case reached through a realized `dsArr`, not through `ds` itself, and `evalForce`'s Distance
  *  march divides `sigma / ds` in its σ-lookup closure before recovery ever runs, so `ds === 0`
  *  NaNs the integration instead (verified by execution, `kex2d-correctness-fixes`). No production
- *  caller can pass `length ≤ 0` (`MIN_FORCE_LEN`, `minForceExtent` floor every write path), so
+ *  caller can pass `length ≤ 0` (the record floor and `deriveRuns` keep every run positive), so
  *  the throw costs nothing reachable. */
 export function resolveStep(length: number, step: number): Step {
     if (!Number.isFinite(length)) throw new Error(`resolveStep: length must be finite (${length})`);
