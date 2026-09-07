@@ -8,6 +8,15 @@ import { applyOp, type Op } from "../src/commands";
 import { dispatch } from "../src/cli";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { createHistory } from "../src/history";
+import { Easing } from "../src/profile";
+import {
+    BakeSystem,
+    DEFAULT_FRICTION,
+    DEFAULT_RESISTANCE,
+    Track,
+    trackEntity,
+    V0,
+} from "../src/track";
 
 // the CLI's own suite: round-trip byte-identity over the committed
 // `.kex` fixture corpus (`tests/fixtures/cli/`, minted by `tests/mint-cli-fixtures.ts` from
@@ -135,8 +144,22 @@ describe("new: seeds a fresh document", () => {
             const created = await dispatch(["new", path]);
             expect(created.exitCode).toBe(0);
             expect(existsSync(path)).toBe(true);
+            // the boot seed, migrated forward: one flat 24 m pitch record from the origin
+            // anchor, the authoring coefficients, and the default start speed.
             const doc = parseDocument(readFileSync(path, "utf8"));
-            expect(doc.lanes.force.length).toBeGreaterThan(0);
+            expect(doc.lanes.geo).toEqual([
+                { id: 0, start: 0, end: 24, ease: Easing.Linear, entry: 0, exit: 0 },
+            ]);
+            expect(doc.lanes.force).toEqual([]);
+            expect(doc.track.v0).toBe(V0);
+            expect(doc.track.friction).toBeCloseTo(DEFAULT_FRICTION, 12);
+            expect(doc.track.resistance).toBeCloseTo(DEFAULT_RESISTANCE, 12);
+            // and it BAKES — the property the retired `seedTrack` arm held (`track.test.ts`).
+            const state = new State();
+            state.addSystem(BakeSystem);
+            loadDocument(state, readFileSync(path, "utf8"));
+            state.step(0);
+            expect(Track.count.get(trackEntity(state)!)).toBeGreaterThan(1);
 
             const clobber = await dispatch(["new", path]);
             expect(clobber.exitCode).toBe(1);
@@ -275,14 +298,37 @@ describe("semantic refusals surface named guards structured, not just a flattene
 });
 
 describe("edit: no second write path — a CLI-edited file reopened equals the ops applied directly", () => {
-    /** every op family S2's own differential arm already proves against a direct setter call;
-     *  this arm proves the SHELL doesn't diverge from `applyOp` — same op, same fixture, one
-     *  path through `dispatch`'s `--ops` flag, one path calling `applyOp` directly, documents
-     *  compared byte-raw (no id-normalizing needed: neither op below allocates a fresh id). */
+    /** every op family the command-versus-setter differential proves against a direct setter
+     *  call (`commands.test.ts`); this arm proves the SHELL doesn't diverge from `applyOp` —
+     *  same op, same fixture, one path through `dispatch`'s `--ops` flag, one path calling
+     *  `applyOp` directly. The id allocator is monotone across the process, so a `record-add`
+     *  lands a different id on the second path; the reported id is normalized out of each text
+     *  and everything else is compared byte-raw. */
+    function normalizeNewId(text: string, id: number | undefined): string {
+        return id === undefined ? text : text.replaceAll(`"id":${id},`, '"id":NEW,');
+    }
     const Cases: { name: string; op: Op }[] = [
         { name: "friction", op: { type: "friction", value: 0.05 } },
         { name: "resistance", op: { type: "resistance", value: 1e-4 } },
         { name: "domain", op: { type: "domain", value: 1 } },
+        // the lane vocabulary (S2e-ii): the shell must not diverge from `applyOp` on a record
+        // op either. `record-add` allocates an id, but both paths allocate it from the same
+        // loaded document, so the two texts still compare raw.
+        {
+            name: "record-add",
+            op: {
+                type: "record-add",
+                lane: "velocity",
+                start: 2,
+                end: 12,
+                ease: 1,
+                entry: 18,
+                exit: 24,
+            },
+        },
+        { name: "end", op: { type: "end", value: 400 } },
+        { name: "order", op: { type: "order", value: ["force", "geo", "velocity"] } },
+        { name: "start-speed", op: { type: "start-speed", value: 16 } },
     ];
 
     for (const { name, op } of Cases) {
@@ -302,16 +348,40 @@ describe("edit: no second write path — a CLI-edited file reopened equals the o
                     directState,
                     readFileSync(join(FIXTURE_DIR, FIXTURE_NAMES[0]), "utf8"),
                 );
-                applyOp(directState, createHistory(), op);
-                const directDoc = saveDocument(directState);
+                const directResult = applyOp(directState, createHistory(), op);
+                const directDoc = normalizeNewId(saveDocument(directState), directResult.id);
 
-                const cliDoc = readFileSync(viaCli, "utf8");
+                const cliDoc = normalizeNewId(
+                    readFileSync(viaCli, "utf8"),
+                    cliPayload.results[0].id,
+                );
                 expect(cliDoc).toBe(directDoc);
             } finally {
                 teardown();
             }
         });
     }
+
+    // the non-vacuity control: `dispatch` and the direct path each build a `State`, and two live
+    // `State`s in one process alias module-scoped component storage (`kex2d/AGENTS.md`), so this
+    // comparison has to be shown capable of SEEING a divergence — a different op on the direct
+    // side must read as a difference, or every arm above is passing for free.
+    test("the differential separates a different op on the direct side", async () => {
+        setup();
+        try {
+            const viaCli = freshCopy(FIXTURE_NAMES[0]);
+            expect(
+                (await dispatch(["edit", viaCli, "--ops", '{"type":"friction","value":0.05}']))
+                    .exitCode,
+            ).toBe(0);
+            const directState = new State();
+            loadDocument(directState, readFileSync(join(FIXTURE_DIR, FIXTURE_NAMES[0]), "utf8"));
+            applyOp(directState, createHistory(), { type: "friction", value: 0.09 });
+            expect(readFileSync(viaCli, "utf8")).not.toBe(saveDocument(directState));
+        } finally {
+            teardown();
+        }
+    });
 
     test("ops read from stdin when --ops is absent", async () => {
         setup();

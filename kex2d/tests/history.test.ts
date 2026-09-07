@@ -35,6 +35,7 @@ import {
     entrySpeed,
     laneOrderOf,
     lanesOf,
+    orderColumn,
     recordOf,
     setEnd,
     setRecordHandle,
@@ -294,10 +295,20 @@ describe("setOrder — the lane priority", () => {
         expect(laneOrderOf(ecs)).toEqual(before);
     });
 
-    test("writing the order it already has records nothing", () => {
+    // an ABSENT column and the default written out are different documents, so writing the
+    // default over absence is a real edit; writing an order the column already carries is not.
+    // RED: snapshot `laneOrderOf` instead of `orderColumn` → the first write reads as a no-op,
+    // and undoing a later swap writes the default out where the document had nothing.
+    test("writing the default over an absent column records, and undo restores absence", () => {
         const { ecs, h } = fixture();
+        expect(orderColumn(ecs)).toBe(0);
         expect(setOrder(h, ecs, laneOrderOf(ecs))).toEqual([]);
-        expect(h.undo).toEqual([]);
+        expect(h.undo).toHaveLength(1);
+        expect(orderColumn(ecs)).not.toBe(0);
+        expect(setOrder(h, ecs, laneOrderOf(ecs))).toEqual([]);
+        expect(h.undo).toHaveLength(1); // the same order again is no edit
+        undo(h, ecs);
+        expect(orderColumn(ecs)).toBe(0);
     });
 
     test("a non-permutation is refused and records nothing", () => {

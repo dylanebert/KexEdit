@@ -18,14 +18,15 @@
  *  mutation. `stats`/`dump`/`validate` load + bake (`track.BakeSystem`) and read pure derived
  *  state (`stats.ts`/`forcelimits.ts`); `fmt` never touches an ECS at all — `doc.parseDocument` +
  *  `doc.serializeDocument` are pure text↔document, the canonicalization the round-trip oracle
- *  pins (`serialize(parse(text)) === text`). `new` seeds through `track.seedTrack`, the one seed
- *  a fresh document takes. */
+ *  pins (`serialize(parse(text)) === text`). `new` writes the boot seed as a v3 document and
+ *  migrates it forward, so the one seed a fresh document takes is the migration's own output. */
 
 import { existsSync } from "node:fs";
 import { State } from "@dylanebert/shallot";
 import { applyOp, type Op, type OpResult, type Refusal } from "./commands";
 import {
     loadDocument,
+    migrate,
     parseDocument,
     saveDocument,
     SemanticRefusalError,
@@ -34,7 +35,19 @@ import {
 import { checkForceLimits, DEFAULT_PROFILE } from "./forcelimits";
 import { createHistory } from "./history";
 import { computeStats } from "./stats";
-import { bakeOut, BakeSystem, samples, seedTrack, Track, trackEntity } from "./track";
+import {
+    bakeOut,
+    BakeSystem,
+    DEFAULT_FRICTION,
+    DEFAULT_RESISTANCE,
+    DS_NOMINAL,
+    EXTEND_DIST,
+    lanesOf,
+    samples,
+    Track,
+    trackEntity,
+    V0,
+} from "./track";
 
 export interface CliResult {
     exitCode: number;
@@ -145,6 +158,11 @@ async function cmdDump(file: string): Promise<CliResult> {
     return okResult({
         count,
         hash: out.hash,
+        // the authored rows, in the same words an op speaks: `dump` is where a headless author
+        // reads the stable ids every record op addresses.
+        lanes: lanesOf(loaded.loaded.state),
+        end: Track.end.get(trackEid),
+        v0: Track.v0.get(trackEid),
         positions: {
             x: toArray(samp.posX, count),
             y: toArray(samp.posY, count),
@@ -251,16 +269,55 @@ async function cmdFmt(file: string): Promise<CliResult> {
     return okResult({ changed: canonical !== text, bytes: canonical.length });
 }
 
-/** seed a fresh document through `track.seedTrack` — one force record at the default g, the
- *  authoring coefficients, and the default start speed. Refuses to clobber an existing file
- *  unless `--force`, since this is the one verb that doesn't require the target to already
- *  exist. S2e-ii re-keys this onto a `scenarios.ts` v3 document migrated forward. */
+/** the boot seed as a v3 document: the physically-grounded authoring coefficients, one flat
+ *  24 m geo section from the fixed origin anchor, and the default start speed as the retired
+ *  one-shot. Written at v3 and migrated forward rather than authored at v4, so the seed a fresh
+ *  document takes is exactly what `migrations[3]` makes of the retired boot track — one
+ *  migration path, not a second authoring one. */
+function seedV3(): Record<string, unknown> {
+    return {
+        version: 3,
+        track: {
+            ds: DS_NOMINAL,
+            domain: 0,
+            friction: DEFAULT_FRICTION,
+            resistance: DEFAULT_RESISTANCE,
+        },
+        segments: [
+            {
+                id: 0,
+                order: 0,
+                kind: 0,
+                run: 0,
+                node: 1,
+                nodes: [
+                    { order: 0, x: 0, y: 0, theta: 0 },
+                    { order: 1, x: EXTEND_DIST, y: 0, theta: 0 },
+                ],
+                points: [],
+            },
+        ],
+        strips: [],
+        oneShot: [{ id: 0, value: V0 }],
+    };
+}
+
+/** seed a fresh document. Refuses to clobber an existing file unless `--force`, since this is
+ *  the one verb that doesn't require the target to already exist. */
 async function cmdNew(file: string, force: boolean): Promise<CliResult> {
     if (!force && existsSync(file))
         return errResult(1, "fileExists", `${file} already exists; pass --force to overwrite`);
-    const state = new State();
-    seedTrack(state);
-    await Bun.write(file, saveDocument(state));
+    let text: string;
+    try {
+        text = serializeDocument(parseDocument(JSON.stringify(migrate(seedV3()))));
+    } catch (e) {
+        return errResult(
+            1,
+            "seedInvalid",
+            `the boot seed did not migrate: ${(e as Error).message}`,
+        );
+    }
+    await Bun.write(file, text);
     return okResult({ created: file });
 }
 

@@ -42,7 +42,6 @@ import {
     trackEnd,
 } from "./lanes";
 import {
-    DEFAULT_G,
     type Easing,
     type ForcePoint,
     forceProfile,
@@ -200,6 +199,14 @@ export function endColumn(ecs: State): number {
 /** the track's resolved end station (m) — the pinned value, or the longest lane's last exit. */
 export function trackEndOf(ecs: State): number {
     return trackEnd(lanesOf(ecs), endColumn(ecs));
+}
+
+/** the track's authored `order` column (0 = absent, the default governs), raw. {@link laneOrderOf}
+ *  resolves it; the gestures snapshot THIS, so undoing a swap restores absence rather than
+ *  writing the default out as an explicit permutation. */
+export function orderColumn(ecs: State): number {
+    const t = trackEntity(ecs);
+    return t === null ? 0 : Track.order.get(t);
 }
 
 /** the track's lane priority, top to bottom — the default when the column is absent or is not
@@ -382,11 +389,18 @@ export function setEnd(ecs: State, end: number): LaneRefusal[] {
     return [];
 }
 
-/** write the lane priority. Refuses anything that is not a permutation of the three lanes
- *  (`lanes.laneOrder`) — a partial order silently leaves one lane unranked. */
-export function setOrder(ecs: State, order: readonly number[]): LaneRefusal[] {
+/** write the lane priority, or CLEAR it with `null` — the order's own follow rule, mirroring
+ *  `setEnd(0)`: a cleared column means the default `[Geo, Force, Velocity]` governs and nothing
+ *  is authored, which is not the same document as the default written out explicitly. Refuses
+ *  anything that is not a permutation of the three lanes (`lanes.laneOrder`) — a partial order
+ *  silently leaves one lane unranked. */
+export function setOrder(ecs: State, order: readonly number[] | null): LaneRefusal[] {
     const t = trackEntity(ecs);
     if (t === null) return [{ guard: "noTrack", message: "no track to order" }];
+    if (order === null) {
+        Track.order.set(t, 0);
+        return [];
+    }
     const resolved = laneOrder(order);
     if (!resolved)
         return [
@@ -528,23 +542,6 @@ export function createTrack(ecs: State): number {
         feasible: new Uint8Array(MAX_SAMPLES),
         firstInfeasible: -1,
         hash: "",
-    });
-    return trackEid;
-}
-
-/** author a fresh document: one track with the physically-grounded coefficients, one 24 m force
- *  record at `DEFAULT_G`, and the default start speed. */
-export function seedTrack(ecs: State): number {
-    const trackEid = createTrack(ecs);
-    Track.friction.set(trackEid, DEFAULT_FRICTION);
-    Track.resistance.set(trackEid, DEFAULT_RESISTANCE);
-    Track.v0.set(trackEid, V0);
-    createRecord(ecs, Lane.Force, {
-        start: 0,
-        end: EXTEND_DIST,
-        ease: 0,
-        entry: DEFAULT_G,
-        exit: DEFAULT_G,
     });
     return trackEid;
 }

@@ -21,6 +21,7 @@ import {
     entrySpeed,
     type LaneRefusal,
     laneOrderOf,
+    orderColumn,
     type LaneWrite,
     recordOf,
     setEnd,
@@ -331,13 +332,17 @@ export function beginEnd(ecs: State): void {
     );
 }
 
-/** land a lane-order swap as one undo entry. A non-permutation is `setOrder`'s refusal. */
+/** land a lane-order swap as one undo entry. The snapshot is the raw `order` COLUMN, not the
+ *  resolved priority: an absent column and the default written out are different documents, so
+ *  undoing the first swap on a fresh track has to restore ABSENCE. A non-permutation is
+ *  `setOrder`'s refusal. */
 export function setOrder(h: History, ecs: State, order: readonly Lane[]): LaneRefusal[] {
-    const before = laneOrderOf(ecs);
+    const column = orderColumn(ecs);
+    const before = column === 0 ? null : laneOrderOf(ecs);
     const refusals = writeLaneOrder(ecs, order);
     if (refusals.length > 0) return refusals;
     const after = laneOrderOf(ecs);
-    if (before.every((lane, i) => lane === after[i])) return refusals;
+    if (orderColumn(ecs) === column) return refusals;
     record(h, {
         apply: () => void writeLaneOrder(ecs, after),
         reverse: () => void writeLaneOrder(ecs, before),
