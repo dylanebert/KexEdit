@@ -1,6 +1,18 @@
 {
-  "version": 3,
-  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
+  "version": 4,
+  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0,"v0":22},
+  "lanes": {
+    "velocity": [],
+    "force": [],
+    "geo": [
+      {"id":0,"start":0,"end":0,"ease":0,"entry":0,"exit":0},
+      {"id":1,"start":0,"end":0,"ease":0,"exit":0.7417825776253247},
+      {"id":2,"start":0,"end":0,"ease":0,"exit":0},
+      {"id":3,"start":0,"end":0,"ease":0,"exit":-0.4373378917478839},
+      {"id":4,"start":0,"end":0,"ease":0,"exit":-0.30444468587744083},
+      {"id":5,"start":0,"end":0,"ease":0,"exit":0.30444468587744083}
+    ]
+  },
   "segments": [
     {
       "id": 35,
@@ -72,6 +84,6 @@
   ],
   "strips": [],
   "oneShot": [
-    {"id":6,"value":22}
+    {"id":6}
   ]
 }

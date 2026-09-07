@@ -8,7 +8,7 @@ The authored track is an open geo/force **segment chain**, without branching or 
 
 `Section` and section-facing APIs remain compatibility, not a second authored model. `ADAPTERS.md` is the test-read inventory of remaining adapters.
 
-Flat v3 serialization and canonical force command/gesture paths have landed. Geometry, velocity and section-facing interaction still include migration adapters: do not infer that every viewport/timeline gesture has migrated from the canonical wire format or from pure `segment.ts` operations. Read callers in `commands.ts`, `history.ts`, `controls.ts` or `Timeline.svelte`.
+Flat v4 serialization and canonical force command/gesture paths have landed. Geometry, velocity and section-facing interaction still include migration adapters: do not infer that every viewport/timeline gesture has migrated from the canonical wire format or from pure `segment.ts` operations. Read callers in `commands.ts`, `history.ts`, `controls.ts` or `Timeline.svelte`.
 
 Geo authors positions and optional tangents; force authors values and named easing. Both substrates allow arbitrary density; rates are derived or invoked-fit views, never geometry storage.
 

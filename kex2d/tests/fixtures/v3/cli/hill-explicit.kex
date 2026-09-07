@@ -1,24 +1,12 @@
 {
-  "version": 4,
-  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0,"v0":22},
-  "lanes": {
-    "velocity": [],
-    "force": [],
-    "geo": [
-      {"id":0,"start":0,"end":0,"ease":0,"entry":0,"exit":0},
-      {"id":1,"start":0,"end":0,"ease":0,"exit":0.7417825776253247},
-      {"id":2,"start":0,"end":0,"ease":0,"exit":0},
-      {"id":3,"start":0,"end":0,"ease":0,"exit":-0.4373378917478839},
-      {"id":4,"start":0,"end":0,"ease":0,"exit":-0.30444468587744083},
-      {"id":5,"start":0,"end":0,"ease":0,"exit":0.30444468587744083}
-    ]
-  },
+  "version": 3,
+  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
   "segments": [
     {
-      "id": 0,
+      "id": 35,
       "order": 0,
       "kind": 0,
-      "run": 0,
+      "run": 35,
       "node": 1,
       "nodes": [
         {"order":0,"x":0,"y":0,"theta":0},
@@ -27,10 +15,10 @@
       "points": []
     },
     {
-      "id": 1,
+      "id": 36,
       "order": 1,
       "kind": 0,
-      "run": 0,
+      "run": 35,
       "node": 2,
       "nodes": [
         {"order":2,"x":38,"y":7,"theta":0.7417825776253247}
@@ -38,10 +26,10 @@
       "points": []
     },
     {
-      "id": 2,
+      "id": 37,
       "order": 2,
       "kind": 0,
-      "run": 0,
+      "run": 35,
       "node": 3,
       "nodes": [
         {"order":3,"x":56,"y":11,"theta":0,"tangent":{"mode":1,"inX":9,"inY":0,"outX":9,"outY":0}}
@@ -49,10 +37,10 @@
       "points": []
     },
     {
-      "id": 3,
+      "id": 38,
       "order": 3,
       "kind": 0,
-      "run": 0,
+      "run": 35,
       "node": 4,
       "nodes": [
         {"order":4,"x":74,"y":7,"theta":-0.4373378917478839}
@@ -60,10 +48,10 @@
       "points": []
     },
     {
-      "id": 4,
+      "id": 39,
       "order": 4,
       "kind": 0,
-      "run": 0,
+      "run": 35,
       "node": 5,
       "nodes": [
         {"order":5,"x":92,"y":0,"theta":-0.30444468587744083}
@@ -71,10 +59,10 @@
       "points": []
     },
     {
-      "id": 5,
+      "id": 40,
       "order": 5,
       "kind": 0,
-      "run": 0,
+      "run": 35,
       "node": 6,
       "nodes": [
         {"order":6,"x":112,"y":0,"theta":0.30444468587744083}
@@ -84,6 +72,6 @@
   ],
   "strips": [],
   "oneShot": [
-    {"id":0}
+    {"id":6,"value":22}
   ]
 }

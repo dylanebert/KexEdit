@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
 import {
@@ -12,7 +14,8 @@ import {
     saveDocument,
     serializeDocument,
 } from "../src/doc";
-import { Easing } from "../src/profile";
+import { Lane, emptyLanes, entryValue, laneExclusive } from "../src/lanes";
+import { DEFAULT_G, Easing } from "../src/profile";
 import { scenarios } from "../src/scenarios";
 import { TangentMode } from "../src/spline";
 import {
@@ -843,6 +846,7 @@ describe("frozen flat-v3 wire", () => {
                 },
             ],
             strips: [],
+            lanes: emptyLanes(),
             oneShot: [],
         });
         const state = new State();
@@ -877,6 +881,7 @@ describe("frozen flat-v3 wire", () => {
                 },
             ],
             strips: [],
+            lanes: emptyLanes(),
             oneShot: [],
         };
         const mutations = [
@@ -954,4 +959,230 @@ describe("saveDocument / loadDocument on a no-op cycle", () => {
 
         expect(Track.count.get(eid)).toBe(0);
     });
+});
+
+// ── v4 lane wire (`kex2d-segment-gestures` S1 § Validation 1) ────────────────────────────────
+
+/** every committed `.kex` under `tests/fixtures/`, at whatever version it was frozen at —
+ *  the migration corpus, read off disk rather than hand-listed so a fixture added later cannot
+ *  quietly escape the sweep. */
+function fixtureCorpus(): string[] {
+    const root = join(import.meta.dir, "fixtures");
+    const out: string[] = [];
+    const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+            a.name.localeCompare(b.name),
+        )) {
+            const path = join(dir, entry.name);
+            if (entry.isDirectory()) walk(path);
+            else if (entry.name.endsWith(".kex")) out.push(path);
+        }
+    };
+    walk(root);
+    return out;
+}
+
+/** the loadable half of the corpus: the `invariants/` fixtures are deliberately malformed (each
+ *  trips one named guard) and the `v2/`/`v3/` mirrors duplicate their live siblings byte for
+ *  byte, so a load arm reads the live, valid documents. */
+function loadableCorpus(): string[] {
+    return fixtureCorpus().filter(
+        (p) => !p.includes("/invariants/") && !p.includes("/v2/") && !p.includes("/v3/"),
+    );
+}
+
+describe("v4 migration sweep", () => {
+    const corpus = fixtureCorpus();
+
+    test("the corpus is the whole committed fixture set", () => {
+        // population floor: a narrowed walk (a typo'd root, a swallowed recursion) cannot pass.
+        expect(corpus.length).toBe(82);
+        expect(corpus.some((p) => p.includes("/velocity/"))).toBe(true);
+        expect(corpus.some((p) => p.includes("/force/"))).toBe(true);
+        expect(corpus.some((p) => p.includes("/cli/"))).toBe(true);
+    });
+
+    for (const path of corpus) {
+        const name = path.slice(path.indexOf("fixtures/"));
+        test(`${name} migrates forward to v${CURRENT_VERSION}`, () => {
+            const raw = JSON.parse(readFileSync(path, "utf8"));
+            expect(raw.version).toBeLessThanOrEqual(CURRENT_VERSION);
+            const migrated = migrate(raw);
+            expect(migrated.version).toBe(CURRENT_VERSION);
+            // the lane substrate is present and shaped on every migrated document, malformed
+            // legacy payload or not.
+            const lanes = migrated.lanes as Record<string, unknown>;
+            for (const lane of ["velocity", "force", "geo"]) expect(lanes[lane]).toBeArray();
+            // and a pre-v4 file's retired `oneShot` value has moved onto `track.v0`.
+            if (raw.version < CURRENT_VERSION) {
+                const oneShot = (raw.oneShot ?? []) as { value?: number }[];
+                expect((migrated.track as { v0?: number }).v0).toBe(oneShot[0]?.value);
+            }
+            for (const row of migrated.oneShot as object[]) expect(row).not.toHaveProperty("value");
+        });
+    }
+});
+
+describe("hand-checked v4 lane shapes", () => {
+    function migratedLanes(rel: string) {
+        const text = readFileSync(join(import.meta.dir, "fixtures", rel), "utf8");
+        return parseDocument(text).lanes;
+    }
+
+    test("velocity/multi-keyframe-strip.kex: one strip splits at each keyframe", () => {
+        // the committed strip is [2, 14) value 10 with keyframes (2,10) (6,18) (10,8) (14,12):
+        // three adjacent segments, each owning both handles, no gap and no overlap.
+        const lanes = migratedLanes("velocity/multi-keyframe-strip.kex");
+        expect(lanes.velocity).toEqual([
+            { id: 0, start: 2, end: 6, ease: Easing.Linear, entry: 10, exit: 18 },
+            { id: 1, start: 6, end: 10, ease: Easing.Linear, entry: 18, exit: 8 },
+            { id: 2, start: 10, end: 14, ease: Easing.Linear, entry: 8, exit: 12 },
+        ]);
+        expect(laneExclusive(lanes.velocity)).toBe(true);
+        // and the single force run of that fixture is one flat segment, entry key owned.
+        expect(lanes.force).toEqual([
+            { id: 3, start: 0, end: 20, ease: Easing.Cubic, entry: 1, exit: 1 },
+        ]);
+        expect(lanes.geo).toEqual([]);
+    });
+
+    test("velocity/keyframeless-strip.kex: one constant segment, entry === exit === value", () => {
+        const lanes = migratedLanes("velocity/keyframeless-strip.kex");
+        expect(lanes.velocity).toEqual([
+            { id: 0, start: 3, end: 9, ease: Easing.Linear, entry: 11, exit: 11 },
+        ]);
+    });
+
+    test("force/adjacent-force-runs.kex: two runs, each run-entry key an owned entry", () => {
+        // run 0 is extent 4 with keys (0, g1, Linear) and (4, g2, Linear); run 1 abuts it at
+        // station 4, extent 5, keys (0, g2, Quintic) and (5, g0.75, Quintic).
+        const lanes = migratedLanes("force/adjacent-force-runs.kex");
+        expect(lanes.force).toEqual([
+            { id: 0, start: 0, end: 4, ease: Easing.Linear, entry: 1, exit: 2 },
+            { id: 1, start: 4, end: 9, ease: Easing.Quintic, entry: 2, exit: 0.75 },
+        ]);
+        // abutting, so exclusive — and segment 1's owned entry equals its predecessor's exit,
+        // which is what makes the run boundary continuous rather than a jump.
+        expect(laneExclusive(lanes.force)).toBe(true);
+        expect(entryValue(Lane.Force, lanes.force, lanes.force[1]!)).toBe(2);
+        expect(lanes.velocity).toEqual([]);
+        expect(lanes.geo).toEqual([]);
+    });
+
+    test("force/all-easings.kex: an interior key splits the run and keeps its own easing", () => {
+        // extent 8, keys (0, 0.5, Linear) (2, 2, Cubic) (5, -0.25, Quintic) (8, 1, Cubic) — the
+        // whole authored profile survives as three adjacent segments; only the first owns an entry.
+        const lanes = migratedLanes("force/all-easings.kex");
+        // the fixture leads with a geo run, which claims lane id 0 (one shared id namespace,
+        // walked velocity → chain order), so the force records start at 1.
+        expect(lanes.geo).toHaveLength(1);
+        expect(lanes.force).toEqual([
+            { id: 1, start: 0, end: 2, ease: Easing.Cubic, entry: 0.5, exit: 2 },
+            { id: 2, start: 2, end: 5, ease: Easing.Quintic, exit: -0.25 },
+            { id: 3, start: 5, end: 8, ease: Easing.Cubic, exit: 1 },
+        ]);
+        expect(entryValue(Lane.Force, lanes.force, lanes.force[1]!)).toBe(2);
+    });
+
+    test("force/single-terminal.kex: no run-entry key, so the entry is inferred", () => {
+        const lanes = migratedLanes("force/single-terminal.kex");
+        expect(lanes.force).toEqual([{ id: 0, start: 0, end: 6, ease: Easing.Quintic, exit: 0.5 }]);
+        expect(lanes.force[0]!.entry).toBeUndefined();
+        // nothing precedes it, so the force lane's own rule answers: DEFAULT_G.
+        expect(entryValue(Lane.Force, lanes.force, lanes.force[0]!)).toBe(DEFAULT_G);
+    });
+
+    test("force/keyless.kex: a run with no authored key authors no force segment", () => {
+        expect(migratedLanes("force/keyless.kex").force).toEqual([]);
+    });
+
+    test("the SAVED v4 text carries the lanes, not just the parsed document", () => {
+        // the fixed-point arms below compare a save against another save, so they cannot see a
+        // lane block the emitter drops on both sides. This one reads the emitted bytes.
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(
+            state,
+            readFileSync(
+                join(import.meta.dir, "fixtures", "velocity", "multi-keyframe-strip.kex"),
+                "utf8",
+            ),
+        );
+        state.step(0);
+        const emitted = JSON.parse(saveDocument(state)).lanes;
+        expect(emitted.velocity).toEqual([
+            { id: 0, start: 2, end: 6, ease: Easing.Linear, entry: 10, exit: 18 },
+            { id: 1, start: 6, end: 10, ease: Easing.Linear, entry: 18, exit: 8 },
+            { id: 2, start: 10, end: 14, ease: Easing.Linear, entry: 8, exit: 12 },
+        ]);
+        expect(emitted.force).toEqual([
+            { id: 3, start: 0, end: 20, ease: Easing.Cubic, entry: 1, exit: 1 },
+        ]);
+        expect(emitted.geo).toEqual([]);
+    });
+});
+
+describe("v4 canonical text is a fixed point", () => {
+    for (const path of loadableCorpus()) {
+        const name = path.slice(path.indexOf("fixtures/"));
+        test(`${name}: save(load(v4)) === v4`, () => {
+            const state = new State();
+            state.addSystem(BakeSystem);
+            loadDocument(state, readFileSync(path, "utf8"));
+            state.step(0);
+            const canonical = saveDocument(state);
+            expect(JSON.parse(canonical).version).toBe(CURRENT_VERSION);
+            // the emitter's own idempotence, then the whole ECS round trip on the v4 text.
+            expect(serializeDocument(parseDocument(canonical))).toBe(canonical);
+            const authored = snapshotAll(state);
+            loadDocument(state, canonical);
+            state.step(0);
+            expect(snapshotAll(state)).toEqual(authored);
+            expect(saveDocument(state)).toBe(canonical);
+        });
+    }
+});
+
+describe("frozen v3 migration corpus", () => {
+    // the pre-S1 v3 corpus, frozen under `tests/fixtures/v3/` exactly as `v2/` freezes the
+    // pre-S2 one: a v3 file must keep migrating to canonical v4, and the canonical v4 it
+    // produces must be the same document the live (already-v4) sibling loads.
+    const frozen = [
+        "cli/circular-arc.kex",
+        "cli/double-hump.kex",
+        "cli/full-loop.kex",
+        "cli/hill-auto.kex",
+        "cli/hill-explicit.kex",
+        "cli/loop-explicit.kex",
+        "cli/parabola-hill.kex",
+        "cli/s-curve.kex",
+        "cli/straight-fillet.kex",
+        "cli/valley-explicit.kex",
+        "hill-explicit-golden.kex",
+    ];
+
+    for (const name of frozen) {
+        test(`${name}: v3 migrates once and canonical v4 is a fixed point`, () => {
+            const text = readFileSync(join(import.meta.dir, "fixtures", "v3", name), "utf8");
+            expect(JSON.parse(text).version).toBe(3);
+            const state = new State();
+            state.addSystem(BakeSystem);
+            loadDocument(state, text);
+            state.step(0);
+            const authored = snapshotAll(state);
+            const canonical = saveDocument(state);
+            expect(JSON.parse(canonical).version).toBe(CURRENT_VERSION);
+            expect(serializeDocument(parseDocument(canonical))).toBe(canonical);
+
+            loadDocument(state, canonical);
+            state.step(0);
+            expect(snapshotAll(state)).toEqual(authored);
+            expect(saveDocument(state)).toBe(canonical);
+
+            // the live sibling is the re-minted v4 of the same scenario; it carries its own
+            // stable ids (minting allocates fresh), so what must agree is the format stamp.
+            const live = readFileSync(join(import.meta.dir, "fixtures", name), "utf8");
+            expect(JSON.parse(live).version).toBe(CURRENT_VERSION);
+        });
+    }
 });

@@ -22,7 +22,7 @@ Friction/drag make speed path-dependent; height-only conservation holds only at 
 
 `spline.ts`: Hermite interpolation and tangents. Auto tangents remain inferred, explicit vectors absolute. A node edit affects only its adjacent segments. Re-head the tip only on its own default move or append, never neighbor movement/deletion; role changes preserve authored headings and tangents. Read `exitHeading`, not stale Auto `theta`, when an explicit tangent controls direction. Reset returns creation state; node zero stays pinned.
 
-`track.ts`: authored ECS, setters, snapshots, bake publication. `segment.ts`: pure chain operations. Flat v3 `doc.ts` stores chain records, not caches; stable order/ids and f32-exact emission (including negative zero) round-trip. Never re-sum conserved run stations/extent from rounded members.
+`track.ts`: authored ECS, setters, snapshots, bake publication. `segment.ts`: pure chain operations. Flat v4 `doc.ts` stores lane records, not caches; stable order/ids and f32-exact emission (including negative zero) round-trip. Never re-sum conserved run stations/extent from rounded members.
 
 ## Velocity strips
 

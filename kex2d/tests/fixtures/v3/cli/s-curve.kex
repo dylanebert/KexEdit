@@ -1,20 +1,6 @@
 {
-  "version": 4,
-  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0,"v0":18},
-  "lanes": {
-    "velocity": [],
-    "force": [],
-    "geo": [
-      {"id":0,"start":0,"end":0,"ease":0,"entry":0,"exit":0},
-      {"id":1,"start":0,"end":0,"ease":0,"exit":0.7610127542247298},
-      {"id":2,"start":0,"end":0,"ease":0,"exit":-0.7610127542247298},
-      {"id":3,"start":0,"end":0,"ease":0,"exit":0},
-      {"id":4,"start":0,"end":0,"ease":0,"exit":-0.6435011087932844},
-      {"id":5,"start":0,"end":0,"ease":0,"exit":0.6435011087932844},
-      {"id":6,"start":0,"end":0,"ease":0,"exit":-0.15354378253955608},
-      {"id":7,"start":0,"end":0,"ease":0,"exit":0.15354378253955608}
-    ]
-  },
+  "version": 3,
+  "track": {"ds":0.5,"domain":0,"friction":0,"resistance":0},
   "segments": [
     {
       "id": 18,
@@ -108,6 +94,6 @@
   ],
   "strips": [],
   "oneShot": [
-    {"id":3}
+    {"id":3,"value":18}
   ]
 }
