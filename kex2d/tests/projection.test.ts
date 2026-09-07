@@ -1,4 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { loadDocument, parseDocument } from "../src/doc";
 import { State } from "@dylanebert/shallot";
 import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import * as projection from "../src/projection";
@@ -13,6 +16,7 @@ import {
 import {
     addNode,
     authoredHash,
+    BakeSystem,
     createForcePoint,
     createSection,
     createTrack,
@@ -31,7 +35,9 @@ import {
     setSectionLength,
     runToken,
     sectionToken,
+    sectionWindows,
     sections,
+    trackDs,
     TrackStart,
 } from "../src/track";
 
@@ -361,4 +367,113 @@ test("derived run stations are read from the records, never summed from member e
     const run = deriveRuns(lanes, 0)[0]!;
     expect(run.stations).toEqual([0, a, b, 44]);
     expect(run.length).toBe(44);
+});
+
+// ── the lane partition against the loaded chain, over the whole fixture corpus ──────────────
+
+/** every committed `.kex` fixture outside the frozen `v2`/`v3` migration inputs and the
+ *  deliberately malformed `invariants/*-red` corpus — the documents that actually load. */
+function loadableFixtures(): string[] {
+    const root = join(import.meta.dir, "fixtures");
+    const out: string[] = [];
+    for (const dir of ["", "cli", "force", "invariants", "velocity"]) {
+        const abs = dir === "" ? root : join(root, dir);
+        if (!existsSync(abs)) continue;
+        for (const name of readdirSync(abs)) {
+            if (!name.endsWith(".kex") || name.endsWith("-red.kex")) continue;
+            out.push(dir === "" ? name : `${dir}/${name}`);
+        }
+    }
+    return out.sort();
+}
+
+test("an unpinned end follows the longest lane, past the authored shape", () => {
+    // `velocity/past-live-extent.kex` authors a strip out to 46 m over 40 m of force runs. The
+    // retired chain ended at 40 and the strip's tail was inert; under the Locked decision the
+    // document runs to the last exit on ANY lane, so the derived track reaches 46.
+    const doc = parseDocument(
+        readFileSync(join(import.meta.dir, "fixtures", "velocity", "past-live-extent.kex"), "utf8"),
+    );
+    const runs = deriveRuns(doc.lanes, doc.track.end ?? 0);
+    expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([[SectionKind.Force, 0, 46]]);
+    expect(Math.max(...doc.lanes.force.map((r) => r.end))).toBe(40);
+});
+
+test("derived lane runs reproduce the loaded chain's geometry partition and force profile", () => {
+    const names = loadableFixtures();
+    // pin the population: a narrowed scan must not pass as a clean sweep.
+    expect(names.length).toBeGreaterThanOrEqual(24);
+    for (const name of names) {
+        const text = readFileSync(join(import.meta.dir, "fixtures", name), "utf8");
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, text);
+        state.step(0);
+
+        const doc = parseDocument(text);
+        const derived = deriveRuns(doc.lanes, doc.track.end ?? 0);
+        const windows = sectionWindows(state);
+        const chainRuns = rebuildRunProjection(state);
+        const ds = trackDs(state);
+
+        // Geo runs are the lanes' own maximal abutting groups, so they survive one-for-one at
+        // the chain's own offsets and derived lengths. Two ADJACENT force runs carry no authored
+        // seam in the lane model (the Locked decision derives the union chain), so they merge —
+        // which is why the force arm below compares the PROFILE across the merge rather than the
+        // partition, and why it is the arm that holds the bake.
+        const geo = (kind: number) => kind === SectionKind.Geo;
+        expect(
+            derived.filter((r) => geo(r.kind)).map((r) => r.start),
+            name,
+        ).toEqual(
+            chainRuns
+                .map((r, i) => [r, windows[i]!] as const)
+                .filter(([r]) => geo(r.kind))
+                .map(([, w]) => w.offset),
+        );
+        expect(
+            derived.filter((r) => geo(r.kind)).map((r) => r.length),
+            name,
+        ).toEqual(
+            chainRuns
+                .map((r, i) => [r, windows[i]!] as const)
+                .filter(([r]) => geo(r.kind))
+                .map(([, w]) => w.len),
+        );
+
+        for (const run of derived) {
+            if (run.kind !== SectionKind.Force) continue;
+            const covered = chainRuns
+                .map((r, i) => ({ r, w: windows[i]! }))
+                .filter(
+                    ({ r, w }) =>
+                        r.kind === SectionKind.Force &&
+                        w.offset >= run.start &&
+                        w.offset < run.start + run.length,
+                );
+            const want: number[] = [];
+            for (const { r } of covered) {
+                const dense = forceDense(
+                    state,
+                    r.segmentIds,
+                    r.stations,
+                    r.length,
+                    resolveStep(r.length, ds),
+                );
+                want.push(...dense);
+            }
+            const got = forceProfile(
+                materializeRunForceClamps(run.points, run.length),
+                resolveStep(run.length, ds),
+            );
+            // Compare over the CHAIN's own extent. A lane may reach past it — an unpinned end
+            // follows the longest lane (Locked decision), and `velocity/past-live-extent.kex`
+            // has a strip beyond the authored shape — and that tail is new track the retired
+            // chain never baked, so it is outside what a bake-identity comparison can say.
+            expect(
+                Array.from(got.subarray(0, want.length)),
+                `${name} force run at ${run.start}`,
+            ).toEqual(want);
+        }
+    }
 });

@@ -1069,31 +1069,42 @@ describe("hand-checked v4 lane shapes", () => {
         expect(lanes.geo).toEqual([]);
     });
 
-    test("force/all-easings.kex: an interior key splits the run and keeps its own easing", () => {
+    test("force/all-easings.kex: the run splits at its keys and each record leads its own", () => {
         // extent 8, keys (0, 0.5, Linear) (2, 2, Cubic) (5, -0.25, Quintic) (8, 1, Cubic) — the
-        // whole authored profile survives as three adjacent segments; only the first owns an entry.
+        // whole authored profile survives as three adjacent segments; only the first owns an
+        // entry, and each record carries the tag of the key that LEADS it (`profile.ts`: the
+        // leading keyframe governs the following segment), never the one that terminates it.
         const lanes = migratedLanes("force/all-easings.kex");
         // the fixture leads with a geo run, which claims lane id 0 (one shared id namespace,
         // walked velocity → chain order), so the force records start at 1.
-        expect(lanes.geo).toHaveLength(1);
+        expect(lanes.geo).toEqual([
+            { id: 0, start: 0, end: 3, ease: Easing.Linear, entry: 0, exit: 0 },
+        ]);
+        // and the force run is anchored at the geo run's own derived length, not at zero.
         expect(lanes.force).toEqual([
-            { id: 1, start: 0, end: 2, ease: Easing.Cubic, entry: 0.5, exit: 2 },
-            { id: 2, start: 2, end: 5, ease: Easing.Quintic, exit: -0.25 },
-            { id: 3, start: 5, end: 8, ease: Easing.Cubic, exit: 1 },
+            { id: 1, start: 3, end: 5, ease: Easing.Linear, entry: 0.5, exit: 2 },
+            { id: 2, start: 5, end: 8, ease: Easing.Cubic, exit: -0.25 },
+            { id: 3, start: 8, end: 11, ease: Easing.Quintic, exit: 1 },
         ]);
         expect(entryValue(Lane.Force, lanes.force, lanes.force[1]!)).toBe(2);
     });
 
-    test("force/single-terminal.kex: no run-entry key, so the entry is inferred", () => {
+    test("force/single-terminal.kex: the first record owns the run's materialized entry", () => {
+        // one key at the run end, so the evaluator's own start clamp is `sampleForce(points, 0)`
+        // — the migrated record owns exactly that, rather than ramping from an inferred DEFAULT_G.
         const lanes = migratedLanes("force/single-terminal.kex");
-        expect(lanes.force).toEqual([{ id: 0, start: 0, end: 6, ease: Easing.Quintic, exit: 0.5 }]);
-        expect(lanes.force[0]!.entry).toBeUndefined();
-        // nothing precedes it, so the force lane's own rule answers: DEFAULT_G.
-        expect(entryValue(Lane.Force, lanes.force, lanes.force[0]!)).toBe(DEFAULT_G);
+        expect(lanes.force).toEqual([
+            { id: 0, start: 0, end: 6, ease: Easing.Linear, entry: 0.5, exit: 0.5 },
+        ]);
+        expect(entryValue(Lane.Force, lanes.force, lanes.force[0]!)).toBe(0.5);
     });
 
-    test("force/keyless.kex: a run with no authored key authors no force segment", () => {
-        expect(migratedLanes("force/keyless.kex").force).toEqual([]);
+    test("force/keyless.kex: a keyless run is one flat DEFAULT_G segment owning both handles", () => {
+        // the run still bakes — `materializeRunForceClamps` holds DEFAULT_G across it — so the
+        // lane must carry that span rather than leaving the run's whole extent unauthored.
+        expect(migratedLanes("force/keyless.kex").force).toEqual([
+            { id: 0, start: 0, end: 6, ease: Easing.Linear, entry: DEFAULT_G, exit: DEFAULT_G },
+        ]);
     });
 
     test("the SAVED v4 text carries the lanes, not just the parsed document", () => {

@@ -26,13 +26,14 @@ import { State } from "@dylanebert/shallot";
 import type { Refusal } from "./commands";
 import { history } from "./history";
 import { type LaneSegment, type Lanes, emptyLanes } from "./lanes";
-import { Easing } from "./profile";
+import { Easing, type ForcePoint, sampleForce } from "./profile";
 import { Domain } from "./section";
-import { TangentMode, type Tangent } from "./spline";
+import { type Node, sampleChain, TangentMode, type Tangent } from "./spline";
 import {
     allStrips,
     createTrack,
     DS_NOMINAL,
+    MAX_SAMPLES,
     MIN_FORCE_LEN,
     MIN_V0,
     type NodeState,
@@ -179,17 +180,20 @@ export interface DocOneShot {
 // lanes, read off the same v3 payload it already emits), so the two can never disagree and a
 // migrated document is a fixed point of a save.
 //
-// **The arclength axis, and its one bridged limit.** Velocity strips are already TRACK-GLOBAL
-// arclength, so the velocity lane migrates exactly. A force run's own extent is authored
-// (`extent`), but a run's OFFSET along the track is the sum of the preceding runs' lengths — and
-// a GEO run's length is bake-derived (`track.segmentSpans` sums published `bakeOut.ds`; spec
-// Locked decision: "geo extent is read from the baked edge ... never a position chord"). A
-// document-to-document migration has no bake, so it cannot resolve a geo run's length. Rather
-// than write a chord-derived lie, a geo run contributes ZERO to the axis here and every geo lane
-// record carries an empty `[station, station)` span meaning "extent not authored — derived by the
-// bake". A force run's emitted span is therefore exact on an all-force document and PROVISIONAL
-// downstream of a geo run; S2's `deriveRuns` re-anchors both from the live bake when the store is
-// cut over to lanes, which is why the authoritative v3 payload is still carried beside them.
+// **The arclength axis.** Velocity strips are already TRACK-GLOBAL arclength, so the velocity
+// lane migrates exactly. A force run's own extent is authored (`extent`); a GEO run's is not —
+// it is read from the baked edge (spec Locked decision: "geo extent is read from the baked edge
+// ... never a position chord"). So this derivation re-samples each geo run's own nodes through
+// `spline.sampleChain` — the same sampler `track.geoChordDs` runs and the same per-edge `ds` the
+// bake publishes, and frame-invariant, so no entry placement is needed — and sums those edges for
+// the run's length and each member's span. Every lane record's `start`, and every velocity/force
+// `end`, is therefore authored ABSOLUTE arclength; a geo record's `end` is the derived column the
+// last bake wrote and `deriveRuns` cuts on, rewritten after every bake, never read as truth.
+//
+// The one limit: `chain` truncates a track at `MAX_SAMPLES` across the WHOLE chain, while this
+// samples each geo run against the full budget. A document already past the budget therefore
+// migrates with a longer tail than it bakes — the same degraded regime the bake itself warns
+// about, and no document in the corpus reaches it.
 
 /** the boundary value list for one strip: the strip's own span ends plus every keyframe strictly
  *  inside it, deduplicated and ordered. Splitting here is the whole "strip → adjacent segments"
@@ -259,10 +263,93 @@ function runsOf(segments: DocSegment[]): { kind: number; members: DocSegment[]; 
     return out;
 }
 
+/** one geo run's nodes as the pure `spline.Node` list its sampler reads, in run-global order.
+ *  `Handle.order` is run-global (`track.spliceGeoMembers`), so concatenating the members' node
+ *  arrays and sorting by `order` rebuilds the run's own chain. */
+function runNodes(members: DocSegment[]): Node[] {
+    return members
+        .flatMap((m) => m.nodes)
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .map((n) => ({ x: n.x, y: n.y, theta: n.theta, tangent: fromDocTangent(n.tangent) }));
+}
+
+/** the derived arclength span of each member of one geo run, in run-local metres: the sampled
+ *  per-edge `ds` summed between the members' terminating nodes. A run whose chain cannot sample
+ *  (fewer than two nodes) spans zero, which is what its degenerate bake publishes. */
+function geoMemberSpans(members: DocSegment[], ds: number): number[] {
+    const nodes = runNodes(members);
+    const posX = new Float32Array(MAX_SAMPLES);
+    const posY = new Float32Array(MAX_SAMPLES);
+    const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
+    const r = sampleChain(nodes, ds, posX, posY, dsArr, MAX_SAMPLES);
+    const spans: number[] = [];
+    for (let i = 0; i < members.length; i++) {
+        const lo = r.offsets[i];
+        const hi = r.offsets[i + 1];
+        let len = 0;
+        if (lo !== undefined && hi !== undefined) for (let e = lo; e < hi; e++) len += dsArr[e]!;
+        spans.push(len);
+    }
+    return spans;
+}
+
+/** the force lane records for ONE force run, in run-local stations offset by `cursor`.
+ *
+ *  The run's authored keys become its boundary stations; the span between two of them is one
+ *  record whose `ease` is the LEADING key's tag, because `profile.ts` gives the leading keyframe
+ *  the following segment (the Blender F-curve convention) — a trailing tag would silently change
+ *  the shape. The FIRST record owns its entry at `sampleForce(points, 0)`, which is exactly the
+ *  value `track.materializeRunForceClamps` materializes for the run's own start, so no migrated
+ *  run reads an inferred entry; a KEYLESS run becomes one flat `DEFAULT_G` record owning both
+ *  handles, matching the same clamp. A key past the run's authored extent is out of the run and
+ *  is dropped from the partition (it still shapes `sampleForce`, as it shapes the profile). */
+function forceRunLane(
+    run: { members: DocSegment[]; extent: number },
+    cursor: number,
+    nextId: () => number,
+): LaneSegment[] {
+    const keys = run.members
+        .flatMap((m) => m.points)
+        .slice()
+        .sort((a, b) => a.s - b.s || a.id - b.id);
+    const points: ForcePoint[] = keys.map((k) => ({
+        s: k.s,
+        g: k.boundary.g,
+        ease: k.boundary.ease,
+    }));
+    const easeAt = new Map<number, Easing>();
+    for (const k of keys) easeAt.set(k.s, k.boundary.ease);
+
+    const stations = [0];
+    for (const k of keys) {
+        if (k.s > 0 && k.s <= run.extent && k.s !== stations[stations.length - 1])
+            stations.push(k.s);
+    }
+    if (run.extent > stations[stations.length - 1]!) stations.push(run.extent);
+    if (stations.length < 2) return [];
+
+    const out: LaneSegment[] = [];
+    for (let i = 0; i + 1 < stations.length; i++) {
+        const start = stations[i]!;
+        const end = stations[i + 1]!;
+        out.push({
+            id: nextId(),
+            start: cursor + start,
+            end: cursor + end,
+            ease: easeAt.get(start) ?? Easing.Linear,
+            ...(i === 0 ? { entry: sampleForce(points, 0) } : {}),
+            exit: sampleForce(points, end),
+        });
+    }
+    return out;
+}
+
 /** the force and geo lane records for one v3 payload, walked along the chain's arclength axis
- *  (see the module note above for the geo-extent limit). */
+ *  (see the module note above for how a geo run's length is resolved). */
 function chainLanes(
     segments: DocSegment[],
+    ds: number,
     nextId: () => number,
 ): { force: LaneSegment[]; geo: LaneSegment[] } {
     const force: LaneSegment[] = [];
@@ -270,59 +357,26 @@ function chainLanes(
     let cursor = 0;
     for (const run of runsOf(segments)) {
         if (run.kind === SectionKind.Force) {
-            const keys = run.members
-                .flatMap((m) => m.points)
-                .slice()
-                .sort((a, b) => a.s - b.s || a.id - b.id);
-            if (keys.length > 0) {
-                // A key AT station 0 is the run's entry handle, not a terminating one; every
-                // other key terminates the span reaching it. A trailing stretch with no key
-                // dwells at the last exit (`lanes.inferredEntry`), which is emitted as a real
-                // flat segment so the run's whole authored extent stays covered.
-                const entryKey = keys.filter((k) => k.s <= 0).pop();
-                const inner = keys.filter((k) => k.s > 0 && k.s <= run.extent);
-                let prior = 0;
-                let held = entryKey ?? inner[0];
-                for (const key of inner) {
-                    if (key.s === prior) continue;
-                    force.push({
-                        id: nextId(),
-                        start: cursor + prior,
-                        end: cursor + key.s,
-                        ease: key.boundary.ease,
-                        ...(prior === 0 && entryKey ? { entry: entryKey.boundary.g } : {}),
-                        exit: key.boundary.g,
-                    });
-                    prior = key.s;
-                    held = key;
-                }
-                if (prior < run.extent && held) {
-                    force.push({
-                        id: nextId(),
-                        start: cursor + prior,
-                        end: cursor + run.extent,
-                        ease: held.boundary.ease,
-                        ...(prior === 0 && entryKey ? { entry: entryKey.boundary.g } : {}),
-                        exit: held.boundary.g,
-                    });
-                }
-            }
+            force.push(...forceRunLane(run, cursor, nextId));
             cursor += run.extent;
         } else {
-            // Geo: one record per member, each terminating at that member's own boundary node.
-            // The span is empty because a geo extent is bake-derived, never authored (above).
-            for (const member of run.members) {
+            // Geo: one record per member, each terminating at that member's own boundary node
+            // over the span the sampler derives for it.
+            const spans = geoMemberSpans(run.members, ds);
+            for (let i = 0; i < run.members.length; i++) {
+                const member = run.members[i]!;
                 const nodes = member.nodes.slice().sort((a, b) => a.order - b.order);
                 const exitNode = nodes[nodes.length - 1];
                 const entryNode = nodes.find((n) => n.order === 0);
                 geo.push({
                     id: nextId(),
                     start: cursor,
-                    end: cursor,
+                    end: cursor + spans[i]!,
                     ease: Easing.Linear,
                     ...(entryNode ? { entry: entryNode.theta } : {}),
                     exit: exitNode ? exitNode.theta : 0,
                 });
+                cursor += spans[i]!;
             }
         }
     }
@@ -331,11 +385,11 @@ function chainLanes(
 
 /** every lane of a v3 payload, in one shared id namespace (velocity, then force, then geo) so a
  *  lane record's identity is unique across the whole document. */
-export function lanesFromChain(segments: DocSegment[], strips: DocStrip[]): Lanes {
+export function lanesFromChain(segments: DocSegment[], strips: DocStrip[], ds: number): Lanes {
     let next = 0;
     const nextId = () => next++;
     const velocity = velocityLane(strips, nextId);
-    const { force, geo } = chainLanes(segments, nextId);
+    const { force, geo } = chainLanes(segments, ds, nextId);
     return { velocity, force, geo };
 }
 
@@ -419,7 +473,7 @@ export function docFromEcs(ecs: State): Kex2dDocument {
     return {
         version: CURRENT_VERSION,
         track: { ...track, ...(v0 === undefined ? {} : { v0 }) },
-        lanes: lanesFromChain(segments, strips),
+        lanes: lanesFromChain(segments, strips, track.ds),
         segments,
         strips,
         oneShot: snap.oneShot.map((o) => ({ id: o.id })),
@@ -1248,7 +1302,11 @@ function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
         rest.segments.every(isPlainObject) &&
         rest.strips.every(isPlainObject);
     const lanes = wellShaped
-        ? lanesFromChain(rest.segments as DocSegment[], rest.strips as DocStrip[])
+        ? lanesFromChain(
+              rest.segments as DocSegment[],
+              rest.strips as DocStrip[],
+              isFiniteNumber(rawTrack.ds) ? rawTrack.ds : DS_NOMINAL,
+          )
         : emptyLanes();
     return {
         ...rest,
