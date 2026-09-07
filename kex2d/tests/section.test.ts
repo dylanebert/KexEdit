@@ -6,11 +6,13 @@ import {
     type Entry,
     evalForce,
     evalGeo,
+    evalPitch,
     localize,
     place,
     type Section,
     type Strip,
 } from "../src/section";
+import { Easing, type ForcePoint } from "../src/profile";
 import type { Node } from "../src/spline";
 import { withThetas } from "./helpers/chain";
 
@@ -796,5 +798,132 @@ describe("energy propagation into a downstream force section", () => {
         // a real energy change reshapes downstream: higher entry v at the same fN means a larger
         // radius, so the arc flattens measurably in its own frame.
         expect(maxDelta(shapeOf(a, 1), shapeOf(b, 1))).toBeGreaterThan(0.1);
+    });
+});
+
+// ── evalPitch: the geo lane's kernel (spec `kex2d-segment-gestures` S2d, item 2) ─────────────
+
+describe("evalPitch", () => {
+    /** the entry every arm below is placed at. */
+    const entry: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+
+    test("a Linear key pair bakes the analytic circular arc", () => {
+        // Linear between two headings is a CONSTANT turn rate, which is a circle of radius
+        // `L / Δθ` — an independently known closed form, not a re-derivation of the kernel.
+        const L = 40;
+        const dTheta = 0.8;
+        const kappa = dTheta / L;
+        const ds = 0.5;
+        const edges = L / ds;
+        const points: ForcePoint[] = [
+            { s: 0, g: 0, ease: Easing.Linear },
+            { s: L, g: dTheta, ease: Easing.Linear },
+        ];
+        const r = evalPitch(entry, points, { edges, ds }, Easing.Linear);
+
+        // the midpoint-chord rule walks a chord of length `ds` along the arc's own tangent
+        // bisector, so the polygon it traces is longer than the arc it inscribes by the
+        // relative factor `1/sinc(Δ/2) − 1 ≈ Δ²/24` per edge, `Δ = κ·ds` the per-edge turn.
+        // That is the kernel's discretization, known in closed form, so the tolerance is
+        // derived rather than tuned: the accumulated excess over the whole run.
+        const turn = kappa * ds;
+        const tol = (L * turn * turn) / 24;
+        expect(tol).toBeLessThan(1e-3);
+        for (let i = 0; i <= edges; i++) {
+            const sigma = i * ds;
+            expect(r.posX[i]!).toBeCloseTo(Math.sin(kappa * sigma) / kappa, 3);
+            expect(r.posY[i]!).toBeCloseTo((1 - Math.cos(kappa * sigma)) / kappa, 3);
+        }
+        // and the RECOVERED heading (read back off the swept geometry by `bake.forces`, never
+        // the prescribed one) tracks the demand to the same order.
+        expect(r.theta[edges]!).toBeCloseTo(dTheta, 2);
+        expect(r.exit.theta).toBeCloseTo(dTheta, 2);
+    });
+
+    test("a run whose first key is not at station 0 seeds at the incoming heading", () => {
+        // the opening record owns no entry, so the run must OPEN at the heading the march
+        // carried in and ramp from there — not step to the first authored value at station 0.
+        const incoming: Entry = { x: 3, y: -2, theta: 0.35, v: V0 };
+        const points: ForcePoint[] = [{ s: 10, g: 0.35, ease: Easing.Linear }];
+        const r = evalPitch(incoming, points, { edges: 20, ds: 0.5 }, Easing.Linear);
+        // a constant demand equal to the incoming heading is a straight line at that heading;
+        // a run that stepped to the key at station 0 would bake the same thing here, so the
+        // discriminating reading is a key that DIFFERS from the incoming heading:
+        expect(r.posX[0]!).toBe(3);
+        expect(r.posY[0]!).toBe(-2);
+        const away: ForcePoint[] = [{ s: 10, g: 0.85, ease: Easing.Linear }];
+        const ramped = evalPitch(incoming, away, { edges: 20, ds: 0.5 }, Easing.Linear);
+        // seeded at 0.35 and ramping to 0.85 over the whole 10 m: the heading at the halfway
+        // station is the midpoint of the two, which a station-0 step would have overshot.
+        expect(ramped.theta[10]!).toBeCloseTo(0.6, 2);
+        expect(ramped.theta[20]!).toBeCloseTo(0.85, 2);
+    });
+
+    test("openEase governs the opening span, and Quintic moves positions off Linear", () => {
+        const incoming: Entry = { x: 0, y: 0, theta: 0, v: V0 };
+        const points: ForcePoint[] = [{ s: 20, g: 0.9, ease: Easing.Linear }];
+        const step = { edges: 40, ds: 0.5 };
+        const lin = evalPitch(incoming, points, step, Easing.Linear);
+        const qui = evalPitch(incoming, points, step, Easing.Quintic);
+        // both land on the same authored exit — the tag shapes the span, not its endpoints.
+        expect(qui.theta[40]!).toBeCloseTo(lin.theta[40]!, 2);
+        // …and the interior is a different curve. The preset tags are symmetric ease-in-out
+        // (`profile.influence`: Cubic is smoothstep, Quintic smootherstep), so they cross at
+        // the halfway station by construction — the discriminating station is a QUARTER in,
+        // where smootherstep is still near a tenth of the ramp Linear has already walked.
+        expect(qui.theta[10]!).toBeLessThan(lin.theta[10]! - 0.1);
+        // and the swept geometry ends decimetres apart on a 20 m run — the tag is a shape
+        // decision the bake carries, not an annotation.
+        const apart = Math.hypot(qui.posX[40]! - lin.posX[40]!, qui.posY[40]! - lin.posY[40]!);
+        expect(apart).toBeGreaterThan(0.4);
+    });
+
+    test("a strip changes v and fN from its own edges on, and never a position", () => {
+        // prescribed heading means the geometry never depends on `v`, which is the whole
+        // reason the pitch lane and the velocity lane do not compete for shape.
+        const points: ForcePoint[] = [
+            { s: 0, g: 0, ease: Easing.Linear },
+            { s: 20, g: 0.6, ease: Easing.Linear },
+        ];
+        const step = { edges: 40, ds: 0.5 };
+        const bare = evalPitch(entry, points, step, Easing.Linear);
+        const strip: Strip[] = [{ start: 12, end: 28, value: 22 }];
+        const held = evalPitch(entry, points, step, Easing.Linear, 0, 0, strip);
+        expect(Array.from(held.posX)).toEqual(Array.from(bare.posX));
+        expect(Array.from(held.posY)).toEqual(Array.from(bare.posY));
+        expect(Array.from(held.theta)).toEqual(Array.from(bare.theta));
+        // v is untouched up to the strip's first edge and prescribed inside it.
+        for (let i = 0; i <= 12; i++) expect(held.v[i]!).toBe(bare.v[i]!);
+        expect(held.v[20]!).toBeCloseTo(22, 5);
+        expect(held.v[20]!).not.toBeCloseTo(bare.v[20]!, 1);
+        // and fN moves with it, since the recovered force reads v² on the same geometry.
+        for (let k = 0; k < 12; k++) expect(held.fN[k]!).toBe(bare.fN[k]!);
+        expect(held.fN[20]!).not.toBeCloseTo(bare.fN[20]!, 3);
+    });
+
+    test("chain dispatches force → pitch → force, seeding the pitch run at the incoming heading", () => {
+        const fN = Float32Array.from({ length: 20 }, () => 1.4);
+        const sections: Section[] = [
+            { kind: "force", fN, step: { edges: 20, ds: 0.5 } },
+            {
+                kind: "pitch",
+                points: [{ s: 15, g: 1.1, ease: Easing.Linear }],
+                step: { edges: 30, ds: 0.5 },
+                openEase: Easing.Linear,
+            },
+            { kind: "force", fN, step: { edges: 20, ds: 0.5 } },
+        ];
+        const c = chain(entry, sections, undefined, 0, 0);
+        expect(c.results.length).toBe(3);
+        expect(c.ranges[1]!.end - c.ranges[1]!.start).toBe(30);
+        // the pitch run opens exactly at the force run's exit — a shared boundary sample, no
+        // tolerance — which is what "seeded at the incoming heading" means at the chain level.
+        const seam = c.ranges[1]!.start;
+        expect(c.posX[seam]!).toBe(c.exits[0]!.x);
+        expect(c.theta[seam]!).toBe(c.exits[0]!.theta);
+        // …and it closes on its own authored heading, which the force run before it never
+        // demanded, so the dispatch is visible in the bake rather than only in the payload.
+        expect(c.theta[c.ranges[1]!.end]!).toBeCloseTo(1.1, 2);
+        expect(c.exits[0]!.theta).toBeLessThan(1.0);
     });
 });

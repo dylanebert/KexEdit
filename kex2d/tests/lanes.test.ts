@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
-    type GeoLaneSegment,
     type LaneSegment,
     Lane,
     endPinnable,
+    laneOrder,
     entryValue,
     inferredEntry,
     laneExclusive,
@@ -143,10 +143,10 @@ describe("entry inference across a gap, per lane rule", () => {
     });
 });
 
-/** a geo record: its handles are node poses, so the span laws see the same shape whatever the
- *  handle type is. */
-function geoSeg(id: number, start: number, end: number): GeoLaneSegment {
-    return { id, start, end, ease: 0, exit: { x: end, y: 0, theta: 0 } };
+/** a geo record: its handles are PITCH angles (absolute unwrapped world heading, radians), the
+ *  same scalar shape every other lane carries. */
+function geoSeg(id: number, start: number, end: number): LaneSegment {
+    return { id, start, end, ease: 0, exit: 0 };
 }
 
 describe("track end", () => {
@@ -175,5 +175,42 @@ describe("track end", () => {
         expect(endPinnable(lanes, 0)).toBe(true); // follow is always legal
         expect(endPinnable(lanes, -1)).toBe(false);
         expect(endPinnable(lanes, Number.NaN)).toBe(false);
+    });
+});
+
+/** `track.order` is document state that changes the bake (`projection.deriveRuns` cuts at the
+ *  higher shape lane's groups), so a list that is not a PERMUTATION of the three lanes leaves a
+ *  lane unranked — a different document from the one the file claims — and is refused rather
+ *  than padded. Spec Locked decision "geo and force overlap: store both, lane order drives". */
+describe("lane order is a permutation or nothing", () => {
+    test("every permutation of the three lanes is accepted, identity included", () => {
+        expect(laneOrder([Lane.Velocity, Lane.Force, Lane.Geo])).toEqual([
+            Lane.Velocity,
+            Lane.Force,
+            Lane.Geo,
+        ]);
+        expect(laneOrder([Lane.Geo, Lane.Force, Lane.Velocity])).toEqual([
+            Lane.Geo,
+            Lane.Force,
+            Lane.Velocity,
+        ]);
+        expect(laneOrder([Lane.Force, Lane.Geo, Lane.Velocity])).toEqual([
+            Lane.Force,
+            Lane.Geo,
+            Lane.Velocity,
+        ]);
+    });
+
+    test("a short, long, repeating or unknown-lane order is refused", () => {
+        expect(laneOrder([])).toBeUndefined();
+        expect(laneOrder([Lane.Geo, Lane.Force])).toBeUndefined();
+        expect(laneOrder([Lane.Geo, Lane.Force, Lane.Velocity, Lane.Geo])).toBeUndefined();
+        // a repeat is the case a length check alone cannot see: three entries, one lane unranked.
+        expect(laneOrder([Lane.Geo, Lane.Geo, Lane.Force])).toBeUndefined();
+        expect(laneOrder([Lane.Geo, Lane.Force, 3])).toBeUndefined();
+        expect(laneOrder([Lane.Geo, Lane.Force, -1])).toBeUndefined();
+        // and a non-number never resolves to a lane by coercion.
+        expect(laneOrder([Lane.Geo, Lane.Force, "0"])).toBeUndefined();
+        expect(laneOrder([Lane.Geo, Lane.Force, null])).toBeUndefined();
     });
 });

@@ -23,7 +23,7 @@
 
 import { forces } from "./bake";
 import { G, integrate, V_FLOOR } from "./forward";
-import type { Step } from "./profile";
+import { type Easing, type ForcePoint, sampleForce, type Step } from "./profile";
 import { type Node, sampleChain, type Tangent } from "./spline";
 
 /** default sample-buffer ceiling — mirrors `track.MAX_SAMPLES`. */
@@ -158,6 +158,17 @@ export type Section =
           kind: "force";
           fN: ArrayLike<number>;
           step: Step;
+          strips?: readonly Strip[];
+      }
+    | {
+          kind: "pitch";
+          /** the run's authored pitch keys in RUN-LOCAL arclength, `g` carrying the absolute
+           *  unwrapped world heading (radians) — the geo lane's own handle. */
+          points: readonly ForcePoint[];
+          step: Step;
+          /** the opening record's easing, governing the span from the run's entry heading to
+           *  the first authored key when that key does not sit at station 0. */
+          openEase: Easing;
           strips?: readonly Strip[];
       };
 
@@ -391,6 +402,94 @@ export function evalForce(
     };
 }
 
+/**
+ * PITCH atom: the geo lane's kernel (spec `kex2d-segment-gestures` Locked decision, "geo is
+ * pitch as a parameter"). The authored parameter is the HEADING, not a node pose, so this
+ * prescribes θ from the profile and sweeps the geometry under it:
+ *
+ *   θ_i = sampleForce(points, i·ds)   for i = 0..edges
+ *   (x, y)_{i+1} = (x, y)_i + ds·(cos, sin) of the MIDPOINT angle ½(θ_i + θ_{i+1})
+ *
+ * — `forward.step`'s own midpoint-chord rule with chord = `ds`, so a pitch run's positional
+ * order matches the force kernel's exactly. This is NOT a second integrator (spec "Not
+ * reopened"): nothing here marches an ODE, and the DISPLAY force comes out of `bake.forces`
+ * on the swept geometry, the same one display path `evalGeo`/`evalForce` end on. `theta`/`v`
+ * on the result are therefore the RECOVERED ones, never the prescribed θ.
+ *
+ * When the opening key does not sit at station 0 the run's own entry heading opens the profile
+ * — `{s: 0, g: entry.theta, ease: openEase}` unshifted, `openEase` being the opening record's
+ * tag, because `profile.ts` gives the LEADING keyframe the following segment (the Blender
+ * F-curve convention `forcePoints` already reads). A run whose first record owns no entry
+ * therefore seeds at the incoming heading rather than stepping to the first authored value.
+ *
+ * `friction`/`resistance`/`strips` (all trailing, defaulted) thread to the recovery exactly as
+ * they do on the geo atom: prescribed heading means the geometry never depends on `v`, so a
+ * strip changes `v`/`fN` from its own edges on and never a position.
+ */
+export function evalPitch(
+    entry: Entry,
+    points: readonly ForcePoint[],
+    step: Step,
+    openEase: Easing,
+    friction = 0,
+    resistance = 0,
+    strips?: readonly Strip[],
+): SectionResult {
+    const { edges, ds } = step;
+    const n = edges + 1;
+    const keys =
+        points[0]?.s === 0 ? points : [{ s: 0, g: entry.theta, ease: openEase }, ...points];
+    const posX = new Float32Array(n);
+    const posY = new Float32Array(n);
+    const theta = new Float32Array(n);
+    const v = new Float32Array(n);
+    posX[0] = entry.x;
+    posY[0] = entry.y;
+    let prev = sampleForce(keys, 0);
+    for (let i = 0; i < edges; i++) {
+        const next = sampleForce(keys, (i + 1) * ds);
+        const mid = 0.5 * (prev + next);
+        posX[i + 1] = posX[i] + ds * Math.cos(mid);
+        posY[i + 1] = posY[i] + ds * Math.sin(mid);
+        prev = next;
+    }
+
+    const dsArr = new Float32Array(edges);
+    dsArr.fill(ds);
+    const fN = new Float32Array(edges);
+    const injection = forces(
+        posX,
+        posY,
+        theta,
+        v,
+        fN,
+        dsArr,
+        0,
+        edges,
+        entry.v,
+        entry.theta,
+        G,
+        V_FLOOR,
+        friction,
+        resistance,
+        stripOverride(strips),
+    );
+    return {
+        posX,
+        posY,
+        theta,
+        v,
+        fN,
+        ds: dsArr,
+        edges,
+        exit: exitOf(posX, posY, theta, v, edges),
+        offsets: [0, edges],
+        valid: true,
+        truncated: false,
+        injection,
+    };
+}
+
 /** the flat realized track: one SoA over every section's samples, plus the
  *  per-section index ranges and exits. `ranges[k].end` is the shared boundary
  *  sample (== `ranges[k+1].start`), so cumulative arclength is continuous across
@@ -457,7 +556,17 @@ export function chain(
                       resistance,
                       sec.strips,
                   )
-                : evalForce(entry, sec.fN, sec.step, friction, resistance, sec.strips);
+                : sec.kind === "pitch"
+                  ? evalPitch(
+                        entry,
+                        sec.points,
+                        sec.step,
+                        sec.openEase,
+                        friction,
+                        resistance,
+                        sec.strips,
+                    )
+                  : evalForce(entry, sec.fN, sec.step, friction, resistance, sec.strips);
         const start = off;
         // bound the COPY at the flat buffers' remaining room. `evalGeo` already respects it —
         // it was handed `maxSamples - off` as its own budget, so `r.edges` never exceeds what's

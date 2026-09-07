@@ -624,7 +624,10 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
     // `domain.ts` retired the seam entirely (S6: a domain flip no longer converts the force
     // store, so `carryForce`/`resolutionFloor` and their `forceProfile`/`sampleForce` calls are
     // gone) — it is no longer a caller here.
-    const Seamed = ["track.ts", "optimize.ts", "polish.ts"];
+    // `doc.ts` joined at S2d: `v3Payloads` is the pure twin of `track.ts`'s own bake payload
+    // builder, so it pairs each force run's edge count and step through `resolveStep` exactly as
+    // the live builder does — the same seam, not a second independent pairing.
+    const Seamed = ["track.ts", "optimize.ts", "polish.ts", "doc.ts"];
     const PairingExempt: Record<string, string> = {
         "playback.ts": "consumes an already-conformed `Step` off a landed solve's own answer",
         "fitlab.ts": "consumes an already-conformed `Step` off a landed solve's own answer",

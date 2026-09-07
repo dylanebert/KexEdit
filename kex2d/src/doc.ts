@@ -25,23 +25,28 @@
 import { State } from "@dylanebert/shallot";
 import type { Refusal } from "./commands";
 import { history } from "./history";
+import { type LaneSegment, type Lanes, emptyLanes, laneOrder } from "./lanes";
+import { fitPitch } from "./pitchfit";
 import {
-    type GeoLaneSegment,
-    type LaneSegment,
-    type Lanes,
-    emptyLanes,
-    type NodePose,
-} from "./lanes";
-import { Easing, type ForcePoint, sampleForce } from "./profile";
-import { Domain } from "./section";
+    Easing,
+    type ForcePoint,
+    forceProfile,
+    resolveStep,
+    sampleForce,
+    type Step,
+} from "./profile";
+import { chain, Domain, type Entry, type Section, type SectionResult, type Strip } from "./section";
 import { type Node, sampleChain, TangentMode, type Tangent } from "./spline";
 import {
     allStrips,
     createTrack,
     DS_NOMINAL,
+    edgeStrips,
+    materializeRunForceClamps,
     MAX_SAMPLES,
     MIN_FORCE_LEN,
     MIN_V0,
+    V0,
     type NodeState,
     refreshVelocityRunMembers,
     reserveIds,
@@ -99,6 +104,13 @@ export interface DocTrack {
      *  start speed: the entry speed falls back to `track.V0`, exactly as an absent one-shot
      *  does today (`track.entrySpeed`). */
     v0?: number;
+    /** authored lane PRIORITY, top to bottom — a permutation of `lanes.Lane` (`lanes.laneOrder`
+     *  refuses anything else). Absent means the default `[Geo, Force, Velocity]`. Document
+     *  state, not a view preference, because it changes the bake: `projection.deriveRuns` cuts
+     *  at the higher shape lane's groups (spec Locked decision "geo and force overlap: store
+     *  both, lane order drives"). No ECS column backs this until S2e, so `docFromEcs` never
+     *  emits it and a file carrying it round-trips it unchanged, exactly as `end` does. */
+    order?: number[];
 }
 
 export interface DocGeoTangent {
@@ -265,20 +277,10 @@ function runsOf(segments: DocSegment[]): { kind: number; members: DocSegment[]; 
     return out;
 }
 
-/** one authored node as the geo lane's own boundary handle — the whole pose (position, local
- *  exit heading and any explicit tangent), which is what a geo boundary IS. */
-function toPose(n: DocNode): NodePose {
-    return {
-        x: n.x,
-        y: n.y,
-        theta: n.theta,
-        ...(n.tangent === undefined ? {} : { tangent: fromDocTangent(n.tangent) }),
-    };
-}
-
 /** one geo run's nodes as the pure `spline.Node` list its sampler reads, in run-global order.
  *  `Handle.order` is run-global (`track.spliceGeoMembers`), so concatenating the members' node
- *  arrays and sorting by `order` rebuilds the run's own chain. */
+ *  arrays and sorting by `order` rebuilds the run's own chain — the exact list `track.geoNodes`
+ *  hands the live bake. */
 function runNodes(members: DocSegment[]): Node[] {
     return members
         .flatMap((m) => m.nodes)
@@ -287,24 +289,116 @@ function runNodes(members: DocSegment[]): Node[] {
         .map((n) => ({ x: n.x, y: n.y, theta: n.theta, tangent: fromDocTangent(n.tangent) }));
 }
 
-/** the derived arclength span of each member of one geo run, in run-local metres: the sampled
- *  per-edge `ds` summed between the members' terminating nodes. A run whose chain cannot sample
- *  (fewer than two nodes) spans zero, which is what its degenerate bake publishes. */
-function geoMemberSpans(members: DocSegment[], ds: number): number[] {
+/** one geo run's baked edge grid, sampled off its own nodes — the pure twin of
+ *  `track.geoChordDs`, down to the buffer sizes, so the payload a document builds and the one
+ *  the live ECS builds are the same call on the same numbers. Chord length is frame-invariant
+ *  (rigid placement preserves distance), so no entry placement is needed to get the grid. */
+function geoChordOf(members: DocSegment[], ds: number): { ds: Float32Array; edges: number } {
     const nodes = runNodes(members);
     const posX = new Float32Array(MAX_SAMPLES);
     const posY = new Float32Array(MAX_SAMPLES);
     const dsArr = new Float32Array(Math.max(1, MAX_SAMPLES - 1));
     const r = sampleChain(nodes, ds, posX, posY, dsArr, MAX_SAMPLES);
-    const spans: number[] = [];
-    for (let i = 0; i < members.length; i++) {
-        const lo = r.offsets[i];
-        const hi = r.offsets[i + 1];
-        let len = 0;
-        if (lo !== undefined && hi !== undefined) for (let e = lo; e < hi; e++) len += dsArr[e]!;
-        spans.push(len);
+    return { ds: dsArr, edges: r.edges };
+}
+
+/** the v3 payload's own force keys for one run, at run-local absolute stations. `DocPoint.s` is
+ *  already run-local absolute (`toDocSegment` adds each member's `runStation` on emit). */
+function runForcePoints(members: DocSegment[]): ForcePoint[] {
+    return members
+        .flatMap((m) => m.points)
+        .slice()
+        .sort((a, b) => a.s - b.s || a.id - b.id)
+        .map((p) => ({ s: p.s, g: p.boundary.g, ease: p.boundary.ease as Easing }));
+}
+
+/** every track-global strip in one run's own edge-index frame — the pure twin of
+ *  `track.stripsForStep`/`geoPayload`'s strip half, reading the document's strips instead of
+ *  the ECS's. */
+function runStrips(
+    strips: DocStrip[],
+    ds: ArrayLike<number>,
+    edges: number,
+    offset: number,
+): ReturnType<typeof edgeStrips> {
+    if (strips.length === 0) return undefined;
+    return edgeStrips(
+        ds,
+        edges,
+        strips.map((st) => ({
+            start: st.start - offset,
+            end: st.end - offset,
+            value: st.value,
+            keyframes: st.keyframes
+                .slice()
+                .sort((a, b) => a.s - b.s)
+                .map((k) => ({ s: k.s - offset, v: k.v })),
+        })),
+    );
+}
+
+/** the whole v3 payload of one document as the evaluator substrate's own input — the entry
+ *  anchor plus one {@link Section} per run, exactly what `track.ts`'s `BakeSystem` builds from
+ *  the live ECS (`geoPayload`/`forcePayload`, the same `resolveStep` pairing, the same
+ *  `materializeRunForceClamps` + `forceProfile`, the same `edgeStrips` frames, the same
+ *  `startEntry(entrySpeed)` seed).
+ *
+ *  **Pure.** No ECS, no `State`, no bake read: `migrations[3]` runs `section.chain` over this to
+ *  learn a geo run's realized shape, and it must be able to do that document-to-document. That
+ *  the two builders agree is not an assumption — a standing arm in `tests/doc.test.ts` asserts
+ *  `chain(v3Payloads(fixture))` is byte-identical to the live bake over the whole corpus, which
+ *  is the premise `tests/fixtures/v3/bake-digests.json` is minted under. */
+export function v3Payloads(doc: { track: DocTrack; segments: DocSegment[]; strips: DocStrip[] }): {
+    entry: Entry;
+    sections: Section[];
+    friction: number;
+    resistance: number;
+    /** each run's absolute entry station, measured the way the live bake measures it — by
+     *  summing the published per-edge steps, never by trusting an authored extent. This is the
+     *  frame a run's strips are read in, so a caller re-framing them onto another grid starts
+     *  from the same number. */
+    offsets: number[];
+} {
+    const ds = doc.track.ds;
+    const strips = doc.strips.slice().sort((a, b) => a.start - b.start || a.id - b.id);
+    const sections: Section[] = [];
+    const offsets: number[] = [];
+    let offset = 0;
+    for (const run of runsOf(doc.segments)) {
+        offsets.push(offset);
+        if (run.kind === SectionKind.Force) {
+            const step = resolveStep(run.extent, ds);
+            const grid = new Float32Array(step.edges).fill(step.ds);
+            sections.push({
+                kind: "force",
+                fN: forceProfile(
+                    materializeRunForceClamps(runForcePoints(run.members), run.extent),
+                    step,
+                ),
+                step,
+                strips: runStrips(strips, grid, step.edges, offset),
+            });
+            // the live bake measures a run's window by SUMMING its published per-edge steps,
+            // never by trusting the authored extent — mirror that, f32 values and all.
+            for (let i = 0; i < step.edges; i++) offset += grid[i]!;
+        } else {
+            const grid = geoChordOf(run.members, ds);
+            sections.push({
+                kind: "geo",
+                nodes: runNodes(run.members),
+                ds,
+                strips: runStrips(strips, grid.ds, grid.edges, offset),
+            });
+            for (let i = 0; i < grid.edges; i++) offset += grid.ds[i]!;
+        }
     }
-    return spans;
+    return {
+        entry: { x: 0, y: 0, theta: 0, v: doc.track.v0 ?? V0 },
+        sections,
+        friction: doc.track.friction,
+        resistance: doc.track.resistance,
+        offsets,
+    };
 }
 
 /** the force lane records for ONE force run, in run-local stations offset by `cursor`.
@@ -358,51 +452,175 @@ function forceRunLane(
     return out;
 }
 
-/** the force and geo lane records for one v3 payload, walked along the chain's arclength axis
- *  (see the module note above for how a geo run's length is resolved). */
+/** the force and geo lane records for one v3 payload, walked along the chain's arclength axis.
+ *
+ *  The axis is the BAKE's: `section.chain` is run over {@link v3Payloads} once, so a force run's
+ *  window and a geo run's window are both read off the realized edges rather than off two
+ *  different rules. A force run's records split at its own authored keys ({@link forceRunLane});
+ *  a GEO run's are FITTED — its recovered heading is re-expressed as pitch records through
+ *  `pitchfit.fitPitch`, knots at the baked node landings, under `geofit.ts`'s dual budget. */
 function chainLanes(
-    segments: DocSegment[],
-    ds: number,
+    doc: { track: DocTrack; segments: DocSegment[]; strips: DocStrip[] },
     nextId: () => number,
-): { force: LaneSegment[]; geo: GeoLaneSegment[] } {
+): { force: LaneSegment[]; geo: LaneSegment[] } {
     const force: LaneSegment[] = [];
-    const geo: GeoLaneSegment[] = [];
+    const geo: LaneSegment[] = [];
+    const runs = runsOf(doc.segments);
+    if (runs.length === 0) return { force, geo };
+    const payload = v3Payloads(doc);
+    const baked = chain(
+        payload.entry,
+        payload.sections,
+        MAX_SAMPLES,
+        payload.friction,
+        payload.resistance,
+    );
     let cursor = 0;
-    for (const run of runsOf(segments)) {
+    for (let i = 0; i < runs.length; i++) {
+        const run = runs[i]!;
+        const result = baked.results[i];
         if (run.kind === SectionKind.Force) {
             force.push(...forceRunLane(run, cursor, nextId));
             cursor += run.extent;
-        } else {
-            // Geo: one record per member, each terminating at that member's own boundary node
-            // over the span the sampler derives for it.
-            const spans = geoMemberSpans(run.members, ds);
-            for (let i = 0; i < run.members.length; i++) {
-                const member = run.members[i]!;
-                const nodes = member.nodes.slice().sort((a, b) => a.order - b.order);
-                const exitNode = nodes[nodes.length - 1];
-                const entryNode = nodes.find((n) => n.order === 0);
-                geo.push({
-                    id: nextId(),
-                    start: cursor,
-                    end: cursor + spans[i]!,
-                    ease: Easing.Linear,
-                    ...(entryNode ? { entry: toPose(entryNode) } : {}),
-                    exit: exitNode ? toPose(exitNode) : { x: 0, y: 0, theta: 0 },
-                });
-                cursor += spans[i]!;
-            }
+            continue;
         }
+        if (!result || result.edges === 0) continue;
+        // the fit is seeded at the run's own FIRST SAMPLE, not at the chain entry the run was
+        // placed from. `evalGeo` places the node chain rigidly, and a chain whose node 0 is not
+        // at its local origin therefore opens offset from that entry; comparing a pitch sweep
+        // started at the entry against a node bake started somewhere else would read the offset
+        // as a shape error. On a well-formed chain the two coincide.
+        const entry: Entry = {
+            x: result.posX[0]!,
+            y: result.posY[0]!,
+            theta: result.theta[0]!,
+            v: result.v[0]!,
+        };
+        const fit = fitGeoRun(
+            result,
+            entry,
+            doc.track,
+            cursor,
+            nextId,
+            runNodes(run.members),
+            (step) =>
+                runStrips(
+                    doc.strips.slice().sort((a, b) => a.start - b.start || a.id - b.id),
+                    new Float32Array(step.edges).fill(step.ds),
+                    step.edges,
+                    payload.offsets[i]!,
+                ),
+        );
+        geo.push(...fit.records);
+        cursor += fit.length;
     }
     return { force, geo };
 }
 
+/** the run-local stations of the run's authored C0 CORNERS: nodes carrying an explicit tangent
+ *  whose in and out directions differ (spec Locked decision "geo is pitch as a parameter").
+ *
+ *  A corner has unbounded continuum force — the node bake spreads it over its own adaptive
+ *  chords, any pitch bake over one uniform cell — so no pointwise force observable converges
+ *  there at any grid. The fit mints it as an AUTHORED DISCONTINUITY instead: the predecessor
+ *  exits at the last resolved heading before the node sample and the successor owns the first
+ *  after it, and the force comparison is not read within one landed edge of the station.
+ *
+ *  `nodes` is the run's own chain in run-global order (`runNodes`) and `knots` the landing
+ *  station of each, so the two are read by the same index — the node ORDER, never a position
+ *  search, which is what makes an added or removed node move the corner with it. */
+function cornerStations(nodes: readonly Node[], knots: readonly number[]): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+        const t = nodes[i]!.tangent;
+        const station = knots[i];
+        if (!t || station === undefined || station <= 0) continue;
+        // direction, not magnitude: a Mirror or Aligned tangent stores different LENGTHS on the
+        // two sides and is perfectly smooth, so comparing the vectors themselves would call
+        // every explicit tangent a corner. The cross product against the dot is the angle
+        // between them, read without a normalization that a zero-length side would divide by.
+        const cross = t.inX * t.outY - t.inY * t.outX;
+        const dot = t.inX * t.outX + t.inY * t.outY;
+        if (Math.abs(Math.atan2(cross, dot)) > 1e-6) out.push(station);
+    }
+    return out;
+}
+
+/** one baked geo run re-expressed as pitch records on the ABSOLUTE ruler, offset by `cursor`.
+ *
+ *  **Both refusal outcomes refuse**, never silently widen a budget (spec Locked decision; the
+ *  architect Answer of 2026-09-07 rejects a recorded exception as a waiver ledger). A `floor`
+ *  outcome names the record floor as the obstacle and a `refused` one names convergence, but
+ *  both carry the same remedy: the run holds a sub-quantum feature no ≥1 m record represents,
+ *  so the document is kept readable by the `retired/pose-ux` build rather than migrated into a
+ *  shape that misrepresents it. */
+function fitGeoRun(
+    result: SectionResult,
+    entry: Entry,
+    track: DocTrack,
+    cursor: number,
+    nextId: () => number,
+    nodes: readonly Node[],
+    strips: (step: Step) => readonly Strip[] | undefined,
+): { records: LaneSegment[]; length: number } {
+    let length = 0;
+    for (let e = 0; e < result.edges; e++) length += result.ds[e]!;
+    const knots: number[] = [];
+    let acc = 0;
+    let landing = 0;
+    for (let sample = 0; sample <= result.edges; sample++) {
+        if (result.offsets[landing] === sample) {
+            knots.push(acc);
+            landing++;
+        }
+        if (sample < result.edges) acc += result.ds[sample]!;
+    }
+    const fit = fitPitch(
+        {
+            x: result.posX,
+            y: result.posY,
+            theta: result.theta,
+            fN: result.fN,
+            ds: result.ds,
+            edges: result.edges,
+            entry,
+        },
+        knots,
+        {
+            dsNominal: track.ds,
+            friction: track.friction,
+            resistance: track.resistance,
+            strips,
+        },
+        nextId,
+        cornerStations(nodes, knots),
+    );
+    if (fit.outcome !== "budget") {
+        const why =
+            fit.outcome === "floor"
+                ? "without a span below the record floor"
+                : "even once refinement converged";
+        fail(
+            `a geo run at station ${cursor} cannot be fitted to pitch records within ${fit.geoBudget} m and ${fit.forceBudget} g ${why} (best ${fit.deviation.toFixed(4)} m / ${fit.forceError.toFixed(4)} g) — this run holds a feature below the authoring quantum; open it with the retired/pose-ux build to recover it`,
+        );
+    }
+    return {
+        records: fit.records.map((r) => ({ ...r, start: cursor + r.start, end: cursor + r.end })),
+        length,
+    };
+}
+
 /** every lane of a v3 payload, in one shared id namespace (velocity, then force, then geo) so a
  *  lane record's identity is unique across the whole document. */
-export function lanesFromChain(segments: DocSegment[], strips: DocStrip[], ds: number): Lanes {
+export function lanesFromChain(doc: {
+    track: DocTrack;
+    segments: DocSegment[];
+    strips: DocStrip[];
+}): Lanes {
     let next = 0;
     const nextId = () => next++;
-    const velocity = velocityLane(strips, nextId);
-    const { force, geo } = chainLanes(segments, ds, nextId);
+    const velocity = velocityLane(doc.strips, nextId);
+    const { force, geo } = chainLanes(doc, nextId);
     return { velocity, force, geo };
 }
 
@@ -483,10 +701,11 @@ export function docFromEcs(ecs: State): Kex2dDocument {
         .sort((a, b) => a.id - b.id)
         .map(toDocStrip);
     const v0 = snap.oneShot[0]?.value;
+    const docTrack: DocTrack = { ...track, ...(v0 === undefined ? {} : { v0 }) };
     return {
         version: CURRENT_VERSION,
-        track: { ...track, ...(v0 === undefined ? {} : { v0 }) },
-        lanes: lanesFromChain(segments, strips, track.ds),
+        track: docTrack,
+        lanes: lanesFromChain({ track: docTrack, segments, strips }),
         segments,
         strips,
     };
@@ -868,6 +1087,10 @@ function validateTrack(v: unknown): DocTrack {
     for (const k of ["end", "v0"] as const) {
         if (v[k] !== undefined && !isFiniteNumber(v[k])) fail(`track.${k} is not a finite number`);
     }
+    // shape only here — that the list is a PERMUTATION is a semantic invariant, reported by
+    // `checkDocInvariants`'s `laneOrder` guard beside every other authoring law.
+    if (v.order !== undefined && (!Array.isArray(v.order) || !v.order.every(isInt)))
+        fail("track.order is not an array of lane integers");
     return {
         ds: v.ds as number,
         domain: v.domain as number,
@@ -875,29 +1098,29 @@ function validateTrack(v: unknown): DocTrack {
         resistance: v.resistance as number,
         ...(v.end === undefined ? {} : { end: v.end as number }),
         ...(v.v0 === undefined ? {} : { v0: v.v0 as number }),
+        ...(v.order === undefined ? {} : { order: v.order as number[] }),
     };
 }
 
-/** one geo boundary handle: a whole node pose, with the same explicit-tangent shape a `nodes[]`
- *  entry carries. */
-function validateNodePose(v: unknown, path: string): NodePose {
-    if (!isPlainObject(v)) fail(`${path} is not an object`);
-    for (const k of ["x", "y", "theta"] as const) {
-        if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
-    }
-    const tangent = validateGeoTangent(v.tangent, path);
-    return {
-        x: v.x as number,
-        y: v.y as number,
-        theta: v.theta as number,
-        ...(tangent === undefined ? {} : { tangent: fromDocTangent(tangent) }),
-    };
+/** a GEO lane handle: one PITCH angle — an absolute unwrapped world heading in radians (spec
+ *  Locked decision "geo is pitch as a parameter"). A bridged-v4 file written before that
+ *  decision carries a node POSE object here instead; that document cannot be reinterpreted (a
+ *  pose's `theta` is a run-LOCAL heading in a frame this wire no longer carries), so it is
+ *  refused at load with the remedy naming its own v3 input, exactly as the spec's Wire v4
+ *  paragraph asks. */
+function validatePitchHandle(v: unknown, path: string): number {
+    if (isPlainObject(v) && isFiniteNumber(v.x) && isFiniteNumber(v.y) && isFiniteNumber(v.theta))
+        fail(
+            `${path} is a node pose, which a v${CURRENT_VERSION} geo handle no longer is — this file was written by a bridged build; re-migrate its v3 original from tests/fixtures/v3/ to recover it as a pitch lane`,
+        );
+    if (!isFiniteNumber(v)) fail(`${path} is missing or not a finite number`);
+    return v as number;
 }
 
 /** one lane record's span and its two handles. `entry` is genuinely optional (its absence is the
  *  "reads the predecessor or the lane rule" case, `lanes.entryValue`); `exit` is always owned and
- *  always required. A handle is a scalar on the velocity and force lanes and a whole node pose on
- *  the geo lane, because a track's shape at a boundary is not one number. */
+ *  always required. Every lane's handles are ONE SCALAR — m/s, g, or radians of absolute
+ *  unwrapped world heading — so the substrate is one shape across every lane. */
 function validateLaneSegment<H>(
     v: unknown,
     lane: string,
@@ -938,7 +1161,7 @@ function validateLanes(v: unknown): Lanes {
         const rows = v[lane];
         if (!Array.isArray(rows)) fail(`lanes.${lane} is missing or not an array`);
         if (lane === "geo")
-            out.geo = rows.map((r, i) => validateLaneSegment(r, lane, i, validateNodePose));
+            out.geo = rows.map((r, i) => validateLaneSegment(r, lane, i, validatePitchHandle));
         else out[lane] = rows.map((r, i) => validateLaneSegment(r, lane, i, validateScalarHandle));
     }
     return out;
@@ -1070,6 +1293,12 @@ function checkDuplicateIds(doc: Kex2dDocument): Refusal[] {
  *  branch on the reason without parsing the message, the same contract `commands.ts` keeps. */
 export function checkDocInvariants(doc: Kex2dDocument): Refusal[] {
     const refusals: Refusal[] = checkDuplicateIds(doc);
+
+    if (doc.track.order !== undefined && laneOrder(doc.track.order) === undefined)
+        refusals.push({
+            guard: "laneOrder",
+            message: `track.order [${doc.track.order.join(", ")}] is not a permutation of the three lanes — a partial order would leave a lane unranked, which is a different document from the one this file claims`,
+        });
 
     if (doc.segments.length === 0)
         refusals.push({
@@ -1350,12 +1579,19 @@ function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
         rest.segments.every(isPlainObject) &&
         rest.strips.every(isPlainObject);
     if (wellShaped) refuseKeysPastRunExtent(rest.segments as DocSegment[]);
+    const track: DocTrack = {
+        ds: isFiniteNumber(rawTrack.ds) ? rawTrack.ds : DS_NOMINAL,
+        domain: isInt(rawTrack.domain) ? rawTrack.domain : Domain.Distance,
+        friction: isFiniteNumber(rawTrack.friction) ? rawTrack.friction : 0,
+        resistance: isFiniteNumber(rawTrack.resistance) ? rawTrack.resistance : 0,
+        ...(v0 === undefined ? {} : { v0 }),
+    };
     const lanes = wellShaped
-        ? lanesFromChain(
-              rest.segments as DocSegment[],
-              rest.strips as DocStrip[],
-              isFiniteNumber(rawTrack.ds) ? rawTrack.ds : DS_NOMINAL,
-          )
+        ? lanesFromChain({
+              track,
+              segments: rest.segments as DocSegment[],
+              strips: rest.strips as DocStrip[],
+          })
         : emptyLanes();
     return {
         ...rest,
