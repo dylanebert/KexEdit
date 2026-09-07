@@ -188,23 +188,6 @@ describe("hover outline lift — a glyph's ink stroke joins its hovered tone (ke
         // the grow channel is OUT (user feel verdict): no hover radius scaling anywhere.
         expect(render.includes("HOVER_GROW")).toBe(false);
     });
-
-    test("Timeline.svelte lifts both glyph strokes to the selection token at base width", () => {
-        // the rung below selection: hover borrows selection's stroke token (--fg) but at the
-        // base 1px width and without the accent fill — selected keeps 1.4px + accent, so the
-        // two registers stay distinguishable by weight and fill, never by a size change.
-        const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        // per-glyph presence, not a rule count. The `.fmarker` lift is behavior-pinned by the
-        // harness computed-style probe (`harness/force.pw.ts` step 4c). Its `.tknob` twin (the
-        // summoned force-handle knob) left with the explicit per-keyframe force handles it
-        // rendered, `kex2d-segment-removal` S3.
-        const lifted = (sel: RegExp): boolean =>
-            new RegExp(`${sel.source}\\s*\\{[^}]*stroke: var\\(--fg\\)`, "s").test(tl);
-        expect(lifted(/\.fpt:hover[^{]*\.fmarker/)).toBe(true);
-        // no geometry channel remains: no grow var, no hover scale transform.
-        expect(tl.includes("--hover-grow")).toBe(false);
-        expect(tl.includes("scale(var(--hover-grow))")).toBe(false);
-    });
 });
 
 // the tangent-knob calibration (kex2d-burndown feel fix: one appearance, ink outline at rest,
@@ -274,21 +257,6 @@ describe("dimmed — the rung below base (S4, finding 4)", () => {
 // the unselected strip fill must derive through `dimmed(COLOR_VELOCITY)`, not the bare
 // constant — a source-text pin, `colors.ts`'s own idiom for a canvas fillStyle with no cheap
 // behavioral read (the S1 Visibility comment beside it names the same constraint).
-describe("Timeline.svelte's unselected strip fill is dimmed, in-palette (S4, finding 4)", () => {
-    test("fillStyle derives dimmed(COLOR_VELOCITY) for the base (unselected, unhovered) rung", () => {
-        const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
-        expect(tl).toContain("dimmed(COLOR_VELOCITY)");
-    });
-});
-
-// S3 (Affordances): the header band's hit zone used to carry a comment claiming the trim/
-// body-drag cursor was "set programmatically via `canvas.style.cursor` in the pointermove
-// handler" — no such handler exists anywhere in the file (`cursorSites()` below finds no
-// `canvas.style.cursor` assignment in `Timeline.svelte`, and the S3 premise correction in the
-// spec's Live log names this as the false claim it is). The declared-registry CSS classes
-// (`.hbandzone.body-hover`/`.edge-hover`) carry the affordance instead, alongside the
-// hover-rung fill/stroke lift, never a canvas-set style. Source-text arm, the same idiom as
-// the cursor allowlist below: the claim has no cheap behavioral read.
 describe("Timeline.svelte carries no false cursor-handler claim (S3)", () => {
     test("the retired `canvas.style.cursor` comment is gone", () => {
         const tl = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
@@ -335,25 +303,8 @@ interface CursorSite {
 // every trim/scrub affordance that carries `cursor: ew-resize` (the two field-row key scrubs, the
 // nav-window pan edge, the force-section extent trim, and the velocity-strip span-edge trim, S5).
 const CURSOR_ALLOWLIST: CursorSite[] = [
-    { file: "App.svelte", selector: ".pinpanel button", value: "pointer" },
-    { file: "App.svelte", selector: ".convert .cancel", value: "pointer" },
-    { file: "App.svelte", selector: ":global(.menu-item)", value: "pointer" },
-    { file: "App.svelte", selector: ".vtip .key", value: "ew-resize" },
-    { file: "Timeline.svelte", selector: ".rail-tool", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".body.panning, .body.panning *", value: "grabbing" },
-    { file: "Timeline.svelte", selector: ".nav-window", value: "grab" },
-    { file: "Timeline.svelte", selector: ".nav-window:active", value: "grabbing" },
-    { file: "Timeline.svelte", selector: ".nav-edge", value: "ew-resize" },
-    { file: "Timeline.svelte", selector: ".clip", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".segment-knob.end", value: "grab" },
-    { file: "Timeline.svelte", selector: ".segment-knob.end:active", value: "grabbing" },
-    { file: "Timeline.svelte", selector: ".clip-add", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".clip-trim", value: "ew-resize" },
     { file: "Timeline.svelte", selector: ".play", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".fld .key", value: "ew-resize" },
-    { file: "Timeline.svelte", selector: ".hbandzone.body-hover", value: "pointer" },
-    { file: "Timeline.svelte", selector: ".hbandzone.edge-hover", value: "ew-resize" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
 ];
 
@@ -456,141 +407,5 @@ describe("cursor allowlist — CSS declarations and canvas assignments, grab/gra
             0,
         );
         expect(raw).toBe(cursorSites().length);
-    });
-});
-
-// ── disabled-affordance registry (S10, kex2d-event-substrate F8): "a field that cannot be
-// edited owes a disabled APPEARANCE, not just a disabled attribute" (the taste ledger's own
-// generalizing rule) — the `.fld` stylesheet carried no `:disabled` rule at all before this
-// stage, so the always-locked one-shot position field and the pin-mode-locked value field
-// rendered identically to a live one. `cursor`/`opacity` has no cheap behavioral read (the same
-// reason the cursor allowlist above is a SOURCE pin, editor-ui.md Menus' declared-registry law),
-// so this is a source pin too — same shape, both directions, a positive control per direction,
-// and the scanner-level control the cursor allowlist's own bug earned (an independent raw count
-// over the same corpus, so a block parser gone blind on a shape it doesn't handle can't pass by
-// shrinking both sides of the diff together).
-
-interface DisabledSite {
-    file: string;
-    selector: string;
-    // the rule's own declared property names, sorted + joined — the treatment's shape, standing
-    // in for `cursorKey`'s single `value` (a disabled treatment sets more than one property).
-    props: string;
-}
-
-// today's population, enumerated FROM THE SOURCE (`disabledSites()` below): the pre-existing
-// grayed-row/grayed-button treatment (menu rows, the pinpanel buttons, the append tail) plus
-// this stage's own addition — the `.fld` input itself (dimmed, default cursor, the same
-// treatment) and the label/unit siblings a disabled input drags down with it, reached through
-// `:has()` rather than a second flag threaded from script.
-const DISABLED_ALLOWLIST: DisabledSite[] = [
-    {
-        file: "App.svelte",
-        selector: ".pinpanel button:not(:disabled):hover",
-        props: "background,border-color,color",
-    },
-    { file: "App.svelte", selector: ".pinpanel button:disabled", props: "cursor,opacity" },
-    {
-        file: "App.svelte",
-        selector: ":global(.menu-item:not(:disabled):hover)",
-        props: "background,color",
-    },
-    { file: "App.svelte", selector: ":global(.menu-item:disabled)", props: "cursor,opacity" },
-    { file: "Timeline.svelte", selector: ".clip-add:disabled", props: "cursor,opacity" },
-    { file: "Timeline.svelte", selector: ".clip-add:disabled:hover", props: "background,color" },
-    { file: "Timeline.svelte", selector: ".fld input:disabled", props: "cursor,opacity" },
-    { file: "Timeline.svelte", selector: ".fld:has(input:disabled) .key", props: "cursor" },
-    {
-        file: "Timeline.svelte",
-        selector: ".fld:has(input:disabled) .key:hover",
-        props: "background,color",
-    },
-    { file: "Timeline.svelte", selector: ".fld:has(input:disabled) .unit", props: "opacity" },
-];
-
-/** walk every scanned `.svelte` file's `<style>` block (the same corpus `cursorSites()` reads)
- *  and collect every rule whose selector text mentions `:disabled` — a real block parse, not a
- *  per-line grep, so a rule spanning several lines still resolves to the one selector that owns
- *  it. `props` is the rule body's own declared property names, sorted, so two rules setting the
- *  same properties in a different order still key identically. */
-function disabledSites(): DisabledSite[] {
-    const out: DisabledSite[] = [];
-    for (const { file, text } of scannedFiles()) {
-        if (!file.endsWith(".svelte")) continue;
-        const style = text.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
-        const blocks = style.match(/[^{}]+\{[^{}]*\}/g) ?? [];
-        for (const b of blocks) {
-            const open = b.indexOf("{");
-            const selector = b
-                .slice(0, open)
-                .replace(/\/\*[\s\S]*?\*\//g, "")
-                .trim()
-                .replace(/\s+/g, " ");
-            if (!selector.includes(":disabled")) continue;
-            const body = b.slice(open + 1, b.lastIndexOf("}"));
-            const props = [...body.matchAll(/([a-z-]+)\s*:/g)]
-                .map((m) => m[1])
-                .sort()
-                .join(",");
-            out.push({ file, selector, props });
-        }
-    }
-    return out;
-}
-
-const disabledKey = (s: DisabledSite): string => `${s.file}::${s.selector}::${s.props}`;
-
-describe("disabled-affordance registry — every `:disabled`-scoped rule declared, both directions (S10, F8)", () => {
-    test("the glob reaches at least one disabled-scoped rule", () => {
-        expect(disabledSites().length).toBeGreaterThan(0);
-    });
-
-    test("every found disabled-scoped rule is declared in the registry", () => {
-        const declared = new Set(DISABLED_ALLOWLIST.map(disabledKey));
-        const undeclared = disabledSites().filter((s) => !declared.has(disabledKey(s)));
-        expect(undeclared).toEqual([]);
-    });
-
-    test("every registry entry corresponds to a real disabled-scoped rule in source", () => {
-        const found = new Set(disabledSites().map(disabledKey));
-        const orphans = DISABLED_ALLOWLIST.filter((s) => !found.has(disabledKey(s)));
-        expect(orphans).toEqual([]);
-    });
-
-    // the positive control, both directions (the source-pin law, editor-ui.md Menus): an
-    // undeclared rule and an orphan registry entry must each be CAUGHT.
-    test("an undeclared disabled-scoped rule is caught (positive control)", () => {
-        const bogus: DisabledSite = {
-            file: "Fake.svelte",
-            selector: ".bogus:disabled",
-            props: "color",
-        };
-        const found = [...disabledSites(), bogus];
-        const declared = new Set(DISABLED_ALLOWLIST.map(disabledKey));
-        expect(found.some((s) => !declared.has(disabledKey(s)))).toBe(true);
-    });
-
-    test("an orphan registry entry is caught (positive control)", () => {
-        const bogus: DisabledSite = {
-            file: "Fake.svelte",
-            selector: ".bogus:disabled",
-            props: "color",
-        };
-        const registry = [...DISABLED_ALLOWLIST, bogus];
-        const found = new Set(disabledSites().map(disabledKey));
-        expect(registry.some((s) => !found.has(disabledKey(s)))).toBe(true);
-    });
-
-    // the SCANNER-level control (the cursor allowlist's own bug, above): the two directions prove
-    // the set-difference LOGIC, never the block parser — an independent raw count of `:disabled`
-    // occurrences inside `<style>` text must equal the parsed site count, since each of today's
-    // rules names exactly one selector carrying exactly one `:disabled` token.
-    test("scanner-level control: raw `:disabled`-in-style occurrences match the parsed site count", () => {
-        const raw = scannedFiles().reduce((n, { file, text }) => {
-            if (!file.endsWith(".svelte")) return n;
-            const style = text.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
-            return n + (style.match(/:disabled/g) ?? []).length;
-        }, 0);
-        expect(raw).toBe(disabledSites().length);
     });
 });

@@ -142,10 +142,6 @@ export type Reserved = {
  * HUD toggle, not this app's vocabulary.
  */
 export const RESERVED = {
-    snap: {
-        keys: ["s", "S"],
-        why: "toggles the persistent snap magnet (editor-ui.md Snapping)",
-    },
     frame: {
         keys: ["f", "F"],
         why: "frames the hovered surface — the whole track (viewport) or the whole timeline",
@@ -155,24 +151,14 @@ export const RESERVED = {
         form: "code",
         why: "toggles cart playback",
     },
-    nudge: {
-        keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"],
-        why: "steps the selected node, force keyframe, or scrubbed playhead by a fixed increment",
-    },
-    undo: {
-        keys: ["z"],
-        mod: "ctrl",
-        why: "undo, the shared history stack",
-    },
-    redo: {
-        keys: ["y"],
-        mod: "ctrl",
-        why: "redo (Ctrl+Y, or Shift+Ctrl+Z through the same lowered-key branch)",
-    },
     debug: {
         keys: ["F3"],
         why: "shallot's own debug HUD toggle — not part of this app's key vocabulary",
     },
+    // `snap` (s/S), `nudge` (the four arrows) and `undo`/`redo` (ctrl+z / ctrl+y) left with the
+    // authoring gestures they served (`retired/pose-ux`): the registry declares what the tree
+    // actually presses, both directions, so a reservation with no live press would be an orphan
+    // declaration, not a claim. S3 re-declares each key alongside the gesture that presses it.
 } as const satisfies Record<string, Reserved>;
 
 /**

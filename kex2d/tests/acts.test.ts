@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { State } from "@dylanebert/shallot";
-import { forceSetEditable, keyframeActs, nodeActs, sectionActs } from "../src/acts";
+import { keyframeActs, nodeActs, sectionActs } from "../src/acts";
 import {
     beginLanding,
     closeContext,
@@ -15,12 +15,9 @@ import {
     skipLanding,
 } from "../src/editor";
 import { history } from "../src/history";
-import { enterPinMode, exitPinMode } from "../src/pin";
 import { TangentMode } from "../src/spline";
 import {
     EXTEND_DIST,
-    forceAt,
-    Force,
     Handle,
     handleTangent,
     lastHandle,
@@ -102,7 +99,7 @@ function forceTrack(): { state: State; sec: number } {
 
 /** two force sections, chained — `b`'s two keyframes come from `appendSection`'s own
  *  continuation seed (kex2d/AGENTS.md's Model (force authoring)). */
-function twoForceSections(): { state: State; a: number; b: number } {
+function _twoForceSections(): { state: State; a: number; b: number } {
     const bd = build();
     const a = fiveKeyframeForceSection(bd);
     const b = bd.appendSection(SectionKind.Force);
@@ -139,15 +136,6 @@ describe("sectionActs", () => {
         expect(sections(state).length).toBe(1);
     });
 
-    test("remove refuses while ANY pin session is open, even on a different section", () => {
-        const { state, a, b } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        const before = sections(state).length;
-        sectionActs(state, b).remove();
-        expect(sections(state).length).toBe(before);
-        exitPinMode(state);
-    });
-
     test("removeSet deletes the whole selected set as one op and clears the section selection", () => {
         const { state, a, b, c } = threeGeoSections();
         selectSection(a);
@@ -162,16 +150,6 @@ describe("sectionActs", () => {
         selectSection(sec);
         sectionActs(state, sec).removeSet();
         expect(sections(state).length).toBe(1);
-    });
-
-    test("removeSet refuses while ANY pin session is open", () => {
-        const { state, a, b } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        selectSection(b);
-        const before = sections(state).length;
-        sectionActs(state, b).removeSet();
-        expect(sections(state).length).toBe(before);
-        exitPinMode(state);
     });
 
     test("reset lands a geo section at its creation state (the flat two-node seed)", () => {
@@ -197,24 +175,6 @@ describe("sectionActs", () => {
         openContext(0, 0, sec);
         sectionActs(state, sec).reset();
         expect(editor.context).toBeNull();
-    });
-
-    test("reset refuses while ANY pin session is open", () => {
-        const { state, a, b } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        const idsBefore = sectionForces(state, b).map((r) => r.id);
-        sectionActs(state, b).reset();
-        expect(sectionForces(state, b).map((r) => r.id)).toEqual(idsBefore);
-        exitPinMode(state);
-    });
-
-    test("pinExit closes the context menu and exits the mode", () => {
-        const { state, a } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        openContext(0, 0, a);
-        sectionActs(state, a).pinExit();
-        expect(editor.context).toBeNull();
-        expect(editor.pinning).toBeNull();
     });
 });
 
@@ -327,21 +287,6 @@ describe("nodeActs", () => {
 });
 
 describe("keyframeActs", () => {
-    test("a pin session keeps force keys on every member of its run editable", () => {
-        const { state, sec } = forceTrack();
-        if (!enterPinMode(state, sec)) throw new Error("no session");
-        const keys = sectionForces(state, sec);
-        expect(
-            new Set(keys.map((key) => Force.section.get(forceAt(state, key.id)!))).size,
-        ).toBeGreaterThan(1);
-        selectForces(
-            keys.map((key) => key.id),
-            keys.at(-1)!.id,
-        );
-        expect(forceSetEditable(state)).toBe(true);
-        exitPinMode(state);
-    });
-
     test("remove deletes the selected set and skips a live landing", () => {
         const { state, sec } = forceTrack();
         const ids = sectionForces(state, sec).map((r) => r.id);
@@ -374,47 +319,5 @@ describe("keyframeActs", () => {
         // an empty selection must never reach `skipLanding()` — an unrelated in-flight landing
         // (a mouse-driven move settling) stays live.
         expect(editor.landing).not.toBeNull();
-    });
-
-    test("remove refuses a mixed-editability set under a live pin session (all-or-nothing)", () => {
-        const { state, a, b } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        const idsA = sectionForces(state, a).map((r) => r.id);
-        const idsB = sectionForces(state, b).map((r) => r.id);
-        // idsA[0] IS on the pinning section (individually editable); idsB[0] is not — the set as
-        // a whole must refuse rather than silently dropping the un-editable member.
-        selectForces([idsA[0], idsB[0]], idsA[0]);
-        const countA = idsA.length;
-        const countB = idsB.length;
-        keyframeActs(state).remove();
-        expect(sectionForces(state, a).length).toBe(countA);
-        expect(sectionForces(state, b).length).toBe(countB);
-        exitPinMode(state);
-    });
-
-    // No "toggleLock refuses outside a session" test, deliberately: `lockCandidates`'s
-    // `editor.pinning === null` early-out is TYPE NARROWING for the very next line, not defense —
-    // deleting it doesn't yield a silent no-op to assert against, it fails to compile. There is no
-    // legal mutant, so an assert here would pin nothing. The refusal is layered elsewhere and
-    // tested there: `forceKeyAct` gates on `pinning && size > 0` (`tests/menu.test.ts`), and the
-    // menu row is mode-scoped-hidden (`lockLabel`).
-    test("toggleLock locks the selected set, filtered to the pinning section", () => {
-        const { state, a, b } = twoForceSections();
-        if (!enterPinMode(state, a)) throw new Error("no session");
-        const idsA = sectionForces(state, a).map((r) => r.id);
-        const idsB = sectionForces(state, b).map((r) => r.id);
-        selectForces([idsA[0], idsA[1], idsB[0]], idsA[0]);
-        keyframeActs(state).toggleLock();
-        expect(editor.locked.has(idsA[0])).toBe(true);
-        expect(editor.locked.has(idsA[1])).toBe(true);
-        expect(editor.locked.has(idsB[0])).toBe(false); // off the pinning section — never a candidate
-        // an UNSELECTED member of the pinning section itself — proves the toggle set is the
-        // SELECTION intersected with the section, not the whole section.
-        expect(editor.locked.has(idsA[2])).toBe(false);
-        // every candidate WAS locked, so a second press unlocks (the toggle law).
-        keyframeActs(state).toggleLock();
-        expect(editor.locked.has(idsA[0])).toBe(false);
-        expect(editor.locked.has(idsA[1])).toBe(false);
-        exitPinMode(state);
     });
 });

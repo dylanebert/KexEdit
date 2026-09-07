@@ -614,7 +614,7 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
     // left to hand an unconformed value into, so splitting the pair — destructuring `edges` alone
     // and marching on some OTHER `ds` — is a type error, not a runtime latent bug a lexical scan
     // has to catch after the fact. That closes the per-call-site pin's whole reason to exist,
-    // `CrossFunctionConsumers` included: `track.ts`'s `forceDense`, `pin.ts`'s `enterPin`, and
+    // `CrossFunctionConsumers` included: `track.ts`'s `forceDense` and
     // `polish.ts`'s `violence` each existed only because the old scanner couldn't see a `ds`
     // conformed in one function and threaded as a bare parameter into another — now each of them
     // takes a `Step`-typed parameter directly, so the exemption is retired, not merely deleted:
@@ -624,7 +624,7 @@ describe("force-payload pairing population is closed (kex2d-section-extent stage
     // `domain.ts` retired the seam entirely (S6: a domain flip no longer converts the force
     // store, so `carryForce`/`resolutionFloor` and their `forceProfile`/`sampleForce` calls are
     // gone) — it is no longer a caller here.
-    const Seamed = ["track.ts", "pin.ts", "optimize.ts", "polish.ts"];
+    const Seamed = ["track.ts", "optimize.ts", "polish.ts"];
     const PairingExempt: Record<string, string> = {
         "playback.ts": "consumes an already-conformed `Step` off a landed solve's own answer",
         "fitlab.ts": "consumes an already-conformed `Step` off a landed solve's own answer",

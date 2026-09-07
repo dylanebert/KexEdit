@@ -444,12 +444,15 @@ describe("authored-component writer census — no second write path", () => {
     });
 
     test("foreign geometry writers route through the canonical position setter", () => {
+        // `controls.ts` no longer authors geometry at all — the canvas control wiring retired
+        // with the pose UX (`retired/pose-ux`), so the drag/nudge call-count arm has no
+        // population left and is dropped rather than re-pointed at a surviving stand-in. The
+        // census arm below still covers the file: were a write to reappear there outside a
+        // `history` gesture, it reds here. `commands.ts` is the live geometry writer.
         const commands = readFileSync(join(srcRoot, "commands.ts"), "utf8");
-        const controls = readFileSync(join(srcRoot, "controls.ts"), "utf8");
         expect(writeSites().filter((s) => s.file === "commands.ts")).toHaveLength(0);
         expect(writeSites().filter((s) => s.file === "controls.ts")).toHaveLength(0);
         expect(commands).toContain("setHandlePosition(ecs, eid, op.x, op.y)");
-        expect(controls.match(/setHandlePosition\(ecs, eid,/g)?.length).toBeGreaterThanOrEqual(4);
     });
 
     test("positive control: the walker masks comments and climbs to a gestured caller", () => {

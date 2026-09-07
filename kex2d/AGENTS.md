@@ -8,13 +8,15 @@ The authored track is an open geo/force **segment chain**, without branching or 
 
 `Section` and section-facing APIs remain compatibility, not a second authored model. `ADAPTERS.md` is the test-read inventory of remaining adapters.
 
-Flat v4 serialization and canonical force command/gesture paths have landed. Geometry, velocity and section-facing interaction still include migration adapters: do not infer that every viewport/timeline gesture has migrated from the canonical wire format or from pure `segment.ts` operations. Read callers in `commands.ts`, `history.ts`, `controls.ts` or `Timeline.svelte`.
+Flat v4 serialization and canonical force command/gesture paths have landed. Geometry, velocity and section-facing interaction still include migration adapters: read callers in `commands.ts` and `history.ts`.
+
+The pose UX is retired to the kexedit tag `retired/pose-ux`: pin mode, canvas authoring control wiring, the conversion UI and every capture flow. Authoring is headless through `commands.ts`/`cli.ts`. `Timeline.svelte` and the canvas draw the bake read-only; `controls.ts` is pan/zoom. `menus.ts`, `keys.ts`, `acts.ts`, `geoforce.ts`, `forcegeo.ts` and `optimize.ts` stay as unwired libraries for the lane rebuild. Read the tag, never a copy, for a retired gesture.
 
 Geo authors positions and optional tangents; force authors values and named easing. Both substrates allow arbitrary density; rates are derived or invoked-fit views, never geometry storage.
 
-The dense bake is **derived display**, never canonical authored state. Both kinds display geometry-recovered force, not demanded force or a smoothed substitute; cart and timeline read the same bake. Direct authoring is deterministic, not a unified intent-arbitrating solver. Optimization is only a scoped, invoked tool; both conversion directions exist. Destructive kind reset and fitted conversion are different operations.
+The dense bake is **derived display**, never canonical authored state. Both kinds display geometry-recovered force, not demanded force or a smoothed substitute; cart and timeline read the same bake. Direct authoring is deterministic, not a unified intent-arbitrating solver. Optimization is only a scoped, invoked tool.
 
-The start position is fixed at the origin. Initial speed reads the track-start `OneShot`, falling back to `V0`, not a `Track.v0` field or the first strip. Velocity strips/keyframes are track-global arclength spans, independent of segment kind and structural edits. Force stations and geometry retain their run/local frames. `Track.domain` is an undoable display lens: it changes no positions, extents or bake hash. Time gestures project through a frozen arclength↔time mapping.
+The start position is fixed at the origin. Initial speed reads the track-start `OneShot`, falling back to `V0`, not a `Track.v0` field or the first strip. Velocity strips/keyframes are track-global arclength spans, independent of segment kind and structural edits. Force stations and geometry retain their run/local frames. `Track.domain` is an undoable display lens: it changes no positions, extents or bake hash.
 
 ## Authoring API
 
@@ -26,7 +28,7 @@ The start position is fixed at the origin. Initial speed reads the track-start `
 
 `doc.ts` load/rollback and DEV-only `__kex` bulk fixture setup are exceptions to ordinary edit gestures, not authoring precedents. `tests/purity.test.ts` catches direct component `.set` writes, not every helper-mediated mutation. `__kex.nudge` uses the command path; setup hooks never ship.
 
-One selection set plus active member lives in `editor.ts`; per-kind accessors are derived, not separate storage. Route selection keys by `activeKind()`, surface keys by hover; enumerate every window keydown reader when changing routing. Mixed force/velocity sets share station motion but no value axis. Preserve byte-identical undo, including selection re-resolution and pin-mode sandbox restoration.
+One selection set plus active member lives in `editor.ts`; per-kind accessors are derived, not separate storage. Preserve byte-identical undo, including selection re-resolution and pin-mode sandbox restoration.
 
 ## Verify
 

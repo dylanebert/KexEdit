@@ -1368,39 +1368,21 @@ describe("the menu grammar — every builder, every state", () => {
     // never a hand-typed second list (the declared-registry law; the deleted `menu ▸ label` map is
     // precedent for exactly this drift) — and driven BOTH directions with a positive control per
     // direction, below.
-    function appSvelteSrc(): string {
-        return readFileSync(join(import.meta.dir, "..", "src", "App.svelte"), "utf8");
-    }
-    // reads `chromeActs`'s declared `Pick<SectionMenuActions, "a" | "b" | …>` return type — the
-    // annotation IS the record's own declared keys: `bun check` fails if the annotation ever
-    // drifts from what the function actually returns (too narrow, too wide), so parsing it is
-    // reading the factory's own keys, not restating them by hand.
-    function chromeActNames(src: string): Set<string> {
-        const m = src.match(/function chromeActs\([^)]*\):\s*Pick<SectionMenuActions,\s*([^>]+)>/);
-        if (!m) return new Set();
-        return new Set(m[1].split("|").map((s) => s.trim().replace(/^"(.*)"$/, "$1")));
-    }
-    test("positive control: the chrome-act scanner reaches the real chromeActs declaration", () => {
-        // proves the regex isn't vacuously empty against the real file — the exact production
-        // names, not a synthetic stand-in.
-        expect([...chromeActNames(appSvelteSrc())].sort()).toEqual(
-            ["pinEnter", "pinSolve", "solve", "solveShape"].sort(),
-        );
-    });
-    test("positive control: the chrome-act scanner reflects what it's handed, not just the real file", () => {
-        // a SYNTHETIC declaration, never seen in production — proves the scanner reads the text
-        // rather than returning a hardcoded set that happens to match today's four names.
-        const synthetic =
-            'function chromeActs(section: number): Pick<SectionMenuActions, "foo" | "bar"> {';
-        expect([...chromeActNames(synthetic)].sort()).toEqual(["bar", "foo"]);
-        expect(chromeActNames("no such function here")).toEqual(new Set());
-    });
+    // `App.svelte`'s `chromeActs` factory hosted these four (a modal gate + an AbortController)
+    // and this census read its declared return type by source parse. The conversion modal and the
+    // pin panel retired with the pose UX (`retired/pose-ux`), so there is no host to parse: the
+    // deciders still EMIT the four as descriptors, and S3 re-hosts them over lanes. The set is
+    // declared here meanwhile, and the reverse direction below still holds it honest — a name no
+    // decider emits reds, so the list cannot quietly outlive the deciders that name it.
+    const RetiredChrome = new Set(["pinEnter", "pinSolve", "solve", "solveShape"]);
+    const chromeActNames = (): Set<string> => RetiredChrome;
+
     test("every emitted act names a key of its surface's PRODUCTION factory record (acts.ts), or a declared chrome act", () => {
         const dummy = new State();
         const sectionKeys = new Set(Object.keys(sectionActs(dummy, -1)));
         const nodeKeysSet = new Set(Object.keys(nodeActs(dummy, -1)));
         const keyframeKeys = new Set(Object.keys(keyframeActs(dummy)));
-        const chromeSet = chromeActNames(appSvelteSrc());
+        const chromeSet = chromeActNames();
         const chromeEmitted = new Set<string>();
         let checked = 0;
         const assertIn = (act: string, keys: Set<string>, factory: string): void => {
@@ -1474,17 +1456,18 @@ describe("the menu grammar — every builder, every state", () => {
     // the handler modules whose key press invokes the same action the row does — the other end of
     // each binding. Both ends read `src/menu.ts`'s table, so this pins that they still do. The
     // key-act seam (`keys.ts`) is where every decider itself reads `BINDINGS` now; a home file
-    // keeps its own entry only where it ALSO compares the binding raw outside the decider (a
-    // mid-drag guard, a defense-in-depth swallow) — `controls.ts`'s `editor.dragging` early-out,
-    // `App.svelte`'s permanent-listener top check and its Delete swallow.
+    // kept its own entry only where it ALSO compared the binding raw outside the decider. Those
+    // second ends — `controls.ts`'s mid-drag `editor.dragging` early-out and `App.svelte`'s
+    // permanent-listener check and Delete swallow — went with the gestures they guarded
+    // (`retired/pose-ux`), so `keys.ts` is every binding's only live home until S3 re-wires them.
     const Handlers: Record<keyof typeof BINDINGS, string[]> = {
-        remove: ["controls.ts", "App.svelte", "keys.ts"],
+        remove: ["keys.ts"],
         append: ["keys.ts"],
-        exitMode: ["App.svelte", "keys.ts"],
+        exitMode: ["keys.ts"],
         lock: ["keys.ts"],
-        convert: ["App.svelte", "keys.ts"],
-        pin: ["App.svelte", "keys.ts"],
-        solve: ["App.svelte", "keys.ts"],
+        convert: ["keys.ts"],
+        pin: ["keys.ts"],
+        solve: ["keys.ts"],
         reset: ["keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
@@ -1494,12 +1477,12 @@ describe("the menu grammar — every builder, every state", () => {
         Delete: { files: [], why: "every Del press is the remove binding" },
         Backspace: { files: [], why: "Del's twin, same binding" },
         Enter: {
-            files: ["App.svelte", "Timeline.svelte"],
-            why: "a popover field's commit-and-blur — not the Add row's append",
+            files: [],
+            why: "the popover fields whose commit-and-blur held this left with the pose UX",
         },
         Escape: {
-            files: ["App.svelte", "Timeline.svelte", "controls.ts"],
-            why: "the dismissal ladder (modal cancel, menu close, landing skip, marquee/drag/selection peel) — none of them the Exit row",
+            files: [],
+            why: "the dismissal ladder (modal cancel, menu close, landing skip, drag/selection peel) left with the surfaces that owned its rungs",
         },
         q: { files: [], why: "the lock toggle only" },
         Q: { files: [], why: "the lock toggle only" },
@@ -1776,13 +1759,12 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         // `editor-ui.md` Menus) — it must find the real snap toggle in controls.ts among
         // everything else it scans.
         const pop = population();
-        expect(pop.length).toBeGreaterThan(10);
-        expect(pop).toContainEqual({ form: "key", value: "s", file: "controls.ts" });
+        expect(pop.length).toBeGreaterThan(3);
+        // the two live presses the reduced tree actually makes, one per surface and one per
+        // scanned form: the viewport's frame key (`.key`) and the dock's transport (`.code`).
+        expect(pop).toContainEqual({ form: "key", value: "f", file: "controls.ts" });
+        expect(pop).toContainEqual({ form: "key", value: "F", file: "controls.ts" });
         expect(pop).toContainEqual({ form: "code", value: "Space", file: "Timeline.svelte" });
-        // the derived-local (`.toLowerCase()`) shape — undo/redo — is reachable too, not just the
-        // direct `.key`/`.code` shapes.
-        expect(pop).toContainEqual({ form: "key", value: "z", file: "Timeline.svelte" });
-        expect(pop).toContainEqual({ form: "key", value: "y", file: "Timeline.svelte" });
     });
 
     // `literals()`'s own blind spot (Validation, `kex2d-shortcuts`): it reads a direct `.key`/
@@ -1866,9 +1848,9 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         const matches = table.filter((d) => d.form === "key" && d.value === "Enter");
         expect(matches.length).toBeGreaterThan(1);
         expect(collisions(matches)).toEqual([]); // the two don't collide (differing scope)
-        expect(
-            population().filter((l) => l.form === "key" && l.value === "Enter").length,
-        ).toBeGreaterThan(0);
+        // the raw `Enter` compares this once also read (the popover fields' commit-and-blur) went
+        // with the pose UX, so the live population no longer carries one; the scope-aware
+        // relaxation is what this control exists for, and the declared table above still holds it.
     });
 
     test("positive control: the resolver still flags a literal claimed by entries that DO collide, even inside a larger match set", () => {
@@ -1944,12 +1926,14 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         // isn't."
         const bareZ: Record<string, Reserved> = {
             ...RESERVED,
+            undo: { keys: ["z"], mod: "ctrl", why: "synthetic — control only" },
             bareZ: { keys: ["z"], why: "synthetic — control only, no chord" },
         };
         expect(collisions(declared(BINDINGS, bareZ))).toEqual([]);
         // but a SECOND Ctrl+`z` entry — same key, same chord — really does collide.
         const dupCtrlZ: Record<string, Reserved> = {
             ...RESERVED,
+            undo: { keys: ["z"], mod: "ctrl", why: "synthetic — control only" },
             undo2: { keys: ["z"], mod: "ctrl", why: "synthetic collision — control only" },
         };
         expect(collisions(declared(BINDINGS, dupCtrlZ))).toEqual([
@@ -1992,10 +1976,15 @@ describe("acts.ts source census — every home reaches its factory", () => {
 
     // the declared population: which files call which factory. Both directions checked below — an
     // undeclared file calling a factory fails just as hard as a declared home that stopped.
+    // Every home emptied with the pose UX (`retired/pose-ux`): the context menus, their keyboard
+    // twins and the chart's keyframe menu all went with the gestures that summoned them, so the
+    // factories are descriptor-only until S3 re-homes them over lane rows. The census still runs
+    // both directions over the empty declaration, which is the direction that matters now: any
+    // file that starts calling a factory without joining this list reds.
     const FactoryHomes: Record<"sectionActs" | "nodeActs" | "keyframeActs", string[]> = {
-        sectionActs: ["App.svelte", "controls.ts"],
-        nodeActs: ["App.svelte", "controls.ts"],
-        keyframeActs: ["Timeline.svelte"],
+        sectionActs: [],
+        nodeActs: [],
+        keyframeActs: [],
     };
 
     // What this census does and does NOT prove: it proves a file MENTIONS its factory. It does not
@@ -2022,52 +2011,10 @@ describe("acts.ts source census — every home reaches its factory", () => {
         // a floor, not the exact count: the walk must be reading the whole module tree, not one
         // lucky directory entry.
         expect(srcFiles.length).toBeGreaterThan(30);
-        expect(src("App.svelte").includes("sectionActs(")).toBe(true);
+        // the scanner reads real text, not an empty string per file: `menus.ts` names every
+        // factory's own act record, so a walk that returned blanks would miss this.
+        expect(src("menus.ts").includes("SectionMenuActions")).toBe(true);
     });
-});
-
-// ── Convert/Pin keydown subject parity (kex2d-shortcuts stage 3, the defect stage 3 shipped
-// with): `D`/`P` must resolve `canSolve`/`canSolveShape`/`canPin` against the KEYDOWN's own
-// subject (`editor.section`, the click-selected section), never the section context MENU's
-// subject (`ctx.section`) — the two are only equal while a menu happens to be open. The shipped
-// defect handed `sectionKeyAct` the module-scope `canSolve`/`canSolveShape`/`canPin` `$derived`s,
-// which all resolve `ctxKind` off `ctx.section`; `ctx` is `null` on every keyboard-only path (no
-// menu need be open to press `D`), so the three enablements were always `false` and `D`/`P` were
-// dead keys — `bun run capture` caught it, no unit test did, because `sectionKeyAct` itself only
-// ever saw hand-passed booleans. A source sentinel
-// is the reachable check here, since whether the listener's OWN `section` local (not `ctx`) feeds
-// the enablement is wiring a unit test can't drive without a live DOM (`editor-ui.md`'s
-// source-census limit) — `bun run capture`'s "Convert/Pin/Solve keyboard bindings flow" is the
-// capture-flow half that actually exercises it. Isolated to the Convert/Pin listener's own block
-// (not the whole file) so a `canSolve` read anywhere else — the menu's own `$derived`, which
-// legitimately reads `ctx.section` — can't hide inside a whole-file match.
-test("App.svelte's Convert/Pin keydown listener resolves canSolve/canSolveShape/canPin against its OWN subject, not the context menu's", () => {
-    const appSrc = readFileSync(join(import.meta.dir, "..", "src", "App.svelte"), "utf8");
-    const start = appSrc.indexOf("// Convert (`D`) and Pin (`P`) — the section context menu's");
-    const end = appSrc.indexOf("// cancel the live solve", start);
-    expect(start, "Convert/Pin listener comment landmark").toBeGreaterThan(-1);
-    expect(end, "next-listener comment landmark").toBeGreaterThan(start);
-    const listener = appSrc.slice(start, end);
-
-    // the listener resolves its own subject fresh, never the module-scope ctx-derived value.
-    expect(listener).toContain("const section = editor.section");
-
-    // `sectionKeyAct`'s three optional fields are each computed from THAT subject — never passed
-    // as a bare identifier, which is exactly how the defect read the tick-derived,
-    // ctx.section-scoped `$derived`s straight through.
-    expect(listener).toMatch(/canSolve:\s*computeCanSolve\(section\)/);
-    expect(listener).toMatch(/canSolveShape:\s*computeCanSolveShape\(section\)/);
-    expect(listener).toMatch(/canPin:\s*computeCanPin\(section\)/);
-    expect(listener).not.toMatch(/canSolve:\s*canSolve\b/);
-    expect(listener).not.toMatch(/canSolveShape:\s*canSolveShape\b/);
-    expect(listener).not.toMatch(/canPin:\s*canPin\b/);
-    // property shorthand (`canSolve,`) is the same bug in its most common shipped shape (the
-    // module-scope `$derived` and the descriptor field share a name) — the canSolve object-key
-    // regex above wouldn't catch shorthand, so it's asserted separately.
-    for (const field of ["canSolve", "canSolveShape", "canPin"])
-        expect(listener, `${field} must not be passed as bare shorthand`).not.toMatch(
-            new RegExp(`\\b${field},`),
-        );
 });
 
 // `menuRows` is a public seam other menus will call, so its edge cases are pinned directly rather
@@ -2256,7 +2203,7 @@ describe("menu source pins — builders and renderer stay singular", () => {
     // the tightened pin (kex2d-burndown 1b): nothing outside this declared set may import the
     // `MenuItem` type at all. `menu.ts` DECLARES the type rather than importing it, so it's
     // excluded from the walk — the allowlist is who may READ it from elsewhere.
-    const MenuItemAllowlist = new Set(["menus.ts", "Menu.svelte", "App.svelte", "Timeline.svelte"]);
+    const MenuItemAllowlist = new Set(["menus.ts", "Menu.svelte"]);
 
     function importsMenuItem(file: string): boolean {
         for (const m of src(file).matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"\.\/menu"/g))
@@ -2275,76 +2222,5 @@ describe("menu source pins — builders and renderer stay singular", () => {
         // its own, the same both-directions law every other registry in this file keeps.
         const stale = [...MenuItemAllowlist].filter((f) => !importsMenuItem(f));
         expect(stale, "allowlisted files that no longer import MenuItem").toEqual([]);
-    });
-});
-
-// S3d replaces point-first context with the selected force segment's easing/delete menu. The
-// chart-wide router classifies body/boundary hits; empty chart space remains inert.
-describe("force segment context routing", () => {
-    const timelineSrc = readFileSync(join(import.meta.dir, "..", "src", "Timeline.svelte"), "utf8");
-
-    // the declared registry: every `oncontextmenu` handler in the file, in source order.
-    // `chartzone` — the chart's empty-space hit rect — is deliberately absent. If it's ever
-    // given a handler again (the retired curve-span path restored, or a fresh free-position
-    // fallback), it appears here as an extra entry and the exact-order `toEqual` below fails.
-    const Handlers = [
-        "toggleSnapPop", // the snap-toggle rail's own increment popover
-        "(e) => e.preventDefault()", // the .body wrapper: blocks the browser menu, opens nothing
-        "rulerCtx", // the ruler's Meters/Seconds domain picker
-        "segmentContext", // force segment body/boundary — Easing/Delete
-        "(e) => clipMenu(e, c)", // the clip strip — the section context menu (Convert/Pin/Reset/Delete)
-        "bandContext", // the velocity-strip band — Add/Delete (T1)
-        "p.s > p.len ? (e) => forceCtx(e, p) : undefined", // orphan force key only
-    ];
-
-    test("every oncontextmenu site in Timeline.svelte matches the declared registry, in order", () => {
-        const found = [...timelineSrc.matchAll(/oncontextmenu=\{([^}]*)\}/g)].map((m) => m[1]);
-        expect(found).toEqual(Handlers);
-    });
-
-    // positive control (the declared-registry law's own clause: prove the SCANNER, not just the
-    // comparison — the cursor-allowlist lesson, `editor-ui.md` Menus). A renamed known handler
-    // must show up as a mismatch, or the regex above is matching nothing.
-    test("positive control: a renamed handler breaks the registry match", () => {
-        const mutated = timelineSrc.replace(
-            "oncontextmenu={rulerCtx}",
-            "oncontextmenu={rulerCtxRENAMED}",
-        );
-        const found = [...mutated.matchAll(/oncontextmenu=\{([^}]*)\}/g)].map((m) => m[1]);
-        expect(found).not.toEqual(Handlers);
-    });
-
-    test("the chartzone and orphan point are the only force context owners", () => {
-        const chart = timelineSrc.match(/<rect\s+class="chartzone"[\s\S]*?\/>/)?.[0];
-        expect(chart?.match(/oncontextmenu=\{([^}]*)\}/)?.[1]).toBe("segmentContext");
-        const forceHit = [...timelineSrc.matchAll(/<circle[\s\S]*?\/>/g)]
-            .map((match) => match[0])
-            .find((circle) => circle.includes('aria-label="Force point"'));
-        expect(forceHit).toBeDefined();
-        expect(forceHit?.match(/oncontextmenu=\{([^}]*)\}/)?.[1]).toBe(
-            "p.s > p.len ? (e) => forceCtx(e, p) : undefined",
-        );
-        expect(timelineSrc.match(/class="fhit"/g)).toHaveLength(2);
-    });
-
-    test("segment context resolves and writes the leading boundary", () => {
-        expect(timelineSrc.match(/RunEntryForceBoundary\.ease\(ecs, run\)/g)).toHaveLength(1);
-        expect(
-            timelineSrc.match(/setForcesEase\(history, ecs, \[leading\.key\], value\)/g),
-        ).toHaveLength(1);
-        expect(timelineSrc.match(/SegmentForceBoundary\.ease\(ecs, id\)/g) ?? []).toHaveLength(0);
-    });
-
-    test("legacy section gathers survive only in computeClips", () => {
-        expect(timelineSrc.match(/sections\(/g)).toHaveLength(1);
-        const body = timelineSrc.match(/function computeClips\([\s\S]*?\n\}/)?.[0];
-        expect(body?.match(/sections\(/g)).toHaveLength(1);
-    });
-
-    // the retired curve-span→leading-keyframe fallback itself: gone, not just unwired. Guards
-    // against a mutant that restores the function but forgets to re-wire it (which the registry
-    // tests above wouldn't catch on their own).
-    test("chartCtx (the retired curve-span path) no longer exists in Timeline.svelte", () => {
-        expect(timelineSrc).not.toContain("function chartCtx");
     });
 });
