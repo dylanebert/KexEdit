@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "track": {
+    "ds": 0.5,
+    "domain": 0,
+    "friction": 0.02,
+    "resistance": 0.0001
+  },
+  "sections": [
+    {
+      "id": 0,
+      "order": 0,
+      "kind": 0,
+      "length": 0,
+      "nodes": [
+        {
+          "order": 0,
+          "x": 0,
+          "y": 0,
+          "theta": 0
+        },
+        {
+          "order": 1,
+          "x": 40,
+          "y": 0,
+          "theta": 0
+        }
+      ],
+      "points": [
+        {
+          "id": 9001,
+          "s": 1,
+          "g": 1,
+          "ease": 0
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "order": 1,
+      "kind": 1,
+      "length": 20,
+      "nodes": [],
+      "points": [
+        {
+          "id": 0,
+          "s": 0,
+          "g": 1,
+          "ease": 1
+        },
+        {
+          "id": 1,
+          "s": 20,
+          "g": 1,
+          "ease": 1
+        }
+      ]
+    }
+  ],
+  "strips": [
+    {
+      "id": 0,
+      "start": 5,
+      "end": 15,
+      "value": 22,
+      "keyframes": [
+        {
+          "id": 0,
+          "s": 5,
+          "v": 22
+        },
+        {
+          "id": 1,
+          "s": 15,
+          "v": 22
+        }
+      ]
+    }
+  ],
+  "oneShot": [
+    {
+      "id": 0,
+      "value": 20
+    }
+  ]
+}

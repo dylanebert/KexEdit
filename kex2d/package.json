@@ -1,0 +1,36 @@
+{
+    "name": "kex2d",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview",
+        "cli": "bun run src/cli.ts",
+        "test": "bun test",
+        "capture": "bun run harness/capture.ts",
+        "harness:deps": "[ -d harness/node_modules/@playwright/test ] || bun install --cwd harness --frozen-lockfile",
+        "mutate": "bun run harness/mutate.ts",
+        "trend": "bun run harness/trend.ts",
+        "surface-budget": "bun run harness/surface-budget.ts",
+        "check": "bun run harness:deps && tsc && svelte-check && biome check",
+        "format": "biome check --write"
+    },
+    "dependencies": {
+        "@dylanebert/shallot": "^0.9.4",
+        "svelte": "^5.56.10",
+        "typegpu": "~0.12.4"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.10",
+        "@sveltejs/vite-plugin-svelte": "^7.3.0",
+        "@types/bun": "latest",
+        "@typescript/native": "npm:typescript@7",
+        "@webgpu/types": "^0.1.72",
+        "svelte-check": "^4.7.6",
+        "typescript": "~6",
+        "unplugin-typegpu": "~0.12.3",
+        "vite": "^8.2.2"
+    }
+}

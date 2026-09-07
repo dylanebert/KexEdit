@@ -6,6 +6,7 @@
 -   **[Video Introduction](#video-introduction)** - Core features overview
 -   **[Basic Workflow](user-guide/basic-workflow.md)** - Create and connect nodes
 -   **[Controlling Properties](user-guide/controlling-properties.md)** - Create a simple launch and airtime hill
+-   **[Force Vector Design](user-guide/fvd.md)** - Design track from rider forces
 -   **[Lift Hill](user-guide/lift-hill.md)** - Create a classic chain lift hill
 
 ### Advanced

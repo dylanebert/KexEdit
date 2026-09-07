@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap"
+            rel="stylesheet"
+        />
+        <title>kex2d — FVD limit</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            html,
+            body {
+                background: #0e0d0c;
+                color: #f0ece8;
+                font-family: "Outfit", system-ui, sans-serif;
+                -webkit-font-smoothing: antialiased;
+            }
+            #lab {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 18px;
+                padding: 22px;
+                align-items: flex-start;
+            }
+            .panel {
+                background: #17140f;
+                border: 1px solid #2b261e;
+                border-radius: 8px;
+                padding: 14px 16px 16px;
+            }
+            .panel h2 {
+                font-size: 14px;
+                font-weight: 600;
+                margin-bottom: 2px;
+            }
+            .panel p {
+                font-size: 11px;
+                color: #9a9188;
+                margin-bottom: 10px;
+                max-width: 460px;
+                line-height: 1.4;
+            }
+            .panel code {
+                font-family: "JetBrains Mono", monospace;
+                color: #cdbd9a;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="lab"></div>
+        <script type="module" src="./src/fvdlab.ts"></script>
+    </body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "track": {
+    "ds": 0.5,
+    "domain": 0,
+    "friction": 0.02,
+    "resistance": 0.0001
+  },
+  "sections": [
+    {
+      "id": 0,
+      "order": 0,
+      "kind": 1,
+      "length": 63.13367462158203,
+      "nodes": [],
+      "points": [
+        { "id": 0, "s": 8.469388961791992, "g": 2, "ease": 1 },
+        { "id": 1, "s": 62.8066291809082, "g": -1, "ease": 2 }
+      ]
+    }
+  ],
+  "strips": [],
+  "oneShot": [
+    { "id": 0, "value": 20 }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "version": 2,
+  "track": {
+    "ds": 0.5,
+    "domain": 0,
+    "friction": 0.02,
+    "resistance": 0.0001
+  },
+  "sections": [
+    {
+      "id": 0,
+      "order": 0,
+      "kind": 0,
+      "length": 0,
+      "nodes": [
+        {
+          "order": 0,
+          "x": 0,
+          "y": 0,
+          "theta": 0
+        },
+        {
+          "order": 1,
+          "x": 3,
+          "y": 0,
+          "theta": 0
+        }
+      ],
+      "points": []
+    },
+    {
+      "id": 1,
+      "order": 1,
+      "kind": 1,
+      "length": 8,
+      "nodes": [],
+      "points": [
+        {
+          "id": 0,
+          "s": 0,
+          "g": 0.5,
+          "ease": 0
+        },
+        {
+          "id": 1,
+          "s": 2,
+          "g": 2,
+          "ease": 1
+        },
+        {
+          "id": 2,
+          "s": 5,
+          "g": -0.25,
+          "ease": 2
+        },
+        {
+          "id": 3,
+          "s": 8,
+          "g": 1,
+          "ease": 1
+        }
+      ]
+    }
+  ],
+  "strips": [],
+  "oneShot": [
+    {
+      "id": 0,
+      "value": 20
+    }
+  ]
+}

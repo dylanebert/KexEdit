@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "track": {
+    "ds": 0.5,
+    "domain": 0,
+    "friction": 0.02,
+    "resistance": 0.0001
+  },
+  "sections": [
+    {
+      "id": 0,
+      "order": 0,
+      "kind": 1,
+      "length": 20,
+      "nodes": [],
+      "points": [
+        {
+          "id": 0,
+          "s": 0,
+          "g": 1,
+          "ease": 1
+        },
+        {
+          "id": 1,
+          "s": 20,
+          "g": 1,
+          "ease": 1
+        }
+      ]
+    }
+  ],
+  "strips": [
+    {
+      "id": 0,
+      "start": 2,
+      "end": 5,
+      "value": 10,
+      "keyframes": [
+        {
+          "id": 0,
+          "s": 2,
+          "v": 10
+        },
+        {
+          "id": 1,
+          "s": 5,
+          "v": 10
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "start": 5,
+      "end": 8,
+      "value": 17,
+      "keyframes": [
+        {
+          "id": 2,
+          "s": 5,
+          "v": 17
+        },
+        {
+          "id": 3,
+          "s": 8,
+          "v": 17
+        }
+      ]
+    }
+  ],
+  "oneShot": [
+    {
+      "id": 0,
+      "value": 20
+    }
+  ]
+}

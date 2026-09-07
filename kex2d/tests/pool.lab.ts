@@ -1,0 +1,127 @@
+// Pooled-conversion wall time (spec `kex/specs/kex2d-geoforce-perf.md`, stage 4).
+//
+// Question: what does the worker pool buy over the in-process `refine`, per scenario and in
+// aggregate, and how promptly does an abort settle. Same conversions the golden freezes — the
+// pooled rows are compared against it, so a row here is a shipping conversion, not a lookalike.
+//
+// Run: bun tests/pool.lab.ts
+
+import { convert, liveWorkers } from "../src/convert";
+import { narrow, refine } from "../src/refine";
+import { type Scenario, scenarios } from "../src/scenarios";
+import { evalGeo } from "../src/section";
+import { GOLDEN } from "./helpers/golden";
+import { stress } from "./helpers/stress";
+
+const CORES = navigator.hardwareConcurrency;
+
+function setup(scenario: Scenario) {
+    const entry = { x: 0, y: 0, theta: 0, v: scenario.v0 };
+    return { entry, bake: evalGeo(entry, scenario.nodes, scenario.ds), ds: scenario.ds };
+}
+
+/** field-order-independent exact compare — the golden fixture's key order is its own. */
+const same = (a: unknown, b: unknown): boolean => {
+    const stable = (value: unknown): string =>
+        JSON.stringify(value, (_, item) =>
+            item && typeof item === "object" && !Array.isArray(item)
+                ? Object.fromEntries(Object.entries(item).sort(([x], [y]) => (x < y ? -1 : 1)))
+                : item,
+        );
+    return stable(a) === stable(b);
+};
+
+async function row(scenario: Scenario, checkGolden: boolean) {
+    const { entry, bake, ds } = setup(scenario);
+
+    const syncAt = performance.now();
+    const plain = narrow(refine({ bake, entry, ds, playback: false }));
+    const syncS = (performance.now() - syncAt) / 1000;
+
+    const poolAt = performance.now();
+    const pooled = await convert(bake, entry, ds);
+    const poolS = (performance.now() - poolAt) / 1000;
+
+    if (!same(pooled, plain))
+        throw new Error(`${scenario.name}: pooled answer differs from the in-process one`);
+    if (checkGolden) {
+        const want = GOLDEN(scenario.name);
+        if (!same(pooled, want))
+            throw new Error(`${scenario.name}: pooled answer differs from the golden`);
+    }
+
+    return {
+        scenario: scenario.name,
+        edges: pooled.edges,
+        keys: pooled.keys,
+        probes: pooled.probes,
+        syncS: +syncS.toFixed(2),
+        poolS: +poolS.toFixed(2),
+        speedup: +(syncS / poolS).toFixed(2),
+    };
+}
+
+/** Abort during a PRUNE round — the fanned-out phase, where the pool is fully busy and a queued
+ *  tail is still waiting. Aborting in the serial split phase would only ever measure one worker. */
+async function cancelMs(scenario: Scenario): Promise<{ ms: number; busy: number }> {
+    const { entry, bake, ds } = setup(scenario);
+    const controller = new AbortController();
+    let pruning = false;
+    const solving = convert(bake, entry, ds, {
+        signal: controller.signal,
+        onProgress: ({ phase }) => {
+            pruning ||= phase === "prune";
+        },
+    });
+    solving.catch(() => {});
+    while (!pruning) await Bun.sleep(2);
+    const busy = liveWorkers();
+    const at = performance.now();
+    controller.abort();
+    await solving.then(
+        () => {
+            throw new Error("abort did not reject");
+        },
+        () => {},
+    );
+    const ms = performance.now() - at;
+    if (liveWorkers() !== 0) throw new Error(`${liveWorkers()} workers survived the abort`);
+    return { ms, busy };
+}
+
+type Row = Awaited<ReturnType<typeof row>>;
+
+const corpus: Row[] = [];
+for (const scenario of scenarios) corpus.push(await row(scenario, true));
+const beyond: Row[] = [];
+for (const scenario of stress) beyond.push(await row(scenario, false));
+
+console.log(`pool size ${Math.max(1, CORES - 1)} (hardwareConcurrency ${CORES})`);
+console.table([...corpus, ...beyond]);
+
+const totals = (rows: Row[]) => ({
+    probes: rows.reduce((a, r) => a + r.probes, 0),
+    syncS: +rows.reduce((a, r) => a + r.syncS, 0).toFixed(2),
+    poolS: +rows.reduce((a, r) => a + r.poolS, 0).toFixed(2),
+    speedup: +(
+        rows.reduce((a, r) => a + r.syncS, 0) / rows.reduce((a, r) => a + r.poolS, 0)
+    ).toFixed(2),
+});
+console.table({ corpus: totals(corpus), stress: totals(beyond) });
+
+const named = (name: string): Scenario => {
+    const found = [...scenarios, ...stress].find((candidate) => candidate.name === name);
+    if (!found) throw new Error(`unknown scenario ${name}`);
+    return found;
+};
+
+const cancels = [
+    await cancelMs(named("double-hump")),
+    await cancelMs(named("quad-hump")),
+    await cancelMs(named("long-mixed")),
+];
+console.log(
+    `cancel latency ms (workers busy at abort): ${cancels
+        .map(({ ms, busy }) => `${ms.toFixed(1)} (${busy})`)
+        .join(" · ")}`,
+);
