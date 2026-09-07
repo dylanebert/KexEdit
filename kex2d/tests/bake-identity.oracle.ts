@@ -38,7 +38,12 @@ import {
     trackEntity,
     V0,
 } from "../src/track";
-import { digestOf, v3Corpus } from "./mint-bake-digests";
+import {
+    digestCorpus,
+    referenceDigest,
+    referenceInput,
+    REFUSAL_WITNESS,
+} from "./mint-bake-digests";
 
 /** every committed `.kex` fixture outside the frozen `v2`/`v3` migration inputs and the
  *  deliberately malformed `invariants/*-red` corpus — the documents that actually load. */
@@ -319,20 +324,30 @@ describe("the lane-derived bake in the shadow", () => {
     }
 });
 
-describe("the frozen v3 bake digests", () => {
-    // minted by `tests/mint-bake-digests.ts` while `v3Payloads` is byte-identical to the live
-    // bake; at S2e the node path is gone and these are the only record of what it produced.
+describe("the frozen bake digests", () => {
+    // Minted by `tests/mint-bake-digests.ts` BEFORE any S2e-i store edit, while `v3Payloads` is
+    // byte-identical to the live bake (`doc.test.ts`, "the pure v3 payload builder is the live
+    // bake"). After the cutover the node path is gone and these are the only record of what it
+    // produced, which is why the digest — not the reference that reproduces it — is the truth.
     const digests = require("./fixtures/v3/bake-digests.json") as Record<string, string>;
 
-    test("every frozen v3 fixture has a digest, the refusal witness included", () => {
-        expect(Object.keys(digests).sort()).toEqual(v3Corpus().sort());
-        expect(digests["cli/loop-explicit.kex"]).toBeString();
+    test("the digest file keys the thirty loadable fixtures plus the refusal witness", () => {
+        // pin the population at 31: a narrowed mint, or a fixture that quietly stopped being
+        // digested, cannot read as a clean sweep.
+        expect(Object.keys(digests).sort()).toEqual(digestCorpus());
+        expect(Object.keys(digests)).toHaveLength(31);
+        expect(digests[REFUSAL_WITNESS]).toBeString();
     });
 
-    for (const name of v3Corpus()) {
-        test(`${name}: the node bake still hashes to its recorded digest`, () => {
-            const text = readFileSync(join(import.meta.dir, "fixtures", "v3", name), "utf8");
-            expect(digestOf(text)).toBe(digests[name]);
+    test("the reference input of a v4 fixture is its frozen v3 twin, never the v4 file", () => {
+        // the reference must stay computable once `segments`/`strips` leave the v4 wire.
+        expect(referenceInput("cli/hill-explicit.kex")).toEndWith("fixtures/v3/cli/hill-explicit.kex");
+        expect(referenceInput("force/keyless.kex")).toEndWith("fixtures/force/keyless.kex");
+    });
+
+    for (const name of digestCorpus()) {
+        test(`${name}: the reference bake still hashes to its recorded digest`, async () => {
+            expect(await referenceDigest(name)).toBe(digests[name]);
         });
     }
 });

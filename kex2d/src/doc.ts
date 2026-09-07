@@ -1607,10 +1607,19 @@ export type MigrationStep = (doc: Record<string, unknown>) => Record<string, unk
 
 /** forward-only migrations, keyed by the version they migrate FROM — `migrations[1]` takes a v1
  *  raw doc and returns a v2 one. The seam exists so a version bump costs one function, not a
- *  rewrite. */
-const migrations: Record<number, MigrationStep> = {
+ *  rewrite.
+ *
+ *  {@link preLaneMigrations} is the prefix that stops at the frozen v3 payload shape: the bake
+ *  digests (`tests/mint-bake-digests.ts`) read every fixture's own v1–v3 text as their reference
+ *  input, and that reference must stay computable after the store cuts over and
+ *  `segments`/`strips` leave the v4 wire. */
+export const preLaneMigrations: Record<number, MigrationStep> = {
     1: dropForceTangent,
     2: sectionsToSegments,
+};
+
+const migrations: Record<number, MigrationStep> = {
+    ...preLaneMigrations,
     3: chainToLanes,
 };
 
