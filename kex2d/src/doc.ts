@@ -25,7 +25,13 @@
 import { State } from "@dylanebert/shallot";
 import type { Refusal } from "./commands";
 import { history } from "./history";
-import { type LaneSegment, type Lanes, emptyLanes } from "./lanes";
+import {
+    type GeoLaneSegment,
+    type LaneSegment,
+    type Lanes,
+    emptyLanes,
+    type NodePose,
+} from "./lanes";
 import { Easing, type ForcePoint, sampleForce } from "./profile";
 import { Domain } from "./section";
 import { type Node, sampleChain, TangentMode, type Tangent } from "./spline";
@@ -259,6 +265,17 @@ function runsOf(segments: DocSegment[]): { kind: number; members: DocSegment[]; 
     return out;
 }
 
+/** one authored node as the geo lane's own boundary handle — the whole pose (position, local
+ *  exit heading and any explicit tangent), which is what a geo boundary IS. */
+function toPose(n: DocNode): NodePose {
+    return {
+        x: n.x,
+        y: n.y,
+        theta: n.theta,
+        ...(n.tangent === undefined ? {} : { tangent: fromDocTangent(n.tangent) }),
+    };
+}
+
 /** one geo run's nodes as the pure `spline.Node` list its sampler reads, in run-global order.
  *  `Handle.order` is run-global (`track.spliceGeoMembers`), so concatenating the members' node
  *  arrays and sorting by `order` rebuilds the run's own chain. */
@@ -347,9 +364,9 @@ function chainLanes(
     segments: DocSegment[],
     ds: number,
     nextId: () => number,
-): { force: LaneSegment[]; geo: LaneSegment[] } {
+): { force: LaneSegment[]; geo: GeoLaneSegment[] } {
     const force: LaneSegment[] = [];
-    const geo: LaneSegment[] = [];
+    const geo: GeoLaneSegment[] = [];
     let cursor = 0;
     for (const run of runsOf(segments)) {
         if (run.kind === SectionKind.Force) {
@@ -369,8 +386,8 @@ function chainLanes(
                     start: cursor,
                     end: cursor + spans[i]!,
                     ease: Easing.Linear,
-                    ...(entryNode ? { entry: entryNode.theta } : {}),
-                    exit: exitNode ? exitNode.theta : 0,
+                    ...(entryNode ? { entry: toPose(entryNode) } : {}),
+                    exit: exitNode ? toPose(exitNode) : { x: 0, y: 0, theta: 0 },
                 });
                 cursor += spans[i]!;
             }
@@ -861,14 +878,36 @@ function validateTrack(v: unknown): DocTrack {
     };
 }
 
-/** one lane record's structural shape. `entry` is genuinely optional (its absence is the
- *  "reads the predecessor or the lane rule" case, `lanes.entryValue`) and is refused only when
- *  present and non-finite; `exit` is always owned and always required. */
-function validateLaneSegment(v: unknown, lane: string, i: number): LaneSegment {
+/** one geo boundary handle: a whole node pose, with the same explicit-tangent shape a `nodes[]`
+ *  entry carries. */
+function validateNodePose(v: unknown, path: string): NodePose {
+    if (!isPlainObject(v)) fail(`${path} is not an object`);
+    for (const k of ["x", "y", "theta"] as const) {
+        if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
+    }
+    const tangent = validateGeoTangent(v.tangent, path);
+    return {
+        x: v.x as number,
+        y: v.y as number,
+        theta: v.theta as number,
+        ...(tangent === undefined ? {} : { tangent: fromDocTangent(tangent) }),
+    };
+}
+
+/** one lane record's span and its two handles. `entry` is genuinely optional (its absence is the
+ *  "reads the predecessor or the lane rule" case, `lanes.entryValue`); `exit` is always owned and
+ *  always required. A handle is a scalar on the velocity and force lanes and a whole node pose on
+ *  the geo lane, because a track's shape at a boundary is not one number. */
+function validateLaneSegment<H>(
+    v: unknown,
+    lane: string,
+    i: number,
+    handle: (raw: unknown, path: string) => H,
+): LaneSegment<H> {
     const path = `lanes.${lane}[${i}]`;
     if (!isPlainObject(v)) fail(`${path} is not an object`);
     if (!isInt(v.id)) fail(`${path}.id is missing or not an integer`);
-    for (const k of ["start", "end", "exit"] as const) {
+    for (const k of ["start", "end"] as const) {
         if (!isFiniteNumber(v[k])) fail(`${path}.${k} is missing or not a finite number`);
     }
     if (
@@ -876,16 +915,20 @@ function validateLaneSegment(v: unknown, lane: string, i: number): LaneSegment {
         (v.ease !== Easing.Linear && v.ease !== Easing.Cubic && v.ease !== Easing.Quintic)
     )
         fail(`${path}.ease is missing or not a valid Easing (0, 1, or 2)`);
-    if (v.entry !== undefined && !isFiniteNumber(v.entry))
-        fail(`${path}.entry is present but not a finite number`);
     return {
         id: v.id as number,
         start: v.start as number,
         end: v.end as number,
         ease: v.ease as number,
-        ...(v.entry === undefined ? {} : { entry: v.entry as number }),
-        exit: v.exit as number,
+        ...(v.entry === undefined ? {} : { entry: handle(v.entry, `${path}.entry`) }),
+        exit: handle(v.exit, `${path}.exit`),
     };
+}
+
+/** a scalar lane handle: the speed (m/s) or normal-force multiple (g) at a boundary. */
+function validateScalarHandle(v: unknown, path: string): number {
+    if (!isFiniteNumber(v)) fail(`${path} is missing or not a finite number`);
+    return v as number;
 }
 
 function validateLanes(v: unknown): Lanes {
@@ -894,7 +937,9 @@ function validateLanes(v: unknown): Lanes {
     for (const lane of ["velocity", "force", "geo"] as const) {
         const rows = v[lane];
         if (!Array.isArray(rows)) fail(`lanes.${lane} is missing or not an array`);
-        out[lane] = rows.map((r, i) => validateLaneSegment(r, lane, i));
+        if (lane === "geo")
+            out.geo = rows.map((r, i) => validateLaneSegment(r, lane, i, validateNodePose));
+        else out[lane] = rows.map((r, i) => validateLaneSegment(r, lane, i, validateScalarHandle));
     }
     return out;
 }

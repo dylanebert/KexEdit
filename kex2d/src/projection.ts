@@ -177,8 +177,8 @@ function forcePoints(rows: readonly LaneSegment[], runStart: number): ForcePoint
 
 /** the maximal abutting groups of one lane's ordered records — the "maximal abutting group"
  *  the Locked decision names as the frame geo node positions live in. */
-function abuttingGroups(rows: readonly LaneSegment[]): LaneSegment[][] {
-    const groups: LaneSegment[][] = [];
+function abuttingGroups<H>(rows: readonly LaneSegment<H>[]): LaneSegment<H>[][] {
+    const groups: LaneSegment<H>[][] = [];
     for (const r of ordered(rows)) {
         const last = groups[groups.length - 1];
         if (last && last[last.length - 1]!.end === r.start) last.push(r);

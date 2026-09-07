@@ -1115,6 +1115,28 @@ describe("hand-checked v4 lane shapes", () => {
         expect(lanes.geo).toEqual([]);
     });
 
+    test("a geo record carries its boundary node's whole pose, explicit tangent included", () => {
+        // `hill-explicit` authors an explicit tangent on its crest node, so the geo lane must
+        // carry position, heading AND that tangent — a heading-only handle cannot rebuild the
+        // shape, which is what makes the geo lane self-sufficient on the wire.
+        // read the FROZEN v3 source, so `migrations[3]` itself is under test rather than the
+        // already-migrated committed file's parser round trip.
+        const lanes = migratedLanes("v3/cli/hill-explicit.kex");
+        expect(lanes.geo[0]!.entry).toEqual({ x: 0, y: 0, theta: 0 });
+        const crest = lanes.geo.find((r) => r.exit.tangent !== undefined);
+        expect(crest?.exit).toEqual({
+            x: 56,
+            y: 11,
+            theta: 0,
+            tangent: { mode: TangentMode.Aligned, inX: 9, inY: 0, outX: 9, outY: 0 },
+        });
+        // and every geo record's pose survives the emitter → parser round trip verbatim.
+        const doc = parseDocument(
+            readFileSync(join(import.meta.dir, "fixtures", "cli", "hill-explicit.kex"), "utf8"),
+        );
+        expect(parseDocument(serializeDocument(doc)).lanes.geo).toEqual(doc.lanes.geo);
+    });
+
     test("velocity/keyframeless-strip.kex: one constant segment, entry === exit === value", () => {
         const lanes = migratedLanes("velocity/keyframeless-strip.kex");
         expect(lanes.velocity).toEqual([
@@ -1146,8 +1168,16 @@ describe("hand-checked v4 lane shapes", () => {
         const lanes = migratedLanes("force/all-easings.kex");
         // the fixture leads with a geo run, which claims lane id 0 (one shared id namespace,
         // walked velocity → chain order), so the force records start at 1.
+        // the geo record's handles are whole node poses, the shape the Wire v4 paragraph names.
         expect(lanes.geo).toEqual([
-            { id: 0, start: 0, end: 3, ease: Easing.Linear, entry: 0, exit: 0 },
+            {
+                id: 0,
+                start: 0,
+                end: 3,
+                ease: Easing.Linear,
+                entry: { x: 0, y: 0, theta: 0 },
+                exit: { x: 3, y: 0, theta: 0 },
+            },
         ]);
         // and the force run is anchored at the geo run's own derived length, not at zero.
         expect(lanes.force).toEqual([

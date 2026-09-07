@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+    type GeoLaneSegment,
     type LaneSegment,
     Lane,
     endPinnable,
@@ -142,11 +143,17 @@ describe("entry inference across a gap, per lane rule", () => {
     });
 });
 
+/** a geo record: its handles are node poses, so the span laws see the same shape whatever the
+ *  handle type is. */
+function geoSeg(id: number, start: number, end: number): GeoLaneSegment {
+    return { id, start, end, ease: 0, exit: { x: end, y: 0, theta: 0 } };
+}
+
 describe("track end", () => {
     const lanes = {
         velocity: [seg(1, 0, 12, 20)],
         force: [seg(2, 0, 30, 1)],
-        geo: [seg(3, 0, 8, 0)],
+        geo: [geoSeg(3, 0, 8)],
     };
 
     test("0 follows the longest lane's last exit", () => {

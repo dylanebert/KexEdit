@@ -5,7 +5,7 @@ import { loadDocument, parseDocument } from "../src/doc";
 import { State } from "@dylanebert/shallot";
 import { Easing, forceProfile, type ForcePoint, resolveStep } from "../src/profile";
 import * as projection from "../src/projection";
-import type { LaneSegment, Lanes } from "../src/lanes";
+import type { GeoLaneSegment, LaneSegment, Lanes } from "../src/lanes";
 import {
     deriveRuns,
     rebuildForceProjection,
@@ -269,6 +269,11 @@ test("a segment-only extent edit invalidates the authored bake hash", () => {
 
 // ── deriveRuns: the lane → evaluator partition ──────────────────────────────────────────────
 
+/** a geo record: its handles are node poses (`lanes.NodePose`), the shape the geo lane stores. */
+function geoSeg(id: number, start: number, end: number): GeoLaneSegment {
+    return { id, start, end, ease: Easing.Linear, exit: { x: end, y: 0, theta: 0 } };
+}
+
 function laneSeg(
     id: number,
     start: number,
@@ -285,7 +290,7 @@ test("geo abutting groups are the geo runs and every uncovered stretch is a forc
         velocity: [],
         // two abutting geo records, a gap, then one more: two geo runs.
         force: [laneSeg(10, 12, 20, 2)],
-        geo: [laneSeg(0, 0, 5, 0), laneSeg(1, 5, 12, 0), laneSeg(2, 20, 26, 0)],
+        geo: [geoSeg(0, 0, 5), geoSeg(1, 5, 12), geoSeg(2, 20, 26)],
     };
     const runs = deriveRuns(lanes, 0);
     expect(runs.map((r) => [r.kind, r.start, r.length, r.segmentIds])).toEqual([
@@ -300,7 +305,7 @@ test("geo abutting groups are the geo runs and every uncovered stretch is a forc
 });
 
 test("a force run with no authored record still bakes, under an id no lane record holds", () => {
-    const lanes: Lanes = { velocity: [], force: [], geo: [laneSeg(7, 0, 10, 0)] };
+    const lanes: Lanes = { velocity: [], force: [], geo: [geoSeg(7, 0, 10)] };
     const runs = deriveRuns(lanes, 25);
     expect(runs.map((r) => [r.kind, r.start, r.length])).toEqual([
         [SectionKind.Geo, 0, 10],
@@ -316,7 +321,7 @@ test("a pinned end extends the trailing force run; follow reads the longest lane
     const lanes: Lanes = {
         velocity: [laneSeg(3, 0, 40, 12)],
         force: [],
-        geo: [laneSeg(0, 0, 9, 0)],
+        geo: [geoSeg(0, 0, 9)],
     };
     expect(deriveRuns(lanes, 0).map((r) => r.length)).toEqual([9, 31]);
     expect(deriveRuns(lanes, 60).map((r) => r.length)).toEqual([9, 51]);
@@ -362,7 +367,7 @@ test("derived run stations are read from the records, never summed from member e
     const lanes: Lanes = {
         velocity: [],
         force: [],
-        geo: [laneSeg(0, 0, a, 0), laneSeg(1, a, b, 0), laneSeg(2, b, 44, 0)],
+        geo: [geoSeg(0, 0, a), geoSeg(1, a, b), geoSeg(2, b, 44)],
     };
     const run = deriveRuns(lanes, 0)[0]!;
     expect(run.stations).toEqual([0, a, b, 44]);
