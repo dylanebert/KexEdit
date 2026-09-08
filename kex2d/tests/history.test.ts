@@ -342,3 +342,30 @@ describe("beginV0 — the start speed", () => {
         expect(entrySpeed(ecs)).toBe(V0);
     });
 });
+
+// ── the failed open (reviewer finding, Validation 3, 2026-09-07) ────────────────────────────
+//
+// `begin` on a gone subject opens nothing; what it must ALSO do is close whatever was open, or a
+// gesture opened on a record deleted mid-drag survives its own subject and the next `commit`
+// lands it. Unreachable from the CLI (every op brackets its own `begin`…`commit`) and reachable
+// from S3's lane rows, which is why it lands here with the timeline.
+describe("begin — a failed open closes the standing gesture", () => {
+    // RED: restore the bare `if (prev === undefined) return;` → the stale span gesture survives
+    // the failed open, `commit` reads the record's moved span against the pre-drag snapshot, and
+    // `h.undo` grows by one entry the author never released.
+    test("a begin on a gone record clears the open gesture, so the next commit records nothing", () => {
+        const { ecs, h } = fixture();
+        const a = addForce(ecs, h, 0, 10);
+        const b = addForce(ecs, h, 20, 30);
+        const depth = h.undo.length;
+
+        beginEdge(ecs, a); // a drag opens on record a
+        setRecordSpan(ecs, a, 0, 12); // and writes a frame of it
+        removeRecord(h, ecs, b); // meanwhile the OTHER record goes away
+        beginEdge(ecs, b); // the drag re-opens on the record that is now gone
+        commit(h); // the release must land nothing
+
+        expect(h.undo).toHaveLength(depth + 1); // the delete alone, not a second entry
+        expect(row(ecs, a).end).toBe(12); // the live write stands; only the entry is refused
+    });
+});

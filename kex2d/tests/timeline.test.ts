@@ -1,15 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { State } from "@dylanebert/shallot";
+import { addRecord, beginEnd, commit, createHistory } from "../src/history";
+import { Lane, type LaneSegment, type Lanes } from "../src/lanes";
+import { Easing } from "../src/profile";
+import { DEFAULT_ORDER } from "../src/projection";
 import { Domain } from "../src/section";
+import { BakeSystem, createTrack, endColumn, lanesOf, setEnd } from "../src/track";
 import {
     arcToTime,
-    clampDelta,
+    CHIP_H,
     clampView,
+    drivenSpans,
     dToU,
     dToUExtend,
+    endDragTarget,
+    endHandle,
     fmt,
     frameAll,
     G_GRID,
+    hitEndHandle,
+    hitRows,
+    laneMembers,
+    laneRows,
     type Mapping,
     marginArc,
     marginFloor,
@@ -18,17 +31,21 @@ import {
     navWindow,
     niceStep,
     nodeArc,
-    nudgeKeyframes,
+    ROW_EXPANDED_H,
+    ROW_GAP,
+    ROW_H,
     pxToU,
     S_GRID,
     snap,
     snapAxis,
     SNAP_PX,
+    spanBoxes,
     stallClampU,
     uToPx,
     T_GRID,
     ticks,
     timeToArc,
+    toggleExpanded,
     trimTargets,
     uToD,
     uToDExtend,
@@ -41,7 +58,6 @@ import {
     zoomAt,
 } from "../src/timeline";
 import { V0 } from "../src/track";
-import { deselectAll, editor, selectForce, selectStripKf } from "../src/editor";
 
 // the distance-domain lead-out floor — most of these tests exercise the pure math over a
 // generic axis unit, so they pass this in wherever `floor` used to default to `MARGIN_M`.
@@ -715,96 +731,6 @@ describe("trimTargets — extent-trim landmark set", () => {
     });
 });
 
-describe("clampDelta — the rigid group Δs clamp (AE comp-start block)", () => {
-    test("a single member degenerates to today's clamp(s + Δs, 0, len)", () => {
-        const m = [{ s: 5, len: 10 }]; // its own Δs range is [−5, 5]
-        expect(clampDelta(m, 3)).toBe(3); // 5 + 3 = 8, in [0, 10]
-        expect(clampDelta(m, 8)).toBe(5); // upper: len − s = 5
-        expect(clampDelta(m, -8)).toBe(-5); // lower: −s = −5
-        expect(clampDelta(m, 0)).toBe(0);
-    });
-
-    test("the tightest member binds the whole group — both bounds", () => {
-        // A wide [−5, 5]; B binds the LOWER at −1; C binds the UPPER at +1 → intersection [−1, 1].
-        const members = [
-            { s: 5, len: 10 }, // Δs ∈ [−5, 5]
-            { s: 1, len: 9 }, // Δs ∈ [−1, 8]  ← lower bound −1
-            { s: 3, len: 4 }, // Δs ∈ [−3, 1]  ← upper bound 1
-        ];
-        expect(clampDelta(members, 4)).toBe(1); // upper: C's len − s
-        expect(clampDelta(members, -4)).toBe(-1); // lower: B's −s
-        expect(clampDelta(members, 0.5)).toBe(0.5); // inside the range → unchanged
-    });
-
-    test("0 is always allowed — the start is never clamped away", () => {
-        const members = [
-            { s: 0, len: 3 }, // pinned at its low edge — can't go down
-            { s: 3, len: 3 }, // pinned at its high edge — can't go up
-        ];
-        expect(clampDelta(members, 0)).toBe(0);
-        expect(clampDelta(members, 1)).toBe(0);
-        expect(clampDelta(members, -1)).toBe(0);
-    });
-
-    test("preserves relative offsets: every member shifts by the SAME clamped Δs", () => {
-        const members = [
-            { s: 2, len: 10 },
-            { s: 6, len: 10 },
-        ];
-        const ds = clampDelta(members, 3); // both far from bounds → 3
-        expect(ds).toBe(3);
-        const moved = members.map((m) => m.s + ds);
-        expect(moved[1] - moved[0]).toBe(members[1].s - members[0].s); // gap unchanged
-    });
-
-    test("an out-of-extent member (s > len) is excluded from the binding set — no drag at rest", () => {
-        // orphan: a section shortened under a keyframe leaves s past len (setSectionLength keeps s).
-        // its own interval [−s, len − s] is empty and would drag the block leftward — it's excluded.
-        const members = [
-            { s: 5, len: 3 }, // s > len — out of extent (orphan)
-            { s: 1, len: 10 }, // in extent, own range [−1, 9]
-        ];
-        expect(clampDelta(members, 0)).toBe(0); // AT REST: no drag (the orphan must not pull siblings)
-        expect(clampDelta(members, 2)).toBe(2); // a positive drag moves the in-bounds member normally
-        expect(clampDelta(members, -5)).toBe(-1); // only the in-bounds member binds (its own −s)
-    });
-
-    test("every member out of extent → empty binding set, Δs passes through (outer clamp bounds writes)", () => {
-        const members = [
-            { s: 5, len: 3 },
-            { s: 8, len: 4 },
-        ];
-        expect(clampDelta(members, 2)).toBe(2);
-        expect(clampDelta(members, -2)).toBe(-2);
-    });
-});
-
-describe("nudgeKeyframes — arrow-nudge writes for the selected keyframe set (force and strip kinds)", () => {
-    test("single-select rounds the ABSOLUTE result to the field grid (pre-multiselect semantics)", () => {
-        // an off-grid s (1.007) nudged right by 0.1 re-quantizes onto the 0.1 grid; v rounds to 0.01.
-        expect(nudgeKeyframes([{ id: 1, s: 1.007, v: 2, len: 10 }], 0.1, 0)).toEqual([
-            { id: 1, s: 1.1, v: 2 }, // 1.007 + 0.1 = 1.107 → round to 0.1 → 1.1
-        ]);
-        expect(nudgeKeyframes([{ id: 1, s: 3, v: 1.007, len: 10 }], 0, 0.05)).toEqual([
-            { id: 1, s: 3, v: 1.06 }, // 1.007 + 0.05 = 1.057 → round to 0.01 → 1.06
-        ]);
-    });
-
-    test("multi: the clamp binds off the nudge grid — offsets preserved exactly, no member past its extent", () => {
-        // B sits 0.05 from its upper bound (a non-grid amount); a +0.1 nudge must move the block by
-        // exactly that 0.05 (the rigid clamp, applied LAST) — NOT a rounded 0.1 that clamps B alone.
-        const members = [
-            { id: 1, s: 2, v: 1, len: 10 },
-            { id: 2, s: 9.95, v: 1, len: 10 },
-        ];
-        const w = nudgeKeyframes(members, 0.1, 0);
-        expect(w[0].s).toBeCloseTo(2.05, 10); // A rode the clamped 0.05
-        expect(w[1].s).toBeCloseTo(10, 10); // B reached its extent, not past
-        expect(w[1].s).toBeLessThanOrEqual(members[1].len); // hard [0, len] invariant holds
-        expect(w[1].s - w[0].s).toBeCloseTo(members[1].s - members[0].s, 10); // offset preserved
-    });
-});
-
 describe("dToU / uToD — arclength → chart-axis projection", () => {
     // the same non-uniform monotone table as the timeToArc/arcToTime suite above (speed
     // varies, so equal arcs don't cover equal times).
@@ -1070,160 +996,6 @@ describe("stallClampU — the Time lens never stretches toward t→∞ past a st
     });
 });
 
-// kex2d-event-substrate S1: the behavior-parity oracle (Validation's locked standard).
-// For each of the five behaviors, one arm drives a force keyframe AND a strip keyframe through
-// the SAME named function and asserts the SAME observable. The call path is the assertion —
-// presence-matching of names is banned. Each previously-missing behavior was witnessed red
-// first (the numbers recorded in the arm's docblock).
-//
-// The five behaviors: snap, deselect, modifier-extend (shift-click), overlap refusal, nudge.
-// The shared functions: snapAxis (timeline.ts), selectStripKf (editor.ts), toggleMember
-// (editor.ts), keyframeRoom (track.ts), nudgeKeyframes (timeline.ts).
-describe("kex2d-event-substrate S1: behavior arms — both keyframe kinds ride one named path per behavior", () => {
-    // ── snap ── both kinds resolve snapping through `snapAxis` (timeline.ts).
-    // RED before fix: the strip keyframe drag (`stripKfMove`) never called `snapAxis` — a
-    // strip keyframe dragged near a grid line or landmark passed through unsnapped. After the
-    // fix, `applyKeyframeDrag` calls `snapAxis` for both kinds (kind-specific targets, same
-    // function). The arm constructs a real force keyframe and a real strip keyframe and calls
-    // `snapAxis` with the kind-specific landmark targets the production handler passes — the
-    // force side snaps to a force-keyframe landmark, the strip side to a strip-keyframe landmark.
-    // The capture harness (section.pw.ts "velocity strip keyframe drag origin flow") pins the
-    // production call path through `applyKeyframeDrag`; this arm pins the shared function's
-    // behavior with real ECS state and kind-specific inputs (not identical — the tautology shape
-    // is banned).
-    // Witnessed red: mutated `snapAxis` to return `{ value: rawVal, guide: null }` unconditionally
-    // (no snap) → `forceSnap.value` was 9.7 not 10, `stripSnap.value` was 4.8 not 5 → exit 1.
-    test("snap: `snapAxis` snaps a force keyframe to a force landmark and a strip keyframe to a strip landmark", () => {
-        // force keyframe: grid 0.1, landmark at px 100 (another force keyframe's station), 10 px/unit
-        const forceGrid = 0.1;
-        const forceTargets = [100]; // px — a force-keyframe landmark
-        const forceFromPx = (px: number) => px / 10;
-        const forceSnap = snapAxis(true, 97, 9.7, forceTargets, forceGrid, forceFromPx, null);
-        // snaps to the landmark at px 100 → val 10
-        expect(forceSnap.value).toBe(10);
-        expect(forceSnap.guide).toBe(100);
-
-        // strip keyframe: grid 0.5, landmark at px 50 (another strip keyframe's station), 10 px/unit
-        // — DIFFERENT grid and DIFFERENT landmark from the force side, so the arm is not a
-        // tautology: if `snapAxis` stopped snapping, the force and strip results would diverge
-        // from their respective expected values.
-        const stripGrid = 0.5;
-        const stripTargets = [50]; // px — a strip-keyframe landmark
-        const stripFromPx = (px: number) => px / 10;
-        const stripSnap = snapAxis(true, 47, 4.7, stripTargets, stripGrid, stripFromPx, null);
-        // snaps to the landmark at px 50 → val 5
-        expect(stripSnap.value).toBe(5);
-        expect(stripSnap.guide).toBe(50);
-    });
-
-    // ── deselect ── both kinds deselect through `selectStripKf(null)` (editor.ts), the fix
-    // added to `marqueeUp` (Timeline.svelte). The previous arm armed `deselectAll`, which
-    // already cleared `stripKf` at base — removing the fix (the `selectStripKf(null)` call in
-    // `marqueeUp`) did not red it. The repaired arm arms the actual fix function: set a strip
-    // keyframe selection, call `selectStripKf(null)`, verify it clears. The capture harness
-    // (section.pw.ts "strip keyframe deselect on empty chart click") pins the production call
-    // path through `marqueeUp`.
-    // Witnessed red: mutated `selectStripKf` to no-op when `id === null` (skip the
-    // `setMember` call) → `editor.stripKf` stayed 7 → exit 1.
-    test("deselect: `selectStripKf(null)` clears the strip keyframe selection (the `marqueeUp` fix)", () => {
-        try {
-            // set up a strip keyframe selection directly
-            selectStripKf(7, "replace", 1);
-            expect(editor.stripKf).toBe(7);
-            // the actual fix: `marqueeUp` calls `selectStripKf(null)` to clear the sub-selection
-            selectStripKf(null);
-            expect(editor.stripKf).toBeNull();
-            // the force side: `marqueeUp` also calls `selectForce(null)` — same observable
-            selectForce(42);
-            expect(editor.force).toBe(42);
-            // `selectForce(null)` is the force-side twin (already existed at base)
-            editor.force = null;
-            expect(editor.force).toBeNull();
-        } finally {
-            // cleanup runs regardless of failure — the editor singleton is module-global
-            deselectAll();
-        }
-    });
-
-    // ── modifier-extend (shift-click) ── the fix is multi-member drag in `keyframeDown`
-    // (Timeline.svelte): shift-click toggles into the set, then the drag moves ALL members
-    // by one shared delta with offsets preserved (`clampDelta` + `nudgeKeyframes`). The
-    // previous arm armed `toggleMember`, which already worked — removing the fix did not red
-    // it. The repaired arm constructs a real multi-member set for both a force and a strip
-    // keyframe and drives the shared delta through `clampDelta` + `nudgeKeyframes`, verifying
-    // offsets are preserved for both kinds. The strip side passes `lo: start` (the strip’s
-    // own lower bound, not 0) — the `lo` parameter was added to `clampDelta` in this branch.
-    // The capture harness (section.pw.ts "strip keyframe multi-member drag") pins the
-    // production call path through `keyframeDown`.
-    // Witnessed red: mutated `clampDelta` to use `0` instead of `mLo` (revert the `lo` fix)
-    // → strip member clamped to `s=0` instead of `s=start` → exit 1.
-    test("modifier-extend: multi-member drag preserves offsets for both force and strip keyframe sets", () => {
-        try {
-            // force: two members at s=3 and s=7, len=10, lo=0 (force keyframes clamp to [0, len])
-            const forceMembers = [
-                { id: 1, s: 3, v: 1, len: 10, lo: 0 },
-                { id: 2, s: 7, v: 1, len: 10, lo: 0 },
-            ];
-            // a +5 delta clamps to +3 (member at s=7 hits len=10)
-            const forceResult = nudgeKeyframes(forceMembers, 5, 0);
-            expect(forceResult[0].s).toBe(6); // 3 + 3
-            expect(forceResult[1].s).toBe(10); // 7 + 3, clamped
-            // offset preserved: both moved by the same delta (3)
-            expect(forceResult[1].s - forceResult[0].s).toBe(4); // original offset 7-3=4
-
-            // strip: two members at s=8 and s=12, len=15, lo=5 (strip keyframes clamp to [start, end])
-            // — the `lo` parameter is the fix: strip keyframes have a non-zero lower bound (`start`).
-            const stripMembers = [
-                { id: 10, s: 8, v: 3, len: 15, lo: 5 },
-                { id: 11, s: 12, v: 5, len: 15, lo: 5 },
-            ];
-            // a -5 delta clamps to -3 (member at s=8 hits lo=5)
-            const stripResult = nudgeKeyframes(stripMembers, -5, 0);
-            expect(stripResult[0].s).toBe(5); // 8 - 3, clamped to lo=5
-            expect(stripResult[1].s).toBe(9); // 12 - 3
-            // offset preserved: both moved by the same delta (-3)
-            expect(stripResult[1].s - stripResult[0].s).toBe(4); // original offset 12-8=4
-        } finally {
-            // cleanup runs regardless of failure — the editor singleton is module-global
-            deselectAll();
-        }
-    });
-
-    // ── nudge ── both kinds nudge through `nudgeKeyframes` (timeline.ts).
-    // RED before fix: `nudgeForces` existed but was force-only (field name `g`, lower bound
-    // hard-coded to 0); no strip keyframe nudge existed at all — the keyboard handler’s `return`
-    // after the strip block blocked nudge from ever being reached. The fix renamed to
-    // `nudgeKeyframes` and added the `lo` parameter so strip keyframes clamp to `[start, end]`
-    // not `[0, end]`. The previous arm called `nudgeKeyframes` twice with byte-identical inputs
-    // (a tautology) and its recorded red was a compile-time missing-export (disqualified per
-    // `checks.md`). The repaired arm constructs a real force keyframe (lo=0) and a real strip
-    // keyframe (lo=start=5) and nudges both by a delta that would cross the strip’s lower bound
-    // — the strip side clamps to `lo`, the force side does not. The capture harness pins the
-    // production call path through the keyboard handler.
-    // Witnessed red: mutated `nudgeKeyframes` to use `0` instead of `lo` (revert the `lo` fix)
-    // → strip member clamped to `s=0` instead of `s=5` → exit 1.
-    test("nudge: `nudgeKeyframes` nudges a force keyframe (lo=0) and a strip keyframe (lo=start) by the same delta", () => {
-        // force: s=1.007, v=2, len=10, lo=0 — nudge +0.1 rounds to grid → s=1.1
-        const forceMembers = [{ id: 1, s: 1.007, v: 2, len: 10, lo: 0 }];
-        const forceResult = nudgeKeyframes(forceMembers, 0.1, 0);
-        expect(forceResult[0].s).toBe(1.1); // 1.007 + 0.1 → round to 0.1 → 1.1
-        expect(forceResult[0].v).toBe(2);
-
-        // strip: s=5.007, v=3, len=15, lo=5 (the strip’s start) — nudge -0.2 would cross lo=5,
-        // so it clamps to 5 (the strip-specific lower bound the fix added)
-        const stripMembers = [{ id: 10, s: 5.007, v: 3, len: 15, lo: 5 }];
-        const stripResult = nudgeKeyframes(stripMembers, -0.2, 0);
-        expect(stripResult[0].s).toBe(5); // clamped to lo=5, not 0
-        expect(stripResult[0].v).toBe(3);
-
-        // the force side with the same delta does NOT clamp to 5 (its lo=0), proving the
-        // inputs are not identical — the arm is not a tautology
-        const forceMembers2 = [{ id: 1, s: 5.007, v: 2, len: 15, lo: 0 }];
-        const forceResult2 = nudgeKeyframes(forceMembers2, -0.2, 0);
-        expect(forceResult2[0].s).toBe(4.8); // 5.007 - 0.2 → round to 0.1 → 4.8, no lo clamp
-    });
-});
-
 // kex2d-event-lane S5 (Locked decision findings 7, 4/5/6, 2, 11-near). Source-text arms —
 // `colors.test.ts`'s idiom for a Svelte-only claim with no unit-testable runtime seam; the real
 // rendered pixels/cursor are the capture flow's own job (`affordance.pw.ts`).
@@ -1236,5 +1008,199 @@ describe("kex2d-event-lane S5: lane label retirement, default strip length, edge
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         expect(src).not.toContain('fillText("vel"');
         expect(src).not.toContain('fillText("events"');
+    });
+});
+
+// ── S3 item 1: the lane-row press grammar (Validation 4) ────────────────────────────────────
+//
+// The headless resolvers `Timeline.svelte` presses through: rows in `track.order` on the shared
+// arclength ruler, span geometry from the records, one hit answer per press (edge, body, chip,
+// gap), the end handle in both its states plus its refusal, expand/collapse, and the driven
+// overlay switching rows on an order swap. Pure — plain lane records and a `View` in — except the
+// end-handle refusal arm, which drives the real `history.beginEnd` gesture so the model's answer
+// and the setter's are read against each other rather than restated.
+describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Validation 4)", () => {
+    const seg = (id: number, start: number, end: number, exit = 1): LaneSegment => ({
+        id,
+        start,
+        end,
+        ease: Easing.Linear,
+        entry: exit,
+        exit,
+    });
+    // one document: a geo record over [0, 20), a force record over [10, 30) under it, and a
+    // velocity record over [0, 12). The geo/force overlap is what the driven overlay reads.
+    const doc = (): Lanes => ({
+        velocity: [seg(1, 0, 12, 15)],
+        force: [seg(2, 10, 30, 2)],
+        geo: [seg(3, 0, 20, 0.1)],
+    });
+    // 10 px per metre, no pan — a station's px is ten times its metre.
+    const view: View = { pan: 0, pxPerU: 10 };
+    const Top = 30;
+
+    // RED: `laneRows` reading `DEFAULT_ORDER` instead of its `order` argument → the swapped call
+    // still reads geo, force, velocity and this arm fails on the first lane.
+    test("rows follow `track.order`, top to bottom, each carrying its own lane's records", () => {
+        const rows = laneRows(doc(), [Lane.Force, Lane.Geo, Lane.Velocity], Top);
+        expect(rows.map((r) => r.lane)).toEqual([Lane.Force, Lane.Geo, Lane.Velocity]);
+        expect(rows.map((r) => r.index)).toEqual([0, 1, 2]);
+        expect(rows.map((r) => r.records.map((s) => s.id))).toEqual([[2], [3], [1]]);
+        expect(rows[0].top).toBe(Top);
+        expect(rows[1].top).toBe(Top + ROW_H + ROW_GAP);
+        expect(rows[2].top).toBe(Top + 2 * (ROW_H + ROW_GAP));
+    });
+
+    // RED: `spanBoxes` projecting `r.start`/`r.end` without `uToPx` (raw metres) → x1 reads 20,
+    // not 200, and the box no longer covers the pressed pixel.
+    test("span geometry projects the record's own stations through the view", () => {
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top);
+        const geo = spanBoxes(rows[0], view, 40);
+        expect(geo).toHaveLength(1);
+        expect(geo[0]).toEqual({ id: 3, x0: 40, x1: 240, y0: Top, y1: Top + ROW_H });
+    });
+
+    // RED: drop `hitRows`'s edge branch (return `body` for every in-span press) → the two edge
+    // presses read `body` and the arm fails on `kind`.
+    test("press grammar: edge, body, chip and gap each resolve on their own pixel", () => {
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top);
+        const mid = Top + CHIP_H + 4; // inside the geo row, below its chip band
+        // the geo span is [0, 20) → px [0, 200] at 10 px/m.
+        expect(hitRows(rows, view, 1, mid)).toEqual({
+            kind: "edge",
+            lane: Lane.Geo,
+            id: 3,
+            which: "start",
+        });
+        expect(hitRows(rows, view, 199, mid)).toEqual({
+            kind: "edge",
+            lane: Lane.Geo,
+            id: 3,
+            which: "end",
+        });
+        expect(hitRows(rows, view, 100, mid)).toEqual({ kind: "body", lane: Lane.Geo, id: 3 });
+        // the chip band rides above the body: the same station reads a chip, not an edge.
+        expect(hitRows(rows, view, 200, Top + 2)).toEqual({
+            kind: "chip",
+            lane: Lane.Geo,
+            id: 3,
+            which: "exit",
+        });
+        expect(hitRows(rows, view, 0, Top + 2)).toEqual({
+            kind: "chip",
+            lane: Lane.Geo,
+            id: 3,
+            which: "entry",
+        });
+        // past the geo record's own end: empty lane, so the press names its station.
+        expect(hitRows(rows, view, 250, mid)).toEqual({ kind: "gap", lane: Lane.Geo, d: 25 });
+        // and the row below answers for its own lane, not geo's.
+        const forceMid = Top + ROW_H + ROW_GAP + CHIP_H + 4;
+        expect(hitRows(rows, view, 150, forceMid)).toEqual({
+            kind: "body",
+            lane: Lane.Force,
+            id: 2,
+        });
+        expect(hitRows(rows, view, 150, 4)).toBeNull(); // the ruler band above every row
+    });
+
+    // RED: `hitRows` taking the fixed `EDGE_PX` grip instead of half the span's width → a 6 px
+    // span's two grips overlap, the `end` edge is unreachable, and this arm reads `start` twice.
+    test("a span narrower than two grips still resolves both edges", () => {
+        const thin: Lanes = { velocity: [], force: [], geo: [seg(9, 0, 0.6)] };
+        const rows = laneRows(thin, DEFAULT_ORDER, Top);
+        const mid = Top + CHIP_H + 4;
+        expect(hitRows(rows, view, 1, mid)).toMatchObject({ kind: "edge", which: "start" });
+        expect(hitRows(rows, view, 5, mid)).toMatchObject({ kind: "edge", which: "end" });
+    });
+
+    // RED: `endHandle` reading `trackEnd(lanes, 0)` for `pinned` too (ignoring the raw column) →
+    // the unpinned document reads `pinned: true` and the arm fails.
+    test("the end handle reads pinned and unpinned off the raw `end` column", () => {
+        const lanes = doc();
+        const follow = endHandle(lanes, 0, view);
+        expect(follow).toEqual({ d: 30, px: 300, pinned: false }); // the longest lane's last exit
+        const pinned = endHandle(lanes, 46, view, 40);
+        expect(pinned).toEqual({ d: 46, px: 500, pinned: true });
+        expect(hitEndHandle(follow, 302)).toBe(true);
+        expect(hitEndHandle(follow, 320)).toBe(false);
+    });
+
+    // RED: `endDragTarget` clamping to `trackEnd(lanes, 0)` instead of refusing → the below-content
+    // drag returns 30 rather than null, and `setEnd` below still refuses it, so the model and the
+    // setter disagree.
+    test("the end handle refuses a pin below content — the model's answer is the setter's", () => {
+        const lanes = doc();
+        expect(endDragTarget(lanes, 40)).toBe(40);
+        expect(endDragTarget(lanes, 30)).toBe(30); // exactly at content is legal
+        expect(endDragTarget(lanes, 29.5)).toBeNull();
+
+        // the live gesture: `beginEnd` opens on the raw column, the setter declines the illegal
+        // write, and the release records nothing.
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        createTrack(ecs);
+        const h = createHistory();
+        for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity]) {
+            for (const r of laneMembers(lanes, lane)) {
+                const w = addRecord(h, ecs, lane, r);
+                if (w.id === null) throw new Error(`refused: ${JSON.stringify(w.refusals)}`);
+            }
+        }
+        const depth = h.undo.length;
+        beginEnd(ecs);
+        expect(setEnd(ecs, 29.5).map((r) => r.guard)).toEqual(["endBelowContent"]);
+        commit(h);
+        expect(h.undo).toHaveLength(depth); // a refused write is no entry
+        expect(endColumn(ecs)).toBe(0);
+
+        beginEnd(ecs);
+        expect(setEnd(ecs, 40)).toEqual([]);
+        commit(h);
+        expect(h.undo).toHaveLength(depth + 1);
+        expect(endHandle(lanesOf(ecs), endColumn(ecs), view)).toMatchObject({
+            d: 40,
+            pinned: true,
+        });
+    });
+
+    // RED: `toggleExpanded` mutating the set in place (returning the same reference) → the
+    // caller's previous state is gone and the "collapse returns the row" assertion below reads
+    // the mutated set.
+    test("expand/collapse: a row opens in place and pushes only the rows below it", () => {
+        const collapsed = laneRows(doc(), DEFAULT_ORDER, Top);
+        const open = toggleExpanded(new Set<Lane>(), Lane.Geo);
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top, open);
+        expect(rows[0].expanded).toBe(true);
+        expect(rows[0].height).toBe(ROW_EXPANDED_H);
+        expect(rows[0].top).toBe(collapsed[0].top); // the row expands IN PLACE
+        expect(rows[1].expanded).toBe(false);
+        expect(rows[1].top).toBe(Top + ROW_EXPANDED_H + ROW_GAP);
+        // the sibling rows keep their spans while one row is open.
+        expect(rows[1].records.map((r) => r.id)).toEqual([2]);
+        // a collapsed row's strip band is its whole height; an expanded one's is the top strip.
+        expect(spanBoxes(rows[0], view)[0].y1).toBe(Top + ROW_H);
+        // collapse returns a NEW set: the caller's own state is never mutated under it, so a
+        // row that opened and shut leaves the previous view state readable.
+        const shut = toggleExpanded(open, Lane.Geo);
+        expect(shut.has(Lane.Geo)).toBe(false);
+        expect(open.has(Lane.Geo)).toBe(true);
+        expect(shut).not.toBe(open);
+    });
+
+    // RED: `drivenSpans` marking a record driven under a run of its OWN kind → geo reads itself
+    // driven over [0, 10) and the arm fails on the default order.
+    test("the driven overlay follows lane order, and an order swap moves it to the other row", () => {
+        const lanes = doc();
+        // default order: geo drives, so the force record is driven where geo covers it — [10, 20).
+        expect(drivenSpans(lanes, 0)).toEqual([{ lane: Lane.Force, id: 2, start: 10, end: 20 }]);
+        // swap: force drives, so the GEO record is the driven one over the same overlap.
+        expect(drivenSpans(lanes, 0, [Lane.Force, Lane.Geo, Lane.Velocity])).toEqual([
+            { lane: Lane.Geo, id: 3, start: 10, end: 20 },
+        ]);
+        // velocity never competes for shape: its position in the order changes nothing.
+        expect(drivenSpans(lanes, 0, [Lane.Velocity, Lane.Geo, Lane.Force])).toEqual(
+            drivenSpans(lanes, 0),
+        );
     });
 });
