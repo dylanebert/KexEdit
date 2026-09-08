@@ -1,14 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { State } from "@dylanebert/shallot";
+import { addRecord, beginEnd, commit, createHistory } from "../src/history";
+import { Lane, type LaneSegment, type Lanes } from "../src/lanes";
+import { Easing } from "../src/profile";
+import { DEFAULT_ORDER } from "../src/projection";
 import { Domain } from "../src/section";
+import { BakeSystem, createTrack, endColumn, lanesOf, setEnd } from "../src/track";
 import {
     arcToTime,
+    CHIP_H,
     clampView,
+    drivenSpans,
     dToU,
     dToUExtend,
+    endDragTarget,
+    endHandle,
     fmt,
     frameAll,
     G_GRID,
+    hitEndHandle,
+    hitRows,
+    laneMembers,
+    laneRows,
     type Mapping,
     marginArc,
     marginFloor,
@@ -17,16 +31,21 @@ import {
     navWindow,
     niceStep,
     nodeArc,
+    ROW_EXPANDED_H,
+    ROW_GAP,
+    ROW_H,
     pxToU,
     S_GRID,
     snap,
     snapAxis,
     SNAP_PX,
+    spanBoxes,
     stallClampU,
     uToPx,
     T_GRID,
     ticks,
     timeToArc,
+    toggleExpanded,
     trimTargets,
     uToD,
     uToDExtend,
@@ -989,5 +1008,199 @@ describe("kex2d-event-lane S5: lane label retirement, default strip length, edge
         const src = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
         expect(src).not.toContain('fillText("vel"');
         expect(src).not.toContain('fillText("events"');
+    });
+});
+
+// ── S3 item 1: the lane-row press grammar (Validation 4) ────────────────────────────────────
+//
+// The headless resolvers `Timeline.svelte` presses through: rows in `track.order` on the shared
+// arclength ruler, span geometry from the records, one hit answer per press (edge, body, chip,
+// gap), the end handle in both its states plus its refusal, expand/collapse, and the driven
+// overlay switching rows on an order swap. Pure — plain lane records and a `View` in — except the
+// end-handle refusal arm, which drives the real `history.beginEnd` gesture so the model's answer
+// and the setter's are read against each other rather than restated.
+describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Validation 4)", () => {
+    const seg = (id: number, start: number, end: number, exit = 1): LaneSegment => ({
+        id,
+        start,
+        end,
+        ease: Easing.Linear,
+        entry: exit,
+        exit,
+    });
+    // one document: a geo record over [0, 20), a force record over [10, 30) under it, and a
+    // velocity record over [0, 12). The geo/force overlap is what the driven overlay reads.
+    const doc = (): Lanes => ({
+        velocity: [seg(1, 0, 12, 15)],
+        force: [seg(2, 10, 30, 2)],
+        geo: [seg(3, 0, 20, 0.1)],
+    });
+    // 10 px per metre, no pan — a station's px is ten times its metre.
+    const view: View = { pan: 0, pxPerU: 10 };
+    const Top = 30;
+
+    // RED: `laneRows` reading `DEFAULT_ORDER` instead of its `order` argument → the swapped call
+    // still reads geo, force, velocity and this arm fails on the first lane.
+    test("rows follow `track.order`, top to bottom, each carrying its own lane's records", () => {
+        const rows = laneRows(doc(), [Lane.Force, Lane.Geo, Lane.Velocity], Top);
+        expect(rows.map((r) => r.lane)).toEqual([Lane.Force, Lane.Geo, Lane.Velocity]);
+        expect(rows.map((r) => r.index)).toEqual([0, 1, 2]);
+        expect(rows.map((r) => r.records.map((s) => s.id))).toEqual([[2], [3], [1]]);
+        expect(rows[0].top).toBe(Top);
+        expect(rows[1].top).toBe(Top + ROW_H + ROW_GAP);
+        expect(rows[2].top).toBe(Top + 2 * (ROW_H + ROW_GAP));
+    });
+
+    // RED: `spanBoxes` projecting `r.start`/`r.end` without `uToPx` (raw metres) → x1 reads 20,
+    // not 200, and the box no longer covers the pressed pixel.
+    test("span geometry projects the record's own stations through the view", () => {
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top);
+        const geo = spanBoxes(rows[0], view, 40);
+        expect(geo).toHaveLength(1);
+        expect(geo[0]).toEqual({ id: 3, x0: 40, x1: 240, y0: Top, y1: Top + ROW_H });
+    });
+
+    // RED: drop `hitRows`'s edge branch (return `body` for every in-span press) → the two edge
+    // presses read `body` and the arm fails on `kind`.
+    test("press grammar: edge, body, chip and gap each resolve on their own pixel", () => {
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top);
+        const mid = Top + CHIP_H + 4; // inside the geo row, below its chip band
+        // the geo span is [0, 20) → px [0, 200] at 10 px/m.
+        expect(hitRows(rows, view, 1, mid)).toEqual({
+            kind: "edge",
+            lane: Lane.Geo,
+            id: 3,
+            which: "start",
+        });
+        expect(hitRows(rows, view, 199, mid)).toEqual({
+            kind: "edge",
+            lane: Lane.Geo,
+            id: 3,
+            which: "end",
+        });
+        expect(hitRows(rows, view, 100, mid)).toEqual({ kind: "body", lane: Lane.Geo, id: 3 });
+        // the chip band rides above the body: the same station reads a chip, not an edge.
+        expect(hitRows(rows, view, 200, Top + 2)).toEqual({
+            kind: "chip",
+            lane: Lane.Geo,
+            id: 3,
+            which: "exit",
+        });
+        expect(hitRows(rows, view, 0, Top + 2)).toEqual({
+            kind: "chip",
+            lane: Lane.Geo,
+            id: 3,
+            which: "entry",
+        });
+        // past the geo record's own end: empty lane, so the press names its station.
+        expect(hitRows(rows, view, 250, mid)).toEqual({ kind: "gap", lane: Lane.Geo, d: 25 });
+        // and the row below answers for its own lane, not geo's.
+        const forceMid = Top + ROW_H + ROW_GAP + CHIP_H + 4;
+        expect(hitRows(rows, view, 150, forceMid)).toEqual({
+            kind: "body",
+            lane: Lane.Force,
+            id: 2,
+        });
+        expect(hitRows(rows, view, 150, 4)).toBeNull(); // the ruler band above every row
+    });
+
+    // RED: `hitRows` taking the fixed `EDGE_PX` grip instead of half the span's width → a 6 px
+    // span's two grips overlap, the `end` edge is unreachable, and this arm reads `start` twice.
+    test("a span narrower than two grips still resolves both edges", () => {
+        const thin: Lanes = { velocity: [], force: [], geo: [seg(9, 0, 0.6)] };
+        const rows = laneRows(thin, DEFAULT_ORDER, Top);
+        const mid = Top + CHIP_H + 4;
+        expect(hitRows(rows, view, 1, mid)).toMatchObject({ kind: "edge", which: "start" });
+        expect(hitRows(rows, view, 5, mid)).toMatchObject({ kind: "edge", which: "end" });
+    });
+
+    // RED: `endHandle` reading `trackEnd(lanes, 0)` for `pinned` too (ignoring the raw column) →
+    // the unpinned document reads `pinned: true` and the arm fails.
+    test("the end handle reads pinned and unpinned off the raw `end` column", () => {
+        const lanes = doc();
+        const follow = endHandle(lanes, 0, view);
+        expect(follow).toEqual({ d: 30, px: 300, pinned: false }); // the longest lane's last exit
+        const pinned = endHandle(lanes, 46, view, 40);
+        expect(pinned).toEqual({ d: 46, px: 500, pinned: true });
+        expect(hitEndHandle(follow, 302)).toBe(true);
+        expect(hitEndHandle(follow, 320)).toBe(false);
+    });
+
+    // RED: `endDragTarget` clamping to `trackEnd(lanes, 0)` instead of refusing → the below-content
+    // drag returns 30 rather than null, and `setEnd` below still refuses it, so the model and the
+    // setter disagree.
+    test("the end handle refuses a pin below content — the model's answer is the setter's", () => {
+        const lanes = doc();
+        expect(endDragTarget(lanes, 40)).toBe(40);
+        expect(endDragTarget(lanes, 30)).toBe(30); // exactly at content is legal
+        expect(endDragTarget(lanes, 29.5)).toBeNull();
+
+        // the live gesture: `beginEnd` opens on the raw column, the setter declines the illegal
+        // write, and the release records nothing.
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        createTrack(ecs);
+        const h = createHistory();
+        for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity]) {
+            for (const r of laneMembers(lanes, lane)) {
+                const w = addRecord(h, ecs, lane, r);
+                if (w.id === null) throw new Error(`refused: ${JSON.stringify(w.refusals)}`);
+            }
+        }
+        const depth = h.undo.length;
+        beginEnd(ecs);
+        expect(setEnd(ecs, 29.5).map((r) => r.guard)).toEqual(["endBelowContent"]);
+        commit(h);
+        expect(h.undo).toHaveLength(depth); // a refused write is no entry
+        expect(endColumn(ecs)).toBe(0);
+
+        beginEnd(ecs);
+        expect(setEnd(ecs, 40)).toEqual([]);
+        commit(h);
+        expect(h.undo).toHaveLength(depth + 1);
+        expect(endHandle(lanesOf(ecs), endColumn(ecs), view)).toMatchObject({
+            d: 40,
+            pinned: true,
+        });
+    });
+
+    // RED: `toggleExpanded` mutating the set in place (returning the same reference) → the
+    // caller's previous state is gone and the "collapse returns the row" assertion below reads
+    // the mutated set.
+    test("expand/collapse: a row opens in place and pushes only the rows below it", () => {
+        const collapsed = laneRows(doc(), DEFAULT_ORDER, Top);
+        const open = toggleExpanded(new Set<Lane>(), Lane.Geo);
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top, open);
+        expect(rows[0].expanded).toBe(true);
+        expect(rows[0].height).toBe(ROW_EXPANDED_H);
+        expect(rows[0].top).toBe(collapsed[0].top); // the row expands IN PLACE
+        expect(rows[1].expanded).toBe(false);
+        expect(rows[1].top).toBe(Top + ROW_EXPANDED_H + ROW_GAP);
+        // the sibling rows keep their spans while one row is open.
+        expect(rows[1].records.map((r) => r.id)).toEqual([2]);
+        // a collapsed row's strip band is its whole height; an expanded one's is the top strip.
+        expect(spanBoxes(rows[0], view)[0].y1).toBe(Top + ROW_H);
+        // collapse returns a NEW set: the caller's own state is never mutated under it, so a
+        // row that opened and shut leaves the previous view state readable.
+        const shut = toggleExpanded(open, Lane.Geo);
+        expect(shut.has(Lane.Geo)).toBe(false);
+        expect(open.has(Lane.Geo)).toBe(true);
+        expect(shut).not.toBe(open);
+    });
+
+    // RED: `drivenSpans` marking a record driven under a run of its OWN kind → geo reads itself
+    // driven over [0, 10) and the arm fails on the default order.
+    test("the driven overlay follows lane order, and an order swap moves it to the other row", () => {
+        const lanes = doc();
+        // default order: geo drives, so the force record is driven where geo covers it — [10, 20).
+        expect(drivenSpans(lanes, 0)).toEqual([{ lane: Lane.Force, id: 2, start: 10, end: 20 }]);
+        // swap: force drives, so the GEO record is the driven one over the same overlap.
+        expect(drivenSpans(lanes, 0, [Lane.Force, Lane.Geo, Lane.Velocity])).toEqual([
+            { lane: Lane.Geo, id: 3, start: 10, end: 20 },
+        ]);
+        // velocity never competes for shape: its position in the order changes nothing.
+        expect(drivenSpans(lanes, 0, [Lane.Velocity, Lane.Geo, Lane.Force])).toEqual(
+            drivenSpans(lanes, 0),
+        );
     });
 });

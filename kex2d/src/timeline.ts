@@ -16,7 +16,9 @@
  *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
  *  findGoodStep). */
 
-import { Domain } from "./section";
+import { endPinnable, Lane, type LaneSegment, type Lanes, ordered, trackEnd } from "./lanes";
+import { deriveRuns } from "./projection";
+import { Domain, SectionKind } from "./section";
 import { V0 } from "./track";
 
 /** view-state: a single affine over the chart's axis `u` (distance or time, per
@@ -535,6 +537,232 @@ export function ticks(v: View, width: number, domain: Domain = Domain.Distance):
     for (let s = Math.floor(from / step) * step; s <= to + step * 0.5; s += step) {
         const sv = Math.abs(s) < step * 1e-6 ? 0 : s; // snap fp drift to a clean 0
         out.push({ s: sv, px: uToPx(v, sv), label: fmt(sv, step) });
+    }
+    return out;
+}
+
+// ── lane rows: the Animate-style timeline model ────────────────────────────────────────────
+//
+// One row per authored lane on the shared arclength ruler, in `track.order` (spec
+// `kex2d-segment-gestures` Locked decision, "timeline layout follows Animate"): a lane's records
+// render as spans with two handles, gaps render empty, and a row expands IN PLACE into that
+// lane's curve view. Everything below is PURE — plain lane records and a `View` in, geometry and
+// hit answers out — so the press grammar is readable headlessly (Validation 4) and `Timeline.svelte`
+// owns only pixels and pointers.
+
+/** a collapsed row's height in px — the strip band a span is drawn in. */
+export const ROW_H = 26;
+
+/** an expanded row's height in px: the in-place curve view (recovered dashed, authored solid),
+ *  the row's own strip growing into a chart, its siblings unmoved except by the offset. */
+export const ROW_EXPANDED_H = 132;
+
+/** the gap between two rows in px. */
+export const ROW_GAP = 2;
+
+/** the grab half-width of a span EDGE in px — a fixed on-screen distance like {@link SNAP_PX},
+ *  so the resize grip is the same size at any zoom. A span narrower than two grips still resolves
+ *  its edges: {@link hitRows} splits a thin span down the middle rather than letting the two
+ *  grips overlap into an unreachable body. */
+export const EDGE_PX = 5;
+
+/** the height of a row's chip band in px, measured from the row's top: the value chips ride
+ *  ABOVE the span body (the leading handle also carrying the easing chip), so a chip press and a
+ *  body press never contend for the same pixel. */
+export const CHIP_H = 10;
+
+/** the chip's own half-width in px, around its handle's station. */
+export const CHIP_PX = 9;
+
+/** one lane's row on the shared ruler. `top`/`height` are dock-local px; `records` is the lane's
+ *  own members in span order (`lanes.ordered`), never a copy of another lane's. */
+export interface LaneRow {
+    lane: Lane;
+    /** the row's place top-to-bottom, its index in `order`. */
+    index: number;
+    top: number;
+    height: number;
+    expanded: boolean;
+    records: LaneSegment[];
+}
+
+/** the rows of one document, top to bottom in `order` — the whole layout in one pure function.
+ *  `top` is the first row's y (below the ruler band); `expanded` is the set of lanes standing
+ *  open in the curve view, so an expanded row grows in place and pushes its siblings down
+ *  without changing their order or their spans. */
+export function laneRows(
+    lanes: Lanes,
+    order: readonly Lane[],
+    top: number,
+    expanded: ReadonlySet<Lane> = new Set(),
+): LaneRow[] {
+    const out: LaneRow[] = [];
+    let y = top;
+    for (let i = 0; i < order.length; i++) {
+        const lane = order[i]!;
+        const open = expanded.has(lane);
+        const height = open ? ROW_EXPANDED_H : ROW_H;
+        out.push({
+            lane,
+            index: i,
+            top: y,
+            height,
+            expanded: open,
+            records: ordered(laneMembers(lanes, lane)),
+        });
+        y += height + ROW_GAP;
+    }
+    return out;
+}
+
+/** one lane's records off the `Lanes` container — the one place a `Lane` resolves to its array. */
+export function laneMembers(lanes: Lanes, lane: Lane): LaneSegment[] {
+    return lane === Lane.Velocity ? lanes.velocity : lane === Lane.Force ? lanes.force : lanes.geo;
+}
+
+/** flip one row open or shut, returning a NEW set — the expand/collapse state is the view's, and
+ *  a row expands in place, so nothing about the document moves. */
+export function toggleExpanded(expanded: ReadonlySet<Lane>, lane: Lane): Set<Lane> {
+    const next = new Set(expanded);
+    if (!next.delete(lane)) next.add(lane);
+    return next;
+}
+
+/** one span's box in dock-local px: `x0`/`x1` are its two stations projected through the view,
+ *  `y0`/`y1` the row's strip band (a collapsed row's whole height; an expanded row's top strip,
+ *  the curve view taking the rest). */
+export interface SpanBox {
+    id: number;
+    x0: number;
+    x1: number;
+    y0: number;
+    y1: number;
+}
+
+/** every span of one row, in span order. `left` is the chart's own left inset, so a caller that
+ *  insets the plot past a gutter passes it once here rather than offsetting every read. */
+export function spanBoxes(row: LaneRow, v: View, left = 0): SpanBox[] {
+    const y1 = row.top + Math.min(row.height, ROW_H);
+    return row.records.map((r) => ({
+        id: r.id,
+        x0: left + uToPx(v, r.start),
+        x1: left + uToPx(v, r.end),
+        y0: row.top,
+        y1,
+    }));
+}
+
+/** what a press on a lane row landed on.
+ *
+ *  `edge` resizes (the span's `start` or `end` moves, the other holds), `body` moves the whole
+ *  span, `chip` edits one handle's value (`entry` on the leading handle, which also carries the
+ *  easing chip; `exit` on the trailing one), and `gap` is empty lane at station `d` — where a
+ *  press ADDS a record rather than editing one. */
+export type RowHit =
+    | { kind: "edge"; lane: Lane; id: number; which: "start" | "end" }
+    | { kind: "body"; lane: Lane; id: number }
+    | { kind: "chip"; lane: Lane; id: number; which: "entry" | "exit" }
+    | { kind: "gap"; lane: Lane; d: number }
+    | null;
+
+/** resolve one press over the rows: chip band first, then a span's edges, then its body, then
+ *  the gap the press fell in. Null off every row (the ruler above, the empty space below).
+ *
+ *  The order is the affordance order — a chip rides above its span and an edge grip rides inside
+ *  it, so the smaller target always wins the pixel it shares with the larger one, which is what
+ *  keeps a resize reachable on a span whose body is one press away. */
+export function hitRows(
+    rows: readonly LaneRow[],
+    v: View,
+    px: number,
+    py: number,
+    left = 0,
+): RowHit {
+    for (const row of rows) {
+        if (py < row.top || py >= row.top + row.height) continue;
+        const d = pxToU(v, px - left);
+        const boxes = spanBoxes(row, v, left);
+        const inChips = py < row.top + CHIP_H;
+        for (let i = 0; i < boxes.length; i++) {
+            const box = boxes[i]!;
+            const rec = row.records[i]!;
+            if (inChips) {
+                if (Math.abs(px - box.x0) <= CHIP_PX)
+                    return { kind: "chip", lane: row.lane, id: rec.id, which: "entry" };
+                if (Math.abs(px - box.x1) <= CHIP_PX)
+                    return { kind: "chip", lane: row.lane, id: rec.id, which: "exit" };
+                continue;
+            }
+            if (px < box.x0 || px > box.x1) continue;
+            // a span narrower than two grips splits down the middle: both edges stay reachable
+            // and no press falls into a body that isn't there.
+            const grip = Math.min(EDGE_PX, (box.x1 - box.x0) / 2);
+            if (px - box.x0 <= grip)
+                return { kind: "edge", lane: row.lane, id: rec.id, which: "start" };
+            if (box.x1 - px <= grip)
+                return { kind: "edge", lane: row.lane, id: rec.id, which: "end" };
+            return { kind: "body", lane: row.lane, id: rec.id };
+        }
+        return { kind: "gap", lane: row.lane, d };
+    }
+    return null;
+}
+
+/** the ruler's end handle: the track end's station, its px, and whether the number is AUTHORED
+ *  (`end` pinned) or FOLLOWING the longest lane's last exit (`end` 0, Animate's rule). */
+export interface EndHandle {
+    d: number;
+    px: number;
+    pinned: boolean;
+}
+
+/** read the end handle off the raw `end` COLUMN — 0 meaning follow, exactly `lanes.trackEnd`'s
+ *  own rule, so the handle never invents a pin the document doesn't carry. */
+export function endHandle(lanes: Lanes, end: number, v: View, left = 0): EndHandle {
+    const d = trackEnd(lanes, end);
+    return { d, px: left + uToPx(v, d), pinned: end !== 0 };
+}
+
+/** is a press on the end handle? A fixed on-screen grip like a span edge's. */
+export function hitEndHandle(handle: EndHandle, px: number, threshold = EDGE_PX): boolean {
+    return Math.abs(px - handle.px) <= threshold;
+}
+
+/** where an end-handle drag to `d` may land, or NULL when the pin would drop below a lane's
+ *  content — the refusal `history.beginEnd`'s gesture reads from `setEnd` (`lanes.endPinnable`),
+ *  reported here so the drag can show it rather than writing and being declined every frame.
+ *  The handle never clamps: an illegal target is refused, not trimmed. */
+export function endDragTarget(lanes: Lanes, d: number): number | null {
+    return endPinnable(lanes, d) && d !== 0 ? d : null;
+}
+
+/** one stretch of one record that the other shape lane DRIVES — the inactive overlay's geometry
+ *  (spec Locked decision, "geo and force overlap: store both, lane order drives"). The record
+ *  keeps its handles and stays editable; this is what it does not get to shape. */
+export interface DrivenSpan {
+    lane: Lane;
+    id: number;
+    start: number;
+    end: number;
+}
+
+/** every driven stretch in the document, read from the SAME partition the bake threads
+ *  (`projection.deriveRuns`) rather than from a second overlap rule: a shape record is driven
+ *  exactly where a run of the OTHER kind covers it, so a lane-order swap moves the overlay to
+ *  the other row by construction. Velocity never competes for shape and is never driven. */
+export function drivenSpans(lanes: Lanes, end: number, order?: readonly Lane[]): DrivenSpan[] {
+    const runs = deriveRuns(lanes, end, order);
+    const out: DrivenSpan[] = [];
+    for (const lane of [Lane.Geo, Lane.Force]) {
+        const foreign = lane === Lane.Geo ? SectionKind.Force : SectionKind.Geo;
+        for (const rec of ordered(laneMembers(lanes, lane))) {
+            for (const run of runs) {
+                if (run.kind !== foreign) continue;
+                const start = Math.max(rec.start, run.start);
+                const stop = Math.min(rec.end, run.start + run.length);
+                if (start < stop) out.push({ lane, id: rec.id, start, end: stop });
+            }
+        }
     }
     return out;
 }
