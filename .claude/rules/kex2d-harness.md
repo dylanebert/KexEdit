@@ -6,9 +6,9 @@ paths:
 
 # kex2d Capture Harness
 
-From `kex2d/`, `bun run capture`: display-gated real-GPU Chrome, WSL→Windows staging. Serialize across ports/worktrees; no host kills/interactive servers.
+From `kex2d/`, `bun run capture`: headed local Chrome, never headless. Serialize across ports/worktrees; no host kills/interactive servers.
 
-Playwright: `harness/package.json`/`bun.lock`; `check` provisions only harness deps, frozen. App install/Shallot wiring: `kex2d/AGENTS.md` Verify. `wsl.ts` keys deps/lock, verifies install before stamping.
+Playwright: `harness/package.json`/`bun.lock`; `check` provisions only harness deps, frozen. App install/Shallot wiring: `kex2d/AGENTS.md` Verify. No display or software adapter: incomplete, never green.
 
 ## Verifier integrity
 
@@ -16,7 +16,7 @@ Playwright: `harness/package.json`/`bun.lock`; `check` provisions only harness d
 
 Full runs: complete `--list` accounting, no skips/truncation, `forbidOnly`. `RUN.json` records counts, failed titles/provenance. Wipe only absent, empty or `RUN.json`-bearing dirs; reject malformed `--out`/non-directories. Listing touches no shots/stamp.
 
-Standalone staging: `capture.ts`'s `stage.files` includes `flow.ts`, every `*.pw.ts` and config; `wsl.ts` prunes deleted flows. No unstaged local imports. Mirrored constants name sources. Use `kexCall`, typed casts for batched reads.
+Declared suite: `capture.ts`'s `suite.files` names `flow.ts`, every `*.pw.ts`, config; `boot` prints `adapter.info`, fails software names. No local imports in loaded files. Mirrored constants name sources. Use `kexCall`, typed casts for batched reads.
 
 Page imports must be module-graph pure, no second app state. `flow.ts` compares menus to real builders: plain descriptors, in-page enum-name resolution, stubbed functions; no copied expectations.
 

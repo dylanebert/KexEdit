@@ -27,7 +27,7 @@ From this root:
 
 ```sh
 plugins/blender/scripts/build_lib.sh
-plugins/blender/scripts/build_lib.sh windows # mingw, Linux/WSL
+plugins/blender/scripts/build_lib.sh windows # mingw, Linux
 plugins/blender/scripts/build_lib.sh all
 cd packages/core && cargo test && cargo clippy
 cd plugins/blender && uvx pytest tests/ -v

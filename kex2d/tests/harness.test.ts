@@ -45,7 +45,6 @@ import {
     declaredCorpusViolations,
     type DeclaredEntry,
 } from "../harness/declared";
-import { provisioned, provisionKey, stalePrune } from "../harness/wsl";
 import { type Baseline, readSurface } from "../harness/surface-budget";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
@@ -138,17 +137,21 @@ describe("wipeable — what a full run is allowed to destroy", () => {
 });
 
 describe("intEnv / boolEnv — the fail-closed knob pass", () => {
+    // `boolEnv` has no live consumer since `KEX_HEADED` was retired with the headless option (the
+    // capture is headed and only headed — headless Chrome reports a software adapter on this seat).
+    // The guard itself survives in `args.ts` as the boolean half of the knob pass, so these arms
+    // cover it under a placeholder name and the next boolean knob inherits them.
     test("an unset knob takes the default", () => {
         expect(intEnv({}, "KEX_WORKERS", 4, 1, 64)).toBe(4);
-        expect(boolEnv({}, "KEX_HEADED")).toBe(false);
+        expect(boolEnv({}, "KEX_FLAG")).toBe(false);
     });
 
     test("a legal value parses, at the range's ends included", () => {
         expect(intEnv({ KEX_WORKERS: "8" }, "KEX_WORKERS", 4, 1, 64)).toBe(8);
         expect(intEnv({ KEX_WORKERS: "1" }, "KEX_WORKERS", 4, 1, 64)).toBe(1);
         expect(intEnv({ KEX_WORKERS: "64" }, "KEX_WORKERS", 4, 1, 64)).toBe(64);
-        expect(boolEnv({ KEX_HEADED: "1" }, "KEX_HEADED")).toBe(true);
-        expect(boolEnv({ KEX_HEADED: "0" }, "KEX_HEADED")).toBe(false);
+        expect(boolEnv({ KEX_FLAG: "1" }, "KEX_FLAG")).toBe(true);
+        expect(boolEnv({ KEX_FLAG: "0" }, "KEX_FLAG")).toBe(false);
     });
 
     test("the knob is read by NAME, so the value can't drift from the name in the error", () => {
@@ -199,14 +202,14 @@ describe("intEnv / boolEnv — the fail-closed knob pass", () => {
         expect(() => intEnv({ KEX_PORT: "80" }, "KEX_PORT", 3014, 1024, 65_535)).toThrow(
             'KEX_PORT must be an integer in [1024, 65535] (got "80")',
         );
-        expect(() => boolEnv({ KEX_HEADED: "true" }, "KEX_HEADED")).toThrow(
-            'KEX_HEADED must be 0 or 1 (got "true")',
+        expect(() => boolEnv({ KEX_FLAG: "true" }, "KEX_FLAG")).toThrow(
+            'KEX_FLAG must be 0 or 1 (got "true")',
         );
     });
 
     test("a boolean knob takes only 0 or 1 — no truthy-string coercion", () => {
-        expect(() => boolEnv({ KEX_HEADED: "true" }, "KEX_HEADED")).toThrow(UsageError);
-        expect(() => boolEnv({ KEX_HEADED: "" }, "KEX_HEADED")).toThrow(UsageError);
+        expect(() => boolEnv({ KEX_FLAG: "true" }, "KEX_FLAG")).toThrow(UsageError);
+        expect(() => boolEnv({ KEX_FLAG: "" }, "KEX_FLAG")).toThrow(UsageError);
     });
 });
 
@@ -335,12 +338,12 @@ describe("collectedCount / runCounts — the suite-count oracle's two sides", ()
 describe("failedTitles — what a red run leaves behind", () => {
     // Flake forensics: the reporter output is gone once the run is over, so `RUN.json` carries the
     // names. Parsed from the list reporter's summary block (a `N failed` line, then one indented
-    // title per failure), because a JSON reporter would mean another artifact staged to and copied
-    // back from the Windows host.
+    // title per failure), which is the reporter the capture already runs.
 
-    // Verbatim from a live staged run (a deliberately-red probe flow), tail included: the summary
-    // block is the LAST thing Playwright prints, the title carries the `[project] › ` prefix, and
-    // the box-drawing pad runs to the terminal width.
+    // Recorded verbatim from a live run on the retired WSL seat (2026-08-25, a deliberately-red
+    // probe flow), tail included — hence the host path in its stack line. The parse it pins is
+    // reporter-shaped, not seat-shaped: the summary block is the LAST thing Playwright prints, the
+    // title carries the `[project] › ` prefix, and the box-drawing pad runs to the terminal width.
     const red = [
         "  x  1 [chromium] › shot.pw.ts:3097:1 › temporary red probe (8ms)",
         "",
@@ -365,19 +368,15 @@ describe("failedTitles — what a red run leaves behind", () => {
         expect(failedTitles(red)).toEqual(["[chromium] › shot.pw.ts:3097:1 › temporary red probe"]);
     });
 
-    test("CRLF is stripped — the bridge hands back powershell's line endings", () => {
-        // the whole stdout arrives from `powershell.exe` through `Bun.spawnSync`, so the real
-        // separator is `\r\n` and every line carries a trailing `\r`. It survives today only
-        // because `\r` sits inside the `[─\s]+$` strip: narrow that to `─+$` and every recorded
-        // title grows an invisible `\r` with all these tests still green.
-        expect(failedTitles(red.replace(/\n/g, "\r\n"))).toEqual([
-            "[chromium] › shot.pw.ts:3097:1 › temporary red probe",
-        ]);
-    });
+    // RETIRED with its contract (`checks.md`, "Retirement is a coverage decision"): the CRLF arm
+    // pinned that a title survives the `\r\n` line endings the retired WSL seat's powershell
+    // transport handed back. The capture now spawns `playwright test` natively on this seat, so no
+    // CRLF stdout reaches the parse and there is no surviving check to name for it — an explicit
+    // coverage cut, not a moved property. The `[─\s]+$` strip that made it pass is unchanged.
 
     test("a green run leaves none", () => {
-        // the bridge's real progress line: ASCII `ok` (the host has no unicode marks) and the
-        // `[chromium] › ` project prefix, which a `›`-hunting parse could mistake for a title.
+        // a real progress line, ASCII `ok` form included, with the `[chromium] › ` project prefix a
+        // `›`-hunting parse could mistake for a title.
         expect(
             failedTitles(
                 "  ok  1 [chromium] › shot.pw.ts:321:1 › geo flow (12.1s)\n\n  24 passed (17.4s)\n",
@@ -832,9 +831,9 @@ describe("removalSummons — the stale-entry removal summons", () => {
     });
 });
 
-describe("the staged host files mirror the knob guards verbatim", () => {
-    // `capture.pw.config.ts` and `flow.ts` are staged to the Windows host STANDALONE (`wsl.ts`),
-    // so they can import nothing and carry their own copy of the guards. Hand-written copies had
+describe("the standalone-loaded files mirror the knob guards verbatim", () => {
+    // `capture.pw.config.ts` and `flow.ts` are loaded by Playwright's own loader and import nothing
+    // local, so they carry their own copy of the guards. Hand-written copies had
     // already drifted — no upper bound on either host-side knob, `KEX_PORT` read raw, and a comment
     // claiming a blank-guard that wasn't there — so the copies are pinned character-identical to
     // the original, and pinned to be REACHED (a verbatim but unused copy guards nothing).
@@ -853,19 +852,16 @@ describe("the staged host files mirror the knob guards verbatim", () => {
 
     test("the copies are character-identical to args.ts", () => {
         expect(fn(config, "intEnv")).toBe(fn(args, "intEnv"));
-        expect(fn(config, "boolEnv")).toBe(fn(args, "boolEnv"));
         expect(fn(flow, "intEnv")).toBe(fn(args, "intEnv"));
     });
 
     test("every knob is read through a guard, at the same range on both sides", () => {
         expect(config).toContain('intEnv(process.env, "KEX_WORKERS", 4, 1, 64)');
-        expect(config).toContain('boolEnv(process.env, "KEX_HEADED")');
         expect(flow).toContain('intEnv(process.env, "KEX_PORT", 3014, 1024, 65_535)');
         expect(flow).toContain('intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000)');
         expect(capture).toContain('intEnv(process.env, "KEX_PORT", DEFAULT_PORT, 1024, 65_535)');
         expect(capture).toContain('intEnv(process.env, "KEX_WORKERS", DEFAULT_WORKERS, 1, 64)');
         expect(capture).toContain('intEnv(process.env, "KEX_SHOT_MS", DEFAULT_SHOT_MS, 0, 60_000)');
-        expect(capture).toContain('boolEnv(process.env, "KEX_HEADED")');
     });
 
     test("the orchestrator's defaults are the numbers the host-side fallbacks use", () => {
@@ -875,38 +871,38 @@ describe("the staged host files mirror the knob guards verbatim", () => {
     });
 });
 
-describe("every staged flow file is in capture.ts's stage.files list", () => {
-    // The split (`kex2d-harness.md` "Verifier integrity") turned staging from "the one file" into a file
-    // LIST — `capture.ts`'s `stage.files` — and a list can silently drop an entry a glob never
-    // would. This walks the harness dir for the real staged set (`flow.ts` + every `*.pw.ts` flow
-    // file) and pins that each one is named in `stage.files`, so a new flow file landing without
-    // its own staging line fails HERE, not as a truncated run on the Windows host. Proven red by
+describe("every flow file is in capture.ts's suite.files list", () => {
+    // The split (`kex2d-harness.md` "Verifier integrity") turned the suite from "the one file" into
+    // a file LIST — `capture.ts`'s `suite.files` — and a list can silently drop an entry a glob
+    // never would. This walks the harness dir for the real flow set (`flow.ts` + every `*.pw.ts`
+    // flow file) and pins that each one is named in `suite.files`, so a new flow file landing
+    // without its own line fails HERE, not as a suite nobody declared. Proven red by
     // hand: dropping `lab.pw.ts` from the list below and re-running failed this test, as the rule
     // that introduced the split requires (`coding.md`: a check is evidence only if seen failing).
     const harnessDir = join(import.meta.dir, "..", "harness");
     const capture = readFileSync(join(harnessDir, "capture.ts"), "utf8");
     const start = capture.indexOf("files: [");
     const end = capture.indexOf("]", start);
-    if (start < 0 || end < 0) throw new Error("no stage.files list found in capture.ts");
+    if (start < 0 || end < 0) throw new Error("no suite.files list found in capture.ts");
     const staged = new Set([...capture.slice(start, end).matchAll(/"([^"]+)"/g)].map((m) => m[1]));
     const real = readdirSync(harnessDir).filter(
         (name) => name === "flow.ts" || name.endsWith(".pw.ts"),
     );
 
-    test("the real staged set is non-empty (a broken glob can't pass vacuously)", () => {
+    test("the real flow set is non-empty (a broken glob can't pass vacuously)", () => {
         expect(real.length).toBeGreaterThan(0);
     });
 
-    test("every real flow.ts / *.pw.ts file is named in stage.files", () => {
+    test("every real flow.ts / *.pw.ts file is named in suite.files", () => {
         for (const name of real)
-            expect(staged.has(name), `${name} missing from stage.files`).toBe(true);
+            expect(staged.has(name), `${name} missing from suite.files`).toBe(true);
     });
 });
 
 describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", () => {
     // kex2d-capture-deflake S1: two standing rules banned a raw `waitForTimeout` sleep racing
     // per-RAF `$derived` propagation and found zero of the class across green-gated stages — the
-    // ban had no enumerator. This walks the SAME real staged set the block above already derives
+    // ban had no enumerator. This walks the SAME real flow set the block above already derives
     // (`flow.ts` + every `*.pw.ts` file in `harness/`, never a hand-picked list) and reds any
     // `waitForTimeout(...)` call whose argument is not exactly `SHOT_MS` — the one lawful sleep
     // (`flow.ts`'s own docblock: "used only immediately before a screenshot... every other wait
@@ -920,7 +916,7 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     );
 
     // one (production line, arg) pair per call site, across the whole real set — never a
-    // per-file sample — so a violation in any staged flow file reds this arm regardless of
+    // per-file sample — so a violation in any flow file reds this arm regardless of
     // which file it lands in.
     // Scans the joined file text, not per line, so a call split across lines (`waitForTimeout(\n
     // 200\n)`) is still found — a per-line regex misses it entirely (zero violations, silent).
@@ -960,16 +956,17 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
         return violations;
     }
 
-    test("the real staged set is non-empty (a broken glob can't pass vacuously)", () => {
+    test("the real flow set is non-empty (a broken glob can't pass vacuously)", () => {
         expect(real.length).toBeGreaterThan(0);
     });
 
     // the "a real member carries the lawful SHOT_MS form" arm retired with the flows themselves
-    // (`retired/pose-ux`): with no `*.pw.ts` staged there is no member to name. The violation arm
-    // below still runs over the staged set, empty or not, and S3's first flow restores the
-    // positive member.
+    // (`retired/pose-ux`): the only `*.pw.ts` in the tree is `adapter.pw.ts`, the display witness,
+    // which takes no screenshot and so carries no settle — there is still no member to name. The
+    // violation arm below runs over the whole flow set regardless, and the first lane-gesture flow
+    // restores the positive member.
 
-    test("no staged flow file carries a waitForTimeout whose argument is not SHOT_MS", () => {
+    test("no flow file carries a waitForTimeout whose argument is not SHOT_MS", () => {
         const violations = nonShotSleeps();
         expect(
             violations,
@@ -979,8 +976,8 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     });
 
     // RED-FIRST WITNESS (run by hand, not shipped as a mutation the suite re-runs): seeded
-    // `await page.waitForTimeout(200);` into `harness/lab.pw.ts` (an unexcluded staged flow
-    // file) and re-ran this file alone — the arm above reported exactly one violation
+    // `await page.waitForTimeout(200);` into `harness/lab.pw.ts` (an unexcluded flow
+    // file, live at the time) and re-ran this file alone — the arm above reported exactly one violation
     // (`lab.pw.ts:<line> waitForTimeout(200)`), exit code 1. Deleted the seed (never
     // `git checkout`/`restore` on a file with no other edits, `git.md`) and re-ran — 0
     // violations, exit code 0. Both directions witnessed 2026-08-25.
@@ -988,7 +985,7 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     // MULTI-LINE WITNESS (2026-08-25, same protocol): a per-line regex misses a call split
     // across lines, so the scan above is joined-text/paren-depth, not per-line. Seeded
     // `await page.waitForTimeout(\n    200\n);` before `lab.pw.ts`'s own `waitForTimeout
-    // (SHOT_MS)` line and re-ran `bun test ./tests/harness.test.ts -t "no staged flow file
+    // (SHOT_MS)` line and re-ran `bun test ./tests/harness.test.ts -t "no flow file
     // carries a waitForTimeout"` — one violation, `lab.pw.ts:207 waitForTimeout(200)` (the
     // line the call's `(` opens on), exit code 1. Deleted the seed, re-ran — 0 violations,
     // exit code 0. The scan reads only the files under `harness/` this arm walks (`flow.ts` +
@@ -997,109 +994,14 @@ describe("no raw waitForTimeout except the SHOT_MS settle before a screenshot", 
     // scanned text and the file holding this comment are disjoint by construction.
 });
 
-describe("provisionKey / provisioned — when the host reinstalls", () => {
-    const pkg = { dependencies: { "@playwright/test": "^1.59.1", playwright: "^1.59.1" } };
-    const lock =
-        '{"lockfileVersion":1,"packages":{"@playwright/test":["@playwright/test@1.59.1"]}}';
-    const key = (p: Record<string, unknown>, l = lock): string => provisionKey(p, l).key;
-
-    test("the key covers the whole dependency block and is order-independent", () => {
-        const { key: k, pin } = provisionKey(pkg, lock);
-        expect(pin).toBe("^1.59.1");
-        expect(
-            key({ dependencies: { playwright: "^1.59.1", "@playwright/test": "^1.59.1" } }),
-        ).toBe(k);
-    });
-
-    test("a changed RANGE changes the key even though the installed version still satisfies it", () => {
-        // the whole point of hashing the block rather than reading the installed version: 1.59.1
-        // satisfies ^1.59.1 forever, so a version key would never reinstall after this edit.
-        expect(
-            key({ dependencies: { ...pkg.dependencies, "@playwright/test": "^1.62.0" } }),
-        ).not.toBe(key(pkg));
-    });
-
-    test("an added dependency changes the key", () => {
-        expect(
-            key({ dependencies: { ...pkg.dependencies, "@axe-core/playwright": "^4.0.0" } }),
-        ).not.toBe(key(pkg));
-    });
-
-    test("EVERY dependency-relevant block is in the key, not just `dependencies`", () => {
-        // a caret range resolves to whatever is newest, so the blocks that steer resolution decide
-        // what the host's node_modules actually becomes: an override or a devDependency edit that
-        // left the key alone would be a stage serving a tree nobody asked for.
-        for (const block of [
-            "devDependencies",
-            "peerDependencies",
-            "optionalDependencies",
-            "overrides",
-        ])
-            expect(key({ ...pkg, [block]: { "@playwright/test": "1.60.0" } })).not.toBe(key(pkg));
-        expect(key({ ...pkg, trustedDependencies: ["playwright"] })).not.toBe(key(pkg));
-    });
-
-    test("the LOCK is in the key — a transitive bump the ranges can't see still reinstalls", () => {
-        // the lock is what the host installs from (`--frozen-lockfile`), so an identical
-        // package.json over a different lock is a different tree.
-        expect(key(pkg, `${lock}\n// resolved elsewhere`)).not.toBe(key(pkg));
-        expect(key(pkg, "")).not.toBe(key(pkg)); // no lock staged at all is its own state
-    });
-
-    test("a package.json declaring no Playwright is a hard error, not an empty key", () => {
-        expect(() => provisionKey({ dependencies: { svelte: "^5.0.0" } }, lock)).toThrow(
-            "no @playwright/test dependency",
-        );
-        expect(() => provisionKey({}, lock)).toThrow("no @playwright/test dependency");
-    });
-
-    test("the stage is reused only when the marker matches AND the tree is really there", () => {
-        const k = key(pkg);
-        expect(provisioned(`${k}\n`, k, true)).toBe(true); // the marker is written with a newline
-        expect(provisioned(null, k, true)).toBe(false); // never provisioned
-        expect(provisioned("deadbeef", k, true)).toBe(false); // provisioned for other deps
-        // the marker's own ordering (deleted before the install, written after the result is
-        // verified) already rules a torn install out; this half catches a node_modules deleted
-        // from under a valid marker — a hand-cleaned stage dir, or the host's TEMP swept.
-        expect(provisioned(`${k}\n`, k, false)).toBe(false);
-    });
-});
-
-describe("stalePrune — a deleted flow file must not outlive the checkout in the stage", () => {
-    // The stage dir is persistent (its `node_modules` is the point) and the config collects tests
-    // by GLOB, so a staged `*.pw.ts` the repo no longer has keeps running there. Observed live: a
-    // pre-split `shot.pw.ts` ran a whole suite of REMOVED features beside the current 28 flows and
-    // the run reported a mix of passes and failures for code that isn't in the tree.
-    const files = ["package.json", "bun.lock", "capture.pw.config.ts", "flow.ts", "geo.pw.ts"];
-    const stale = /\.pw\.ts$/;
-
-    test("deletes a staged flow file the current set no longer lists", () => {
-        expect(stalePrune(["flow.ts", "geo.pw.ts", "shot.pw.ts"], files, stale)).toEqual([
-            "shot.pw.ts",
-        ]);
-    });
-
-    test("keeps every file the stage still stages, and everything the pattern doesn't name", () => {
-        expect(
-            stalePrune(
-                [
-                    "package.json",
-                    "bun.lock",
-                    "flow.ts",
-                    "geo.pw.ts",
-                    ".provisioned",
-                    "node_modules",
-                ],
-                files,
-                stale,
-            ),
-        ).toEqual([]);
-    });
-
-    test("no pattern means no pruning — the opt-in stays opt-in", () => {
-        expect(stalePrune(["shot.pw.ts"], files, undefined)).toEqual([]);
-    });
-});
+// RETIRED with the WSL→Windows staging bridge (`harness/wsl.ts`, deleted this stage):
+// `provisionKey`/`provisioned` decided when the persistent host stage reinstalled its
+// `node_modules`, and `stalePrune` decided which `*.pw.ts` a persistent stage dir had to drop. The
+// capture now runs `playwright test` in `harness/` itself, so there is no second tree to provision
+// and no stage dir a deleted flow file can outlive — the checkout IS the run dir and the glob reads
+// it directly. Both contracts ENDED; no surviving check is named for them, because there is nothing
+// left to hold (`checks.md`, "Retirement is a coverage decision"). The harness's own dependency
+// install is `package.json`'s `harness:deps`, frozen, covered by `bun run check` running it.
 
 describe("trend — the recorded run distribution and its tripwires", () => {
     // `RUN.json` records ONE run and the next full run wipes the shot

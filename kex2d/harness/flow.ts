@@ -2,18 +2,17 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test as base } from "@playwright/test";
 
-// kex2d's capture-flow staged helpers module. Past ~28 flows the harness rule (`kex2d-harness.md`
-// "Verifier integrity") describes splitting the single `shot.pw.ts` into staged flow files + one staged helpers
+// kex2d's capture-flow helpers module. Past ~28 flows the harness rule (`kex2d-harness.md`
+// "Verifier integrity") describes splitting the single `shot.pw.ts` into flow files + one helpers
 // module — this file. Every flow boots the page, drives one authoring surface through REAL pointer
 // and keyboard events, asserts the resulting state through the DEV-only `window.__kex` hook
 // (src/main.ts — read-only for the asserts; it performs an op only where a gesture can't reach the
-// setup), and screenshots what it built. Screenshots land in KEX_OUT (a Windows path when staged;
-// copied back). Each flow file's own tests carry their own header saying what they drive and what
-// they pin.
+// setup), and screenshots what it built. Screenshots land in KEX_OUT. Each flow file's own tests
+// carry their own header saying what they drive and what they pin.
 
 // Env knobs, validated not coerced: `capture.ts` forwards values it has already checked, and these
-// guards cover a direct `playwright test` run. This file is staged to the Windows host STANDALONE
-// (`wsl.ts`) alongside every `*.pw.ts` flow file, so it can import nothing: `UsageError` and
+// guards cover a direct `playwright test` run. This file imports nothing local (Playwright loads the
+// flow files through its own loader, and the page's own module graph is the app's): `UsageError` and
 // `intEnv` are MIRRORED VERBATIM from `harness/args.ts`, and `tests/harness.test.ts` pins them
 // character-identical to it — a drifting copy is a guard that only LOOKS enforced.
 class UsageError extends Error {}
@@ -45,7 +44,41 @@ export const OUT = process.env.KEX_OUT ?? "shots";
 // condition (`coding.md` forbids sleep-as-condition-wait).
 export const SHOT_MS = intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000);
 
-// The boot every flow shares, and the uncaught-exception gate around it.
+// RED-FIRST WITNESS (2026-09-08, by hand): flipped `capture.pw.config.ts` to `headless: true` and
+// ran `bun run capture -- -g "adapter witness" --out <scratch>` — the assertion below failed at
+// `flow.ts:70` with `software adapter, not a real-GPU reading: google / swiftshader / `, capture
+// exit 1. Restored `headless: false` and the same run passes at `nvidia / lovelace / `. Both
+// directions read on this seat, so the gate discriminates the two candidates it exists to separate.
+
+// A software adapter is not a real-GPU reading. The capture runs headed precisely because headless
+// Chrome falls back to SwiftShader on this seat, so the adapter identity is printed once per worker
+// and a software name fails the run rather than passing quietly.
+const SOFTWARE = /swiftshader|llvmpipe|lavapipe|warp|basic render/i;
+
+let adapterPrinted = false;
+
+/** Read `adapter.info` from the page and fail the run on a software adapter. Every boot pays this
+ *  (one `requestAdapter`), so no flow can screenshot a scene the software rasterizer drew. */
+async function assertRealAdapter(page: Page): Promise<void> {
+    const info = await page.evaluate(async () => {
+        const gpu = (navigator as unknown as { gpu?: GPU }).gpu;
+        if (!gpu) return null;
+        const adapter = await gpu.requestAdapter();
+        if (!adapter) return null;
+        const { vendor, architecture, device } = adapter.info;
+        return `${vendor} / ${architecture} / ${device}`;
+    });
+    expect(info, "no WebGPU adapter at all — this is not a real-GPU reading").not.toBeNull();
+    if (!adapterPrinted) {
+        process.stdout.write(`\nadapter: ${info}\n`);
+        adapterPrinted = true;
+    }
+    expect(SOFTWARE.test(info as string), `software adapter, not a real-GPU reading: ${info}`).toBe(
+        false,
+    );
+}
+
+// The boot every flow shares, the adapter gate, and the uncaught-exception gate around it.
 //
 // `boot()` opens the app and waits for the dock — the app's own mounted-and-laid-out gate.
 // `boot("/some-lab.html")` opens a lab page instead; a lab states its own readiness (its `.panel`
@@ -64,6 +97,7 @@ export const test = base.extend<{ boot: Boot }>({
         page.on("pageerror", (e) => thrown.push(e.stack ?? e.message));
         await use(async (path = "/") => {
             await page.goto(`http://localhost:${PORT}${path}`, { waitUntil: "load" });
+            await assertRealAdapter(page);
             if (path === "/") await expect(page.locator(".dock")).toBeVisible();
         });
         expect(thrown, `the page threw an uncaught exception:\n${thrown.join("\n")}`).toEqual([]);
@@ -73,14 +107,13 @@ export const test = base.extend<{ boot: Boot }>({
 export { expect, join };
 export type { Page };
 
-// Layout constants MIRRORED from the app, because this file is staged to the host STANDALONE
-// (`wsl.ts`) and so can import nothing from `src/`. Each names its source; a change there is a
-// change here. OWED: the cheap close is a test-side drift arm (tests are NOT staged standalone,
-// so a test could import both these constants and the Svelte-side constants and assert
+// Layout constants MIRRORED from the app, because this file imports nothing from `src/`. Each
+// names its source; a change there is a change here. OWED: the cheap close is a test-side drift arm
+// (a test CAN import app source, so it could import both these constants and the Svelte-side ones and assert
 // equality). What actually blocks it is narrower than it looks, measured at close: `bun test` CAN
 // import `Timeline.svelte` (the default export is the raw file text), but the Svelte-side
 // constants (`RULER_H`/`GAP_H`/`STRIP_H`/`TOP`) are module-internal `const`s and not exported, so
-// the arm costs one source change (export them) rather than a staging change or a compiler
+// the arm costs one source change (export them) rather than a compiler
 // plugin. Nobody owns it yet; whoever moves the band's geometry meets it.
 // The velocity-strip HEADER band's own row — RULER_H (26) + GAP_H (20) is
 // its top, HBAND_H (20) its height (S3 (Affordances): `STRIP_H = GAP_H`, a lane at the clip
@@ -348,8 +381,8 @@ export async function clickMenuItem(page: Page, menu: string, item: string): Pro
 
 // ── the rendered-DOM cross-check against the REAL builders (kex2d-menu-grammar decision 8).
 //
-// The source of truth is `src/menus.ts` itself, not a copy of it here: this file is staged to the
-// Windows host standalone and so can't IMPORT app source, but the page it drives is served by the
+// The source of truth is `src/menus.ts` itself, not a copy of it here: this file can't IMPORT app
+// source, but the page it drives is served by the
 // vite dev server, so the PAGE imports the real modules at runtime (`/src/menus.ts`, `/src/menu.ts`
 // — `menus.ts` is module-graph pure, gated by `tests/menu.test.ts`, so pulling it in costs
 // nothing). A hand-typed expected sequence would make a builder reorder plus a matching hand-edit
@@ -381,7 +414,7 @@ export type MenuSpec = {
      *  actions (`appendMenu`). Enum-valued and function-valued fields go in `enums` / `fns`. */
     state: Record<string, unknown> | null;
     /** enum-valued descriptor fields, named `<module>.<Enum>.<Member>` and resolved from the real
-     *  module in the page — never a mirrored numeric literal, which is what a staged copy would
+     *  module in the page — never a mirrored numeric literal, which is what a local copy would
      *  otherwise force. */
     enums?: Record<string, string>;
     /** descriptor fields the builder CALLS (the easing glyph resolvers). Stubbed in the page: a

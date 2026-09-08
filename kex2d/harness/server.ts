@@ -16,8 +16,8 @@ async function answers(url: string): Promise<boolean> {
     }
 }
 
-// Boot the kex2d vite dev server on `port` and resolve once it answers. The server runs WSL-side;
-// the host Chrome reaches it over WSL2's localhost forwarding. `BROWSER=none` suppresses vite's
+// Boot the kex2d vite dev server on `port` and resolve once it answers. The server and the headed
+// Chrome that drives it are on the same box, so `localhost` is literal. `BROWSER=none` suppresses vite's
 // auto-open — a capture never wants a tab. Throws (naming the server + port, killing the child)
 // within STARTUP_TIMEOUT_MS rather than hanging.
 export async function startServer(

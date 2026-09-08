@@ -331,8 +331,10 @@ for (const path of PATHS) {
 /** `kex2d-golden-reproducibility` 1a amendment: the ladder above brackets the first divergent
  *  index but can't localize it — the bracket on `circular-arc-refine` spans rows 9–15, and on
  *  `hill-explicit-geofit` rows 65–127 (past the existing verbatim-32 block entirely). A committed
- *  256-row HEAD reference, minted on the WSL host (this repo's reference machine — 1b's first
- *  answer confirmed all eleven gates reproduce there), covers both brackets with margin. Rows
+ *  256-row HEAD reference, minted on the WSL seat (this repo's reference machine at the time —
+ *  1b's first answer confirmed all eleven gates reproduced there; that seat was retired
+ *  2026-09-08, `seat-map-omarchy`, and this is the reading it left, not a reading of the seat
+ *  running now), covers both brackets with margin. Rows
  *  serialize through `rowString`, the SAME serialization the whole-table hash and the ladder use
  *  — never a second spelling. */
 interface HeadReferencePath {
