@@ -184,6 +184,43 @@ describe("the setters refuse structurally", () => {
         expect([row.start, row.end]).toEqual([0, 20]);
     });
 
+    // the origin law (spec Locked decision "the ruler starts at 0", S3a punch list item 1).
+    // Before it, `setRecordSpan(id, -5, 15)` landed with no refusal at all and `deriveRuns`
+    // clipped the record to a run over [0, 15) the document never authored.
+    //
+    // RED: delete `refuse`'s `row.start < 0` branch → both setters land, `w.id` is the record
+    // and the span/length assertions below fail (exit 1).
+    test("setRecordSpan refuses a start before the origin and leaves BOTH ends untouched", () => {
+        const { state } = track();
+        const id = author(state, Lane.Force, { start: 0, end: 20, ease: 0, entry: 1, exit: 1 });
+        const w = setRecordSpan(state, id, -5, 15);
+        expect(w.id).toBeNull();
+        expect(w.refusals.map((r) => r.guard)).toEqual(["segmentBeforeOrigin"]);
+        const row = laneRows(state, Lane.Force)[0]!;
+        expect([row.start, row.end]).toEqual([0, 20]);
+    });
+
+    test("createRecord refuses a negative start and writes nothing", () => {
+        const { state } = track();
+        const w = createRecord(state, Lane.Velocity, {
+            start: -5,
+            end: 15,
+            ease: 0,
+            entry: 20,
+            exit: 20,
+        });
+        expect(w.id).toBeNull();
+        expect(w.refusals.map((r) => r.guard)).toEqual(["segmentBeforeOrigin"]);
+        expect(laneRows(state, Lane.Velocity)).toHaveLength(0);
+    });
+
+    test("a span starting AT the origin is legal — 0 is on the ruler", () => {
+        const { state } = track();
+        const w = createRecord(state, Lane.Velocity, { start: 0, end: 15, ease: 0, exit: 20 });
+        expect(w.refusals).toEqual([]);
+        expect(laneRows(state, Lane.Velocity)).toHaveLength(1);
+    });
+
     test("a setter addressed at a record that isn't there refuses by name", () => {
         const { state } = track();
         expect(setRecordSpan(state, 99, 0, 10).refusals.map((r) => r.guard)).toEqual([

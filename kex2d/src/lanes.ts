@@ -17,6 +17,12 @@
  *  contract `track.ts`'s `stripOverlapped` holds for velocity strips today, which
  *  {@link segmentOverlapped} generalizes to every lane.
  *
+ *  **The ruler starts at 0.** A record's `start` is absolute arclength on the track ruler, so a
+ *  span reaching before the origin is not a track: {@link laneRefusals} names it
+ *  `segmentBeforeOrigin` beside the floor and exclusivity, and it is refused rather than
+ *  clamped for the same reason an overlap is — a clamped document lies about its own bake,
+ *  because `projection.ts` would derive the clipped run and no reader would know.
+ *
  *  **Gaps are legal and mean something per lane.** A stretch of track with no segment in a lane
  *  is not an error: it is the lane's inferred value (see {@link inferredEntry}) — velocity
  *  dissipates under physics, force dwells at the last authored exit (`DEFAULT_G` before any),
@@ -141,6 +147,11 @@ export function laneRefusals<H>(
             out.push({
                 guard: "segmentDegenerate",
                 message: `${name} segment ${s.id} spans [${s.start}, ${s.end}), which is not a positive half-open span`,
+            });
+        if (s.start < 0)
+            out.push({
+                guard: "segmentBeforeOrigin",
+                message: `${name} segment ${s.id} spans [${s.start}, ${s.end}), which starts before the ruler's origin at 0`,
             });
     }
     const rows = ordered(segments);
