@@ -1,11 +1,10 @@
 /**
  * The row taxonomy, in canonical order — the menus' ordering law:
  *
- * - `create` — the document gains an object (Add, the append flyout's Geo/Force).
+ * - `create` — the document gains an object (Add, a lane row's own segment).
  * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
- *   scoped to it (Convert, Pin, Solve, Exit, Handles, Tangents ▸, Easing ▸, Lock/Unlock,
- *   Meters/Seconds). The residual class, honestly.
- * - `lifecycle` — the subject ends at its creation state or gone (Reset, then Delete).
+ *   scoped to it (Easing ▸, Expand/Collapse, Meters/Seconds). The residual class, honestly.
+ * - `lifecycle` — the subject ends at its creation state or gone (Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
  * frequency rule, demoted to a tiebreaker where it's cheap and unenforceable-but-harmless).
@@ -37,54 +36,26 @@ export type Binding = {
  * `hint`. So a rebind moves the hint with it and a row can't come to lie about its key — the
  * failure the `L` → `Q` rebind would have caused with the table living in a test.
  *
- * A pointer gesture is not a shortcut (`Handles` is double-click and advertises nothing), and the
- * hint names the row's ACTION, not its live enablement — a grayed row keeps it, the way a disabled
- * `Add` still tells you append is `Enter`.
+ * A pointer gesture is not a shortcut (the step-in is double-click and advertises nothing), and
+ * the hint names the row's ACTION, not its live enablement — a grayed row keeps it.
  *
- * Homes: `remove` — `controls.ts` (section, node set, chain-end trim) + `Timeline.svelte` (force
- * keyframe); `append` — `controls.ts`; `exitMode` — `App.svelte`; `lock` — `Timeline.svelte`.
- * `convert`/`pin` — `App.svelte`'s own permanent listener (`kex2d-shortcuts` stage 3): the section
- * menu's remaining single-subject rows, dispatched through the MERGED chrome + document acts
- * record (`solve`/`solveShape`/`pinEnter` are chrome — `editor-ui.md` Menus, the act-BODY seam's
- * residual clause 2 — so `controls.ts`, which only reaches `acts.ts`, can't be their home).
- * `solve` — the mode-scoped `Enter` exception (Locked decision 1's law 3): `Enter` is `append`
- * everywhere else, but pin mode's editing lockdown already bars geo append, so nothing collides in
- * fact; the same permanent listener reads `editor.pinning` to know which claim is live.
- * `reset` — `controls.ts` alone (`kex2d-shortcuts` stage 4): unlike Convert/Pin, `reset` is a plain
- * document act on BOTH `SectionMenuActions` and `NodeMenuActions` (`acts.ts sectionActs`/`nodeActs`
- * already return it — no modal, no `AbortController`), so it never needs the chrome-act merge;
- * `controls.ts`'s existing section/node keydown rungs dispatch it exactly like `remove`.
- * One key, two subject kinds, per law 3: a section (`sectionKeyAct`) or a node/node-set
- * (`nodeKeyAct`, `resetSet` on a multi selection) — node 0's tangent-clear delegation lives inside
- * `track.resetNode` itself, invisible at this seam. Keyframes carry no Reset row and no binding
- * (the Easing-subsumes-Reset law, `kex2d-shortcuts` Locked decision), so `forceKeyAct` never reads it.
- * `Escape` and `Delete` also drive dismissal/guard rungs that are nobody's menu row; those stay
- * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one. `C` (Cut's own
- * binding through `kex2d-segment-removal` S1) is unclaimed since S2 retired Cut's last surface —
- * free for a future segment-authoring gesture, not reclaimed here.
+ * ONE entry survives the pose UX. `remove` — home `Timeline.svelte`, through `keys.ts`'s
+ * `timelineKeyAct`: Delete on the selected span, the span menu's own terminal row
+ * (`menus.spanMenu`). `append`, `lock`, `convert`, `pin`, `solve` and `reset` addressed sections,
+ * nodes, keyframes and pin mode, all retired to `retired/pose-ux`, so they left with the rows and
+ * the deciders that invoked them rather than staying as declarations nothing can press — their
+ * letters (`Q`, `D`, `P`, `R`, and `C` since `kex2d-segment-removal` S2) are unclaimed again, free
+ * for a later lane gesture, and `Enter` moved to `RESERVED.commitField` with the popover's own
+ * field law. `Escape` stays here as `exitMode`: `Timeline.svelte`'s dismissal ladder presses it
+ * directly (through `bound`) rather than through a decider, because each rung — a live gesture, a
+ * summoned menu, the popover, the selection — is a different subject rather than one named act.
+ *
+ * `Delete` and `Escape` also drive dismissal/guard rungs that are nobody's menu row; those stay
+ * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
 export const BINDINGS = {
     remove: { keys: ["Delete", "Backspace"], hint: "Del" },
-    append: { keys: ["Enter"], hint: "Enter" },
     exitMode: { keys: ["Escape"], hint: "Esc" },
-    // the one named exemption to the derived map: the mnemonic law gives Lock `L`, and pin mode's
-    // feel round 6 re-keyed it to `Q` for reachability while the other hand holds the pointer. A
-    // feel verdict outranks a derivation, so it's recorded here rather than re-keyed.
-    lock: { keys: ["q", "Q"], hint: "Q" },
-    // `V` was the derived pick (law 4's tiebreaker) but is refused: Figma/Rive bind bare `V` to
-    // the base select/move tool, an arbitrary letter their camp standardized — exactly the reflex
-    // kex2d must not collide with. `D` is free across both camps and wins law 4's left-hand-reach
-    // tiebreaker (`kex2d-shortcuts` stage 5 feel verdict).
-    convert: { keys: ["d", "D"], hint: "D" },
-    // mnemonic-exact (Locked decision 1).
-    pin: { keys: ["p", "P"], hint: "P" },
-    // mode-scoped: `Enter` also fires `append` (unscoped) everywhere outside pin mode. Law 3's
-    // one exception — see the doc comment above.
-    solve: { keys: ["Enter"], hint: "Enter", scope: "pin" },
-    // mnemonic-exact, left-hand (Locked decision 1). The registry's one two-subject binding
-    // (section `reset`, node `reset`/`resetSet`) — law 3's cross-surface case, plain document
-    // acts on both menus, so it needs no `scope`.
-    reset: { keys: ["r", "R"], hint: "R" },
 } as const satisfies Record<string, Binding>;
 
 /** whether a `KeyboardEvent.key` fires this binding.
@@ -107,8 +78,8 @@ export type Modifier = "ctrl";
  *  `key` worth branching on). `mod` narrows to a required chord (earned by undo/redo). `scope`
  *  narrows the claim to one named mode, so a later entry may reuse the SAME key inside a mode
  *  whose own lockdown makes the unscoped press unreachable there (Locked decision 1's law-3
- *  exception — `Enter` inside pin mode for Solve) without reading as a collision with the
- *  unscoped claim; no entry uses it yet, so the field ships ahead of its first occupant, the
+ *  exception, which was pin mode's `Enter`) without reading as a collision with the unscoped
+ *  claim; no entry uses it, so the field stands ahead of its first occupant, the
  *  same shape the declared-registry law sanctions for an empty registry (`editor-ui.md` Menus:
  *  "a registry that ships empty... makes the positive controls the whole deliverable"). */
 export type Reserved = {
@@ -132,9 +103,8 @@ export type Reserved = {
  * Numpad Period, its bare `F` is Make Edge/Face; Unity alone is the precedent), routed by
  * `editor.hover` so it frames exactly one surface. `playback` — `Timeline.svelte`, the one
  * `code`-form entry (no printable `key` worth branching on, `Space`'s pre-existing `code`
- * exemption). `nudge` — `controls.ts`
- * (node manipulator) + `Timeline.svelte` (force keyframe + playhead step), routed by
- * `editor.hover` / the live selection so one arrow press is one action. `undo`/`redo` —
+ * exemption). `nudge` — `Timeline.svelte` alone, through `keys.ts`'s `nudgeAct`, guarded on the
+ * live selection so one arrow press is one action. `undo`/`redo` —
  * `Timeline.svelte`'s permanent listener, the shared `history` stack, guarded off
  * `editor.dragging` (never mid-gesture) and off a focused field; both compare a `.toLowerCase()`
  * local, so only the lowercase form is a real literal (`Z`/`Y` never appear raw — a Shift+Z also
@@ -155,10 +125,9 @@ export const RESERVED = {
         keys: ["F3"],
         why: "shallot's own debug HUD toggle — not part of this app's key vocabulary",
     },
-    // re-declared at S3b with the gestures that press them (`keys.ts`'s `timelineKeyAct`, home
+    // re-declared at S3b/S3c with the gestures that press them (`keys.ts`'s `timelineKeyAct`, home
     // `Timeline.svelte`): the registry declares what the tree actually presses, both directions,
     // so each entry below has a live press and a reservation with none would be an orphan.
-    // `nudge` (the four arrows) is still absent — S3c re-declares it with the nudge gesture.
     snap: {
         keys: ["s"],
         why: "toggles the timeline's landmark+grid snapping (default on; Ctrl/Cmd inverts it for one drag)",
@@ -173,13 +142,28 @@ export const RESERVED = {
         mod: "ctrl",
         why: "redoes the last undone entry; Ctrl+Shift+Z redoes too, off the same lowercased `z`",
     },
+    // the popover field's own commit (`Popover.svelte`): Enter lands the typed value and blurs.
+    // A `RESERVED` press rather than a `BINDINGS` one because no menu row invokes it — it is the
+    // field law's own key (root `ui.md`: Enter commits, Escape reverts), not an advertised act.
+    commitField: {
+        keys: ["Enter"],
+        why: "commits a popover field's typed value and blurs it (the field law's Enter)",
+    },
+    // S3c's in-place tweak (`keys.ts`'s `nudgeAct`, home `Timeline.svelte`): the horizontal pair
+    // moves the selected span along the ruler by the station quantum, the vertical pair moves a
+    // handle's value by the lane's own quantum under Shift (Alt narrows it to an owned entry).
+    // One entry, four keys: they are one gesture read on two channels, not four claims.
+    nudge: {
+        keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"],
+        why: "nudges the selected span: \u2190/\u2192 by the station quantum, Shift+\u2191/\u2193 the handle value (Alt: the owned entry)",
+    },
 } as const satisfies Record<string, Reserved>;
 
 /**
- * A row in the shared menu language (`Menu.svelte`, rendered inside the `.menu` look). The
- * section context menu, the node context menu, and the append flyout all render an array of
- * these, so a menu is pure data and enablement, separators, and submenus are first-class
- * per-item properties, not per-menu special cases.
+ * A row in the shared menu language (`Menu.svelte`, rendered inside the `.menu` look). The lane
+ * row menu, the span menu and the ruler's unit picker all render an array of these, so a menu is
+ * pure data and enablement, separators, and submenus are first-class per-item properties, not
+ * per-menu special cases.
  */
 export type MenuItem = {
     /** the row label. omitted for a separator. */

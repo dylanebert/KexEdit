@@ -10,32 +10,50 @@ import {
     releaseGesture,
     trackMapping,
 } from "./cart";
-import { COLOR_GUIDE_RAY, laneTone } from "./colors";
+import { COLOR_GUIDE_RAY, COLOR_HATCH, HATCH_GAP, laneTone } from "./colors";
 import { editor, beginDrag, clearSelection, endDrag, selectRecord, toggleRecord } from "./editor";
-import { addRecord, beginBody, beginEdge, beginEnd, cancel, commit, history, redo as redoHistory, removeRecord, undo as undoHistory } from "./history";
-import { Lane, RECORD_FLOOR, type LaneSegment } from "./lanes";
-import { BINDINGS, bound } from "./menu";
-import { timelineKeyAct } from "./keys";
+import { addRecord, beginBody, beginEdge, beginEnd, beginHandle, cancel, commit, history, redo as redoHistory, removeRecord, setEase, setOrder, undo as undoHistory } from "./history";
+import { Lane, RECORD_FLOOR, laneName, type LaneSegment } from "./lanes";
+import { BINDINGS, bound, fitMenu } from "./menu";
+import Menu from "./Menu.svelte";
+import { rowMenu, spanMenu } from "./menus";
+import Popover from "./Popover.svelte";
+import { nudgeAct, timelineKeyAct } from "./keys";
+import { type Easing, sampleForce } from "./profile";
 import {
+    authoredPolylines,
+    type BakeRead,
+    bakeStations,
+    chartY,
     clampSpanDrag,
     COLUMN_W,
     clampView,
     defaultHandle,
+    drivenSpans,
     endHandle,
+    type FieldSpec,
     frameAll,
     hitEndHandle,
     hitRows,
     laneRows,
     type LaneRow,
     marginArc,
+    nudgeQuantum,
+    popoverFit,
     recordEntry,
+    recoveredPolyline,
+    reorderDrop,
+    reordered,
     type RowHit,
     ROW_H,
+    rowChart,
     S_GRID,
     snapAxis,
     spanBoxes,
     spanCurve,
+    spanResidual,
     spanTargets,
+    toggleExpanded,
     ticks,
     timeToArc,
     uToPx,
@@ -43,7 +61,7 @@ import {
     type View,
     zoomAt,
 } from "./timeline";
-import { bakeOut, endColumn, lanesOf, laneOrderOf, setEnd, setRecordSpan, Track, trackEndOf } from "./track";
+import { bakeOut, endColumn, lanesOf, laneOrderOf, recordOf, samples, setEnd, setRecordHandle, setRecordSpan, Track, trackEndOf } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, resize } from "./view";
 
 /** The lane timeline (spec `kex2d-segment-gestures` S3b): one row per authored lane on a shared
@@ -89,6 +107,14 @@ let onEnd = $state(false);
 let snapping = $state(true);
 /** the guide px a live drag's landmark hit flashes, or null (the grid is ambient, no flash). */
 let guide = $state<number | null>(null);
+/** the rows standing open in the curve view — the step-in's whole state, the VIEW's and not the
+ *  document's, so a row expands in place and nothing about the track moves (check-in two, 12). */
+let expanded = $state<ReadonlySet<Lane>>(new Set());
+/** the popover peeled by Escape while its span stays selected — dismissal peels one layer
+ *  (`ui.md`), so the panel goes before the selection does. Re-armed by the next selection. */
+let peeled = $state(false);
+/** the summoned context menu: the lane row's or the span's, at a screen point. */
+let menu = $state<{ x: number; y: number; items: ReturnType<typeof rowMenu> } | null>(null);
 
 const chartW = $derived(Math.max(0, dockW - COLUMN_W));
 
@@ -99,7 +125,7 @@ const doc = $derived.by(() => {
     if (eid === null) return null;
     return { lanes: lanesOf(ecs), order: laneOrderOf(ecs), end: endColumn(ecs), total: trackEndOf(ecs) };
 });
-const rows = $derived(doc ? laneRows(doc.lanes, doc.order, ROWS_TOP) : []);
+const rows = $derived(doc ? laneRows(doc.lanes, doc.order, ROWS_TOP, expanded) : []);
 const sTotal = $derived(doc?.total ?? 0);
 const mFloor = $derived(marginArc(sTotal, 50));
 const clamped = $derived(clampView(view, chartW, sTotal, mFloor));
@@ -139,6 +165,56 @@ const playheadS = $derived.by(() => {
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
+// ── the bake, read against the ruler (S3c) ────────────────────────────────────────
+// One projection of the flat bake onto absolute arclength (`timeline.bakeStations`), then one
+// `BakeRead` per SHAPE lane: force reads the per-edge `fN` column piecewise-constant at its own
+// opening sample, pitch reads the per-sample heading. Velocity has no recovered shape channel of
+// its own here — its own recovered speed is the `v` column, which the step-in draws the same way.
+// These feed the driven residual and the expanded row's dashed curve; both are DERIVED DISPLAY,
+// never authored state (`kex2d/AGENTS.md`).
+const bake = $derived.by(() => {
+    void tick;
+    if (eid === null) return null;
+    const out = bakeOut.get(eid);
+    const sm = samples.get(eid);
+    const n = Track.count.get(eid) ?? 0;
+    if (!out || !sm || n < 2) return null;
+    return { station: bakeStations(out.ds, n), out, theta: sm.theta, n };
+});
+
+/** the recovered channel one lane is measured against — `undefined` for a lane with none. */
+function bakeRead(lane: Lane): BakeRead | undefined {
+    const b = bake;
+    if (!b) return undefined;
+    if (lane === Lane.Force) return { station: b.station, value: b.out.fN, n: b.n - 1 };
+    if (lane === Lane.Geo) return { station: b.station, value: b.theta, n: b.n };
+    return { station: b.station, value: b.out.v, n: b.n };
+}
+
+// every driven stretch, read from the same partition the bake threads — so a lane-order swap
+// moves the overlay to the other row by construction (`timeline.drivenSpans`).
+const driven = $derived(doc ? drivenSpans(doc.lanes, doc.end, doc.order) : []);
+const drivenIds = $derived(new Set(driven.map((d) => d.id)));
+
+/** the display unit, precision and scrub rate one lane's VALUE fields carry. Pitch is authored in
+ *  radians and read in DEGREES — the one lane whose store unit is not the unit a person thinks in
+ *  (`ui.md`'s field law: key / value / unit, and the unit has to be the person's). */
+function laneUnit(lane: Lane): { unit: string; precision: number; to: (v: number) => number; from: (v: number) => number } {
+    if (lane === Lane.Geo)
+        return {
+            unit: "\u00b0",
+            precision: 1,
+            to: (v) => (v * 180) / Math.PI,
+            from: (v) => (v * Math.PI) / 180,
+        };
+    return {
+        unit: lane === Lane.Force ? "g" : "m/s",
+        precision: 2,
+        to: (v) => v,
+        from: (v) => v,
+    };
+}
+
 // ── render ────────────────────────────────────────────────────────────────────
 const xOf = (s: number): number => COLUMN_W + uToPx(clamped, s);
 
@@ -148,7 +224,7 @@ const xOf = (s: number): number => COLUMN_W + uToPx(clamped, s);
 function drawRow(ctx: CanvasRenderingContext2D, row: LaneRow): void {
     const base = laneTone(row.lane, "base");
     ctx.fillStyle = "rgba(0, 0, 0, 0.24)";
-    ctx.fillRect(COLUMN_W, row.top, chartW, ROW_H);
+    ctx.fillRect(COLUMN_W, row.top, chartW, row.height);
 
     // the column cell: the row's ONE label, in its own lane color (check-in two, points 2 and 10).
     ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
@@ -197,6 +273,101 @@ function drawRow(ctx: CanvasRenderingContext2D, row: LaneRow): void {
             ctx.restore();
         }
     }
+
+    // the DRIVEN overlay, drawn last so it sits OVER the spans it qualifies: a neutral-gray 45°
+    // hatch across exactly the stretch the other shape lane covers (`timeline.drivenSpans`, the
+    // same partition the bake threads). The record keeps its own color underneath — it is still
+    // editable and still selectable; what the hatch says is that its shape is not the one the
+    // track takes there (check-in two, point 9; `editor-ui.md`: hatch subject, guides neutral).
+    for (const d of driven) {
+        if (d.lane !== row.lane) continue;
+        const x0 = xOf(d.start);
+        const x1 = xOf(d.end);
+        if (x1 <= COLUMN_W || x0 >= dockW) continue;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(Math.max(x0, COLUMN_W), row.top, Math.max(0, x1 - Math.max(x0, COLUMN_W)), ROW_H);
+        ctx.clip();
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = COLOR_HATCH;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = Math.max(x0, COLUMN_W) - ROW_H; x < x1; x += HATCH_GAP) {
+            ctx.moveTo(x, row.top + ROW_H);
+            ctx.lineTo(x + ROW_H, row.top);
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    if (row.expanded) drawCurveView(ctx, row);
+}
+
+/** one expanded row's in-place curve view: the AUTHORED curve solid, one polyline per record so a
+ *  gap is never drawn through, and the RECOVERED bake dashed across the whole ruler
+ *  (`editor-ui.md`: recovered dashed/faded, authored solid/bright). The row grew to
+ *  `ROW_EXPANDED_H` in place, so its siblings kept their spans and only moved by the offset —
+ *  Animate's tween span plus its inline Motion Editor, which is what the person asked to step
+ *  into (check-in two, point 12). */
+function drawCurveView(ctx: CanvasRenderingContext2D, row: LaneRow): void {
+    const read = bakeRead(row.lane);
+    const entries = row.records.map((r) => recordEntry(doc!.lanes, row.lane, r));
+    const extra: number[] = [];
+    if (read) for (let i = 0; i < read.n; i++) extra.push(read.value[i] ?? 0);
+    const chart = rowChart(row, entries, extra);
+    const color = laneTone(row.lane, "base");
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(COLUMN_W, row.top + ROW_H, chartW, row.height - ROW_H);
+    ctx.clip();
+
+    // the chart floor: the value the row opens at, so the two curves have a datum to read against.
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(COLUMN_W, chart.bottom + 0.5);
+    ctx.lineTo(dockW, chart.bottom + 0.5);
+    ctx.stroke();
+
+    if (read) {
+        const pts = recoveredPolyline(read, chart, clamped, COLUMN_W);
+        ctx.setLineDash([3, 3]);
+        ctx.globalAlpha = 0.7;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+            const pt = pts[i]!;
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+    }
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    for (const line of authoredPolylines(row, entries, chart, clamped, COLUMN_W)) {
+        ctx.beginPath();
+        for (let i = 0; i < line.length; i++) {
+            const pt = line[i]!;
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.stroke();
+    }
+    ctx.restore();
+
+    // the row's own value window, in the lane's unit — two numbers, at the chart's two bounds.
+    const u = laneUnit(row.lane);
+    ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
+    ctx.font = '9px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${u.to(chart.hi).toFixed(u.precision)}${u.unit}`, COLUMN_W + 4, chart.top);
+    ctx.fillText(`${u.to(chart.lo).toFixed(u.precision)}${u.unit}`, COLUMN_W + 4, chart.bottom);
 }
 
 function render(ctx: CanvasRenderingContext2D): void {
@@ -289,6 +460,9 @@ $effect(() => {
     void playheadS;
     void selectedIds;
     void guide;
+    void expanded;
+    void driven;
+    void bake;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -301,6 +475,89 @@ $effect(() => {
     if (framed || chartW <= 0 || sTotal <= 0) return;
     framed = true;
     view = frameAll(chartW, sTotal, marginArc(sTotal, 50));
+});
+
+// ── the contextual popover: the value editor for the ONE selected span ────────────
+// Summoned by the selection (not a second click), anchored to the span's own box, flipped and
+// clamped inside the dock (`timeline.popoverFit`), peeled by Escape before the selection and
+// gone the moment the selection clears or grows past one member — the popover binds to a single
+// subject (`editor-ui.md` Multiselect: no popovers over a set).
+const popSubject = $derived.by(() => {
+    void tick;
+    if (!doc || eid === null || peeled) return null;
+    const ids = editor.records.ids;
+    if (ids.size !== 1) return null;
+    const id = editor.record;
+    if (id === null) return null;
+    const found = recordOf(ecs, id);
+    if (!found) return null;
+    const row = rows.find((r) => r.lane === found.lane);
+    if (!row) return null;
+    const box = spanBoxes(row, clamped, COLUMN_W).find((b) => b.id === id);
+    if (!box) return null;
+    return { id, lane: found.lane, row: found.row, box };
+});
+
+const POPOVER_SIZE = { w: 180, h: 132 };
+const popFit = $derived(
+    popSubject ? popoverFit(popSubject.box, POPOVER_SIZE, { w: dockW, h: DOCK_HEIGHT }) : null,
+);
+
+/** the selected record's fields, each one a closure over a `history.ts` gesture — so a popover
+ *  commit lands exactly the entry a drag of the same quantity would (`tests/history.test.ts`
+ *  drives the identity). Pitch converts to degrees at this seam and back on the write; the store
+ *  stays radians. A DRIVEN record's value fields stay editable (it keeps its handles); what it
+ *  gets instead is the residual readout below them. */
+const popFields = $derived.by((): FieldSpec[] => {
+    const p = popSubject;
+    if (!p) return [];
+    const u = laneUnit(p.lane);
+    const q = nudgeQuantum(p.lane);
+    const handle = (which: "entry" | "exit", value: number): FieldSpec => ({
+        key: which,
+        unit: u.unit,
+        value: u.to(value),
+        precision: u.precision,
+        rate: u.to(q) / 4,
+        begin: () => beginHandle(ecs, p.id, which),
+        write: (v) => void setRecordHandle(ecs, p.id, which, u.from(v)),
+        commit: () => commit(history),
+        cancel: () => cancel(),
+    });
+    const station = (key: "start" | "end"): FieldSpec => ({
+        key,
+        unit: "m",
+        value: key === "start" ? p.row.start : p.row.end,
+        precision: 2,
+        rate: S_GRID / 4,
+        begin: () => beginEdge(ecs, p.id),
+        write: (v) => {
+            const span = clampSpanDrag(key, key === "start" ? v : p.row.start, key === "start" ? p.row.end : v);
+            setRecordSpan(ecs, p.id, span.start, span.end);
+        },
+        commit: () => commit(history),
+        cancel: () => cancel(),
+    });
+    const fields: FieldSpec[] = [];
+    const entry = recordEntry(doc!.lanes, p.lane, p.row);
+    if (entry !== undefined) fields.push(handle("entry", entry));
+    fields.push(handle("exit", p.row.exit), station("start"), station("end"));
+    return fields;
+});
+
+/** the driven residual, formatted in the lane's unit — recovered minus demanded at the worst
+ *  station of the span (`timeline.spanResidual`). Null where the record is not driven, or where
+ *  the bake covers none of its span (a missing premise is not a zero miss). */
+const popResidual = $derived.by((): string | null => {
+    const p = popSubject;
+    if (!p || !drivenIds.has(p.id)) return null;
+    const read = bakeRead(p.lane);
+    if (!read) return null;
+    const r = spanResidual(read, p.row, recordEntry(doc!.lanes, p.lane, p.row));
+    if (r === undefined) return null;
+    const u = laneUnit(p.lane);
+    const v = u.to(r);
+    return `${v >= 0 ? "+" : ""}${v.toFixed(u.precision)}${u.unit} recovered \u2212 demanded`;
 });
 
 // ── pointers ──────────────────────────────────────────────────────────────────
@@ -412,15 +669,144 @@ function gapUp(e: PointerEvent): void {
     guide = null;
     const span = clampSpanDrag("body", Math.min(g.from, to), Math.max(g.from, to));
     if (span.end - span.start < RECORD_FLOOR) return;
-    const value = defaultHandle(doc.lanes, g.lane, span.start);
-    const write = addRecord(history, ecs, g.lane, {
-        start: span.start,
-        end: span.end,
+    addFlat(g.lane, span.start, span.end);
+}
+
+// ── the lane column's reorder drag ────────────────────────────────────────────
+// The column IS the grip (Animate's layer column, dragged through to re-rank): press a name,
+// drag it over another row's band, release. `history.setOrder` lands one entry over `track.order`
+// — which is DOCUMENT state, because the order is what `deriveRuns` reads as priority, so a swap
+// changes the bake and moves the driven overlay to the other row.
+let reorder = $state<{ from: number; to: number } | null>(null);
+
+function reorderMove(e: PointerEvent): void {
+    if (!reorder) return;
+    reorder = { from: reorder.from, to: reorderDrop(rows, localY(e.clientY)) };
+}
+function reorderUp(): void {
+    const g = reorder;
+    reorder = null;
+    endDrag();
+    window.removeEventListener("pointermove", reorderMove);
+    window.removeEventListener("pointerup", reorderUp);
+    window.removeEventListener("pointercancel", reorderUp);
+    if (!g || !doc) return;
+    const next = reordered(doc.order, g.from, g.to);
+    if (next !== doc.order) setOrder(history, ecs, next); // identity: no move records nothing
+}
+
+// ── the step-in: double-click a span or a row expands it in place ──────────────
+function chartDblClick(e: MouseEvent): void {
+    const px = localX(e.clientX);
+    const py = localY(e.clientY);
+    if (py < RULER_H) return;
+    const hit = hitRows(rows, clamped, px, py, COLUMN_W);
+    if (hit === null) return;
+    e.preventDefault();
+    expanded = toggleExpanded(expanded, hit.lane);
+}
+
+// ── the two summoned menus: the lane row's and the span's ──────────────────────
+function chartMenu(e: MouseEvent): void {
+    e.preventDefault();
+    if (!doc || eid === null) return;
+    const px = localX(e.clientX);
+    const py = localY(e.clientY);
+    const hit = hitRows(rows, clamped, px, py, COLUMN_W);
+    if (hit === null) {
+        menu = null;
+        return;
+    }
+    const at = { x: e.clientX, y: e.clientY };
+    if (hit.kind === "body" || hit.kind === "edge") {
+        const found = recordOf(ecs, hit.id);
+        if (!found) return;
+        selectRecord(hit.id); // right-click names only what is under it, and selects it
+        peeled = false;
+        menu = {
+            ...at,
+            items: spanMenu(
+                {
+                    ease: found.row.ease as Easing,
+                    presetGlyph,
+                    canDelete: !editor.dragging,
+                },
+                {
+                    setEase: (ease) => void setEase(history, ecs, hit.id, ease),
+                    remove: () => void removeRecord(history, ecs, hit.id),
+                },
+            ),
+        };
+        return;
+    }
+    // the column and a gap both address the ROW: add a segment at the pointer's own station
+    // (a column press has no station of its own, so it opens one at the ruler's origin side of
+    // the row's first free stretch — the pointer's station under the chart, floored at 0).
+    const station = Math.max(0, hit.kind === "gap" ? hit.d : pxToU(clamped, px - COLUMN_W));
+    const span = gapSpan(hit.lane, station);
+    menu = {
+        ...at,
+        items: rowMenu(
+            { name: laneName(hit.lane), expanded: expanded.has(hit.lane), canAdd: span !== null },
+            {
+                add: () => {
+                    if (span) addFlat(hit.lane, span.start, span.end);
+                },
+                toggleExpand: () => {
+                    expanded = toggleExpanded(expanded, hit.lane);
+                },
+            },
+        ),
+    };
+}
+
+/** the span a menu-summoned Add would take: one `STRIP_LEN` of free lane from `station`, trimmed
+ *  at the next record's start, or null when the station is inside a record or the free stretch is
+ *  under `RECORD_FLOOR`. The drag-out's own law, resolved for a click instead of a drag. */
+const STRIP_LEN = 10;
+function gapSpan(lane: Lane, station: number): { start: number; end: number } | null {
+    if (!doc) return null;
+    const rowRecords = rows.find((r) => r.lane === lane)?.records ?? [];
+    for (const r of rowRecords) if (station >= r.start && station < r.end) return null;
+    let stop = station + STRIP_LEN;
+    for (const r of rowRecords) if (r.start >= station && r.start < stop) stop = r.start;
+    return stop - station < RECORD_FLOOR ? null : { start: station, end: stop };
+}
+
+/** mint one flat record over `[start, end)` at whatever the lane already holds there — the gap
+ *  drag-out's own rule, shared so the menu row and the drag cannot open different documents. */
+function addFlat(lane: Lane, start: number, end: number): void {
+    if (!doc) return;
+    const value = defaultHandle(doc.lanes, lane, start);
+    const write = addRecord(history, ecs, lane, {
+        start,
+        end,
         ease: doc.lanes.force[0]?.ease ?? 1,
         entry: value,
         exit: value,
     });
-    if (write.id !== null) selectRecord(write.id);
+    if (write.id !== null) {
+        selectRecord(write.id);
+        peeled = false;
+    }
+}
+
+/** the easing submenu's row glyph: the preset's REAL curve, drawn from the same sampler the span
+ *  and the step-in read, so the icon cannot drift from the shape it names. */
+function presetGlyph(ease: Easing): string {
+    const pts: string[] = [];
+    for (let i = 0; i <= 8; i++) {
+        const f = i / 8;
+        const g = sampleForce(
+            [
+                { s: 0, g: 0, ease },
+                { s: 1, g: 1, ease },
+            ],
+            f,
+        );
+        pts.push(`${(3 + f * 16).toFixed(1)} ${(12 - g * 10).toFixed(1)}`);
+    }
+    return `M${pts.join(" L")}`;
 }
 
 // ── the end-handle gesture ─────────────────────────────────────────────────────
@@ -457,7 +843,7 @@ function endScrub(): void {
 }
 
 function chartMove(e: PointerEvent): void {
-    if (drag || endDrag_ || gap || panning) return;
+    if (drag || endDrag_ || gap || panning || reorder) return;
     const px = localX(e.clientX);
     const py = localY(e.clientY);
     onEnd = endH !== null && py < RULER_H && hitEndHandle(endH, px);
@@ -508,7 +894,17 @@ function chartDown(e: PointerEvent): void {
         clearSelection(); // an empty click clears the selection (the dismissal rung)
         return;
     }
-    if (hit.kind === "column") return; // the reorder drag is S3c's
+    if (hit.kind === "column") {
+        // the column is the row's grip: a press opens the reorder drag (`history.setOrder` on
+        // release), and a press that never leaves its own row lands nothing.
+        clearSelection();
+        reorder = { from: hit.index, to: hit.index };
+        beginDrag(canvas, e.pointerId);
+        window.addEventListener("pointermove", reorderMove);
+        window.addEventListener("pointerup", reorderUp);
+        window.addEventListener("pointercancel", reorderUp);
+        return;
+    }
     if (hit.kind === "gap") {
         clearSelection();
         gap = { lane: hit.lane, from: hit.d };
@@ -525,6 +921,7 @@ function chartDown(e: PointerEvent): void {
     // popover and the keys bind to. Shift toggles membership; a plain press replaces.
     if (e.shiftKey) toggleRecord(hit.id);
     else if (!editor.records.ids.has(hit.id)) selectRecord(hit.id);
+    peeled = false; // a fresh pick re-arms the popover Escape peeled
     if (hit.kind === "edge") beginEdge(ecs, hit.id);
     else beginBody(ecs, hit.id);
     drag = {
@@ -586,6 +983,37 @@ function sliderDown(e: PointerEvent): void {
     window.addEventListener("pointercancel", sliderUp);
 }
 
+/** the record a nudge acts on: the ACTIVE selected member, resolved through the store so a key
+ *  press can never address a record an undo has since removed. */
+function nudgeSubject(): { id: number; lane: Lane; row: LaneSegment } | null {
+    const id = editor.record;
+    if (id === null) return null;
+    const found = recordOf(ecs, id);
+    return found ? { id, lane: found.lane, row: found.row } : null;
+}
+
+/** apply one nudge as ONE undo entry: the same `history.ts` gesture the drag and the popover
+ *  open, bracketed around a single setter write. A station nudge floors at the origin exactly as
+ *  a body drag does (`timeline.clampSpanDrag`), so an arrow can no more reach below 0 than a
+ *  pointer can; a refused write simply lands nothing and the gesture records nothing. */
+function applyNudge(act: NonNullable<ReturnType<typeof nudgeAct>>): void {
+    const p = nudgeSubject();
+    if (!p) return;
+    if (act.kind === "station") {
+        const shift = act.sign * S_GRID;
+        const span = clampSpanDrag("body", p.row.start + shift, p.row.end + shift);
+        beginBody(ecs, p.id);
+        setRecordSpan(ecs, p.id, span.start, span.end);
+        commit(history);
+        return;
+    }
+    const base = act.which === "entry" ? p.row.entry : p.row.exit;
+    if (base === undefined) return;
+    beginHandle(ecs, p.id, act.which);
+    setRecordHandle(ecs, p.id, act.which, base + act.sign * nudgeQuantum(p.lane));
+    commit(history);
+}
+
 onMount(() => {
     // wheel zooms the document axis at the cursor, shift+wheel pans — the curve-editor
     // standard. Never under a live gesture (`editor.dragging`, the one live-gesture flag).
@@ -608,15 +1036,28 @@ onMount(() => {
         // Escape peels the innermost layer first: a live gesture, then the selection
         // (`editor-ui.md`: dismissal peels one layer).
         if (bound(BINDINGS.exitMode, e.key)) {
-            if (drag || endDrag_ || gap) {
+            if (drag || endDrag_ || gap || reorder) {
                 e.preventDefault();
                 drag = null;
                 endDrag_ = false;
                 gap = null;
+                reorder = null;
                 guide = null;
                 cancel();
                 endDrag();
                 if (eid !== null) releaseGesture(eid);
+                return;
+            }
+            if (menu !== null) {
+                e.preventDefault();
+                menu = null;
+                return;
+            }
+            // dismissal peels ONE layer (`ui.md`): the popover goes before the selection it
+            // was summoned by, so Escape twice is panel then subject.
+            if (!peeled && popSubject !== null) {
+                e.preventDefault();
+                peeled = true;
                 return;
             }
             if (editor.records.ids.size > 0) {
@@ -628,6 +1069,19 @@ onMount(() => {
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
+            return;
+        }
+        // the nudge rung: in-place tweaks without stepping into the popover (check-in two, 13).
+        const nudge = nudgeAct(e, {
+            dragging: editor.dragging,
+            selected: editor.record !== null,
+            shift: e.shiftKey,
+            alt: e.altKey,
+            ownsEntry: nudgeSubject()?.row.entry !== undefined,
+        });
+        if (nudge !== null) {
+            e.preventDefault();
+            applyNudge(nudge);
             return;
         }
         const act = timelineKeyAct(e.key, {
@@ -677,9 +1131,34 @@ onMount(() => {
         bind:this={canvas}
         onpointerdown={chartDown}
         onpointermove={chartMove}
-        oncontextmenu={(e) => e.preventDefault()}
+        ondblclick={chartDblClick}
+        oncontextmenu={chartMenu}
     ></canvas>
+
+    <!-- the contextual popover: the value editor, anchored to the selected span, never a docked
+         panel (Locked decision; the person's check-in two, point 13). -->
+    {#if popSubject && popFit}
+        <Popover
+            x={popFit.x}
+            y={popFit.y}
+            title={laneName(popSubject.lane)}
+            fields={popFields}
+            ease={popSubject.row.ease as Easing}
+            onease={(v) => setEase(history, ecs, popSubject.id, v)}
+            residual={popResidual}
+            onpeel={() => (peeled = true)}
+        />
+    {/if}
 </div>
+
+<!-- the summoned row / span menu: one instance of the shared menu language, positioned by the
+     same `fitMenu` action every root context menu uses. -->
+{#if menu}
+    <div class="menu-anchor" use:fitMenu={{ x: menu.x, y: menu.y }}>
+        <Menu items={menu.items} onclose={() => (menu = null)} />
+    </div>
+{/if}
+<svelte:window onpointerdown={(e) => { if (menu && !(e.target as HTMLElement)?.closest?.(".menu-anchor")) menu = null; }} />
 
 <!-- the player: a standard media transport (play/pause · global scrub · timecode), floated as
      its own surface above the dock. It drives the cart, never the document. -->
@@ -742,6 +1221,10 @@ onMount(() => {
         user-select: none;
         -webkit-user-select: none;
         overflow: hidden;
+    }
+    .menu-anchor {
+        position: fixed;
+        z-index: 8;
     }
     .chart {
         display: block;
