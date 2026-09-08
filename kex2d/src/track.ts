@@ -9,9 +9,10 @@
  *   - `Track.end` (0 = follow the longest lane), `Track.order` (lane priority) and `Track.v0`
  *     (the start speed), beside the track's `ds`, `domain` and the two loss coefficients.
  *
- *  The setters below are the only authored writers, and every one of them refuses through
- *  `lanes.laneRefusals`: a candidate lane is assembled, the laws are read over it, and either
- *  every guard passes and the write lands or nothing is written at all. Refusals are
+ *  The setters below are the only authored writers, and every one of them refuses through the
+ *  `lanes.ts` laws: a candidate lane is assembled, the laws the edited record introduces are
+ *  read over it, and either every guard passes and the write lands or nothing is written at
+ *  all. Refusals are
  *  STRUCTURAL — an overlapping edit is declined, never clamped into legality (Locked decision).
  *
  *  **Stations are f64.** A lane record's `start`/`end`/`entry`/`exit` are authored numbers on a
@@ -34,7 +35,6 @@ import {
     Lane,
     type LaneSegment,
     type Lanes,
-    laneRefusals,
     endPinnable,
     laneOrder,
     ordered,
@@ -232,30 +232,52 @@ export function entrySpeed(ecs: State): number {
 
 // ── the setters — the only authored writers ──────────────────────────────────
 //
-// Every one assembles the CANDIDATE lane, reads `lanes.laneRefusals` plus the record floor over
-// it, and writes only when the candidate is clean. Structural refusal, never a clamp.
-
-/** the record floor as a refusal: a span shorter than `RECORD_FLOOR` is not an authoring
- *  gesture. Reported under `segmentDegenerate`, the guard a non-positive span already carries,
- *  because both are the same claim — this span is not a record. */
-function floorRefusals(lane: Lane, rows: readonly LaneSegment[]): LaneRefusal[] {
-    const out: LaneRefusal[] = [];
-    for (const r of rows)
-        if (r.end - r.start < RECORD_FLOOR && r.end > r.start)
-            out.push({
-                guard: "segmentDegenerate",
-                message: `${laneNameOf(lane)} segment ${r.id} spans ${r.end - r.start} m, below the ${RECORD_FLOOR} m record floor`,
-            });
-    return out;
-}
+// Every one assembles the CANDIDATE lane and reads the laws the EDITED record introduces over
+// it, writing only when that record is clean. Structural refusal, never a clamp.
 
 function laneNameOf(lane: Lane): string {
     return lane === Lane.Velocity ? "velocity" : lane === Lane.Force ? "force" : "geo";
 }
 
-/** every law a candidate lane violates — the one gate every setter passes through. */
-function refuse(lane: Lane, candidate: readonly LaneSegment[]): LaneRefusal[] {
-    return [...laneRefusals(lane, candidate), ...floorRefusals(lane, candidate)];
+/** every law the EDITED record introduces into `candidate` — its own span (degenerate, or under
+ *  the record floor) and the overlaps it itself takes part in. The one gate every setter passes
+ *  through.
+ *
+ *  Scoped to the edited record on purpose (spec S2f punch list item 1): a setter refuses what
+ *  the gesture introduces, never a violation the document already carried. Reading the WHOLE
+ *  candidate lane instead froze every span edit on a lane holding a legal-but-sub-floor record
+ *  — `force/sub-min-spacing.kex` loads legally, because the record floor is a setter law and
+ *  not a document one, and then refused moving record 2 for record 1's floor, a violation the
+ *  gesture neither made nor could clear. The laws themselves are unchanged and stay the
+ *  `lanes.ts` vocabulary (`segmentDegenerate`, `segmentOverlapped`); only their subject
+ *  narrows. A duplicate id is not read here — ids are unique across the whole document, not per
+ *  lane, so `createRecord` refuses that one against the live document itself. */
+function refuse(lane: Lane, candidate: readonly LaneSegment[], edited: number): LaneRefusal[] {
+    const row = candidate.find((r) => r.id === edited);
+    // a delete introduces nothing: the candidate is the lane minus one record, and every law
+    // here is a law about a record that is present.
+    if (!row) return [];
+    const name = laneNameOf(lane);
+    const out: LaneRefusal[] = [];
+    if (!(row.start < row.end))
+        out.push({
+            guard: "segmentDegenerate",
+            message: `${name} segment ${row.id} spans [${row.start}, ${row.end}), which is not a positive half-open span`,
+        });
+    else if (row.end - row.start < RECORD_FLOOR)
+        out.push({
+            guard: "segmentDegenerate",
+            message: `${name} segment ${row.id} spans ${row.end - row.start} m, below the ${RECORD_FLOOR} m record floor`,
+        });
+    for (const other of ordered(candidate)) {
+        if (other.id === edited) continue;
+        if (other.start < row.end && row.start < other.end)
+            out.push({
+                guard: "segmentOverlapped",
+                message: `${name} segment ${row.id} [${row.start}, ${row.end}) overlaps segment ${other.id} [${other.start}, ${other.end})`,
+            });
+    }
+    return out;
 }
 
 /** the candidate lane produced by replacing (or adding, or dropping) one record. */
@@ -304,7 +326,7 @@ export function createRecord(
         return declined([
             { guard: "duplicateId", message: `a lane record already holds id ${id}` },
         ]);
-    const refusals = refuse(lane, candidateOf(laneRows(ecs, lane), id, next));
+    const refusals = refuse(lane, candidateOf(laneRows(ecs, lane), id, next), id);
     if (refusals.length > 0) return declined(refusals);
     const eid = ecs.create();
     ecs.add(eid, LaneRecord);
@@ -319,7 +341,7 @@ export function setRecordSpan(ecs: State, id: number, start: number, end: number
     if (eid === null) return declined([{ guard: "recordNotFound", message: `no record ${id}` }]);
     const lane = LaneRecord.lane.get(eid) as Lane;
     const next = { ...rowOf(eid), start, end };
-    const refusals = refuse(lane, candidateOf(laneRows(ecs, lane), id, next));
+    const refusals = refuse(lane, candidateOf(laneRows(ecs, lane), id, next), id);
     if (refusals.length > 0) return declined(refusals);
     writeRow(eid, lane, next);
     return landed(id);

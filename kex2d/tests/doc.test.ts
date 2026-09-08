@@ -595,6 +595,35 @@ describe("the start speed is `track.v0` and nothing else", () => {
     });
 });
 
+describe("a retired wire column makes the file a bridged document, not a v4 one", () => {
+    // one inline v4 text, valid but for the column: the guard is structural, so it needs no
+    // `invariants/*-red.kex` fixture (that census is one fixture per semantic guard).
+    const v4 = () => ({
+        version: CURRENT_VERSION,
+        track: { ds: 0.5, domain: 0, friction: 0, resistance: 0, v0: 16 },
+        lanes: {
+            velocity: [],
+            force: [],
+            geo: [{ id: 0, start: 0, end: 24, ease: 0, entry: 0, exit: 0 }],
+        },
+    });
+
+    test("the inline v4 text itself loads", () => {
+        expect(parseDocument(JSON.stringify(v4())).lanes.geo).toHaveLength(1);
+    });
+
+    for (const column of ["segments", "strips"] as const) {
+        test(`a v4 text still carrying \`${column}\` is refused with the bridged-build remedy`, () => {
+            const raw = { ...v4(), [column]: [] } as Record<string, unknown>;
+            expect(() => parseDocument(JSON.stringify(raw))).toThrow(
+                new RegExp(`${column} is not a valid field`),
+            );
+            expect(() => parseDocument(JSON.stringify(raw))).toThrow(/retired\/pose-ux/);
+            expect(() => parseDocument(JSON.stringify(raw))).toThrow(/kex2d document:/);
+        });
+    }
+});
+
 describe("saveDocument / loadDocument on a no-op cycle", () => {
     test("loadDocument(ecs, saveDocument(ecs)) is a no-op on the live ECS", () => {
         const { state, eid } = flatTrack();
