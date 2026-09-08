@@ -9,8 +9,6 @@
  *  never fights over its target. */
 
 import type { State } from "@dylanebert/shallot";
-import { createHistory, type History } from "./history";
-import type { OptimizeOutcome, UnreachableReason } from "./optimize";
 import { recordAt } from "./track";
 
 /** which end of a node's tangent a knob edits. The node substrate is retired at S2e-i; the type
@@ -329,10 +327,6 @@ interface EditorState {
      *  own `-2` branch — a sentinel, not a `Strip.id`, since the one-shot is never a strip
      *  row, S3 Locked decision). */
     stripMenu: { x: number; y: number; d: number; strip: number } | null;
-    /** the snapping magnet toggle (AE model): a persistent editor preference, default
-     *  on, `S` toggles it, and holding Ctrl/Cmd momentarily inverts it (`snapActive`).
-     *  ephemeral like the rest of `editor` — a view preference, not authored track state. */
-    snap: boolean;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
@@ -376,53 +370,6 @@ interface EditorState {
      *  auto-dismissed. it lives here and nowhere else: nothing of a solve past points / length /
      *  realized `ds` is ever stored on the document. */
     notice: Notice | null;
-    /** the pin-mode session in flight on a force section, or null — the mode-scoped stamp +
-     *  entry-frame ghost (`kex2d-optimize-mode` stage 1: `optimize.ts`'s masked solve). Entering
-     *  the mode stamps the section's CURRENT exit as the pin and freezes a ghost of the CURRENT
-     *  shape; both live and die with this field — there is no persistent pin. A refused solve
-     *  never clears it (refusal stays in-mode); only `endPin` does — Exit/Esc, or the
-     *  landed Solve that closes the mode. */
-    pinning: PinSession | null;
-    /** locked force-keyframe ids for the live pin session — mode-scoped: locks persist
-     *  across solves while the mode is open and are discarded on `endPin` (exit or the
-     *  landed Solve that closes the mode). All keys are free by default (the locked decision's
-     *  "all-free, locking is the gesture" law) — an in-mode-added key is free by construction,
-     *  since locking is opt-in membership here. Meaningless outside a session, but not reset
-     *  automatically on entry ordering — `beginPin` clears it explicitly. */
-    locked: Set<number>;
-    /** whether an invoked pin solve is running — the mode's OWN blocking gate, separate from
-     *  `converting` (a geo↔force kind conversion): the two invoked tools never overlap in scope
-     *  (a converting section can't be mid-pin, since entering pin mode requires an
-     *  already-force, already-baked section) but share nothing else, so a shared boolean would
-     *  couple two independent modal surfaces. */
-    pinSolving: boolean;
-    /** the live paced-landing display, or null — see {@link Landing}. cosmetic only. */
-    landing: Landing | null;
-}
-
-/** the mode-entry stamp + ghost the optimize kernel (`optimize.ts`) and its editor command
- *  (`pin.ts`) read/write against — structural, so this module never imports either (the
- *  `SolveOutcome`/`Converting` precedent). `stamp` is the pin (frozen at mode entry — it lives and
- *  dies with the session, the mode-scoped-stamp law); `ghost` is the mode-entry shape's dense
- *  positions, for the whole-shape ghost overlay — also frozen, never re-derived.
- *
- *  **Everything else about the section is read live, every solve.** There is no cached entry
- *  frame/length/ds/domain here: `pin.runPinSection` re-reads the section's CURRENT
- *  baking parameters at each invoke (`sectionSpec`) — the invoked-command convention, so the
- *  solve always targets exactly what's on screen. The entry frame is STABLE in-mode by the
- *  editing lockdown (only the pinning section is editable — no upstream edits, no v0), so the
- *  live re-read and the stamp describe the same entry for the mode's whole life; the re-read is
- *  convention, not drift-handling. */
-export interface PinSession {
-    section: number;
-    stamp: { x: number; y: number; theta: number; v: number };
-    ghost: { x: Float32Array; y: Float32Array };
-    /** the section's full recovered exit at mode entry — the downstream freeze's chain seed
-     *  (`track.setBakeFreeze`): while the mode is open, sections after this one bake from HERE,
-     *  not the live exit (stage 7 — downstream holds its mode-entry placement; the boundary gap
-     *  is the residual made visible). frozen with the stamp, so a reopened session (undo of the
-     *  landed Solve) freezes identically. */
-    freeze: { x: number; y: number; theta: number; v: number };
 }
 
 /** a solve in flight: the façade's own progress, rewritten per report. */
@@ -444,84 +391,12 @@ export interface Notice {
     text: string;
 }
 
-/** the paced landing (kex2d-optimize-mode stage 5, display-wide since kex2d-idioms stage 4): a
- *  landed Solve's keyframes animate continuously from their pre-solve to their solved `g` over
- *  {@link LANDING_MS} so the solve reads as a process. COSMETIC ONLY — the document landed
- *  atomically before this state exists; it offsets where the timeline DRAWS the moved diamonds
- *  AND, through the bake seam (`track.setBakeLanding`), what the whole display bakes while it
- *  runs — curve, viewport geometry, markers, cart, with the downstream freeze held through the
- *  window. Esc or any pointerdown skips to the end state (`skipLanding`); expiry is equivalent
- *  to skipping. It is also the mode's EXIT TRANSITION (kex2d-idioms stage 8): while it runs
- *  the modal presentation holds — {@link modeChromeSection}. */
-export interface Landing {
-    /** `performance.now()` at the landing. */
-    start: number;
-    /** the landed session's section — the modal chrome's subject through the window
-     *  ({@link modeChromeSection}): the dim's scope and the subject hatch key here once the
-     *  mode itself has closed. */
-    section: number;
-    /** the moved keys only: each id's pre-solve and solved g. */
-    moves: readonly { id: number; from: number; to: number }[];
-}
-
-/** the paced landing's duration (ms) — deliberate pacing, not latency (the solve itself is
- *  milliseconds; this is the feedback). */
-export const LANDING_MS = 500;
-
-/** open the paced landing display. a solve that moved nothing shows nothing. `hold` is the
- *  landed session's section + frozen entry (`PinSession.freeze`): the display bake keeps
- *  downstream seeded there for the window, so the freeze the mode close released doesn't snap
- *  — it eases shut as the interpolated exit converges to the stamp. */
-export function beginLanding(
-    moves: readonly { id: number; from: number; to: number }[],
-    hold: { section: number; entry: { x: number; y: number; theta: number; v: number } },
-): void {
-    if (moves.length === 0) {
-        // clear BOTH halves: a prior override left live under a null `editor.landing` would be
-        // unreleasable (every skip listener guards on the landing) and bake every frame forever.
-        editor.landing = null;
-        return;
-    }
-    const landing: Landing = { start: performance.now(), section: hold.section, moves };
-    void hold;
-    editor.landing = landing;
-}
-
-/** skip (or expire) the landing: the display snaps to the document's own values — the chart's
- *  diamond override and the bake-seam override clear together (one skip, whole display). */
-export function skipLanding(): void {
-    editor.landing = null;
-}
-
-/** the modal chrome's subject section, or null when no modal presentation holds (kex2d-idioms
- *  stage 8): the live pin session's, else the paced landing's — the landing is the mode's
- *  exit transition, so the panel, the dim wash, and the subject hatch hold through the window
- *  and release in ONE moment (expiry or skip). CHROME ONLY, never a second mode state:
- *  enablement and consent predicates (`sectionOpsAllowed`, `sectionEditable`, the lockdowns)
- *  keep reading `editor.pinning` — document truth — and an in-window edit stays
- *  possible-but-skip (every entry gesture routes through `skipLanding` first). */
-export function modeChromeSection(): number | null {
-    return editor.pinning?.section ?? editor.landing?.section ?? null;
-}
-
 /** the one shared easing curve (`editor-ui.md` Mode vocabulary: Motion) — cubic ease-out,
  *  `1 − (1 − t)³`. The CSS twin is App.svelte's `--ease-out` token, the exact bezier of this
  *  polynomial (`cubic-bezier(0.33333, 1, 0.66667, 1)`); pinned equal in colors.test.ts, so
  *  the two halves can't drift into two dialects of one motion. */
 export function easeOut(t: number): number {
     return 1 - (1 - t) ** 3;
-}
-
-/** the displayed g for a keyframe under the live landing, or null when the landing doesn't
- *  cover it (or has expired) — the one cosmetic display override. the shared ease-out, so the
- *  motion decelerates into the solved value. */
-export function landingG(landing: Landing, id: number, now: number): number | null {
-    const t = (now - landing.start) / LANDING_MS;
-    if (t >= 1) return null;
-    const m = landing.moves.find((mv) => mv.id === id);
-    if (!m) return null;
-    const k = t <= 0 ? 0 : easeOut(t);
-    return m.from + (m.to - m.from) * k;
 }
 
 export const editor: EditorState = {
@@ -588,7 +463,6 @@ export const editor: EditorState = {
     forceMenu: null,
     rulerMenu: null,
     stripMenu: null,
-    snap: true,
     dragging: false,
     hoverSection: null,
     hoverNode: null,
@@ -597,10 +471,6 @@ export const editor: EditorState = {
     hover: "viewport",
     converting: null,
     notice: null,
-    pinning: null,
-    locked: new Set(),
-    pinSolving: false,
-    landing: null,
 };
 
 /** the four hover fields as one named shape — `controls.pickHover`'s return type, annotated
@@ -640,113 +510,6 @@ export function clearHover(): void {
     editor.hoverNode = null;
     editor.hoverForce = null;
     editor.hoverSection = null;
-}
-
-// ── pin mode (kex2d-optimize-mode stage 7: the sandbox) ──────────────────────
-// mode-scoped: entering stamps the exit, freezes a ghost + the downstream chain, and opens the
-// SANDBOX — a second History every in-mode recording lands in (`history.redirectHistory`), so the
-// pin state is temporary and the outer stacks are untouched until a Solve lands. locking is
-// a set of force-keyframe ids, all-free by default (the locked decision's consent-boundary law).
-// `beginPin`/`endPin` are the ONLY open/close choke points — every path (fresh entry,
-// Exit/Esc, the landed Solve, undo/redo of the landing) goes through them, so the sandbox, the
-// redirect, and the downstream freeze can never leak past the mode.
-
-let sandboxH: History | null = null;
-
-/** the live sandbox history, or null when no mode is open — in-mode undo/redo operate on THIS
- *  stack only (`pin.undoRouted`/`redoRouted`); the outer stacks are unreachable from
- *  inside (the sandbox contract). */
-export function sandbox(): History | null {
-    return sandboxH;
-}
-
-/** swap the live sandbox's stacks for captured ones — the landed Solve's undo path: the outer
- *  entry carries the sandbox frozen at solve time, and undoing it reopens the mode with the
- *  experiment resumed (edits present, in-mode undo/redo intact). copies both ways, so repeated
- *  undo/redo cycles can't mutate the entry's frozen arrays. a no-op with no mode open. */
-export function restoreSandbox(undoE: History["undo"], redoE: History["redo"]): void {
-    if (sandboxH === null) return;
-    sandboxH.undo = [...undoE];
-    sandboxH.redo = [...redoE];
-}
-
-/** enter pin mode on a force section: stamp its current exit, freeze the mode-entry ghost,
- *  open a fresh sandbox (all in-mode recordings land there — nothing applies to the outer
- *  history until Solve), freeze the downstream chain at the session's recovered exit, and clear
- *  any stale lock set from a prior session. */
-export function beginPin(session: PinSession): void {
-    // a session never opens over a live landing override (exitPinMode's symmetric skip):
-    // the new session's freeze and a stale hold would fight over the two-part chain.
-    skipLanding();
-    editor.pinning = session;
-    editor.locked = new Set();
-    editor.notice = null;
-    sandboxH = createHistory();
-}
-
-/** close pin mode: drop the stamp, the ghost, every lock, the sandbox, and the downstream
- *  freeze (the next bake repropagates downstream from the live exit). the document-level close
- *  semantics live with the callers (`pin.ts`): Exit reverts the sandbox first; the
- *  landed Solve captures it into the outer entry. */
-export function endPin(): void {
-    editor.pinning = null;
-    editor.locked.clear();
-    editor.pinSolving = false;
-    sandboxH = null;
-}
-
-/** toggle a single force keyframe's lock — the basic lock/free gesture. a no-op outside a live
- *  session (nothing to lock against). */
-export function toggleLocked(id: number): void {
-    if (editor.pinning === null) return;
-    if (editor.locked.has(id)) editor.locked.delete(id);
-    else editor.locked.add(id);
-}
-
-/** the keyframe context menu's Lock/Unlock row, or null when the row does not EXIST (kex2d
- *  stage 6): lock is mode-scoped state — outside an pin session (or on a section other than
- *  the pinning one) there is nothing to lock, so the row is OMITTED, not grayed (menus law:
- *  gray a blocked action, omit one the subject rules out — contrast the in-mode Convert rows,
- *  which gray because convert exists and is temporarily barred). the label mirrors the `Q`
- *  hotkey's toggle semantics (`toggleLockedSet`): an all-locked selection offers Unlock,
- *  anything else Lock.
- *
- * @example
- * const label = lockLabel(editor.pinning, pt.section, memberIds, editor.locked);
- * if (label) items.unshift({ label, action: () => toggleLockedSet(memberIds) });
- */
-export function lockLabel(
-    pinning: PinSession | null,
-    section: number,
-    ids: readonly number[],
-    locked: ReadonlySet<number>,
-): "Lock" | "Unlock" | null {
-    if (pinning === null || pinning.section !== section || ids.length === 0) return null;
-    return ids.every((id) => locked.has(id)) ? "Unlock" : "Lock";
-}
-
-/** toggle a SET of force keyframes' lock as one gesture (the multiselect bulk form, mirroring the
- *  bulk force ops elsewhere): if every member is already locked, unlock them all; otherwise lock
- *  every member (the "select some free keys among locked ones" case locks the rest, matching the
- *  bulk-toggle convention the easing/tangent-mode rows already use — act on the whole set, not
- *  per-member). a no-op outside a live session. */
-export function toggleLockedSet(ids: readonly number[]): void {
-    if (editor.pinning === null || ids.length === 0) return;
-    const allLocked = ids.every((id) => editor.locked.has(id));
-    for (const id of ids) {
-        if (allLocked) editor.locked.delete(id);
-        else editor.locked.add(id);
-    }
-}
-
-/** open the pin solve's own blocking gate — a solve is in flight, no other editor input. */
-export function beginPinSolve(): void {
-    editor.pinSolving = true;
-}
-
-/** close the pin solve's blocking gate — resolution, cancel, or failure alike. */
-export function endPinSolve(): void {
-    editor.pinSolving = false;
 }
 
 // ── the invoked-solve gate ────────────────────────────────────────────────────────
@@ -875,24 +638,6 @@ export function fitDone(r: FitOutcome): Notice {
     return { kind: "done", text: `${text} · ${misses.join(" · ")}` };
 }
 
-/** the readout for a solve that REFUSED — raised on the shared transient notice (the app's one
- *  status surface, stage-7 fourth check-in: the panel keeps only Solve/Exit + the starved
- *  reason). one TERSE sentence per refusal class — no "Nothing changed" padding, the sandbox
- *  guarantees it — with the taxonomy's two labels (unreachable variants vs did-not-converge)
- *  kept distinguishable. `reason` is the certifying check on an `"unreachable"` answer. typed on
- *  the kernel's own exported unions — a TYPE-ONLY import is erased at compile, so the solver
- *  tier still never joins this module's runtime graph (the structural-read rule guards the
- *  graph, not the types). there is deliberately no landed-solve readout: the paced landing
- *  animation is the feedback. */
-export function pinRefused(outcome: OptimizeOutcome, reason?: UnreachableReason): string {
-    if (outcome === "unreachable") {
-        if (reason === "stall") return "The draft stalls before the exit.";
-        if (reason === "conditioning") return "The free keys can't steer the exit.";
-        return "Fewer than 3 free keys.";
-    }
-    return "Failed to converge.";
-}
-
 /** the readout for a solve that REJECTED, plus the raw detail for the console.
  *
  * One plain sentence per class, never the thrown message: those name sections by id and functions
@@ -987,16 +732,6 @@ export function endDrag(): void {
         // already released / detached
     }
 }
-
-/** flip the snapping magnet (the `S` key). */
-export function toggleSnap(): void {
-    editor.snap = !editor.snap;
-}
-
-/** whether snapping is active for a gesture, given whether the Ctrl/Cmd bypass modifier
- *  is held: the persistent toggle XOR the momentary modifier (the AE magnet — hold to
- *  invert, so a bypass turns it off while on and summons it while off). */
-export const snapActive = (mod: boolean): boolean => editor.snap !== mod;
 
 // a plain click replace-selects: clearing every member of every kind, then setting the one.
 // shift/marquee toggle within one kind after sweeping the others. the `exclusive*` family is

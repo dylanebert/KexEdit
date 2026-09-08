@@ -14,13 +14,8 @@ import {
     endConvert,
     enterTangentEdit,
     fitDone,
-    landingG,
-    LANDING_MS,
-    lockLabel,
-    modeChromeSection,
     notify,
     openContext,
-    pinRefused,
     solveDone,
     solveFailed,
     type Selection,
@@ -937,85 +932,6 @@ test("a dense fit reads as a failure and names the node count — a held budget 
         kind: "error",
         text: "The fit needs 240 nodes — too many to author. Nothing changed.",
     });
-});
-
-// ── the paced landing's display interpolation (`landingG`) + the refusal mapping ──
-// kex2d-optimize-mode stage 5: the landing animation IS the feedback (the Δg toast is gone) —
-// the interpolation is the one cosmetic display override, so its edges are pinned here.
-
-test("landingG: interpolates a covered key from `from` toward `to`, ease-out, and expires to null", () => {
-    const landing = { start: 1000, section: 0, moves: [{ id: 7, from: 1, to: 2 }] };
-    expect(landingG(landing, 7, 1000)).toBe(1); // t = 0: the pre-solve draft value
-    const mid = landingG(landing, 7, 1000 + LANDING_MS / 2);
-    if (mid === null) throw new Error("mid-animation read expired");
-    expect(mid).toBeGreaterThan(1.5); // ease-OUT: past the halfway value at half time
-    expect(mid).toBeLessThan(2);
-    expect(landingG(landing, 7, 1000 + LANDING_MS)).toBeNull(); // expiry → the document's own value
-});
-
-test("landingG: an uncovered key reads null (only moved keys animate)", () => {
-    const landing = { start: 0, section: 0, moves: [{ id: 7, from: 1, to: 2 }] };
-    expect(landingG(landing, 8, 100)).toBeNull();
-});
-
-// ── the modal-chrome predicate (`modeChromeSection`, kex2d-idioms stage 8) ──
-// the landing is the mode's exit transition: the panel, dim wash, and subject hatch key on
-// this one predicate (pinning ∥ landing) so the modal presentation holds through the
-// window and releases in ONE moment — chrome only, never a second mode state (enablement
-// keeps reading `editor.pinning`).
-
-test("modeChromeSection: null at rest, the session's section in-mode, the landing's through the window", () => {
-    expect(modeChromeSection()).toBeNull();
-    editor.pinning = {
-        section: 3,
-        stamp: { x: 0, y: 0, theta: 0, v: 10 },
-        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
-        freeze: { x: 0, y: 0, theta: 0, v: 10 },
-    };
-    expect(modeChromeSection()).toBe(3); // the live mode
-    editor.pinning = null;
-    editor.landing = { start: 0, section: 3, moves: [{ id: 1, from: 0, to: 1 }] };
-    expect(modeChromeSection()).toBe(3); // the exit transition holds the chrome
-    editor.landing = null;
-    expect(modeChromeSection()).toBeNull(); // one release moment — skip and expiry alike
-});
-
-// ── the keyframe menu's Lock/Unlock row (`lockLabel`, kex2d stage 6) ──
-// mode-scoped existence: the row is OMITTED (null) outside pin mode and on any section other
-// than the pinning one (lock doesn't exist there — omit, not gray); inside, the label mirrors
-// the `Q` toggle's semantics (all locked → Unlock, else Lock).
-
-test("lockLabel: hidden outside the mode, on other sections, and on an empty set", () => {
-    const session = {
-        section: 7,
-        stamp: { x: 0, y: 0, theta: 0, v: 10 },
-        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
-        freeze: { x: 0, y: 0, theta: 0, v: 10 },
-    };
-    expect(lockLabel(null, 7, [1, 2], new Set())).toBeNull(); // no mode → no row
-    expect(lockLabel(session, 3, [1, 2], new Set())).toBeNull(); // another section → no row
-    expect(lockLabel(session, 7, [], new Set())).toBeNull(); // nothing selected → no row
-});
-
-test("lockLabel: toggle semantics — all-locked offers Unlock, anything else Lock", () => {
-    const session = {
-        section: 7,
-        stamp: { x: 0, y: 0, theta: 0, v: 10 },
-        ghost: { x: new Float32Array(0), y: new Float32Array(0) },
-        freeze: { x: 0, y: 0, theta: 0, v: 10 },
-    };
-    expect(lockLabel(session, 7, [1, 2], new Set())).toBe("Lock"); // none locked
-    expect(lockLabel(session, 7, [1, 2], new Set([1]))).toBe("Lock"); // mixed → lock the rest
-    expect(lockLabel(session, 7, [1, 2], new Set([1, 2]))).toBe("Unlock"); // all locked
-});
-
-test("pinRefused: one TERSE sentence per refusal class, taxonomy distinguishable", () => {
-    // stage-7 fourth check-in: no "Nothing changed" padding (the sandbox guarantees it); the
-    // three unreachable certificates stay distinct from did-not-converge.
-    expect(pinRefused("unreachable", "stall")).toBe("The draft stalls before the exit.");
-    expect(pinRefused("unreachable", "conditioning")).toBe("The free keys can't steer the exit.");
-    expect(pinRefused("unreachable", "free-count")).toBe("Fewer than 3 free keys.");
-    expect(pinRefused("diverged")).toBe("Failed to converge.");
 });
 
 // ── the hover seam (kex2d-followups stage 3, follow-up 7): `writeHover`/`clearHover` are pure —

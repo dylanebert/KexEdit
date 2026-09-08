@@ -152,7 +152,6 @@ export interface Kex {
     parked(): boolean;
     resistance(): number;
     runs(): { id: number; kind: number; start: number; length: number }[];
-    sandboxDepth(): number | null;
     save(): string;
     setV0(v: number): void;
     // the first-infeasible sample's own axis reading, or null off a feasible bake.

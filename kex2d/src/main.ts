@@ -4,7 +4,7 @@ import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
 import { loadDocument, saveDocument } from "./doc";
-import { activeKind, sandbox, selectionHook } from "./editor";
+import { activeKind, selectionHook } from "./editor";
 import { history, setSelectionHook } from "./history";
 import { RenderPlugin } from "./render";
 import { loadSnapSteps } from "./settings";
@@ -78,7 +78,6 @@ if (import.meta.env.DEV) {
             runsOf(ecs).map((r) => ({ id: r.id, kind: r.kind, start: r.start, length: r.length })),
         // the active selection member's kind, or null when nothing is selected.
         activeKind: (): string | null => activeKind(),
-        sandboxDepth: (): number | null => sandbox()?.undo.length ?? null,
         // the START diamond's screen point (canvas-local px) — sample 0, the world origin.
         startAt: (): { x: number; y: number } | null => {
             const s = samples.get(track);

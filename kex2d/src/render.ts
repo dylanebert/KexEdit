@@ -1,7 +1,6 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { cartPose, cartState } from "./cart";
 import { COLOR_ACCENT, COLOR_INFEASIBLE, kindSegments } from "./colors";
-import { editor } from "./editor";
 import { niceStep } from "./timeline";
 import { bakeOut, samples, Track } from "./track";
 import { Canvas2D, resize, viewTransform } from "./view";
@@ -152,29 +151,6 @@ const TrackDrawSystem: System = {
         const { element: canvas, ctx } = Canvas2D;
         if (!ctx) return;
         const { sx, sy, ox, oy } = viewTransform(canvas);
-
-        // pin mode's whole-shape ghost (kex2d-optimize-mode stage 1): the mode-entry
-        // geometry, frozen at `beginPin` and never re-derived — a faint dashed reference
-        // so the author sees how far the current draft has drifted from where the mode's stamp
-        // was taken. Drawn first (underneath the live track); the ghost never picks or hovers.
-        if (editor.pinning) {
-            const { x: gx, y: gy } = editor.pinning.ghost;
-            if (gx.length >= 2) {
-                ctx.save();
-                ctx.strokeStyle = "rgba(240, 236, 232, 0.25)";
-                ctx.lineWidth = 2;
-                ctx.setLineDash([6, 4]);
-                ctx.beginPath();
-                for (let i = 0; i < gx.length; i++) {
-                    const px = ox + gx[i] * sx;
-                    const py = oy + gy[i] * sy;
-                    if (i === 0) ctx.moveTo(px, py);
-                    else ctx.lineTo(px, py);
-                }
-                ctx.stroke();
-                ctx.restore();
-            }
-        }
 
         for (const trackEid of ecs.query([Track])) {
             const count = Track.count.get(trackEid);

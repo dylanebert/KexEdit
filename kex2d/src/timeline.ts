@@ -19,8 +19,6 @@
 import { Domain } from "./section";
 import { V0 } from "./track";
 
-const clampN = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
-
 /** view-state: a single affine over the chart's axis `u` (distance or time, per
  *  `Track.domain`). `pan` is the content pixel at the left edge (scroll-like);
  *  `pxPerU` is the horizontal scale (px per axis unit). */
@@ -367,64 +365,6 @@ export function snapAxis(
     return active
         ? { value: Math.round(rawVal / grid) * grid, guide: null }
         : { value: rawVal, guide: null };
-}
-
-/** the rigid group clamp for a multi-keyframe s-drag/nudge (AE comp-start: the block stops as one).
- *  given each selected member's section-local `s` and extent `len`, clamp a desired shared Δs so
- *  EVERY in-extent member stays within its own `[0, len]` — the tightest member bounds the group, so
- *  the relative offsets are preserved exactly. the binding interval intersects `[−s, len − s]` over
- *  members with `0 ≤ s ≤ len` ONLY; an out-of-extent member (`s > len`, reachable by shortening a
- *  section under a keyframe — `setSectionLength` leaves the point's s) has an empty own-interval, so
- *  it would drag the whole block leftward — it's excluded from the binding set and instead rides the
- *  shared Δs under its own outer `clamp(s + Δs, 0, len)` (what a single-select drag of that orphan
- *  already does). the binding interval always contains 0, so the start is never clamped away; when
- *  EVERY member is out of extent the set is empty and Δs passes through unclamped (the per-member
- *  outer clamp still bounds each write). a single in-extent member degenerates to today's
- *  `clamp(s + Δs, 0, len)`. @example clampDelta([{ s: 5, len: 10 }, { s: 1, len: 2 }], 3) // → 1 */
-export function clampDelta(
-    members: readonly { s: number; len: number; lo?: number }[],
-    ds: number,
-): number {
-    let lo = -Infinity;
-    let hi = Infinity;
-    for (const m of members) {
-        const mLo = m.lo ?? 0; // default lower bound is 0 (force keyframes); strip keyframes pass `start`
-        if (m.s > m.len) continue; // out of extent: excluded from the binding set (rides the outer clamp)
-        if (mLo - m.s > lo) lo = mLo - m.s; // Δs ≥ lo − s keeps the member ≥ lo
-        if (m.len - m.s < hi) hi = m.len - m.s; // Δs ≤ len − s keeps it ≤ len
-    }
-    const r = Math.min(Math.max(ds, lo), hi); // empty binding set → lo/hi stay ∓∞, Δs unclamped
-    return r === 0 ? 0 : r; // normalize −0 (from a member pinned at s = lo) so `=== 0` holds downstream
-}
-
-/** the per-member `(s, g)` writes for one arrow-nudge of the selected force set (Timeline.svelte's
- *  keyboard handler). two regimes: a SINGLE selection rounds the ABSOLUTE result to the field grid
- *  (s → 0.1, g → 0.01), re-quantizing an off-grid point onto the grid — the pre-multiselect nudge
- *  semantics, preserved byte-for-byte. a MULTI set moves by ONE shared delta: the nudge step is
- *  already grid-sized, so the rigid clamp is applied LAST (the hard `[0, len]` invariant wins with no
- *  post-clamp rounding — a rounded Δs could exceed the clamp bound and break the offsets), and every
- *  relative offset is preserved exactly. @example nudgeKeyframes([{ id: 1, s: 1.007, v: 2, len: 10 }], 0, 0.05) */
-export function nudgeKeyframes(
-    members: readonly { id: number; s: number; v: number; len: number; lo?: number }[],
-    ds: number,
-    dv: number,
-): { id: number; s: number; v: number }[] {
-    if (members.length === 1) {
-        const p = members[0];
-        const lo = p.lo ?? 0;
-        return [
-            {
-                id: p.id,
-                s: Math.round(clampN(p.s + ds, lo, p.len) * 10) / 10,
-                v: Math.round((p.v + dv) * 100) / 100,
-            },
-        ];
-    }
-    const d = clampDelta(members, ds); // the rigid group clamp — LAST, no rounding after it
-    return members.map((m) => {
-        const lo = m.lo ?? 0;
-        return { id: m.id, s: clampN(m.s + d, lo, m.len), v: m.v + dv };
-    });
 }
 
 /** the extent-trim magnet targets in chart-local px: content landmarks that are stable
