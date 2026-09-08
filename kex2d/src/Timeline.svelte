@@ -1,108 +1,82 @@
 <script lang="ts">
 import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
+import { cartArc, cartState, parkAtArc, parkFromTime, trackMapping } from "./cart";
+import { laneColor } from "./colors";
+import { BINDINGS, bound } from "./menu";
+import { editor, beginDrag, endDrag } from "./editor";
+import { beginBody, beginEdge, beginEnd, cancel, commit, history } from "./history";
+import { Lane, type LaneSegment } from "./lanes";
 import {
-    cartArc,
-    cartState,
-    forceCurve,
-    parkAtArc,
-    parkFromTime,
-    trackMapping,
-    velocityCurve,
-} from "./cart";
-import { COLOR_FORCE, COLOR_VELOCITY, kindSegments } from "./colors";
-import { editor } from "./editor";
-import {
+    CHIP_H,
     clampView,
+    endHandle,
     fmt,
     frameAll,
+    hitEndHandle,
+    hitRows,
+    laneRows,
+    type LaneRow,
     marginArc,
+    type RowHit,
+    ROW_GAP,
+    ROW_H,
+    spanBoxes,
     ticks,
     timeToArc,
     uToPx,
+    pxToU,
     type View,
-    yFit,
-    type YFit,
     zoomAt,
 } from "./timeline";
-import { bakeOut, Track } from "./track";
+import { bakeOut, endColumn, lanesOf, laneOrderOf, setEnd, setRecordSpan, Track, trackEndOf } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, resize } from "./view";
 
-/** The read-only timeline (`retired/pose-ux`, spec `kex2d-segment-gestures` S2c). The pose-era
- *  dock authored force keyframes, velocity strips and section extents in place; every one of
- *  those gestures is retired, and S3 rebuilds this surface as Animate-style lane rows over the
- *  lane substrate. Until then the dock is what the canvas already is: a VIEW of the bake.
+/** The lane timeline (spec `kex2d-segment-gestures` S3): one row per authored lane on a shared
+ *  arclength ruler, each lane's records drawn as spans with two handles and a value chip on
+ *  each — Animate's tween-span grammar over the lane substrate, not After Effects' property
+ *  stack (Locked decision, "timeline layout follows Animate").
  *
- *  It reads the published bake (`bakeOut`, `cart.forceCurve`/`velocityCurve`) and the derived
- *  run projection's kind colors (`colors.kindSegments`) — never authored state, and it writes
- *  none: the only writes are to the cart's own transport (park/hold), which is playback, not
- *  authoring. Both curves are geometry-RECOVERED, so both draw dashed under the mode
- *  vocabulary (`editor-ui.md`: recovered dashed, authored solid) — nothing here is authored. */
+ *  The row model is `timeline.ts`'s: `laneRows` lays the rows out in `track.order`, `spanBoxes`
+ *  projects each record's own stations through the view, and `hitRows` answers one press. This
+ *  component owns pixels and pointers and NOTHING else — every authored write goes through a
+ *  `history.ts` gesture over a `track.ts` setter (`beginEdge`/`beginBody` + `setRecordSpan`,
+ *  `beginEnd` + `setEnd`), written every frame so the drag projects through the bake as it
+ *  happens, and coalesced into one undo entry on release. A refused span simply doesn't move:
+ *  the setter declines and the next frame redraws the record where it still is.
+ *
+ *  The playhead reads and never edits (`editor-ui.md`: scrub never authors). */
 
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 
 // ── chart geometry ────────────────────────────────────────────────────────────
-const RULER_H = 26; // top band: arclength ticks and labels
-const GAP_H = 20; // the kind strip: one clip per derived run, in its kind color
-const CLIP_PAD = 2;
-const CLIP_H = GAP_H - 2 * CLIP_PAD;
-const TOP = RULER_H + GAP_H;
+const RULER_H = 26; // the shared arclength ruler
+const ROWS_TOP = RULER_H + 6;
+const CHIP_W = 34; // the value chip's drawn width
 const BOT_PAD = 8;
-const LEFT_GUT = 44; // g-axis labels live here; the plot insets past it
-const RIGHT_GUT = 40; // the speed axis's own labels
-const BAND: [number, number] = [-2, 6]; // resting g window (the comfort band)
-const V_BAND: [number, number] = [0, 20]; // resting speed window (m/s)
-const Y_BASE = 1; // gravity baseline (1 g)
-const V_BASE = 0; // speed floor (0 m/s)
 const ZOOM_DIV = 200; // wheel-delta → geometric zoom rate
 
 let canvas: HTMLCanvasElement;
 let dockW = $state(0);
 let view = $state<View>({ pan: 0, pxPerU: 0 });
 let framed = false;
+let hover = $state<RowHit>(null);
+let onEnd = $state(false);
 
-const chartW = $derived(Math.max(0, dockW - LEFT_GUT - RIGHT_GUT));
+const chartW = $derived(Math.max(0, dockW));
 
-// the bake, re-read each published frame (`tick`) — the one source this surface has.
-const bake = $derived.by(() => {
+// the authored document, re-read each published frame (`tick`) — the rows are AUTHORED state,
+// unlike the retired read-only dock, which read only the bake.
+const doc = $derived.by(() => {
     void tick;
     if (eid === null) return null;
-    const f = forceCurve(eid);
-    const v = velocityCurve(eid);
-    if (!f || !v) return null;
-    return { f, v, sTotal: f.s[f.n - 1] ?? 0 };
+    return { lanes: lanesOf(ecs), order: laneOrderOf(ecs), end: endColumn(ecs), total: trackEndOf(ecs) };
 });
-const sTotal = $derived(bake?.sTotal ?? 0);
+const rows = $derived(doc ? laneRows(doc.lanes, doc.order, ROWS_TOP) : []);
+const sTotal = $derived(doc?.total ?? 0);
 const mFloor = $derived(marginArc(sTotal, 50));
 const clamped = $derived(clampView(view, chartW, sTotal, mFloor));
-const segs = $derived.by(() => {
-    void tick;
-    return eid === null ? [] : kindSegments(ecs);
-});
-
-// the two value axes fit the baked data, anchored on their resting bands.
-const yF = $derived.by((): YFit => {
-    const b = bake;
-    if (!b) return yFit(Y_BASE, Y_BASE, Y_BASE, BAND);
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let i = 0; i < b.f.n; i++) {
-        if (b.f.f[i] < lo) lo = b.f.f[i];
-        if (b.f.f[i] > hi) hi = b.f.f[i];
-    }
-    return Number.isFinite(lo) ? yFit(lo, hi, Y_BASE, BAND) : yFit(Y_BASE, Y_BASE, Y_BASE, BAND);
-});
-const yV = $derived.by((): YFit => {
-    const b = bake;
-    if (!b) return yFit(V_BASE, V_BASE, V_BASE, V_BAND);
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let i = 0; i < b.v.n; i++) {
-        if (b.v.v[i] < lo) lo = b.v.v[i];
-        if (b.v.v[i] > hi) hi = b.v.v[i];
-    }
-    return Number.isFinite(lo) ? yFit(lo, hi, V_BASE, V_BAND) : yFit(V_BASE, V_BASE, V_BASE, V_BAND);
-});
+const endH = $derived(doc ? endHandle(doc.lanes, doc.end, clamped) : null);
 
 // ── the transport (the cart's clock, not the document's) ──────────────────────
 const tTotal = $derived.by(() => {
@@ -121,8 +95,6 @@ const paused = $derived.by(() => {
     return eid === null ? true : (cartState.get(eid)?.held ?? true);
 });
 const frac = $derived(tTotal > 0 ? Math.min(1, Math.max(0, (cartSec ?? 0) / tTotal)) : 0);
-// the playhead's place on the arclength axis — the cart rides in time, the ruler is metres,
-// so it projects through the bake's own arclength↔time table (`cart.trackMapping`).
 const playheadS = $derived.by(() => {
     void tick;
     if (eid === null) return null;
@@ -134,136 +106,114 @@ const playheadS = $derived.by(() => {
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(Math.max(x, lo), hi);
 
-// ── render ────────────────────────────────────────────────────────────────────
-function yOf(g: number): number {
-    const h = Math.max(1, DOCK_HEIGHT - TOP - BOT_PAD);
-    return TOP + ((yF.hi - g) / Math.max(1e-9, yF.hi - yF.lo)) * h;
+/** a handle's value in its lane's own unit — pitch in DEGREES, the one place the substrate's
+ *  radians are translated for reading (velocity m/s, force g). */
+function chipLabel(lane: Lane, value: number | undefined): string {
+    if (value === undefined) return "–";
+    if (lane === Lane.Velocity) return `${fmt(value, 1)}`;
+    if (lane === Lane.Force) return `${fmt(value, 2)}g`;
+    return `${fmt((value * 180) / Math.PI, 1)}°`;
 }
-function vOf(v: number): number {
-    const h = Math.max(1, DOCK_HEIGHT - TOP - BOT_PAD);
-    return TOP + ((yV.hi - v) / Math.max(1e-9, yV.hi - yV.lo)) * h;
-}
-const xOf = (s: number): number => LEFT_GUT + uToPx(clamped, s);
 
-/** one recovered curve, dashed: every value on this surface is read back out of the bake. */
-function drawCurve(
+// ── render ────────────────────────────────────────────────────────────────────
+const xOf = (s: number): number => uToPx(clamped, s);
+
+function drawChip(
     ctx: CanvasRenderingContext2D,
-    s: ArrayLike<number>,
-    y: ArrayLike<number>,
-    n: number,
-    project: (v: number) => number,
+    x: number,
+    top: number,
+    text: string,
     color: string,
+    align: "left" | "right",
 ): void {
-    if (n < 2) return;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(LEFT_GUT, TOP, chartW, DOCK_HEIGHT - TOP - BOT_PAD);
-    ctx.clip();
-    ctx.setLineDash([4, 3]);
+    const w = CHIP_W;
+    const x0 = align === "left" ? x : x - w;
+    ctx.fillStyle = "rgba(22, 20, 19, 0.85)";
+    ctx.fillRect(x0, top, w, CHIP_H);
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-        const px = xOf(s[i]);
-        const py = project(y[i]);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+    ctx.globalAlpha = 0.5;
+    ctx.strokeRect(x0 + 0.5, top + 0.5, w - 1, CHIP_H - 1);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.font = '9px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, x0 + w / 2, top + CHIP_H / 2 + 0.5);
+}
+
+/** one lane row: its band, its spans in the lane color, each span's two edge grips, and a value
+ *  chip on each handle. A gap draws nothing — it is the lane's inferred value, not a record. */
+function drawRow(ctx: CanvasRenderingContext2D, row: LaneRow): void {
+    const color = laneColor(row.lane);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.24)";
+    ctx.fillRect(0, row.top, chartW, ROW_H);
+    for (const box of spanBoxes(row, clamped)) {
+        const rec = row.records.find((r) => r.id === box.id) as LaneSegment;
+        const w = Math.max(1, box.x1 - box.x0);
+        const live = hover?.kind !== "gap" && hover?.id === box.id;
+        ctx.globalAlpha = live ? 0.55 : 0.4;
+        ctx.fillStyle = color;
+        ctx.fillRect(box.x0, box.y0 + CHIP_H, w, ROW_H - CHIP_H);
+        ctx.globalAlpha = 1;
+        // the two handles: a solid grip at each end, the span's own two authored stations.
+        ctx.fillStyle = color;
+        ctx.fillRect(box.x0, box.y0 + CHIP_H, 2, ROW_H - CHIP_H);
+        ctx.fillRect(box.x1 - 2, box.y0 + CHIP_H, 2, ROW_H - CHIP_H);
+        drawChip(ctx, box.x0, box.y0, chipLabel(row.lane, rec.entry ?? rec.exit), color, "left");
+        drawChip(ctx, box.x1, box.y0, chipLabel(row.lane, rec.exit), color, "right");
     }
-    ctx.stroke();
-    ctx.restore();
 }
 
 function render(ctx: CanvasRenderingContext2D): void {
-    const w = dockW;
-    const h = DOCK_HEIGHT;
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, dockW, DOCK_HEIGHT);
 
-    // the bands: ruler, then the kind strip.
+    // the ruler band and its 1-2-5 ticks.
     ctx.fillStyle = "rgba(255, 255, 255, 0.04)";
-    ctx.fillRect(0, 0, w, RULER_H);
-    ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
-    ctx.fillRect(0, RULER_H, w, GAP_H);
-
-    const b = bake;
-    // the kind strip: one clip per derived run, in the run's kind color (`colors.kindColor`,
-    // the one place kind → color resolves). Read-only — no hover, no selection rung.
-    if (b) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(LEFT_GUT, RULER_H, chartW, GAP_H);
-        ctx.clip();
-        for (const seg of segs) {
-            const s0 = b.f.s[Math.min(seg.startSample, b.f.n - 1)] ?? 0;
-            const s1 = b.f.s[Math.min(seg.endSample, b.f.n - 1)] ?? 0;
-            const x0 = xOf(s0);
-            const x1 = xOf(s1);
-            ctx.fillStyle = seg.color;
-            ctx.globalAlpha = 0.75;
-            ctx.fillRect(x0, RULER_H + CLIP_PAD, Math.max(1, x1 - x0), CLIP_H);
-        }
-        ctx.restore();
-    }
-
-    // the shared arclength ruler.
+    ctx.fillRect(0, 0, dockW, RULER_H);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(LEFT_GUT, 0, chartW, RULER_H);
+    ctx.rect(0, 0, chartW, RULER_H);
     ctx.clip();
     ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
-    ctx.lineWidth = 1;
     for (const tk of ticks(clamped, chartW)) {
-        const x = LEFT_GUT + tk.px;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
         ctx.beginPath();
-        ctx.moveTo(x, RULER_H - 6);
-        ctx.lineTo(x, RULER_H);
+        ctx.moveTo(tk.px, RULER_H - 6);
+        ctx.lineTo(tk.px, RULER_H);
         ctx.stroke();
         ctx.fillStyle = "rgba(160, 152, 144, 0.8)";
-        ctx.fillText(tk.label, x, 8);
+        ctx.fillText(tk.label, tk.px, 8);
     }
     ctx.restore();
 
-    // the g gridlines and their labels, then the 1 g baseline.
-    ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
-    ctx.textBaseline = "middle";
-    const dec = yF.step >= 1 ? 0 : 1;
-    for (let g = Math.ceil(yF.lo / yF.step) * yF.step; g <= yF.hi + 1e-9; g += yF.step) {
-        const y = yOf(g);
-        if (y < TOP + 5 || y > DOCK_HEIGHT - BOT_PAD - 5) continue;
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    for (const row of rows) drawRow(ctx, row);
+
+    // the end handle: a pinned end draws solid, a following one hollow — the number is authored
+    // in the first case and read off the longest lane in the second.
+    if (endH) {
+        ctx.strokeStyle = endH.pinned ? "#ece8e3" : "rgba(236, 232, 227, 0.45)";
+        ctx.lineWidth = onEnd ? 2 : 1;
         ctx.beginPath();
-        ctx.moveTo(LEFT_GUT, y);
-        ctx.lineTo(LEFT_GUT + chartW, y);
+        ctx.moveTo(endH.px, 0);
+        ctx.lineTo(endH.px, DOCK_HEIGHT - BOT_PAD);
         ctx.stroke();
-        ctx.textAlign = "right";
-        ctx.fillStyle = "rgba(160, 152, 144, 0.7)";
-        ctx.fillText(`${fmt(g, dec)}g`, LEFT_GUT - 6, y);
-    }
-    ctx.strokeStyle = "rgba(205, 197, 188, 0.35)";
-    ctx.beginPath();
-    ctx.moveTo(LEFT_GUT, yOf(Y_BASE));
-    ctx.lineTo(LEFT_GUT + chartW, yOf(Y_BASE));
-    ctx.stroke();
-
-    // the speed axis's own bounds, on the right gutter.
-    ctx.textAlign = "left";
-    ctx.fillStyle = COLOR_VELOCITY;
-    ctx.globalAlpha = 0.7;
-    ctx.fillText(`${fmt(yV.hi, 1)}`, LEFT_GUT + chartW + 6, vOf(yV.hi) + 6);
-    ctx.fillText(`${fmt(yV.lo, 1)}`, LEFT_GUT + chartW + 6, vOf(yV.lo) - 6);
-    ctx.globalAlpha = 1;
-
-    if (b) {
-        drawCurve(ctx, b.v.s, b.v.v, b.v.n, vOf, COLOR_VELOCITY);
-        drawCurve(ctx, b.f.s, b.f.f, b.f.n, yOf, COLOR_FORCE);
+        ctx.beginPath();
+        ctx.moveTo(endH.px - 5, 0);
+        ctx.lineTo(endH.px, 8);
+        ctx.lineTo(endH.px + 5, 0);
+        ctx.closePath();
+        if (endH.pinned) {
+            ctx.fillStyle = "#ece8e3";
+            ctx.fill();
+        } else ctx.stroke();
     }
 
     // the playhead: read, never authored.
     if (playheadS !== null) {
         const x = xOf(playheadS);
-        if (x >= LEFT_GUT && x <= LEFT_GUT + chartW) {
+        if (x >= 0 && x <= chartW) {
             ctx.strokeStyle = "rgba(240, 236, 232, 0.75)";
             ctx.lineWidth = 1;
             ctx.beginPath();
@@ -277,9 +227,10 @@ function render(ctx: CanvasRenderingContext2D): void {
 $effect(() => {
     void tick;
     void clamped;
-    void yF;
-    void yV;
-    void segs;
+    void rows;
+    void endH;
+    void hover;
+    void onEnd;
     void playheadS;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -288,19 +239,17 @@ $effect(() => {
     render(ctx);
 });
 
-// frame the whole track once the dock has a width and the bake has an extent.
+// frame the whole track once the dock has a width and the document has an extent.
 $effect(() => {
     if (framed || chartW <= 0 || sTotal <= 0) return;
     framed = true;
     view = frameAll(chartW, sTotal, marginArc(sTotal, 50));
 });
 
-// ── navigation and transport ──────────────────────────────────────────────────
-const dAtPx = (clientX: number): number => {
-    const rect = canvas.getBoundingClientRect();
-    const px = clientX - rect.left - LEFT_GUT;
-    return (px + clamped.pan) / Math.max(1e-9, clamped.pxPerU);
-};
+// ── pointers ──────────────────────────────────────────────────────────────────
+const localX = (clientX: number): number => clientX - canvas.getBoundingClientRect().left;
+const localY = (clientY: number): number => clientY - canvas.getBoundingClientRect().top;
+const dAtPx = (clientX: number): number => pxToU(clamped, localX(clientX));
 
 let panning = false;
 let panX = 0;
@@ -317,17 +266,80 @@ function panUp(): void {
     window.removeEventListener("pointercancel", panUp);
 }
 
+// ── the span gesture: one open drag over one record ────────────────────────────
+// `beginEdge`/`beginBody` open it, every move writes the candidate span through `setRecordSpan`
+// (the setter refuses an overlap or a sub-floor span, so an illegal frame simply doesn't land),
+// and the release commits one entry. Escape cancels back to the pre-drag span.
+let drag: {
+    id: number;
+    which: "start" | "end" | "body";
+    start: number;
+    end: number;
+    grab: number;
+} | null = null;
+
+function dragMove(e: PointerEvent): void {
+    const g = drag;
+    if (!g) return;
+    const d = dAtPx(e.clientX);
+    if (g.which === "body") {
+        const shift = d - g.grab;
+        setRecordSpan(ecs, g.id, g.start + shift, g.end + shift);
+    } else if (g.which === "start") {
+        setRecordSpan(ecs, g.id, d, g.end);
+    } else {
+        setRecordSpan(ecs, g.id, g.start, d);
+    }
+}
+function dragUp(): void {
+    if (!drag) return;
+    drag = null;
+    commit(history);
+    endDrag();
+    window.removeEventListener("pointermove", dragMove);
+    window.removeEventListener("pointerup", dragUp);
+    window.removeEventListener("pointercancel", dragUp);
+}
+
+// ── the end-handle gesture ─────────────────────────────────────────────────────
+// the pin refuses to drop below any lane's content (`setEnd`), so an illegal frame never lands
+// and the handle stays where the content holds it.
+let endDrag_ = false;
+function endMove(e: PointerEvent): void {
+    if (!endDrag_) return;
+    setEnd(ecs, Math.max(0, dAtPx(e.clientX)));
+}
+function endUp(): void {
+    if (!endDrag_) return;
+    endDrag_ = false;
+    commit(history);
+    endDrag();
+    window.removeEventListener("pointermove", endMove);
+    window.removeEventListener("pointerup", endUp);
+    window.removeEventListener("pointercancel", endUp);
+}
+
+// ── the playhead scrub (the ruler band alone: scrubbing never edits) ───────────
 let scrubbing = false;
 function scrubTo(e: PointerEvent): void {
     if (eid === null || !scrubbing) return;
     parkAtArc(ecs, eid, clamp(dAtPx(e.clientX), 0, sTotal));
 }
 function endScrub(): void {
-    scrubbing = false; // parked + paused: a scrub never auto-resumes (the AE convention)
+    scrubbing = false;
     window.removeEventListener("pointermove", scrubTo);
     window.removeEventListener("pointerup", endScrub);
     window.removeEventListener("pointercancel", endScrub);
 }
+
+function chartMove(e: PointerEvent): void {
+    if (drag || endDrag_ || panning) return;
+    const px = localX(e.clientX);
+    const py = localY(e.clientY);
+    onEnd = endH !== null && py < RULER_H && hitEndHandle(endH, px);
+    hover = onEnd ? null : hitRows(rows, clamped, px, py);
+}
+
 function chartDown(e: PointerEvent): void {
     if (e.button === 1) {
         e.preventDefault();
@@ -339,15 +351,50 @@ function chartDown(e: PointerEvent): void {
         return;
     }
     if (e.button !== 0 || eid === null) return;
-    const st = cartState.get(eid);
-    if (!st) return;
+    const px = localX(e.clientX);
+    const py = localY(e.clientY);
     e.preventDefault();
-    scrubbing = true;
-    st.held = true; // freeze playback while scrubbing
-    scrubTo(e);
-    window.addEventListener("pointermove", scrubTo);
-    window.addEventListener("pointerup", endScrub);
-    window.addEventListener("pointercancel", endScrub);
+
+    // the ruler: the end handle first, then the scrub — the handle is the smaller target.
+    if (py < RULER_H) {
+        if (endH && hitEndHandle(endH, px)) {
+            beginEnd(ecs);
+            endDrag_ = true;
+            beginDrag(canvas, e.pointerId);
+            window.addEventListener("pointermove", endMove);
+            window.addEventListener("pointerup", endUp);
+            window.addEventListener("pointercancel", endUp);
+            return;
+        }
+        const st = cartState.get(eid);
+        if (!st) return;
+        scrubbing = true;
+        st.held = true; // freeze playback while scrubbing
+        scrubTo(e);
+        window.addEventListener("pointermove", scrubTo);
+        window.addEventListener("pointerup", endScrub);
+        window.addEventListener("pointercancel", endScrub);
+        return;
+    }
+
+    const hit = hitRows(rows, clamped, px, py);
+    if (hit === null || hit.kind === "gap" || hit.kind === "chip") return; // S3 item 3's rungs
+    const row = rows.find((r) => r.lane === hit.lane);
+    const rec = row?.records.find((r) => r.id === hit.id);
+    if (!rec) return;
+    if (hit.kind === "edge") beginEdge(ecs, hit.id);
+    else beginBody(ecs, hit.id);
+    drag = {
+        id: hit.id,
+        which: hit.kind === "edge" ? hit.which : "body",
+        start: rec.start,
+        end: rec.end,
+        grab: pxToU(clamped, px),
+    };
+    beginDrag(canvas, e.pointerId);
+    window.addEventListener("pointermove", dragMove);
+    window.addEventListener("pointerup", dragUp);
+    window.addEventListener("pointercancel", dragUp);
 }
 
 function togglePlay(): void {
@@ -401,7 +448,7 @@ onMount(() => {
     const onWheel = (e: WheelEvent): void => {
         e.preventDefault();
         if (editor.dragging || chartW <= 0) return;
-        const x = e.clientX - canvas.getBoundingClientRect().left - LEFT_GUT;
+        const x = localX(e.clientX);
         const panH =
             e.shiftKey || (!e.ctrlKey && !e.metaKey && Math.abs(e.deltaX) > Math.abs(e.deltaY));
         if (panH) {
@@ -414,6 +461,16 @@ onMount(() => {
     const onKey = (e: KeyboardEvent): void => {
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        // Escape cancels the live gesture before anything else (`editor-ui.md`: dismissal peels
+        // one layer, and a gesture is the innermost).
+        if (bound(BINDINGS.exitMode, e.key) && (drag || endDrag_)) {
+            e.preventDefault();
+            drag = null;
+            endDrag_ = false;
+            cancel();
+            endDrag();
+            return;
+        }
         if (e.code === "Space") {
             e.preventDefault();
             togglePlay();
@@ -426,19 +483,25 @@ onMount(() => {
         window.removeEventListener("keydown", onKey);
         endScrub();
         panUp();
+        dragUp();
+        endUp();
         sliderUp();
     };
 });
 </script>
 
 <!-- the timeline dock: the force curve earns persistence (`editor-ui.md`), so this one surface
-     stays docked — now as a read-only view of the bake until S3 rebuilds it over lane rows. -->
+     stays docked — now as the lane rows themselves, one row per authored parameter. -->
 <div
     class="dock"
     bind:clientWidth={dockW}
     style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px;"
     onpointerenter={() => (editor.hover = "timeline")}
-    onpointerleave={() => (editor.hover = "viewport")}
+    onpointerleave={() => {
+        editor.hover = "viewport";
+        hover = null;
+        onEnd = false;
+    }}
     role="group"
     aria-label="Timeline"
 >
@@ -446,6 +509,7 @@ onMount(() => {
         class="chart"
         bind:this={canvas}
         onpointerdown={chartDown}
+        onpointermove={chartMove}
         oncontextmenu={(e) => e.preventDefault()}
     ></canvas>
 </div>

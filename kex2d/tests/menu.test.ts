@@ -1389,7 +1389,7 @@ describe("the menu grammar — every builder, every state", () => {
     const Handlers: Record<keyof typeof BINDINGS, string[]> = {
         remove: ["keys.ts"],
         append: ["keys.ts"],
-        exitMode: ["keys.ts"],
+        exitMode: ["keys.ts", "Timeline.svelte"],
         lock: ["keys.ts"],
         convert: ["keys.ts"],
         pin: ["keys.ts"],

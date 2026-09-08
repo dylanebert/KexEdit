@@ -1,7 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { COLOR_VELOCITY, DIM_WASH, dimmed, hexToOklch, hovered, selected } from "../src/colors";
+import {
+    COLOR_FORCE,
+    COLOR_GEO,
+    COLOR_VELOCITY,
+    DIM_WASH,
+    dimmed,
+    hexToOklch,
+    hovered,
+    kindColor,
+    laneColor,
+    selected,
+} from "../src/colors";
+import { Lane } from "../src/lanes";
+import { SectionKind } from "../src/section";
 import { easeOut } from "../src/editor";
 
 // an independent sRGB #rrggbb reader (not the module under test).
@@ -396,4 +409,15 @@ describe("cursor allowlist — CSS declarations and canvas assignments, grab/gra
         );
         expect(raw).toBe(cursorSites().length);
     });
+});
+
+// ── the lane color law (S3): the authored twin of `kindColor` ──
+test("laneColor: velocity green, force accent, geo blue — one color per parameter", () => {
+    expect(laneColor(Lane.Velocity)).toBe(COLOR_VELOCITY);
+    expect(laneColor(Lane.Force)).toBe(COLOR_FORCE);
+    expect(laneColor(Lane.Geo)).toBe(COLOR_GEO);
+    // the derived-run twin agrees where the two languages overlap: a pitch run draws geo blue
+    // and a force run the accent, so a span and the run it derives never disagree on hue.
+    expect(laneColor(Lane.Geo)).toBe(kindColor(SectionKind.Geo));
+    expect(laneColor(Lane.Force)).toBe(kindColor(SectionKind.Force));
 });

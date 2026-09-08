@@ -7,12 +7,14 @@ import Timeline from "./Timeline.svelte";
 import { bakeOut, Track } from "./track";
 import { attachCanvas2D } from "./view";
 
-/** The app shell after the pose UX retired (`retired/pose-ux`, spec `kex2d-segment-gestures`
- *  S2c): a canvas that draws the bake, the read-only timeline dock over it, and the standing
- *  infeasibility banner. Every authoring surface this component used to host — the node ring
- *  and manipulator knobs, the node/section context menus, pin mode's panel, the conversion
- *  modal and the track-start dissipation fields — went with the gestures they drove. Authoring
- *  is headless through `commands.ts`/`cli.ts` until S3 rebuilds the timeline over lanes. */
+/** The app shell over the lane substrate (spec `kex2d-segment-gestures` S3): a canvas that
+ *  draws the bake, the lane timeline docked over it, and the standing infeasibility banner.
+ *  Authoring lives in the dock — one row per lane, spans edited in place — and the canvas
+ *  stays a READ-ONLY view of the bake until the geo control wiring returns over pitch
+ *  segments. Every authoring surface this component used to host — the node ring and
+ *  manipulator knobs, the node/section context menus, pin mode's panel, the conversion modal
+ *  and the track-start dissipation fields — went with the gestures they drove
+ *  (`retired/pose-ux`); `commands.ts`/`cli.ts` remain the headless authoring surface. */
 
 const { ecs }: { ecs: State } = $props();
 let canvas: HTMLCanvasElement;

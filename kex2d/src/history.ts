@@ -126,14 +126,20 @@ let gesture: {
 } | null = null;
 
 /** open a gesture, deep-capturing the pristine pre-gesture state. `snap` returning
- *  `undefined` (the target is gone) opens nothing. */
+ *  `undefined` (the target is gone) opens nothing — and CLOSES whatever was open: a failed
+ *  open is still an open, so leaving the previous gesture standing would let the next `commit`
+ *  land an edit the author made on a different subject. Reachable from S3's lane rows, where a
+ *  drag can open on a record deleted mid-gesture (reviewer finding, Validation 3, 2026-09-07). */
 export function begin<S>(
     snap: () => S | undefined,
     restore: (s: S) => void,
     same: (a: S, b: S) => boolean,
 ): void {
     const prev = snap();
-    if (prev === undefined) return;
+    if (prev === undefined) {
+        gesture = null;
+        return;
+    }
     gesture = {
         snap: snap as () => unknown,
         restore: restore as (s: unknown) => void,

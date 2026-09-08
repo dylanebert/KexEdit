@@ -1,4 +1,5 @@
 import type { State } from "@dylanebert/shallot";
+import { Lane } from "./lanes";
 import { runInfo, runsOf, SectionKind } from "./track";
 
 /** the kind color language (`ui.md`): geo = cool blue, force = accent gold. Same values
@@ -41,6 +42,13 @@ export const DIM_WASH = "rgba(22, 20, 19, 0.55)";
 
 export function kindColor(kind: SectionKind): string {
     return kind === SectionKind.Force ? COLOR_FORCE : COLOR_GEO;
+}
+
+/** one lane's color — the kind-color law over the AUTHORED lanes rather than the derived runs:
+ *  a velocity span is green, a force span the accent, a pitch span geo blue, so a row reads as
+ *  its parameter whichever row it sits in. `kindColor` stays the derived-run twin. */
+export function laneColor(lane: Lane): string {
+    return lane === Lane.Velocity ? COLOR_VELOCITY : lane === Lane.Force ? COLOR_FORCE : COLOR_GEO;
 }
 
 /** the selection tone-variant knobs — how a selected element's own color brightens (the
