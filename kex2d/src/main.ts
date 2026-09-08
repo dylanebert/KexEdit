@@ -3,6 +3,7 @@ import { ProfilePlugin } from "@dylanebert/shallot/extras";
 import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import { cartArc, cartState, CartPlugin } from "./cart";
+import { applyOp, type Op } from "./commands";
 import { loadDocument, saveDocument } from "./doc";
 import { activeKind, selectionHook } from "./editor";
 import { history, setSelectionHook } from "./history";
@@ -22,6 +23,15 @@ import {
 } from "./track";
 import { camera, Canvas2D, snapGuides, viewTransform } from "./view";
 
+/** the dev boot track, as ops: a 20 m pitch rise, a force span carrying its tail past it, a
+ *  velocity prescription over the head, and the end left following the longest lane. */
+const BOOT_OPS: Op[] = [
+    { type: "start-speed", value: 16 },
+    { type: "record-add", lane: "geo", start: 0, end: 20, ease: 1, entry: 0, exit: 0.35 },
+    { type: "record-add", lane: "force", start: 14, end: 54, ease: 0, entry: 1, exit: 2.5 },
+    { type: "record-add", lane: "velocity", start: 4, end: 14, ease: 1, entry: 18, exit: 24 },
+];
+
 const { state: ecs, dispose } = await run({
     plugins: [ProfilePlugin, TrackPlugin, CartPlugin, RenderPlugin],
     defaults: false,
@@ -39,6 +49,23 @@ loadSnapSteps();
 // node/undo/track state through this and drive the real UI (extend, drag, undo).
 // Never ships — kex2d is a `defaults:false` prototype with no production build path.
 // See harness/flow.ts (the `Kex` mirror of this hook) and the `*.pw.ts` flows beside it.
+// DEV-only boot fixture: the app's own document is created empty (`createTrack`), and until a
+// file surface exists there is nothing for the timeline to show. So a dev boot authors ONE mixed
+// track through the command layer — the same `applyOp` vocabulary the CLI drives, so this is not
+// a second authoring path — with a geo span, a force span overlapping its tail, a velocity span
+// over the head, and a following end. It is the S4 mixed track, and the surface the person's
+// check-in reads. Never ships: `defaults:false` prototype, DEV branch only.
+if (import.meta.env.DEV) {
+    for (const eid of ecs.query([Track])) {
+        for (const op of BOOT_OPS) applyOp(ecs, history, op);
+        void eid;
+        break;
+    }
+    // the fixture is the document's starting state, not an edit: undo has nothing before it.
+    history.undo.length = 0;
+    history.redo.length = 0;
+}
+
 if (import.meta.env.DEV) {
     let track = -1;
     for (const eid of ecs.query([Track])) {
