@@ -34,7 +34,7 @@
             "maxParagraphChars": 157
         },
         "kex2d/AGENTS.md": {
-            "bytes": 4896,
+            "bytes": 4893,
             "maxParagraphChars": 422
         },
         "kex2d/CLAUDE.md": {
@@ -42,7 +42,7 @@
             "maxParagraphChars": 157
         }
     },
-    "totalBytes": 27239,
+    "totalBytes": 27236,
     "processChecks": [
         "kex2d/tests/harness.test.ts"
     ]
