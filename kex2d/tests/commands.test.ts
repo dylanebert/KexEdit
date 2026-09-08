@@ -21,8 +21,15 @@ import { Lane } from "../src/lanes";
 import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
 import {
+    bakeOut,
     BakeSystem,
     createRecord,
+    DEFAULT_FRICTION,
+    DEFAULT_RESISTANCE,
+    DS_NOMINAL,
+    samples,
+    Track,
+    V0,
     deleteRecord,
     setEnd,
     setOrder,
@@ -288,5 +295,137 @@ describe("op-shape refusals — what no setter ever sees", () => {
         });
         expect(overlap.refusals.map((r) => r.guard)).toEqual(["segmentOverlapped"]);
         expect(h.undo).toEqual([]);
+    });
+});
+
+describe("Validation 3's live arms, as ops through applyOp", () => {
+    /** the check-in transcript's own document: `cli new`'s one flat 24 m pitch record, with the
+     *  ops Validation 3 (b) names applied to it. Written inline rather than shelled through the
+     *  CLI so the arm is device-free and reads the bake directly; the seed is `cli new`'s
+     *  output byte for byte. */
+    const seed = JSON.stringify({
+        version: 4,
+        track: {
+            ds: DS_NOMINAL,
+            domain: 0,
+            friction: DEFAULT_FRICTION,
+            resistance: DEFAULT_RESISTANCE,
+            v0: V0,
+        },
+        lanes: {
+            velocity: [],
+            force: [],
+            geo: [{ id: 0, start: 0, end: 24, ease: 0, entry: 0, exit: 0 }],
+        },
+    });
+    const setup: Op[] = [
+        {
+            type: "record-add",
+            lane: "force",
+            start: 14,
+            end: 54,
+            ease: Easing.Linear,
+            entry: 1,
+            exit: 2.5,
+        },
+        {
+            type: "record-add",
+            lane: "velocity",
+            start: 4,
+            end: 14,
+            ease: Easing.Cubic,
+            entry: 18,
+            exit: 24,
+        },
+        { type: "record-handle", id: GEO, which: "exit", value: 0.35 },
+        { type: "start-speed", value: 16 },
+    ];
+
+    interface Bake {
+        count: number;
+        x: number[];
+        y: number[];
+        theta: number[];
+        fN: number[];
+        v: number[];
+        t: number[];
+        tTotal: number;
+    }
+
+    /** every published number of the live bake, copied out — the fields Validation 3's `bytes`
+     *  metric reads, off the same arrays `cli dump` publishes. */
+    function readBake(ecs: State): Bake {
+        ecs.step(0);
+        const eid = trackEntity(ecs);
+        if (eid === null) throw new Error("no track");
+        const out = bakeOut.get(eid);
+        const samp = samples.get(eid);
+        if (!out || !samp) throw new Error("no bake");
+        const n = Track.count.get(eid);
+        const take = (a: ArrayLike<number>, k: number) => Array.from(a).slice(0, k);
+        return {
+            count: n,
+            x: take(samp.posX, n),
+            y: take(samp.posY, n),
+            theta: take(samp.theta, n),
+            fN: take(out.fN, n - 1),
+            v: take(out.v, n),
+            t: take(out.t, n),
+            tTotal: out.tTotal,
+        };
+    }
+
+    /** ONE `State` for the whole arm: two live `State`s in one process alias module-scoped
+     *  component storage (`kex2d/AGENTS.md`), so the before/after pair is read as two snapshots
+     *  of one document, never as two documents. */
+    function transcript(): { before: Bake; after: Bake } {
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        loadDocument(ecs, seed);
+        const h = createHistory();
+        for (const op of setup) {
+            const r = applyOp(ecs, h, op);
+            expect(r.refusals).toEqual([]);
+            expect(r.applied).toBe(true);
+        }
+        const before = readBake(ecs);
+        const swap = applyOp(ecs, h, { type: "order", value: ["force", "geo", "velocity"] });
+        expect(swap.refusals).toEqual([]);
+        return { before, after: readBake(ecs) };
+    }
+
+    // RED: read the PREVIOUS edge's chord (`chordAt(47)`) instead → 0.0109 rad against the same
+    // 0.0073 rad bound, and the arm fails (exit 1). This is Validation 3 (b)'s own foil.
+    test("a pitch edit's recovered heading lands on its authored exit within one edge's turning", () => {
+        const { before } = transcript();
+        expect(before.count).toBe(109);
+        // the pitch record [0, 24) ends at sample 48 on the ds-0.5 ruler.
+        const chordAt = (i: number) =>
+            Math.atan2(before.y[i]! - before.y[i - 1]!, before.x[i]! - before.x[i - 1]!);
+        const turning = Math.abs(before.theta[48]! - before.theta[47]!);
+        expect(Math.abs(chordAt(48) - 0.35)).toBeLessThanOrEqual(turning);
+        // non-vacuity: the bound is one edge's turning, not a free pass.
+        expect(Math.abs(chordAt(47) - 0.35)).toBeGreaterThan(turning);
+    });
+
+    // RED: extend the compared prefix past the cut (29 samples / 28 edges) → `fN[27]` is still
+    // equal but `fN[28]` reads 1.83 g before against 1.01 g after, and the arm fails (exit 1).
+    test("an order swap changes only the overlap", () => {
+        const { before, after } = transcript();
+        // the swap hands force the [14, 24) overlap; everything before station 14 — 28 samples
+        // and 27 edges on the ds-0.5 ruler — is published unchanged.
+        for (const f of ["x", "y", "theta", "v", "t"] as const)
+            expect(before[f].slice(0, 28)).toEqual(after[f].slice(0, 28));
+        expect(before.fN.slice(0, 27)).toEqual(after.fN.slice(0, 27));
+        // at the cut station itself the clipped record is re-parametrized over [0, 14) by the
+        // profile sampler: f32 publication noise, not a level.
+        expect(Math.abs(before.theta[28]! - after.theta[28]!)).toBeLessThan(1e-6);
+        expect(Math.abs(before.fN[27]! - after.fN[27]!)).toBeLessThan(1e-4);
+        // and past the cut, force owning the overlap is the reading itself.
+        expect(before.fN[28]!).toBeCloseTo(1.83, 2);
+        expect(after.fN[28]!).toBeCloseTo(1.01, 2);
+        expect(after.count).toBe(before.count);
+        expect(before.tTotal).toBeCloseTo(2.854, 3);
+        expect(after.tTotal).toBeCloseTo(2.7049, 4);
     });
 });
