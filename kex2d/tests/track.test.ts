@@ -9,7 +9,10 @@
  *  predicate. Device-free: no GPU, no canvas. */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { State } from "@dylanebert/shallot";
+import { loadDocument } from "../src/doc";
 import { Lane, RECORD_FLOOR, trackEnd } from "../src/lanes";
 import { Easing } from "../src/profile";
 import { DEFAULT_ORDER } from "../src/projection";
@@ -131,7 +134,7 @@ describe("the setters refuse structurally", () => {
         expect(laneRows(state, Lane.Force)).toHaveLength(2);
     });
 
-    // RED (the record floor): delete `floorRefusals`'s body (return `[]`) → a 0.5 m span lands
+    // RED (the record floor): delete `refuse`'s floor branch → a 0.5 m span lands
     // and the length assertion below fails (exit 1).
     test("createRecord refuses a span below the record floor", () => {
         const { state } = track();
@@ -453,5 +456,76 @@ describe("the derived partition and the velocity framing", () => {
         const { state } = track();
         author(state, Lane.Force, { start: 0, end: 20, ease: 0, entry: 1, exit: 1 });
         expect(trackEnd(lanesOf(state), endColumn(state))).toBe(trackEndOf(state));
+    });
+});
+
+describe("a setter refuses what the gesture introduces, never a violation already carried", () => {
+    // `force/sub-min-spacing.kex` LOADS legally: the record floor is a setter law, not a
+    // document one, so its force lane holds a legal 0.1 m record 1 at [2, 2.1). Reading the
+    // whole candidate lane made that record refuse every other edit on the lane — a violation
+    // the gesture neither made nor could clear (spec S2f punch list item 1; architect finding
+    // from the Validation 3 dry run, 2026-09-07).
+    //
+    // RED: scope `refuse` back to the whole candidate lane (`laneRefusals(lane, candidate)`
+    // plus the floor over every row) → the first arm's move is refused for record 1's floor and
+    // the landing assertions fail (exit 1).
+    function loaded(): State {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(
+            state,
+            readFileSync(join(import.meta.dir, "fixtures", "force", "sub-min-spacing.kex"), "utf8"),
+        );
+        return state;
+    }
+
+    test("record 2 moves to [3, 6) with the lane's carried sub-floor record untouched", () => {
+        const state = loaded();
+        expect(lanesOf(state).force.map((r) => [r.start, r.end])).toEqual([
+            [0, 2],
+            [2, 2.1],
+            [2.1, 6],
+        ]);
+        const w = setRecordSpan(state, 2, 3, 6);
+        expect(w.refusals).toEqual([]);
+        expect(w.id).toBe(2);
+        expect(lanesOf(state).force.map((r) => [r.id, r.start, r.end])).toEqual([
+            [0, 0, 2],
+            [1, 2, 2.1],
+            [2, 3, 6],
+        ]);
+    });
+
+    test("the same gesture is still refused when IT overlaps a neighbour", () => {
+        const state = loaded();
+        const w = setRecordSpan(state, 2, 2, 6);
+        expect(w.id).toBeNull();
+        expect(w.refusals.map((r) => r.guard)).toEqual(["segmentOverlapped"]);
+        expect(lanesOf(state).force[2]).toMatchObject({ id: 2, start: 2.1, end: 6 });
+    });
+
+    test("the same gesture is still refused when IT drops under the record floor", () => {
+        const state = loaded();
+        const w = setRecordSpan(state, 2, 5.5, 6);
+        expect(w.id).toBeNull();
+        expect(w.refusals.map((r) => r.guard)).toEqual(["segmentDegenerate"]);
+        expect(lanesOf(state).force[2]).toMatchObject({ start: 2.1, end: 6 });
+    });
+
+    test("a record carrying the violation may still edit its own OTHER columns", () => {
+        // record 1 is the sub-floor one: its span is untouched by a handle write, so nothing
+        // about the gesture introduces the floor breach.
+        const state = loaded();
+        expect(setRecordHandle(state, 1, "exit", 2.75).refusals).toEqual([]);
+        expect(setRecordEase(state, 1, Easing.Linear).refusals).toEqual([]);
+        // but record 1 cannot widen out of its own floor in place: every span that clears the
+        // floor collides with a neighbour, which is a violation the gesture DOES introduce.
+        expect(setRecordSpan(state, 1, 2, 2.5).refusals.map((r) => r.guard)).toEqual([
+            "segmentDegenerate",
+            "segmentOverlapped",
+        ]);
+        expect(setRecordSpan(state, 1, 1, 2.1).refusals.map((r) => r.guard)).toEqual([
+            "segmentOverlapped",
+        ]);
     });
 });
