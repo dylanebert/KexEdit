@@ -83,6 +83,27 @@ describe("exclusivity: overlap is refused, abutting is legal", () => {
         expect(laneRefusals(Lane.Force, [seg(1, 0, 10, 5), seg(2, 10, 20, 7)])).toEqual([]);
     });
 
+    // the origin law (spec Locked decision "the ruler starts at 0", S3a punch list item 0).
+    // RED: delete `laneRefusals`' `s.start < 0` branch → the first two assertions read `[]` and
+    // fail (exit 1).
+    test("laneRefusals names a record starting before the ruler's origin", () => {
+        const before = laneRefusals(Lane.Geo, [seg(1, -5, 15, 0)]);
+        expect(before.map((r) => r.guard)).toEqual(["segmentBeforeOrigin"]);
+        expect(before[0]!.message).toContain("geo segment 1");
+        expect(before[0]!.message).toContain("[-5, 15)");
+        // the law is per-record and independent of the others: a negative start that is ALSO
+        // degenerate names both, and a lane whose other member is legal still refuses.
+        expect(laneRefusals(Lane.Force, [seg(1, -5, -5, 1)]).map((r) => r.guard)).toEqual([
+            "segmentDegenerate",
+            "segmentBeforeOrigin",
+        ]);
+        expect(
+            laneRefusals(Lane.Velocity, [seg(1, -2, 4, 12), seg(2, 4, 10, 12)]).map((r) => r.guard),
+        ).toEqual(["segmentBeforeOrigin"]);
+        // and 0 itself is on the ruler, not before it — the permit direction.
+        expect(laneRefusals(Lane.Velocity, [seg(1, 0, 10, 12)])).toEqual([]);
+    });
+
     test("ordered is total and never mutates its input", () => {
         const input = [seg(3, 5, 9, 1), seg(1, 0, 4, 1), seg(2, 0, 4, 1)];
         const out = ordered(input);

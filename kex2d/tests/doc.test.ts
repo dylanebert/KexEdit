@@ -6,6 +6,7 @@ import {
     CURRENT_VERSION,
     docFromEcs,
     type DocGeoTangent,
+    checkDocumentSemantics,
     loadDocument,
     migrate,
     type MigrationStep,
@@ -713,7 +714,7 @@ describe("v4 migration sweep", () => {
 
     test("the corpus is the whole committed fixture set", () => {
         // population floor: a narrowed walk (a typo'd root, a swallowed recursion) cannot pass.
-        expect(corpus.length).toBe(68);
+        expect(corpus.length).toBe(69);
         expect(corpus.some((p) => p.includes("/velocity/"))).toBe(true);
         expect(corpus.some((p) => p.includes("/force/"))).toBe(true);
         expect(corpus.some((p) => p.includes("/cli/"))).toBe(true);
@@ -746,6 +747,42 @@ describe("v4 migration sweep", () => {
             expect(migrated).not.toHaveProperty("oneShot");
         });
     }
+});
+
+describe("the origin law at the document boundary", () => {
+    // spec Locked decision "the ruler starts at 0", S3a punch list item 2. `validateDocument`
+    // is structural and unchanged: the fixture is a well-SHAPED v4 document, so the refusal is
+    // the census's, read over the parsed document.
+    //
+    // RED: delete `laneRefusals`' `s.start < 0` branch → `checkDocumentSemantics` returns `[]`
+    // and the first two assertions fail (exit 1).
+    const red = () =>
+        readFileSync(
+            join(import.meta.dir, "fixtures", "invariants", "segmentBeforeOrigin-red.kex"),
+            "utf8",
+        );
+
+    test("a v4 record starting before 0 is refused by name, structurally well-shaped", () => {
+        const doc = parseDocument(red());
+        expect(doc.lanes.geo[0]).toMatchObject({ id: 2, start: -5, end: 40 });
+        const refusals = checkDocumentSemantics(doc);
+        expect(refusals.map((r) => r.guard)).toEqual(["segmentBeforeOrigin"]);
+        expect(refusals[0]!.message).toContain("geo segment 2");
+    });
+
+    test("no committed fixture migrates into one — every v3 station is non-negative", () => {
+        // why the census gains a hand-authored v4 fixture instead of a re-minted corpus: the
+        // migration cannot mint the violation it guards.
+        for (const path of loadableCorpus()) {
+            if (path.endsWith("cli/loop-explicit.kex")) continue;
+            const migrated = migrate(JSON.parse(readFileSync(path, "utf8"))) as {
+                lanes: Record<string, { start: number }[]>;
+            };
+            for (const lane of ["velocity", "force", "geo"])
+                for (const row of migrated.lanes[lane]!)
+                    expect(row.start).toBeGreaterThanOrEqual(0);
+        }
+    });
 });
 
 describe("hand-checked v4 lane shapes", () => {

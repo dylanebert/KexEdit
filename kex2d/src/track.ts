@@ -249,8 +249,10 @@ function laneNameOf(lane: Lane): string {
  *  — `force/sub-min-spacing.kex` loads legally, because the record floor is a setter law and
  *  not a document one, and then refused moving record 2 for record 1's floor, a violation the
  *  gesture neither made nor could clear. The laws themselves are unchanged and stay the
- *  `lanes.ts` vocabulary (`segmentDegenerate`, `segmentOverlapped`); only their subject
- *  narrows. A duplicate id is not read here — ids are unique across the whole document, not per
+ *  `lanes.ts` vocabulary (`segmentDegenerate`, `segmentOverlapped`, `segmentBeforeOrigin`);
+ *  only their subject narrows. The origin law is here for the same reason the others are: a
+ *  span reaching before 0 lands with no refusal at all today, and `deriveRuns` then clips it to
+ *  a run the document never authored. A duplicate id is not read here — ids are unique across the whole document, not per
  *  lane, so `createRecord` refuses that one against the live document itself. */
 function refuse(lane: Lane, candidate: readonly LaneSegment[], edited: number): LaneRefusal[] {
     const row = candidate.find((r) => r.id === edited);
@@ -268,6 +270,11 @@ function refuse(lane: Lane, candidate: readonly LaneSegment[], edited: number): 
         out.push({
             guard: "segmentDegenerate",
             message: `${name} segment ${row.id} spans ${row.end - row.start} m, below the ${RECORD_FLOOR} m record floor`,
+        });
+    if (row.start < 0)
+        out.push({
+            guard: "segmentBeforeOrigin",
+            message: `${name} segment ${row.id} spans [${row.start}, ${row.end}), which starts before the ruler's origin at 0`,
         });
     for (const other of ordered(candidate)) {
         if (other.id === edited) continue;

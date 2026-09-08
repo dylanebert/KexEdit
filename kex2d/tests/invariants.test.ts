@@ -25,6 +25,7 @@ const INVARIANTS = [
     "duplicateId",
     "segmentOverlapped",
     "segmentDegenerate",
+    "segmentBeforeOrigin",
     "laneOrder",
     "validStripValue",
     "validCoefficient",
