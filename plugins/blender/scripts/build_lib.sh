@@ -9,9 +9,8 @@
 #
 # After building, mirrors the addon dir (sources + lib) to any path listed in
 # the KEXEDIT_DEV_INSTALL env var (colon-separated). Useful for syncing into a
-# Windows-side Blender extensions folder from WSL where cross-filesystem
-# symlinks are awkward. Example:
-#   KEXEDIT_DEV_INSTALL=/mnt/c/BlenderExtensions/dev/kexedit build_lib.sh all
+# Blender extensions folder without a symlink. Example:
+#   KEXEDIT_DEV_INSTALL=~/.config/blender/4.2/extensions/user_default/kexedit build_lib.sh
 
 set -e
 
