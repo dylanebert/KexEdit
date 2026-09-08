@@ -1,55 +1,41 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { State } from "@dylanebert/shallot";
 import {
-    activateStripKf,
+    activateRecord,
     activeKind,
+    anySelected,
     beginConvert,
     clearHover,
-    closeContext,
+    clearSelection,
     convertProgress,
-    deselectAll,
     dismissNotice,
-    multi,
-    ensureStrip,
     editor,
     endConvert,
-    enterTangentEdit,
     fitDone,
+    multi,
     notify,
-    openContext,
+    type Selection,
+    selectionHook,
+    selectRecord,
+    selectRecords,
+    setMember,
     solveDone,
     solveFailed,
-    type Selection,
-    type SelectMode,
-    anySelected,
-    select,
-    selectForce,
-    selectForces,
-    selectNodes,
-    selectOneShot,
-    selectSegment,
-    selectSegments,
-    activateSegment,
-    selectSection,
-    selectStart,
-    selectStrip,
-    selectStripKf,
-    selectStripKfs,
-    selectionHook,
-    stripKfOwner,
-    setMember,
     toggleMember,
+    toggleRecord,
     writeHover,
 } from "../src/editor";
-import { modeKeyAct } from "../src/keys";
+import { addRecord, createHistory, removeRecord } from "../src/history";
+import { Lane } from "../src/lanes";
+import { Easing } from "../src/profile";
+import { BakeSystem, createTrack } from "../src/track";
 
-// the selection substrate: a per-kind set + active member, single-select the size-1 case. these are
-// pure editor-state tests — the select* APIs touch no ECS (only the SelectionHook does; its
-// set-restore-across-recycle lives in history.test.ts). ids here are arbitrary numbers (the set
-// stores eids/stable-ids opaquely). clear every kind before each so a leftover can't leak —
-// `deselectAll` is the substrate's own one-shot form of the same four-kind clear this file used to
-// spell out by hand (`kex2d-event-lane` S4).
+// the selection substrate over the lane records: one member set with an active member, and
+// single-select as its size-1 case. These are pure editor-state tests — `selectRecord` and its
+// siblings touch no ECS (only the `SelectionHook` does, and its restore-against-the-store arm is
+// at the bottom of this file). Clear before each so a leftover can't leak.
 beforeEach(() => {
-    deselectAll();
+    clearSelection();
 });
 
 // ── pure set helpers ──
@@ -95,691 +81,156 @@ test("setMember replaces the set with one member, or clears it", () => {
 
 // ── replace (single-select, the default) ──
 
-test("replace select collapses the node kind to one active member", () => {
-    select(10);
-    expect([...editor.nodes.ids]).toEqual([10]);
-    expect(editor.selection).toBe(10); // the scalar accessor reads the active member
-    select(20);
-    expect([...editor.nodes.ids]).toEqual([20]);
-    expect(editor.selection).toBe(20);
-    select(null);
-    expect(editor.nodes.ids.size).toBe(0);
-    expect(editor.selection).toBeNull();
+// ── the record kind ──────────────────────────────────────────────────────────────────
+// One kind over the lane substrate, addressed by the stable record id every setter, op and undo
+// entry already uses. The three forms a press takes: replace (a plain click), toggle (Shift), and
+// clear (an empty click, or Escape's selection rung).
+
+test("a plain click replace-selects: one member, active, whatever was there gone", () => {
+    selectRecord(4);
+    selectRecord(7);
+    expect([...editor.records.ids]).toEqual([7]);
+    expect(editor.record).toBe(7);
+    expect(anySelected()).toBe(true);
+    expect(multi()).toBe(false);
 });
 
 test("the scalar setter is a replace-select", () => {
-    editor.selection = 42;
-    expect([...editor.nodes.ids]).toEqual([42]);
-    expect(editor.nodes.active).toBe(42);
-    editor.force = 7; // switches kinds
-    expect(editor.nodes.ids.size).toBe(0);
-    expect([...editor.forces.ids]).toEqual([7]);
+    selectRecord(4);
+    editor.record = 9;
+    expect([...editor.records.ids]).toEqual([9]);
+    expect(editor.record).toBe(9);
 });
 
-// ── toggle (shift-click) ──
-
-test("toggle builds a node set, active following the last toggled-in member", () => {
-    select(10); // replace baseline
-    select(20, "toggle");
-    select(30, "toggle");
-    expect([...editor.nodes.ids]).toEqual([10, 20, 30]);
-    expect(editor.selection).toBe(30);
-    select(20, "toggle"); // remove a non-active member
-    expect([...editor.nodes.ids]).toEqual([10, 30]);
-    expect(editor.selection).toBe(30);
-    select(30, "toggle"); // remove the active → promote the survivor
-    expect([...editor.nodes.ids]).toEqual([10]);
-    expect(editor.selection).toBe(10);
+// RED: make `toggleRecord` an unconditional add and the second press below never removes — the
+// Shift-click grammar loses its half.
+test("Shift toggles membership, the active following the last toggled-in member", () => {
+    selectRecord(4);
+    toggleRecord(7);
+    toggleRecord(9);
+    expect([...editor.records.ids]).toEqual([4, 7, 9]);
+    expect(editor.record).toBe(9);
+    expect(multi()).toBe(true);
+    toggleRecord(7);
+    expect([...editor.records.ids]).toEqual([4, 9]);
+    expect(editor.record).toBe(9); // an inactive member leaving doesn't move the active
 });
 
-test("toggling out the active with ≥2 survivors promotes the last-inserted one, not the oldest", () => {
-    select(1); // {1}
-    select(2, "toggle"); // {1,2}
-    select(3, "toggle"); // {1,2,3}, active 3
-    expect(editor.selection).toBe(3);
-    select(3, "toggle"); // remove the active while TWO survivors {1,2} remain
-    expect([...editor.nodes.ids]).toEqual([1, 2]);
-    expect(editor.selection).toBe(2); // the last-inserted survivor — a regression to order 1 would pass every ≤1-survivor test
+// RED: promote the FIRST survivor instead of the last-inserted one and this reads 4, not 7.
+test("toggling out the active promotes the most-recently-added survivor", () => {
+    selectRecord(4);
+    toggleRecord(7);
+    toggleRecord(9);
+    toggleRecord(9); // the active leaves
+    expect(editor.record).toBe(7);
 });
 
-// ── set appliers (the marquee's atomic write: one merged hit set + its active, written in one go) ──
-
-test("selectNodes writes a whole set and re-anchors the active", () => {
-    selectNodes([10, 20, 30], 20);
-    expect([...editor.nodes.ids]).toEqual([10, 20, 30]);
-    expect(editor.selection).toBe(20); // the caller's active, not the last member
+test("selectRecord(null) and clearSelection both empty the set", () => {
+    selectRecord(4);
+    selectRecord(null);
+    expect(anySelected()).toBe(false);
+    expect(editor.record).toBeNull();
+    selectRecord(4);
+    toggleRecord(7);
+    clearSelection();
+    expect([...editor.records.ids]).toEqual([]);
+    expect(editor.record).toBeNull();
 });
 
-test("selectNodes falls back to the last-inserted member when the given active isn't in the set", () => {
-    selectNodes([10, 20, 30], 99); // 99 was never a member (a dropped/stale active)
-    expect(editor.selection).toBe(30);
-    selectNodes([10, 20], null);
-    expect(editor.selection).toBe(20);
+test("selectRecords writes a whole set and anchors the active, falling back to the last member", () => {
+    selectRecords([4, 7, 9], 7);
+    expect([...editor.records.ids]).toEqual([4, 7, 9]);
+    expect(editor.record).toBe(7);
+    selectRecords([4, 7], 99); // an active outside the set falls back to the last inserted
+    expect(editor.record).toBe(7);
+    selectRecords([], null);
+    expect(anySelected()).toBe(false);
 });
 
-test("a non-empty set applier writes its own kind without sweeping others; an empty one clears only its own", () => {
-    // S2: the marquee extends across kinds — selectNodes no longer clears other kinds.
-    selectSection(3);
-    selectNodes([10, 20], 10);
-    expect([...editor.sections.ids]).toEqual([3]); // NOT swept — co-selection
-    expect([...editor.nodes.ids]).toEqual([10, 20]);
-
-    // an empty write is the marquee's "hit nothing" case: it clears the node kind alone, leaving
-    // the full deselect (the other kinds + START) to the caller, matching empty-click.
-    selectSection(3);
-    selectNodes([], null);
-    expect(editor.nodes.ids.size).toBe(0);
-    expect([...editor.sections.ids]).toEqual([3]); // untouched — the caller owns the rest
+// RED: let `activateRecord` add the id it was given and a right-click outside the set would
+// silently grow it — the Blender active-object model says promote a MEMBER, never mint one.
+test("activateRecord promotes a member without disturbing the set, and no-ops off it", () => {
+    selectRecord(4);
+    toggleRecord(7);
+    activateRecord(4);
+    expect(editor.record).toBe(4);
+    expect([...editor.records.ids]).toEqual([4, 7]);
+    activateRecord(99);
+    expect(editor.record).toBe(4);
+    expect([...editor.records.ids]).toEqual([4, 7]);
 });
 
-test("a set applier that grows past a sub-mode's subject drops the sub-mode", () => {
-    select(10);
-    enterTangentEdit(10);
-    selectNodes([10, 20], 20);
-    expect(editor.tangentEdit).toBeNull();
+test("activeKind tags the one kind, and null on an empty selection", () => {
+    expect(activeKind()).toBeNull();
+    selectRecord(4);
+    expect(activeKind()).toBe("record");
+    clearSelection();
+    expect(activeKind()).toBeNull();
 });
 
-test("canonical segment selection keeps stable membership and active identity", () => {
-    selectSegment(41);
-    selectSegment(42, "toggle");
-    expect([...editor.segments.ids]).toEqual([41, 42]);
-    expect(editor.segment).toBe(42);
-    activateSegment(41);
-    expect(editor.segment).toBe(41);
-    selectSegments([7, 8], 8);
-    expect([...editor.segments.ids]).toEqual([7, 8]);
-    expect(activeKind()).toBe("segment");
-});
-
-test("selectForces writes the force set without sweeping other kinds (S2: marquee extends)", () => {
-    select(10);
-    selectForces([5, 6, 7], 6);
-    expect([...editor.nodes.ids]).toEqual([10]); // NOT swept — co-selection
-    expect([...editor.forces.ids]).toEqual([5, 6, 7]);
-    expect(editor.force).toBe(6);
-});
-
-// ── kind exclusivity ──
-
-test("selecting into one kind clears the others (a multi-member set included)", () => {
-    select(10);
-    select(11, "toggle"); // a two-node set
-    selectForce(5); // switch to the force kind
-    expect(editor.nodes.ids.size).toBe(0);
-    expect(editor.selection).toBeNull();
-    expect([...editor.forces.ids]).toEqual([5]);
-    selectSection(3);
-    expect(editor.forces.ids.size).toBe(0);
-    expect([...editor.sections.ids]).toEqual([3]);
-    selectStart(true);
-    expect(editor.sections.ids.size).toBe(0);
-    expect(editor.start).toBe(true);
-    // S3: the track-start one-shot is the sixth selection kind (`editor.ts`'s own
-    // header comment) — a boolean like `start`, so a plain click replace-select clears it.
-    selectStrip(7);
-    expect(editor.start).toBe(false);
-    expect(editor.strip).toBe(7);
-    selectOneShot(true);
-    expect(editor.strips.ids.size).toBe(0);
-    expect(editor.strip).toBeNull();
-    expect(editor.oneShot).toBe(true);
-    select(10);
-    expect(editor.start).toBe(false);
-    expect(editor.oneShot).toBe(false);
-});
-
-test("toggling into a kind while another kind is active keeps both (S2: shift-click extends)", () => {
-    selectForce(5);
-    selectForce(6, "toggle"); // a two-point force set
-    select(10, "toggle"); // shift-click a node with forces selected
-    expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]); // NOT swept
-    expect([...editor.nodes.ids]).toEqual([10]);
-    expect(editor.selection).toBe(10);
-});
-
-// ── kex2d-event-lane S4: one selection model — the locked decision's own transition table over
-// {segment, span, keyframe, empty-ruler, empty-lane} × {click, modifier-click}, asserting the
-// resulting selection set at the pure editor-state substrate every Timeline.svelte handler
-// routes through (the DOM-driven twin is `force.pw.ts` "one selection model — the S4 transition
-// table", which drives the real pointer over the same rows). "keyframe" is generic here — the
-// force and strip-keyframe substrates share the exact same `select*`/`toggle` shape (S3's parity
-// law), so one row stands for both; the strip-keyframe-specific multiselect (this stage's own
-// booked ground) gets its own describe block below. ──
-
-describe("one selection model — transition table (segment / span / keyframe)", () => {
-    const kinds: Record<
-        "segment" | "span" | "keyframe",
-        {
-            select: (id: number | null, mode?: SelectMode) => void;
-            ids: () => Set<number>;
-            active: () => number | null;
+// ── the history selection hook ────────────────────────────────────────────────────────
+// The hook snapshots the whole SET, and restores only the members whose records the store still
+// holds — the store is the authority on what exists, so an undo past a delete restores the set
+// minus what is gone rather than a member addressing nothing.
+describe("selectionHook — snapshot the set, restore against the store", () => {
+    function fixture(): { ecs: State; ids: number[] } {
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        createTrack(ecs);
+        const h = createHistory();
+        const ids: number[] = [];
+        for (const [start, end] of [
+            [0, 10],
+            [10, 20],
+        ] as const) {
+            const w = addRecord(h, ecs, Lane.Force, {
+                start,
+                end,
+                ease: Easing.Linear,
+                entry: 1,
+                exit: 1,
+            });
+            if (w.id === null) throw new Error("fixture refused");
+            ids.push(w.id);
         }
-    > = {
-        segment: {
-            select: selectSection,
-            ids: () => editor.sections.ids,
-            active: () => editor.section,
-        },
-        span: { select: selectStrip, ids: () => editor.strips.ids, active: () => editor.strip },
-        keyframe: { select: selectForce, ids: () => editor.forces.ids, active: () => editor.force },
-    };
-
-    for (const [name, k] of Object.entries(kinds)) {
-        test(`${name}: click replace-selects it, clearing every other kind`, () => {
-            // arm every OTHER kind first — the row's own claim is that selecting this kind
-            // sweeps them all, not just the one kind the test happens to pick.
-            select(1);
-            selectForce(2);
-            selectSection(3);
-            selectStrip(4);
-            k.select(9);
-            for (const [other, o] of Object.entries(kinds))
-                if (other !== name) expect(o.ids().size).toBe(0);
-            expect(editor.nodes.ids.size).toBe(0);
-            expect(k.active()).toBe(9);
-        });
-
-        test(`${name}: modifier-click toggles membership — the sole member out, then back in`, () => {
-            k.select(9);
-            k.select(9, "toggle");
-            expect(k.ids().size).toBe(0);
-            expect(k.active()).toBeNull();
-            k.select(9, "toggle");
-            expect([...k.ids()]).toEqual([9]);
-            expect(k.active()).toBe(9);
-        });
-
-        test(`${name}: modifier-click on a second id ADDS it, active following the toggled-in member`, () => {
-            k.select(9);
-            k.select(10, "toggle");
-            expect([...k.ids()].sort((a, b) => a - b)).toEqual([9, 10]);
-            expect(k.active()).toBe(10);
-        });
+        return { ecs, ids };
     }
-});
 
-describe("one selection model — empty-ruler / empty-lane deselect", () => {
-    test("deselectAll clears every kind and every sub-mode at once", () => {
-        select(1);
-        select(2, "toggle");
-        enterTangentEdit(2);
-        deselectAll();
-        expect(editor.nodes.ids.size).toBe(0);
-        expect(editor.tangentEdit).toBeNull();
-        selectForce(3);
-        deselectAll();
-        expect(editor.forces.ids.size).toBe(0);
-        selectSection(4);
-        selectStrip(5);
-        selectStripKf(6, "replace", 5);
-        selectStart(true);
-        deselectAll();
-        expect(editor.sections.ids.size).toBe(0);
-        expect(editor.strips.ids.size).toBe(0);
-        expect(editor.stripKfs.ids.size).toBe(0);
-        expect(editor.start).toBe(false);
+    test("an empty selection snapshots as null and restores as a clear", () => {
+        const { ecs, ids } = fixture();
+        expect(selectionHook.snapshot(ecs)).toBeNull();
+        selectRecord(ids[0]);
+        selectionHook.restore(ecs, null);
+        expect(anySelected()).toBe(false);
     });
 
-    // the empty-ruler and empty-lane click handlers (`Timeline.svelte` `startScrub`/`bandDown`)
-    // both route through this exact call on a plain click, guarded on `!e.shiftKey` at the DOM
-    // layer — that guard is the "modifier-click preserves" half; the substrate has nothing left
-    // to prove past "a modifier-click is a no-op here", asserted directly.
-    test("a modifier-click at the DOM layer is a no-op — deselectAll is simply not called", () => {
-        selectSection(1);
-        // (the handler's own `if (!e.shiftKey) deselectAll();` — nothing to call here)
-        expect(editor.section).toBe(1);
-    });
-});
-
-// ── strip-keyframe multi-select (S4's booked ground, `kex2d-event-lane` S3 log) — `selectForce`'s
-// own shape, generalized onto the strip-keyframe sub-selection layered under strip selection. ──
-
-describe("strip-keyframe multi-select", () => {
-    test("replace collapses the set to one member; toggle adds/removes", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        expect([...editor.stripKfs.ids]).toEqual([10]);
-        expect(editor.stripKf).toBe(10);
-        selectStripKf(20, "toggle", 1); // keyframe 20 rides strip 1 too
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-        expect(editor.stripKf).toBe(20);
-        selectStripKf(10, "toggle", 1); // remove the non-active member
-        expect([...editor.stripKfs.ids]).toEqual([20]);
-        expect(editor.stripKf).toBe(20); // untouched — the removed member wasn't active
+    test("every member rides the snapshot, and the active comes back as the active", () => {
+        const { ecs, ids } = fixture();
+        selectRecord(ids[0]);
+        toggleRecord(ids[1]);
+        const snap = selectionHook.snapshot(ecs);
+        clearSelection();
+        selectionHook.restore(ecs, snap);
+        expect([...editor.records.ids]).toEqual(ids);
+        expect(editor.record).toBe(ids[1]);
     });
 
-    test("toggling out the active promotes the most-recently-added survivor", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1);
-        selectStripKf(20, "toggle", 1); // remove the active member
-        expect([...editor.stripKfs.ids]).toEqual([10]);
-        expect(editor.stripKf).toBe(10);
+    // RED: drop the `recordAt` guard in `restore` and the deleted record comes back as a member
+    // addressing nothing — every later reader (the popover, the Delete rung) then binds to a
+    // record the store does not hold.
+    test("a member whose record is gone is dropped on restore, and the active falls back", () => {
+        const { ecs, ids } = fixture();
+        selectRecord(ids[0]);
+        toggleRecord(ids[1]);
+        const snap = selectionHook.snapshot(ecs);
+        clearSelection();
+        // the second record leaves the store between the snapshot and the restore
+        const h = createHistory();
+        expect(removeRecord(h, ecs, ids[1]).id).toBe(ids[1]);
+        selectionHook.restore(ecs, snap);
+        expect([...editor.records.ids]).toEqual([ids[0]]);
+        expect(editor.record).toBe(ids[0]); // the active fell back to the surviving member
     });
-
-    test("activateStripKf promotes a member active without disturbing the set; a non-member is a no-op", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1); // {10, 20}, active 20
-        activateStripKf(10);
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]); // set unchanged
-        expect(editor.stripKf).toBe(10); // promoted
-        activateStripKf(99); // not a member
-        expect(editor.stripKf).toBe(10); // unchanged
-    });
-
-    test("deselecting the owning strip clears the keyframe set (the sub-selection's own invariant)", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1);
-        selectStrip(null);
-        expect(editor.stripKfs.ids.size).toBe(0);
-        expect(editor.stripKf).toBeNull();
-    });
-
-    test("selecting a different top-level kind sweeps the strip-keyframe set (the same exclusivity every other sub-selection observes)", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1);
-        selectSection(5);
-        expect(editor.stripKfs.ids.size).toBe(0);
-    });
-
-    // ── the replace-select sweep: `selectStripKf`'s replace path calls `sweepOtherKinds`,
-    // clearing sibling kinds (force) while keeping the owning strip (an ancestor, not a sibling).
-    // S2 made force+stripKf co-selection reachable through shift-click, so this sweep is now
-    // reachable through production entry points — the plain-click replace path on a different
-    // keyframe of an already-selected strip (see the criterion-(c) arm above). ──
-    test("selecting a strip keyframe clears the force selection (replace-select sweep)", () => {
-        selectForce(99);
-        expect(editor.force).toBe(99);
-        selectStripKf(10, "replace", 1);
-        expect(editor.force).toBeNull(); // was left selected before S9
-        expect(editor.stripKf).toBe(10);
-    });
-
-    test("selecting a force keyframe clears the strip-keyframe selection (the reverse already held)", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        expect(editor.stripKf).toBe(10);
-        selectForce(99);
-        expect(editor.stripKf).toBeNull();
-        expect(editor.force).toBe(99);
-    });
-
-    // S2: the marquee extends across kinds, so `selectStripKfs` does NOT sweep the force set.
-    // This is the marquee's atomic write — it clears only its own kind, leaving the rest for the
-    // caller to sweep (matching empty-click).
-    test("selectStripKfs (the marquee multi-write) does NOT sweep the force set (S2: extends)", () => {
-        selectForce(99);
-        ensureStrip(1);
-        selectStripKfs(
-            [10, 20],
-            20,
-            new Map([
-                [10, 1],
-                [20, 1],
-            ]),
-        );
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-        expect(editor.stripKf).toBe(20);
-        expect(editor.force).toBe(99); // NOT swept — co-selection
-    });
-});
-
-// ── S2: cross-kind co-selection, reachable (kex2d-selection-substrate S2) ──────────────────
-// the state S9 proved unreachable is now the thing these arms assert: shift-click and marquee
-// extend across kinds, so force and strip keyframes can be co-selected as members of one set.
-// a plain click stays a replace-select clearing every member of every kind (not widened here).
-// the shift/marquee paths stop routing through `sweepOtherKinds`; it survives for the plain-click
-// `selectStripKf` replace path alone (the layered invariant: clear other top-level kinds, keep
-// the owning strip).
-
-describe("S2: cross-kind co-selection — shift-click extends across kinds", () => {
-    test("shift-clicking a force keyframe then a strip keyframe leaves both selected", () => {
-        selectForce(5);
-        ensureStrip(1); // shift-click adds the owning strip without clearing others
-        selectStripKf(10, "toggle", 1);
-        // both kinds co-exist in the unified set — the state S9 proved unreachable
-        expect([...editor.forces.ids]).toEqual([5]);
-        expect(editor.force).toBe(5);
-        expect([...editor.stripKfs.ids]).toEqual([10]);
-        expect(editor.stripKf).toBe(10);
-    });
-
-    test("shift-clicking a node with forces selected keeps both kinds", () => {
-        selectForce(5);
-        select(10, "toggle");
-        expect([...editor.forces.ids]).toEqual([5]);
-        expect([...editor.nodes.ids]).toEqual([10]);
-    });
-
-    test("shift-clicking a strip keyframe with a force keyframe selected keeps both", () => {
-        selectForce(5);
-        ensureStrip(1);
-        selectStripKf(10, "toggle", 1);
-        // toggle the force out, then back in — the strip keyframe survives
-        selectForce(5, "toggle");
-        expect(editor.forces.ids.size).toBe(0);
-        expect([...editor.stripKfs.ids]).toEqual([10]);
-        selectForce(5, "toggle");
-        expect([...editor.forces.ids]).toEqual([5]);
-        expect([...editor.stripKfs.ids]).toEqual([10]);
-    });
-});
-
-describe("S2: cross-kind co-selection — marquee extends across kinds", () => {
-    test("selectForces does NOT clear the strip-keyframe set (marquee extends, not replaces)", () => {
-        ensureStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1);
-        selectForces([5, 6], 6);
-        expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-    });
-
-    test("selectStripKfs does NOT clear the force set (marquee extends, not replaces)", () => {
-        selectForce(5);
-        selectForce(6, "toggle");
-        ensureStrip(1);
-        selectStripKfs(
-            [10, 20],
-            20,
-            new Map([
-                [10, 1],
-                [20, 1],
-            ]),
-        );
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-        expect([...editor.forces.ids].sort((a, b) => a - b)).toEqual([5, 6]);
-    });
-
-    test("selectNodes does NOT clear the force set (marquee extends across kinds)", () => {
-        selectForce(5);
-        selectNodes([10, 20], 20);
-        expect([...editor.nodes.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-        expect([...editor.forces.ids]).toEqual([5]);
-    });
-});
-
-describe("S2: plain click stays replace-select (not widened)", () => {
-    test("plain-clicking a force keyframe clears the strip-keyframe set", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectForce(5);
-        expect(editor.stripKfs.ids.size).toBe(0);
-        expect([...editor.forces.ids]).toEqual([5]);
-    });
-
-    test("plain-clicking a strip keyframe sweeps the sibling force kind (S2 criterion c)", () => {
-        // build force+strip+stripKf through production entry points (shift-click extends)
-        selectForce(5);
-        ensureStrip(1);
-        selectStripKf(10, "toggle", 1);
-        // the mixed set is live: force + strip + stripKf co-exist
-        expect(editor.force).toBe(5);
-        expect(editor.strip).toBe(1);
-        expect([...editor.stripKfs.ids]).toEqual([10]);
-        // plain-click a DIFFERENT keyframe of the same already-selected strip —
-        // keyframeDown skips its own selectStrip (the strip is already selected) and
-        // reaches selectStripKf's replace path with the force kind still live, so
-        // sweepOtherKinds(["stripKf", "strip"]) clears the force (sibling), keeping the strip (ancestor)
-        selectStripKf(20, "replace", 1);
-        expect(editor.force).toBeNull(); // swept by sweepOtherKinds, not by selectStrip
-        expect(editor.strip).toBe(1); // the owning strip survives (containment, not sibling)
-        expect([...editor.stripKfs.ids]).toEqual([20]);
-    });
-
-    test("plain-clicking a strip keyframe drops a NON-OWNING co-selected strip (containment is per member)", () => {
-        // the ancestor exception keeps the strip that OWNS the clicked keyframe, never the
-        // whole strip kind: a co-selected strip that owns nothing in the new set is a
-        // sibling, not an ancestor, and the replace sweep drops it with every other kind.
-        // built through the production selectors, the plain-click sequence `keyframeDown`
-        // drives: the band click `selectStrip` (replace) + the band shift-click `selectStrip`
-        // (toggle) co-select two strips with the owner active, so the plain click skips its
-        // own `selectStrip` (the owner is already the active strip) and `selectStripKf`'s
-        // replace sweep is the only thing that can drop the non-owner — the arm fails if it
-        // doesn't run.
-        // RED-FIRST WITNESS: ran against the whole-kind sweep
-        // (`sweepOtherKinds(["stripKf", "strip"])` alone) — the arm red at the non-owner
-        // assertion, `editor.strips.ids.has(1)` was true (the non-owning strip survived).
-        // Restored the per-member drop; green.
-        selectStrip(1);
-        selectStrip(2, "toggle"); // two strips co-selected, strip 2 active
-        selectStripKf(21, "replace", 2); // plain click on strip 2's keyframe — owner already active
-        expect(editor.strips.ids.has(2)).toBe(true); // the owning strip survives (containment)
-        expect(editor.strips.ids.has(1)).toBe(false); // the non-owner drops
-        expect([...editor.stripKfs.ids]).toEqual([21]);
-    });
-});
-
-// ── the plain-click replace form stores containment ──
-// the production replace sequence stores the supplied owner on the strip-keyframe member,
-// so the owning strip survives. this arm asserts that stored-flag property through
-// `stripKfOwner` and the resulting owning-strip selection.
-// RED-FIRST WITNESS: stubbed the sweep's flag write (`memberAdd("stripKf", id)` without
-// the owner) — the whole suite red at this arm alone, `stripKfOwner(21)` read null:
-// 1892 pass / 1 fail. Restored the write; 1893 pass / 0 fail.
-describe("the plain-click replace form stores containment", () => {
-    test("a plain click stores its keyframe's owning strip", () => {
-        // the production plain-click sequence through the production selectors — the band
-        // `selectStrip` `keyframeDown` performs, then the replace select — never
-        // `ensureStrip` or the toggle helpers.
-        selectStrip(7);
-        selectStripKf(21, "replace", 7);
-        expect(editor.stripKf).toBe(21); // the keyframe is still selected
-        expect([...editor.stripKfs.ids]).toEqual([21]);
-        expect(editor.strips.ids.has(7)).toBe(true); // the owning strip survives (containment)
-        expect(stripKfOwner(21)).toBe(7); // the sweep stored the owner on the member
-    });
-});
-
-// ── the shift-click and marquee add paths record the same containment flag ──
-// the replace sweep was the only add path writing `owner` on the member; the shift-click
-// toggle and the marquee multi-write added members with no flag, so `stripKfOwner` read
-// null for a shift-clicked or rubber-banded keyframe — the same no-ECS read the plain
-// click repaired, silently missing on the two other gestures. both paths now take the
-// owner from the caller's own hit data (`StripKfPt.strip`) exactly as the replace sweep
-// does, so the flag is a property of the member, not of the click form that added it.
-// RED-FIRST WITNESS: stubbed each path's flag write alone (the toggle form's owner arg and
-// the marquee loop's `owners?.get(id)`) — the whole suite red at its arm alone each time,
-// `stripKfOwner` reading null: toggle stub 1894 pass / 1 fail, marquee stub 1894 pass /
-// 1 fail. Restored each; 1895 pass / 0 fail across 51 files.
-describe("the shift-click and marquee add paths record the containment flag", () => {
-    test("a shift-click-toggled strip keyframe carries its owning strip", () => {
-        // the production shift-click sequence through the production selectors — the band
-        // `ensureStrip` `keyframeDown` performs on shift, then the toggle select. like the
-        // plain-click arm above, strip 2 and keyframe 31 name nothing in any store: this
-        // file touches no ECS at all.
-        ensureStrip(2);
-        selectStripKf(31, "toggle", 2);
-        expect([...editor.stripKfs.ids]).toEqual([31]);
-        expect(editor.stripKf).toBe(31);
-        expect(stripKfOwner(31)).toBe(2); // the toggle add stored the flag too
-        // toggling out removes the member, flag and all
-        selectStripKf(31, "toggle", 2);
-        expect(stripKfOwner(31)).toBeNull();
-    });
-
-    test("a marquee-selected strip keyframe set carries each member's owning strip", () => {
-        // the production marquee sequence through the production selector — the set write
-        // with the owners map `marqueeUp` builds off its hit points (keyed by keyframe id,
-        // across two strips), then the per-hit `ensureStrip` writes after it
-        const owners = new Map([
-            [31, 2],
-            [32, 2],
-            [41, 4],
-        ]);
-        selectStripKfs([31, 32, 41], 41, owners);
-        expect(editor.stripKf).toBe(41);
-        ensureStrip(2);
-        ensureStrip(4);
-        expect([...editor.stripKfs.ids]).toEqual([31, 32, 41]);
-        expect(stripKfOwner(31)).toBe(2);
-        expect(stripKfOwner(32)).toBe(2);
-        expect(stripKfOwner(41)).toBe(4);
-    });
-});
-
-// ── the state invariant the add APIs now carry: no stripKf member without its owner ──
-// `selectStripKf`'s toggle overload and `selectStripKfs`'s owners map both kept the owner
-// OPTIONAL until this repair — an owner-less call produced an owner-null member, the very
-// hole the stored flag exists to close (S5's ownership read would read a selected keyframe
-// as "not owned"). the overloads now REQUIRE the owner on every non-null add (the null clear
-// form stays distinct and takes none), and these arms witness the runtime backstop behind
-// the type: the formerly owner-less forms are cast back into reach — the `kfDesc` descriptor's
-// shared select/selectMany field types keep the param optional for the force kind, so the
-// type system alone cannot catch a future owner-less caller at that seam; the runtime
-// guards are the defense, and each must select NOTHING.
-describe("owner-less add forms fail closed — no stripKf member without its owner", () => {
-    test("an owner-less toggle call selects nothing (no member, no active write)", () => {
-        // the production selection first, so the refusal is observable against a live set
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        (selectStripKf as (id: number, mode: SelectMode, owner?: number) => void)(20, "toggle");
-        expect([...editor.stripKfs.ids]).toEqual([10]); // no owner-less member joined the set
-        expect(editor.stripKf).toBe(10); // the active write never ran either
-        expect(stripKfOwner(20)).toBeNull();
-    });
-
-    test("an owner-less set-write call selects nothing; a partial map adds only what it covers", () => {
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        // the formerly legal two-parameter form — the owners map omitted entirely
-        (
-            selectStripKfs as (
-                ids: number[],
-                active: number | null,
-                owners?: ReadonlyMap<number, number>,
-            ) => void
-        )([20, 30], 30);
-        expect([...editor.stripKfs.ids]).toEqual([]); // NOTHING was added
-        expect(editor.stripKf).toBeNull(); // the active fell back to the surviving strip
-        expect(stripKfOwner(20)).toBeNull();
-        expect(stripKfOwner(30)).toBeNull();
-        // a partial map: the covered id is added, the uncovered id is skipped — per id, never
-        // an owner-null member
-        selectStripKfs([20, 30], 30, new Map([[30, 1]]));
-        expect([...editor.stripKfs.ids]).toEqual([30]);
-        expect(stripKfOwner(20)).toBeNull();
-        expect(stripKfOwner(30)).toBe(1);
-    });
-});
-
-// ── S2 repair: the three criteria the adversarial pass added ──
-// each a demonstrated instance rather than a class claim. (a) the double-fire observable stays
-// pinned: one Delete on a node+force mixed selection produces exactly one edit. (b) one undo
-// AND one redo round-trip a mixed set: redo restores every member of every kind. (c) the
-// surviving sweepOtherKinds arm is non-vacuous — see the rewritten arm above.
-
-// `activeKind()`'s XOR-by-construction: a single `Member.kind` tag means exactly one
-// handler's `activeKind() === <kind>` guard passes on a mixed selection. These arms pin
-// that structural property — the routing key is a single tag, not a set — NOT criterion (a)
-// (the edit count). Criterion (a) is covered by a capture arm (section.pw.ts) because the
-// keydown handlers live behind `window.addEventListener` inside `onMount`, and `bun:test`
-// has no DOM — a unit arm asserting a routing predicate is vacuous by construction.
-describe("activeKind() is a single-kind tag — XOR by construction", () => {
-    test("a node+force mixed selection has exactly one active kind", () => {
-        selectForce(5);
-        select(10, "toggle");
-        // both per-kind accessors read non-null simultaneously (the fallback), but the
-        // active member's kind is a single tag — exactly one handler's guard passes
-        const kind = activeKind();
-        expect(kind).not.toBeNull();
-        expect(kind === "node").not.toBe(kind === "force");
-    });
-
-    test("switching the active kind by shift-click changes the single tag", () => {
-        selectForce(5);
-        select(10, "toggle");
-        expect(activeKind()).toBe("node"); // last shift-clicked is the node
-        selectForce(5, "toggle");
-        selectForce(5, "toggle"); // toggle out and back in — force is now the active kind
-        expect(activeKind()).toBe("force");
-        const k2 = activeKind();
-        expect(k2 === "node").not.toBe(k2 === "force"); // still a single tag
-    });
-});
-
-describe("S2 repair: mixed-set snapshot/restore (criterion b)", () => {
-    test("selectionHook.snapshot captures every member with its kind, not just the active kind", () => {
-        // build a mixed set: force + strip + stripKf
-        selectForce(5);
-        ensureStrip(1);
-        selectStripKf(10, "toggle", 1);
-        // snapshot captures every member — the old switch-on-active-kind shape dropped the passive kind
-        const snap = selectionHook.snapshot(null as never); // ecs not needed for non-node kinds
-        expect(snap).not.toBeNull();
-        const s = snap as NonNullable<typeof snap>;
-        const kinds = s.members.map((m) => m.kind).sort();
-        expect(kinds).toEqual(["force", "strip", "stripKf"]);
-        expect(s.active?.kind).toBe("stripKf"); // the active member
-    });
-});
-
-// ── sub-mode collapse ──
-
-test("entering tangent edit collapses a multi-node set to its subject", () => {
-    select(10);
-    select(20, "toggle");
-    select(30, "toggle"); // a three-node set
-    enterTangentEdit(20);
-    expect([...editor.nodes.ids]).toEqual([20]);
-    expect(editor.selection).toBe(20);
-    expect(editor.tangentEdit).toBe(20);
-});
-
-test("growing the node set past the tangent-edit subject exits the sub-mode", () => {
-    select(10);
-    enterTangentEdit(10);
-    expect(editor.tangentEdit).toBe(10);
-    select(20, "toggle"); // the set grows to two → the single-subject sub-mode drops
-    expect(editor.tangentEdit).toBeNull();
-    expect([...editor.nodes.ids]).toEqual([10, 20]);
-});
-
-test("re-selecting the tangent-edit subject alone keeps the sub-mode", () => {
-    select(10);
-    enterTangentEdit(10);
-    select(10); // replace-select the same sole node
-    expect(editor.tangentEdit).toBe(10);
-});
-
-// BLOCKER 2: selectNodes([]) must exit tangent-edit — the shrink-to-zero case (a shift+marquee
-// that toggles the last member off). the length guard on the reconcile call skipped the exit
-// when `ids` was empty, leaving the sub-mode live on a deselected subject. this arm red at
-// 47f456d (tangentEdit stays set) and green after the guard is dropped. Its force-edit twin
-// (`selectForces([])` exiting force handle-edit) left with the sub-mode itself,
-// `kex2d-segment-removal` S3.
-test("selectNodes([]) exits tangent-edit (shrink-to-zero)", () => {
-    select(10);
-    enterTangentEdit(10);
-    expect(editor.tangentEdit).toBe(10);
-    selectNodes([], null);
-    expect(editor.nodes.ids.size).toBe(0);
-    expect(editor.tangentEdit).toBeNull();
-});
-
-// ── section context menu: promote-vs-replace on right-click (mirrors openNodeMenu/openForceMenu) ──
-
-test("openContext on a member of a multi-set promotes it active, keeping the whole set", () => {
-    selectSection(1);
-    selectSection(2, "toggle");
-    selectSection(3, "toggle"); // a shift-click set {1,2,3}, active 3
-    openContext(50, 60, 1); // right-click a non-active MEMBER
-    expect([...editor.sections.ids].sort((a, b) => a - b)).toEqual([1, 2, 3]); // set preserved
-    expect(editor.sections.active).toBe(1); // promoted, not replaced
-    expect(editor.context).toEqual({ x: 50, y: 60, section: 1 });
-    closeContext();
-    expect(editor.context).toBeNull();
-});
-
-test("openContext outside the set replace-selects just the target (today's single-select)", () => {
-    selectSection(1);
-    selectSection(2, "toggle"); // a set {1,2}
-    openContext(10, 20, 9); // right-click a section NOT in the set
-    expect([...editor.sections.ids]).toEqual([9]); // replaced, not kept
-    expect(editor.sections.active).toBe(9);
 });
 
 // ── the invoked-solve gate (kex2d-geoforce-editor stage 3) ──
@@ -965,163 +416,29 @@ describe("writeHover / clearHover — the one seam every hover write and clear g
     });
 });
 
-// ── the set-level multi predicate (S1, editor-ui.md Multi context UI) ──────────────────
-// the law: under one container, a containment-kept owning strip is not a second subject; all
-// other co-selected members count, including cross-kind siblings. a per-kind `ids.size > 1`
-// predicate reads a two-member cross-kind sibling set as single-select, so the context readers
-// (manip ring, popover, readout) read this exported predicate instead. bulk-op applicability
-// readers (Delete set-lift, arrow-nudge group move) stay per-kind — the
-// law governs context, never bulk-op applicability.
-describe("multi — the set-level multi predicate", () => {
-    // every arm constructs its selection through the production selectors a click calls
-    // (`selectStrip`, `selectStripKf`, `selectForce`, `deselectAll`), not through `ensureStrip`
-    // or toggle helpers — so the containment sweep (`sweepOtherKinds`) actually runs and the
-    // arms exercise the same path the popover guard reads.
-
-    test("an empty selection reads false", () => {
-        deselectAll();
+// ── the set-level predicates ───────────────────────────────────────────────────────────
+// `multi()` answers whether contextual single-subject chrome is valid (the popover binds to one
+// span); `anySelected()` answers whether the dismissal rung has anything to clear. Both read the
+// set, not a per-kind view.
+describe("multi / anySelected — the set-level reads", () => {
+    test("an empty selection reads false on both", () => {
         expect(multi()).toBe(false);
-    });
-
-    test("a genuinely cross-kind two-member set (one force + one strip keyframe) reads true", () => {
-        // the defect the law names: a per-kind `ids.size > 1` predicate reads this as single-select
-        // (forces.ids.size === 1, stripKfs.ids.size === 1), but the whole set has ≥2 members.
-        // built through the production selectors — `selectForce` in replace mode, then
-        // `selectStripKf` in toggle mode, whose `toggleSingle` does not sweep, so both kinds
-        // survive. deliberately narrower than a real shift-click on a strip keyframe, which also
-        // runs `ensureStrip` (`Timeline.svelte` `keyframeDown`) and so lands three members: this
-        // arm isolates the cross-kind pair with no containment member in it.
-        selectForce(5);
-        selectStripKf(10, "toggle", 1);
-        expect(multi()).toBe(true);
-    });
-
-    test("a same-kind two-member set reads true", () => {
-        selectForce(5);
-        selectForce(6, "toggle");
-        expect(multi()).toBe(true);
-    });
-
-    test("deselecting back to one member reads false", () => {
-        selectForce(5);
-        selectForce(6, "toggle");
-        expect(multi()).toBe(true);
-        selectForce(6, "toggle");
-        expect(multi()).toBe(false);
-    });
-
-    test("the containment pair selectStrip then selectStripKf reads single", () => {
-        // BEHAVIOR ARM (not a pre-repair control): the production click path keeps the owning
-        // strip with its keyframe. Replacing multi() with raw `_members.size > 1` makes this
-        // assertion fail (received true), proving the arm reaches the new containment exclusion.
-        // a plain click on a strip keyframe first selects the owning strip (`selectStrip`), then
-        // selects the keyframe (`selectStripKf` in replace mode, whose `sweepOtherKinds(["stripKf",
-        // "strip"])` keeps the strip). the result is a two-member set by construction: {strip, stripKf}.
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        expect(editor.strips.ids.has(1)).toBe(true);
-        expect(editor.stripKfs.ids.has(10)).toBe(true);
-        expect(multi()).toBe(false);
-    });
-
-    test("a keyframe with a non-owning strip reads multi", () => {
-        // CONTRAST ARM: the production click path leaves a non-owning strip as a genuine sibling.
-        // This intentionally stays green under raw size-only multi(); its distinct witness is an
-        // over-broad exclusion that drops every selected strip alongside a strip keyframe, which
-        // makes this assertion fail rather than hiding the two arm roles.
-        // The same production click sequence followed by a shift-click on another strip leaves
-        // the owning strip as containment and the second strip as a genuine sibling subject.
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStrip(2, "toggle");
-        expect(editor.stripKfs.ids.has(10)).toBe(true);
-        expect(editor.strips.ids.has(2)).toBe(true);
-        expect(multi()).toBe(true);
-    });
-
-    test("two keyframes under one owning strip still read multi", () => {
-        // the containment carve-out removes the OWNING STRIP from the count — it never merges
-        // the keyframes it owns into that strip's single subject. Two selected keyframes of one
-        // strip are two co-selected siblings under their common ancestor, so the popover hides
-        // exactly as it does for any other multi-set. Built through the production click path —
-        // the band click's `selectStrip`, the first keyframe's replace, then a shift-click on a
-        // second keyframe of the same strip — shift is what sends `keyframeDown` to the toggle
-        // form (`if (e.shiftKey) desc.select(…, "toggle", owner)`), while `ensureStrip` still
-        // runs on the shift path whether or not the strip is already selected. never
-        // `ensureStrip` + bare toggles.
-        // RED-FIRST WITNESS: the per-owner family form — counting each owning strip's keyframe
-        // set as ONE subject with it (reading "a containment-kept ancestor is not a second
-        // subject" as "a containment group is one subject") — reds this arm alone: `multi()`
-        // read false where true was expected, while every earlier arm in this block stayed
-        // green under the same mutant (the containment pair has one keyframe; the non-owning
-        // contrast arm's strip 2 is a subject of its own). Restored; green.
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        selectStripKf(20, "toggle", 1);
-        expect([...editor.stripKfs.ids].sort((a, b) => a - b)).toEqual([10, 20]);
-        expect(editor.strips.ids.has(1)).toBe(true); // the owning strip is in the set (containment)
-        expect(multi()).toBe(true); // two sibling keyframes, not one folded subject
-    });
-});
-
-// ── the set-level live-selection read (the pin-mode Escape rung's `selected` layer) ──
-// the law: "is something selected" is a property of the whole member set, never a hand-enumerated
-// OR over the per-kind views. the pre-fix guard OR-ed exactly four kinds (node, force, section,
-// START), so a strip-only selection read `selected: false` and the pin-mode Escape rung
-// (`App.svelte` → `modeKeyAct`) exited the pin session instead of yielding the selection rung —
-// the kind list was the defect, and `anySelected` is the extracted read the Svelte site now calls.
-// every arm builds its selection through the production selectors a click calls (`selectStrip`,
-// `selectStripKf`, `selectOneShot`, …), not through `ensureStrip` or toggle helpers, so the arms
-// exercise the same path the guard reads.
-describe("anySelected — the set-level live-selection read", () => {
-    // the exact oracle for the criterion: Escape with ONLY a strip selected must yield
-    // (`null`), never `pinExit` — the selection peels, the pin session stays open.
-    test("Escape with a strip-only selection yields — modeKeyAct reads null, not pinExit", () => {
-        selectStrip(1); // the plain-click production path (replace-select)
-        expect(editor.strip).toBe(1); // the strip really is selected
-        expect(
-            modeKeyAct("Escape", {
-                modeOpen: true,
-                menuOpen: false,
-                editing: false,
-                selected: anySelected(),
-                solvable: true,
-                solving: false,
-            }),
-        ).toBeNull();
-    });
-
-    test("the other omitted kinds are live too: strip keyframe (owning strip kept) and the one-shot", () => {
-        // a plain click on a strip keyframe selects the owning strip first, then the keyframe —
-        // the two-member containment set is still a live selection, not an empty one.
-        selectStrip(1);
-        selectStripKf(10, "replace", 1);
-        expect(anySelected()).toBe(true);
-        selectOneShot(true);
-        expect(anySelected()).toBe(true);
-    });
-
-    test("the kinds the old guard already enumerated stay live (no regression)", () => {
-        select(10);
-        expect(anySelected()).toBe(true);
-        selectForce(5);
-        expect(anySelected()).toBe(true);
-        selectSection(3);
-        expect(anySelected()).toBe(true);
-        selectStart(true);
-        expect(anySelected()).toBe(true);
-        // and the empty set reads false — the mode's Exit rung is the only thing left to peel.
-        deselectAll();
         expect(anySelected()).toBe(false);
-        expect(
-            modeKeyAct("Escape", {
-                modeOpen: true,
-                menuOpen: false,
-                editing: false,
-                selected: anySelected(),
-                solvable: true,
-                solving: false,
-            }),
-        ).toBe("pinExit");
+    });
+
+    test("one member is selected but not multi; two members are both", () => {
+        selectRecord(5);
+        expect(anySelected()).toBe(true);
+        expect(multi()).toBe(false);
+        toggleRecord(6);
+        expect(multi()).toBe(true);
+    });
+
+    test("toggling back to one member reads single again", () => {
+        selectRecord(5);
+        toggleRecord(6);
+        toggleRecord(6);
+        expect(multi()).toBe(false);
+        expect(anySelected()).toBe(true);
     });
 });

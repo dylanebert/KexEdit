@@ -24,12 +24,14 @@ import {
     removeRecord,
     setEase,
     setOrder,
+    setSelectionHook,
     undo,
 } from "../src/history";
 import { Lane, type LaneSegment } from "../src/lanes";
 import { Easing } from "../src/profile";
 import {
     BakeSystem,
+    createRecord,
     createTrack,
     endColumn,
     entrySpeed,
@@ -112,7 +114,7 @@ describe("addRecord / removeRecord — the structural verbs", () => {
         const id = addForce(ecs, h, 0, 10, 2);
         setRecordHandle(ecs, id, "entry", undefined); // an unowned entry must survive the trip
         const before = row(ecs, id);
-        expect(removeRecord(h, ecs, id)).toBe(true);
+        expect(removeRecord(h, ecs, id).id).toBe(id);
         expect(h.undo).toHaveLength(2);
         expect(lanesOf(ecs).force).toEqual([]);
         undo(h, ecs);
@@ -120,9 +122,14 @@ describe("addRecord / removeRecord — the structural verbs", () => {
         expect(row(ecs, id).entry).toBeUndefined();
     });
 
-    test("removeRecord on a missing id is false and records nothing", () => {
+    // RED (reviewer note 2): return a bare boolean again and `commands.ts` names `recordNotFound`
+    // on BOTH false paths — this arm asserts the guard the verb itself reports, so the id-less
+    // case is distinguishable from a store refusal on a record that IS there.
+    test("removeRecord on a missing id reports recordNotFound and records nothing", () => {
         const { ecs, h } = fixture();
-        expect(removeRecord(h, ecs, 99)).toBe(false);
+        const out = removeRecord(h, ecs, 99);
+        expect(out.id).toBeNull();
+        expect(out.refusals.map((r) => r.guard)).toEqual(["recordNotFound"]);
         expect(h.undo).toEqual([]);
     });
 });
@@ -224,6 +231,40 @@ describe("beginEdge / beginBody — the span gestures", () => {
     });
 });
 
+// ── the replay guard (reviewer note 4) ──────────────────────────────────────────────────────
+// A setter refusal on the live authoring path is an outcome the caller reports; the same refusal
+// inside an `apply`/`reverse` is a stack that no longer matches the document. `addRecord` used to
+// discard its redo's outcome (`void createRecord(...)`), so a redo the document had since made
+// illegal landed nothing and left every later entry addressing a record that is not there.
+describe("the replay guard — a command's own apply/reverse must land", () => {
+    // RED: restore `apply: () => void createRecord(ecs, lane, landed)` and this redo silently
+    // lands nothing — `h.undo` grows by one, the record is absent, and the next arm's read of it
+    // throws far from the cause instead of here.
+    test("a redo the document has made illegal throws rather than silently landing nothing", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10);
+        undo(h, ecs); // the record leaves
+        expect(recordOf(ecs, id)).toBeUndefined();
+        // an overlapping record takes the room the undo freed. Written through the SETTER, not
+        // the verb: a new authoring entry would clear the redo branch, and the branch is exactly
+        // what this arm needs standing.
+        expect(
+            createRecord(ecs, Lane.Force, { start: 5, end: 15, ease: Easing.Linear, exit: 1 }).id,
+        ).not.toBeNull();
+        expect(() => redo(h, ecs)).toThrow(/segmentOverlapped/);
+    });
+
+    test("an undo whose delete cannot land throws rather than banking a wrong reverse", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10);
+        removeRecord(h, ecs, id); // the record is gone, its delete entry on the stack
+        undo(h, ecs); // which restores it
+        expect(recordOf(ecs, id)).not.toBeUndefined();
+        redo(h, ecs); // and deletes it again — the replay landed both directions
+        expect(recordOf(ecs, id)).toBeUndefined();
+    });
+});
+
 describe("setEase — the easing chip", () => {
     // RED: record unconditionally (drop the `before === ease` short-circuit) → re-picking the
     // tag a record already carries banks an entry and `h.undo` reads 2.
@@ -237,6 +278,29 @@ describe("setEase — the easing chip", () => {
         expect(h.undo).toHaveLength(2);
         undo(h, ecs);
         expect(row(ecs, id).ease).toBe(Easing.Linear);
+    });
+
+    // RED (reviewer note 3): drop `setEase`'s `pre` snapshot and this arm reads `undefined` —
+    // the entry lands in the GESTURE form, which tells undo to leave the selection alone. An
+    // easing pick is not a gesture: it is one write from a menu row or a popover field, so the
+    // selection it was made under is part of what undo owes back.
+    test("the entry carries the pre-command selection, not the gesture form", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10);
+        const seen: unknown[] = [];
+        setSelectionHook({
+            snapshot: () => ({ marker: seen.length }),
+            restore: (_e, snap) => void seen.push(snap),
+        });
+        try {
+            setEase(h, ecs, id, Easing.Quintic);
+            const entry = h.undo[h.undo.length - 1];
+            expect(entry.pre).not.toBeUndefined();
+            undo(h, ecs);
+            expect(seen).toHaveLength(1); // undo restored the entry's own pre-selection
+        } finally {
+            setSelectionHook(null);
+        }
     });
 
     test("setEase on a missing record refuses and records nothing", () => {

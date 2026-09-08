@@ -11,6 +11,7 @@ import {
     hovered,
     kindColor,
     laneColor,
+    laneTone,
     selected,
 } from "../src/colors";
 import { Lane } from "../src/lanes";
@@ -229,6 +230,35 @@ describe("hovered — the rung below selection", () => {
 // kex2d-event-substrate S4, finding 4: an unselected velocity strip's fill wants a rung IN the
 // palette, never a bare alpha drop or an invented hex — `dimmed`'s the same OKLCH move `hovered`
 // makes, run the other way (darker, less saturated, hue held).
+// ── the lane span's three rungs (S3b) ───────────────────────────────────────────────────────
+// `laneTone` is the ONE seam that picks between `selected` and `hovered` for a span, so the row
+// render carries no priority logic of its own and the priority is testable without a canvas.
+describe("laneTone — the span's state rung, in the lane's own hue", () => {
+    // RED: read `hover` before `selected` in `laneTone` and a selected span under the pointer
+    // draws at the hover rung — the click stops showing on the thing it just picked.
+    test("selection outranks hover, and both outrank base", () => {
+        for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity]) {
+            const base = hexToOklch(laneTone(lane, "base")).l;
+            const hover = hexToOklch(laneTone(lane, "hover")).l;
+            const sel = hexToOklch(laneTone(lane, "selected")).l;
+            expect(hover).toBeGreaterThan(base);
+            expect(sel).toBeGreaterThan(hover);
+        }
+    });
+
+    // RED: return a flat `COLOR_ACCENT` for a selected span and the force lane — whose own hue IS
+    // the accent — reads as NOT selected, the exact defect the tone-variant law names.
+    test("every rung holds its lane's own hue — a selected force span is not a flat accent", () => {
+        for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity]) {
+            const h = hexToOklch(laneColor(lane)).h;
+            expect(hexToOklch(laneTone(lane, "hover")).h).toBeCloseTo(h, 1);
+            expect(hexToOklch(laneTone(lane, "selected")).h).toBeCloseTo(h, 1);
+        }
+        expect(laneTone(Lane.Force, "selected")).not.toBe(laneTone(Lane.Geo, "selected"));
+        expect(laneTone(Lane.Force, "base")).toBe(laneColor(Lane.Force));
+    });
+});
+
 describe("dimmed — the rung below base (S4, finding 4)", () => {
     const kinds = ["#78a5d6", "#d49560", COLOR_VELOCITY];
 

@@ -180,3 +180,45 @@ export function modeKeyAct(
     if (bound(BINDINGS.solve, key)) return !s.solving && s.solvable ? "pinSolve" : null;
     return null;
 }
+
+// ── the lane timeline's own rung (S3b) ────────────────────────────────────────────
+// The timeline's window keydown, decided here rather than in `Timeline.svelte` so the whole
+// matrix is drivable headlessly. The four presses it owns are the ones the person's check-in two
+// named missing: undo/redo (point 5), snap (point 6) and Delete on the selected span (the
+// selection rung, point 7). Each compares a LOWERCASED key, so `Z`/`Y`/`S` never appear as raw
+// literals and the registry's chord rule (`Modifier`) is what keeps `z` under Ctrl distinct from
+// a future bare one.
+
+/** the timeline rung's state (`Timeline.svelte`'s permanent listener). */
+export type TimelineKeyState = {
+    /** a live pointer gesture is in flight (`editor.dragging`) — every act here is inert
+     *  mid-drag: undoing under a drag would replay a stack the open gesture is still writing to,
+     *  and deleting the record being dragged leaves the gesture with no subject. */
+    dragging: boolean;
+    /** the Ctrl/Cmd chord is held (`ctrlKey || metaKey`) — `RESERVED.undo`/`redo`'s own `mod`. */
+    ctrl: boolean;
+    /** Shift is held — Ctrl+Shift+Z is redo's second form, off the same lowercased `z`. */
+    shift: boolean;
+    /** a record is selected — Delete has a subject only then. */
+    selected: boolean;
+};
+
+/** the acts the timeline rung names. `remove` is the one that reads a `BINDINGS` row (Delete, the
+ *  span menu's own terminal row at S3c); the other three are reserved presses with no menu row. */
+export type TimelineAct = "undo" | "redo" | "remove" | "toggleSnap";
+
+/** timeline Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z / Delete / `S` — `null` off every claim, and `null`
+ *  for ALL of them while a gesture is live. Delete additionally needs a selected record; the snap
+ *  toggle needs nothing, since it is a standing preference rather than an act on a subject. */
+export function timelineKeyAct(key: string, s: TimelineKeyState): TimelineAct | null {
+    if (s.dragging) return null;
+    const k = key.toLowerCase();
+    if (s.ctrl) {
+        if (k === "z") return s.shift ? "redo" : "undo";
+        if (k === "y") return "redo";
+        return null;
+    }
+    if (bound(BINDINGS.remove, key)) return s.selected ? "remove" : null;
+    if (k === "s") return "toggleSnap";
+    return null;
+}

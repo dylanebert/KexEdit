@@ -155,10 +155,24 @@ export const RESERVED = {
         keys: ["F3"],
         why: "shallot's own debug HUD toggle — not part of this app's key vocabulary",
     },
-    // `snap` (s/S), `nudge` (the four arrows) and `undo`/`redo` (ctrl+z / ctrl+y) left with the
-    // authoring gestures they served (`retired/pose-ux`): the registry declares what the tree
-    // actually presses, both directions, so a reservation with no live press would be an orphan
-    // declaration, not a claim. S3 re-declares each key alongside the gesture that presses it.
+    // re-declared at S3b with the gestures that press them (`keys.ts`'s `timelineKeyAct`, home
+    // `Timeline.svelte`): the registry declares what the tree actually presses, both directions,
+    // so each entry below has a live press and a reservation with none would be an orphan.
+    // `nudge` (the four arrows) is still absent — S3c re-declares it with the nudge gesture.
+    snap: {
+        keys: ["s"],
+        why: "toggles the timeline's landmark+grid snapping (default on; Ctrl/Cmd inverts it for one drag)",
+    },
+    undo: {
+        keys: ["z"],
+        mod: "ctrl",
+        why: "undoes the last authoring entry — the shared `history` stack, inert mid-gesture",
+    },
+    redo: {
+        keys: ["y"],
+        mod: "ctrl",
+        why: "redoes the last undone entry; Ctrl+Shift+Z redoes too, off the same lowercased `z`",
+    },
 } as const satisfies Record<string, Reserved>;
 
 /**

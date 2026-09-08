@@ -84,13 +84,16 @@ describe("kex2d-selection-substrate S1: structural oracle", () => {
         expect(src).toMatch(/export\s+interface\s+Member\s*\{/);
     });
 
-    test("the per-kind accessors are getters over the unified set, not stored fields", () => {
-        // `get nodes()`, `get forces()`, etc. — derived reads, not storage.
-        for (const field of ["nodes", "forces", "sections", "strips", "stripKfs"]) {
-            expect(src).toMatch(new RegExp(`get\\s+${field}\\s*\\(\\s*\\)\\s*:\\s*Selection`));
-        }
-        // `start` and `oneShot` are getters too — derived from the unified set.
-        expect(src).toMatch(/get\s+start\s*\(\s*\)\s*:\s*boolean/);
-        expect(src).toMatch(/get\s+oneShot\s*\(\s*\)\s*:\s*boolean/);
+    // S3b: the kind census is down to one — `record`, the lane substrate's only authored
+    // subject — so the five pose-era accessors and the two singleton booleans left with the
+    // subjects they addressed. The property this arm pins is unchanged: the accessor is a GETTER
+    // over the unified set, never a stored field, which is what makes the container the one
+    // storage. Coverage note: `nodes`/`forces`/`sections`/`strips`/`stripKfs`/`start`/`oneShot`
+    // have no surviving check because they have no surviving subject.
+    test("the accessors are getters over the unified set, not stored fields", () => {
+        expect(src).toMatch(/get\s+records\s*\(\s*\)\s*:\s*Selection/);
+        expect(src).toMatch(/get\s+record\s*\(\s*\)\s*:\s*number \| null/);
+        // and no accessor is a stored `Selection` record on the editor object.
+        expect(src.match(/^\s*records\s*:\s*\{/gm)).toBeNull();
     });
 });

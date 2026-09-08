@@ -16,9 +16,21 @@
  *  ported from `reference/animation-timeline` (valToPx/pxToVal, _zoom, _renderTicks,
  *  findGoodStep). */
 
-import { endPinnable, Lane, type LaneSegment, type Lanes, ordered, trackEnd } from "./lanes";
+import {
+    endPinnable,
+    entryValue,
+    inferredEntry,
+    Lane,
+    laneName,
+    type LaneSegment,
+    type Lanes,
+    ordered,
+    trackEnd,
+} from "./lanes";
 import { deriveRuns } from "./projection";
+import { type Easing, type ForcePoint, sampleForce } from "./profile";
 import { Domain, SectionKind } from "./section";
+import { snapSteps } from "./settings";
 import { V0 } from "./track";
 
 /** view-state: a single affine over the chart's axis `u` (distance or time, per
@@ -321,6 +333,24 @@ export function snap(px: number, targets: Iterable<number>, threshold = SNAP_PX)
 export const S_GRID = 1;
 export const G_GRID = 0.1;
 
+/** `G_GRID`'s velocity twin — the speed quantum a velocity handle's nudge or value drag lands on,
+ *  in m/s. A whole metre per second: the velocity lane's authoring vocabulary is coarse next to
+ *  force's tenth-of-a-g, because a strip's prescribed speed reads in whole numbers at every scale
+ *  the ride runs at (10 m/s to 40 m/s), where a 0.1 step would be noise below the bake's own
+ *  recovery. The third and last of the value quanta, so `nudgeQuantum` covers every lane. */
+export const V_GRID = 1;
+
+/** the value quantum one lane's handle nudges by — the per-lane arm of the nudge grammar (`S_GRID`
+ *  is the shared STATION quantum every lane's span moves on). Pitch reads the person's own
+ *  configured angle grid (`settings.snapSteps.angle`, the manipulator quantum) rather than a fourth
+ *  constant here: a heading is the one lane whose quantum a person already tunes, and inventing a
+ *  timeline-local twin would be two dialects of one grid. */
+export function nudgeQuantum(lane: Lane): number {
+    if (lane === Lane.Velocity) return V_GRID;
+    if (lane === Lane.Force) return G_GRID;
+    return snapSteps.angle;
+}
+
 /** `S_GRID`'s time twin — the placement quantum a keyframe drag snaps to on the
  *  chart's u-axis while the track reads in `Domain.Time`, in seconds. Derived, not
  *  tuned: the time a cart at the default entry speed `V0` (10 m/s) takes to cover one
@@ -566,20 +596,22 @@ export const ROW_GAP = 2;
  *  grips overlap into an unreachable body. */
 export const EDGE_PX = 5;
 
-/** the height of a row's chip band in px, measured from the row's top: the value chips ride
- *  ABOVE the span body (the leading handle also carrying the easing chip), so a chip press and a
- *  body press never contend for the same pixel. */
-export const CHIP_H = 10;
-
-/** the chip's own half-width in px, around its handle's station. */
-export const CHIP_PX = 9;
+/** the lane column's width in px — the left inset every chart read is projected past
+ *  (`spanBoxes`/`hitRows`/`endHandle`'s own `left`). Animate's layer column: it names each row by
+ *  its authored quantity and is the row's own grip, so the rows are annotated THERE and nowhere
+ *  else, and the ruler's 0 tick sits inside the chart rather than on its cut edge (the person's
+ *  check-in two, points 2, 4 and 10). */
+export const COLUMN_W = 76;
 
 /** one lane's row on the shared ruler. `top`/`height` are dock-local px; `records` is the lane's
- *  own members in span order (`lanes.ordered`), never a copy of another lane's. */
+ *  own members in span order (`lanes.ordered`), never a copy of another lane's; `name` is the
+ *  authored quantity the column prints (`lanes.laneName`), the row's only label. */
 export interface LaneRow {
     lane: Lane;
     /** the row's place top-to-bottom, its index in `order`. */
     index: number;
+    /** the lane's own quantity name — the lane column's label and nothing else's. */
+    name: string;
     top: number;
     height: number;
     expanded: boolean;
@@ -605,6 +637,7 @@ export function laneRows(
         out.push({
             lane,
             index: i,
+            name: laneName(lane),
             top: y,
             height,
             expanded: open,
@@ -654,23 +687,25 @@ export function spanBoxes(row: LaneRow, v: View, left = 0): SpanBox[] {
 
 /** what a press on a lane row landed on.
  *
+ *  `column` is the row's name in the left column — its label, and the grip a reorder drag takes;
  *  `edge` resizes (the span's `start` or `end` moves, the other holds), `body` moves the whole
- *  span, `chip` edits one handle's value (`entry` on the leading handle, which also carries the
- *  easing chip; `exit` on the trailing one), and `gap` is empty lane at station `d` — where a
- *  press ADDS a record rather than editing one. */
+ *  span, and `gap` is empty lane at station `d` — where a drag-out ADDS a record rather than
+ *  editing one. There is no `chip`: the first look read the chip band as busy and unreadable and
+ *  the spans as starved of height, so a span fills its row and carries no per-handle label at all
+ *  (the person's check-in two, point 1). */
 export type RowHit =
+    | { kind: "column"; lane: Lane; index: number }
     | { kind: "edge"; lane: Lane; id: number; which: "start" | "end" }
     | { kind: "body"; lane: Lane; id: number }
-    | { kind: "chip"; lane: Lane; id: number; which: "entry" | "exit" }
     | { kind: "gap"; lane: Lane; d: number }
     | null;
 
-/** resolve one press over the rows: chip band first, then a span's edges, then its body, then
- *  the gap the press fell in. Null off every row (the ruler above, the empty space below).
+/** resolve one press over the rows: the lane column first, then a span's edges, then its body,
+ *  then the gap the press fell in. Null off every row (the ruler above, the empty space below).
  *
- *  The order is the affordance order — a chip rides above its span and an edge grip rides inside
- *  it, so the smaller target always wins the pixel it shares with the larger one, which is what
- *  keeps a resize reachable on a span whose body is one press away. */
+ *  The order is the affordance order — the column owns the whole inset left of the chart, and an
+ *  edge grip rides inside its span, so the smaller target always wins the pixel it shares with
+ *  the larger one, which is what keeps a resize reachable on a span whose body is one press away. */
 export function hitRows(
     rows: readonly LaneRow[],
     v: View,
@@ -680,19 +715,12 @@ export function hitRows(
 ): RowHit {
     for (const row of rows) {
         if (py < row.top || py >= row.top + row.height) continue;
+        if (px < left) return { kind: "column", lane: row.lane, index: row.index };
         const d = pxToU(v, px - left);
         const boxes = spanBoxes(row, v, left);
-        const inChips = py < row.top + CHIP_H;
         for (let i = 0; i < boxes.length; i++) {
             const box = boxes[i]!;
             const rec = row.records[i]!;
-            if (inChips) {
-                if (Math.abs(px - box.x0) <= CHIP_PX)
-                    return { kind: "chip", lane: row.lane, id: rec.id, which: "entry" };
-                if (Math.abs(px - box.x1) <= CHIP_PX)
-                    return { kind: "chip", lane: row.lane, id: rec.id, which: "exit" };
-                continue;
-            }
             if (px < box.x0 || px > box.x1) continue;
             // a span narrower than two grips splits down the middle: both edges stay reachable
             // and no press falls into a body that isn't there.
@@ -765,4 +793,127 @@ export function drivenSpans(lanes: Lanes, end: number, order?: readonly Lane[]):
         }
     }
     return out;
+}
+
+/** one point of a span's miniature curve, in dock-local px. */
+export interface CurvePoint {
+    x: number;
+    y: number;
+}
+
+/** how many samples a miniature curve draws — enough that a Quintic reads as a curve at the
+ *  narrowest span worth drawing, few enough that three rows redraw per frame for free. */
+const CURVE_SAMPLES = 25;
+
+/** the miniature curve inside one span: the record's OWN easing from entry to exit, sampled
+ *  through `profile.ts`'s one sampler (the same `sampleForce` over the record's two handles that
+ *  `projection.curveAt` reads, so the drawn shape is the curve the bake threads, never a second
+ *  easing dialect) and normalized into the box.
+ *
+ *  Normalized to the record's own two handles, not to the lane's range: this is a SHAPE, not a
+ *  reading — a span conveys how its value moves without a label, which is what the person asked
+ *  for when the chips came off (check-in two, point 11). A flat record (equal handles, or an
+ *  unowned entry that reads the exit) draws a level line down the box's middle rather than
+ *  dividing by a zero span. `entry` is the value the record's lane entry law resolved to
+ *  (`lanes.entryValue`); `undefined` means the record opens off a gap and owns no entry the view
+ *  can draw from, so the line is level at the exit. */
+export function spanCurve(
+    record: LaneSegment,
+    entry: number | undefined,
+    box: SpanBox,
+    pad = 3,
+): CurvePoint[] {
+    const from = entry ?? record.exit;
+    const span = record.end - record.start;
+    const top = box.y0 + pad;
+    const bot = box.y1 - pad;
+    const lo = Math.min(from, record.exit);
+    const hi = Math.max(from, record.exit);
+    const mid = (top + bot) / 2;
+    if (!(span > 0) || hi - lo <= 0)
+        return [
+            { x: box.x0, y: mid },
+            { x: box.x1, y: mid },
+        ];
+    const points: ForcePoint[] = [
+        { s: record.start, g: from, ease: record.ease as Easing },
+        { s: record.end, g: record.exit, ease: record.ease as Easing },
+    ];
+    const out: CurvePoint[] = [];
+    for (let i = 0; i < CURVE_SAMPLES; i++) {
+        const f = i / (CURVE_SAMPLES - 1);
+        const g = sampleForce(points, record.start + f * span);
+        // value UP is pixel-y DOWN, so a rising handle draws a rising line.
+        out.push({
+            x: box.x0 + f * (box.x1 - box.x0),
+            y: bot - ((g - lo) / (hi - lo)) * (bot - top),
+        });
+    }
+    return out;
+}
+
+/** the view's rigid clamp at the ruler's origin — the landmark that survives a snap bypass
+ *  (`editor-ui.md`), floored here rather than in the setter because the ORIGIN LAW is the headless
+ *  author's refusal (`lanes.segmentBeforeOrigin`, landed S3a) and a pointer must not be refused
+ *  every frame for a place it can simply not reach. A body drag whose shift would put `start`
+ *  under 0 lands at 0 with its LENGTH held (the span slides to the wall, it does not shrink into
+ *  it); a start-edge drag floors its own station at 0 and the far edge holds. An end-edge drag is
+ *  unchanged: it cannot reach the origin without crossing its own start, which the setter refuses
+ *  as degenerate. */
+export function clampSpanDrag(
+    which: "start" | "end" | "body",
+    start: number,
+    end: number,
+): { start: number; end: number } {
+    if (which === "body") return start >= 0 ? { start, end } : { start: 0, end: end - start };
+    if (which === "start") return { start: Math.max(0, start), end };
+    return { start, end };
+}
+
+/** the landmark pool one span drag snaps to, in AXIS units (metres) — the caller projects them
+ *  through the view and hands them to {@link snapAxis}, whose `S_GRID` fallback is the ambient
+ *  grid under them. Content landmarks only (`editor-ui.md`: never a display artefact like a ruler
+ *  tick): every OTHER record's two stations ACROSS the lanes (so a force span lines up with the
+ *  pitch span it shapes), the parked playhead, the track end, and the origin. `exclude` is the
+ *  dragged record's own id — a span never snaps to where it already is (self-snap), while the
+ *  gesture-start axis magnet `snapAxis` carries is the caller's own separate affordance. */
+export function spanTargets(
+    lanes: Lanes,
+    playheadS: number | null,
+    end: number,
+    exclude?: number,
+): number[] {
+    const out: number[] = [0, trackEnd(lanes, end)];
+    for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity])
+        for (const rec of laneMembers(lanes, lane)) {
+            if (rec.id === exclude) continue;
+            out.push(rec.start, rec.end);
+        }
+    if (playheadS !== null) out.push(playheadS);
+    return out;
+}
+
+/** the value a record's entry handle reads for display — its own owned handle, else the lane's
+ *  entry law (`lanes.entryValue`: the abutting predecessor's exit, else the lane's dwell), else
+ *  `undefined` where the lane infers nothing and the march owns it. The one seam {@link spanCurve}
+ *  and the row render read, so the drawn curve and the baked one open from the same value. */
+export function recordEntry(lanes: Lanes, lane: Lane, record: LaneSegment): number | undefined {
+    return entryValue(lane, laneMembers(lanes, lane), record) as number | undefined;
+}
+
+/** the handle value a record minted by a gap drag-out opens and closes at — a FLAT record at
+ *  whatever the lane already holds there, so adding a span changes the document's shape by
+ *  nothing until the person edits a handle (the Animate rule: a new span inherits, it does not
+ *  jump). The lane's own law answers first (`lanes.inferredEntry`: force dwells at the last exit,
+ *  `DEFAULT_G` before any), then the nearest preceding record's exit, then the lane's own floor
+ *  value — `V0` for velocity, because a prescribed speed of 0 is a march with no direction and
+ *  the setter refuses it, and level (0 rad) for pitch. */
+export function defaultHandle(lanes: Lanes, lane: Lane, station: number): number {
+    const rows = laneMembers(lanes, lane);
+    const inferred = inferredEntry(lane, rows, station);
+    if (inferred !== undefined) return inferred;
+    let best: LaneSegment | undefined;
+    for (const r of rows) if (r.end <= station && (!best || r.end > best.end)) best = r;
+    if (best) return best.exit;
+    return lane === Lane.Velocity ? V0 : 0;
 }

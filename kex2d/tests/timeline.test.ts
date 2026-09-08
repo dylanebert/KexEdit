@@ -9,8 +9,9 @@ import { Domain } from "../src/section";
 import { BakeSystem, createTrack, endColumn, lanesOf, setEnd } from "../src/track";
 import {
     arcToTime,
-    CHIP_H,
+    clampSpanDrag,
     clampView,
+    COLUMN_W,
     drivenSpans,
     dToU,
     dToUExtend,
@@ -31,6 +32,8 @@ import {
     navWindow,
     niceStep,
     nodeArc,
+    nudgeQuantum,
+    defaultHandle,
     ROW_EXPANDED_H,
     ROW_GAP,
     ROW_H,
@@ -40,6 +43,8 @@ import {
     snapAxis,
     SNAP_PX,
     spanBoxes,
+    spanCurve,
+    spanTargets,
     stallClampU,
     uToPx,
     T_GRID,
@@ -49,6 +54,7 @@ import {
     trimTargets,
     uToD,
     uToDExtend,
+    V_GRID,
     type View,
     xGrow,
     yEase,
@@ -58,6 +64,7 @@ import {
     zoomAt,
 } from "../src/timeline";
 import { V0 } from "../src/track";
+import { snapSteps } from "../src/settings";
 
 // the distance-domain lead-out floor — most of these tests exercise the pure math over a
 // generic axis unit, so they pass this in wherever `floor` used to default to `MARGIN_M`.
@@ -1062,9 +1069,9 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
 
     // RED: drop `hitRows`'s edge branch (return `body` for every in-span press) → the two edge
     // presses read `body` and the arm fails on `kind`.
-    test("press grammar: edge, body, chip and gap each resolve on their own pixel", () => {
+    test("press grammar: column, edge, body and gap each resolve on their own pixel", () => {
         const rows = laneRows(doc(), DEFAULT_ORDER, Top);
-        const mid = Top + CHIP_H + 4; // inside the geo row, below its chip band
+        const mid = Top + 4; // inside the geo row — the span fills it, there is no chip band
         // the geo span is [0, 20) → px [0, 200] at 10 px/m.
         expect(hitRows(rows, view, 1, mid)).toEqual({
             kind: "edge",
@@ -1079,23 +1086,10 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
             which: "end",
         });
         expect(hitRows(rows, view, 100, mid)).toEqual({ kind: "body", lane: Lane.Geo, id: 3 });
-        // the chip band rides above the body: the same station reads a chip, not an edge.
-        expect(hitRows(rows, view, 200, Top + 2)).toEqual({
-            kind: "chip",
-            lane: Lane.Geo,
-            id: 3,
-            which: "exit",
-        });
-        expect(hitRows(rows, view, 0, Top + 2)).toEqual({
-            kind: "chip",
-            lane: Lane.Geo,
-            id: 3,
-            which: "entry",
-        });
         // past the geo record's own end: empty lane, so the press names its station.
         expect(hitRows(rows, view, 250, mid)).toEqual({ kind: "gap", lane: Lane.Geo, d: 25 });
         // and the row below answers for its own lane, not geo's.
-        const forceMid = Top + ROW_H + ROW_GAP + CHIP_H + 4;
+        const forceMid = Top + ROW_H + ROW_GAP + 4;
         expect(hitRows(rows, view, 150, forceMid)).toEqual({
             kind: "body",
             lane: Lane.Force,
@@ -1104,12 +1098,116 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
         expect(hitRows(rows, view, 150, 4)).toBeNull(); // the ruler band above every row
     });
 
+    // RED (the person's check-in two, points 2/4/10): drop `hitRows`'s `px < left` branch and a
+    // press on the column falls through to the chart's own hit, so the name cell answers `gap`
+    // at a NEGATIVE station — the lane column stops being a target at all.
+    test("the lane column answers for its whole inset, and names its row's own quantity", () => {
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top);
+        expect(rows.map((r) => r.name)).toEqual(["geo", "force", "velocity"]);
+        expect(hitRows(rows, view, 10, Top + 4, COLUMN_W)).toEqual({
+            kind: "column",
+            lane: Lane.Geo,
+            index: 0,
+        });
+        // one pixel past the inset is the chart again — the geo span's own start edge.
+        expect(hitRows(rows, view, COLUMN_W + 1, Top + 4, COLUMN_W)).toMatchObject({
+            kind: "edge",
+            lane: Lane.Geo,
+        });
+        // the row below answers for ITS lane, not the one above it.
+        expect(hitRows(rows, view, 10, Top + ROW_H + ROW_GAP + 4, COLUMN_W)).toEqual({
+            kind: "column",
+            lane: Lane.Force,
+            index: 1,
+        });
+    });
+
+    // RED: drop the `which === "body"` length-preserving branch (floor `start` alone) and the
+    // body drag lands [0, 17) — the span SHRINKS into the wall instead of stopping at it.
+    test("the view's origin clamp: a body drag holds its length at 0, a start edge floors there", () => {
+        expect(clampSpanDrag("body", -3, 17)).toEqual({ start: 0, end: 20 });
+        expect(clampSpanDrag("body", 4, 24)).toEqual({ start: 4, end: 24 }); // untouched above 0
+        expect(clampSpanDrag("start", -3, 20)).toEqual({ start: 0, end: 20 });
+        expect(clampSpanDrag("start", 5, 20)).toEqual({ start: 5, end: 20 });
+        // an end edge cannot reach the origin without crossing its own start, which the setter
+        // refuses as degenerate — so the clamp leaves it alone rather than inventing a second law.
+        expect(clampSpanDrag("end", 5, -1)).toEqual({ start: 5, end: -1 });
+    });
+
+    // RED: drop the origin and the end from `spanTargets`' pool and the two landmarks the person
+    // drags to most (the wall and the track's own end) stop pulling; drop the `exclude` and a span
+    // snaps to where it already is.
+    test("the snap pool is every other record's stations across the lanes, plus the playhead, the end and 0", () => {
+        const lanes = doc();
+        expect(spanTargets(lanes, 7, 0).sort((a, b) => a - b)).toEqual([
+            0, 0, 0, 7, 10, 12, 20, 30, 30,
+        ]);
+        // the dragged record's own two stations leave the pool — a span never snaps to itself.
+        expect(spanTargets(lanes, null, 0, 3)).not.toContain(20);
+        // a pinned end is the landmark, not the content extent.
+        expect(spanTargets(lanes, null, 46, 3)).toContain(46);
+    });
+
+    // RED: read the record's `exit` for both handles and every span draws level — the shape the
+    // chips were replaced by conveys nothing (check-in two, point 11).
+    test("the miniature curve samples the record's own easing, normalized into its box", () => {
+        const rec: LaneSegment = {
+            id: 4,
+            start: 0,
+            end: 10,
+            ease: Easing.Linear,
+            entry: 0,
+            exit: 2,
+        };
+        const box = { id: 4, x0: 100, x1: 200, y0: 10, y1: 36 };
+        const pts = spanCurve(rec, 0, box, 3);
+        expect(pts[0]).toEqual({ x: 100, y: 33 }); // the entry sits at the box's floor
+        expect(pts[pts.length - 1]).toEqual({ x: 200, y: 13 }); // the exit at its ceiling
+        // Linear rises straight: a quarter along the span is a quarter of the way up. A Cubic
+        // over the same two handles is NOT — smoothstep is flat at its entry — so the tag really
+        // governs the drawn curve. (The MIDPOINT is a poor foil: both families are symmetric and
+        // read exactly half there, which is why this samples a quarter in.)
+        const quarter = pts[(pts.length - 1) / 4];
+        expect(quarter.y).toBeCloseTo(28, 1);
+        const cubic = spanCurve({ ...rec, ease: Easing.Cubic }, 0, box, 3);
+        expect(cubic[(pts.length - 1) / 4].y).toBeCloseTo(29.875, 1);
+        // a flat record (equal handles) draws a level line down the middle, never a divide by 0.
+        const flat = spanCurve({ ...rec, exit: 0 }, 0, box, 3);
+        expect(flat.map((p) => p.y)).toEqual([23, 23]);
+        // an unowned entry opens off a gap: nothing to draw from, so the line is level at the exit.
+        expect(spanCurve(rec, undefined, box, 3).map((p) => p.y)).toEqual([23, 23]);
+    });
+
+    // RED: return `G_GRID` for every lane and the pitch nudge quantizes a heading in radians to
+    // a tenth of a g — a unit the lane does not hold.
+    test("each lane nudges its handle by its own value quantum", () => {
+        expect(nudgeQuantum(Lane.Velocity)).toBe(V_GRID);
+        expect(nudgeQuantum(Lane.Force)).toBe(G_GRID);
+        expect(nudgeQuantum(Lane.Geo)).toBe(snapSteps.angle); // the person's own configured grid
+    });
+
+    // RED: mint the record at a fixed 1 g and the gap drag-out steps the force lane at the seam —
+    // adding a span would change the bake before any handle is touched.
+    test("a gap drag-out's record opens flat at whatever the lane already holds there", () => {
+        const lanes = doc();
+        // force dwells at the last exit at or before the station (`lanes.inferredEntry`).
+        expect(defaultHandle(lanes, Lane.Force, 40)).toBe(2);
+        // before any force record, the lane's own dwell is `DEFAULT_G`.
+        expect(defaultHandle({ velocity: [], force: [], geo: [] }, Lane.Force, 5)).toBe(1);
+        // geo infers nothing across a gap, so the nearest preceding exit answers.
+        expect(defaultHandle(lanes, Lane.Geo, 25)).toBe(0.1);
+        // and with nothing behind it, each lane's own floor value: a prescribed 0 m/s is a march
+        // with no direction, which the setter refuses, so velocity opens at `V0`.
+        expect(defaultHandle({ velocity: [], force: [], geo: [] }, Lane.Velocity, 5)).toBe(V0);
+        expect(defaultHandle({ velocity: [], force: [], geo: [] }, Lane.Geo, 5)).toBe(0);
+    });
+
     // RED: `hitRows` taking the fixed `EDGE_PX` grip instead of half the span's width → a 6 px
     // span's two grips overlap, the `end` edge is unreachable, and this arm reads `start` twice.
     test("a span narrower than two grips still resolves both edges", () => {
         const thin: Lanes = { velocity: [], force: [], geo: [seg(9, 0, 0.6)] };
         const rows = laneRows(thin, DEFAULT_ORDER, Top);
-        const mid = Top + CHIP_H + 4;
+        const mid = Top + 4;
         expect(hitRows(rows, view, 1, mid)).toMatchObject({ kind: "edge", which: "start" });
         expect(hitRows(rows, view, 5, mid)).toMatchObject({ kind: "edge", which: "end" });
     });

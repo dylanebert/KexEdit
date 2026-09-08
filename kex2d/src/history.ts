@@ -228,6 +228,17 @@ export function landDomain(h: History, ecs: State, target: Domain): void {
 // simply never lands, because the setter declines the write and the gesture's `same` reads no
 // change. Every verb below returns the setter's own outcome so the caller can name the guard.
 
+/** the replay guard: a command's own apply/reverse must LAND. A setter refusal on the live
+ *  authoring path is an outcome the caller reports; the same refusal during an undo or a redo is
+ *  a stack that no longer matches the document, and continuing past it corrupts every later entry
+ *  addressing the same record. Throws with the guard names the setter reported. */
+function replayed(write: LaneWrite, what: string, id: number): void {
+    if (write.id === null)
+        throw new Error(
+            `history: ${what} of record ${id} was refused (${write.refusals.map((r) => r.guard).join(", ")})`,
+        );
+}
+
 /** author one record in `lane` and land it as one undo entry. Returns the setter's outcome, so a
  *  refusal (overlap, floor, duplicate id) names its guard and nothing is recorded. */
 export function addRecord(
@@ -246,30 +257,54 @@ export function addRecord(
         {
             // the id travels with the entry, so a redo re-spawns the SAME record a selection
             // snapshot or a later edit addresses — an allocator-fresh id would alias.
-            apply: () => void createRecord(ecs, lane, landed),
-            reverse: () => void deleteRecord(ecs, id),
+            //
+            // The replay's own outcome is READ, not discarded: `createRecord` returns a refusal
+            // rather than throwing, so a redo the document has since made illegal (an overlap the
+            // undone edit made room for) would otherwise land nothing and leave the stack
+            // claiming a record that is not there — every later entry addressing `id` then acts
+            // on nothing, silently. A replay that cannot land is a broken stack, not an authoring
+            // outcome to report, so it throws (reviewer note 4, Validation 3).
+            apply: () => replayed(createRecord(ecs, lane, landed), "re-create", id),
+            reverse: () => {
+                if (!deleteRecord(ecs, id))
+                    throw new Error(`history: undo could not delete record ${id}`);
+            },
         },
         pre,
     );
     return write;
 }
 
-/** delete one record and land it as one undo entry. False when there was no such record. */
-export function removeRecord(h: History, ecs: State, id: number): boolean {
+/** delete one record and land it as one undo entry. Returns the setter's own outcome, like every
+ *  other verb here: `id` on a landed delete, and the guard that declined it otherwise. It used to
+ *  return a bare boolean, which made the command layer name `recordNotFound` on BOTH of its false
+ *  paths — including the one where the record was found and the store still declined the destroy,
+ *  a refusal that has nothing to do with the id (reviewer note 2, Validation 3). */
+export function removeRecord(h: History, ecs: State, id: number): LaneWrite {
     const found = recordOf(ecs, id);
-    if (!found) return false;
+    if (!found)
+        return { id: null, refusals: [{ guard: "recordNotFound", message: `no record ${id}` }] };
     const pre = selHook?.snapshot(ecs);
     const { lane, row } = found;
-    if (!deleteRecord(ecs, id)) return false;
+    if (!deleteRecord(ecs, id))
+        return {
+            id: null,
+            refusals: [
+                { guard: "recordNotDeleted", message: `record ${id} was found but not deleted` },
+            ],
+        };
     record(
         h,
         {
-            apply: () => void deleteRecord(ecs, id),
-            reverse: () => void createRecord(ecs, lane, row),
+            apply: () => {
+                if (!deleteRecord(ecs, id))
+                    throw new Error(`history: redo could not delete record ${id}`);
+            },
+            reverse: () => replayed(createRecord(ecs, lane, row), "restore", id),
         },
         pre,
     );
-    return true;
+    return { id, refusals: [] };
 }
 
 /** open a gesture on one of a record's two handles — the value chip drag or typed edit. The
@@ -317,12 +352,22 @@ export function setEase(h: History, ecs: State, id: number, ease: Easing): LaneW
     const found = recordOf(ecs, id);
     if (!found) return setRecordEase(ecs, id, ease); // the setter owns the not-found refusal
     const before = found.row.ease as Easing;
+    // the pre-command selection, captured BEFORE the write like every other structural verb here:
+    // an entry with no `pre` is the GESTURE form, which tells undo to leave the selection alone
+    // because the dragged subject stays selected either way. An easing pick is not a gesture — it
+    // is one write from a menu row or a popover field, and the selection it was made under is
+    // part of what undo owes back (reviewer note 3, Validation 3).
+    const pre = selHook?.snapshot(ecs);
     const write = setRecordEase(ecs, id, ease);
     if (write.id === null || before === ease) return write;
-    record(h, {
-        apply: () => void setRecordEase(ecs, id, ease),
-        reverse: () => void setRecordEase(ecs, id, before),
-    });
+    record(
+        h,
+        {
+            apply: () => replayed(setRecordEase(ecs, id, ease), "re-ease", id),
+            reverse: () => replayed(setRecordEase(ecs, id, before), "un-ease", id),
+        },
+        pre,
+    );
     return write;
 }
 
