@@ -28,7 +28,9 @@ import {
     undo,
 } from "../src/history";
 import { Lane, type LaneSegment } from "../src/lanes";
+import { nudgeAct } from "../src/keys";
 import { Easing } from "../src/profile";
+import { clampSpanDrag, nudgeQuantum, S_GRID } from "../src/timeline";
 import {
     BakeSystem,
     createRecord,
@@ -431,5 +433,188 @@ describe("begin — a failed open closes the standing gesture", () => {
 
         expect(h.undo).toHaveLength(depth + 1); // the delete alone, not a second entry
         expect(row(ecs, a).end).toBe(12); // the live write stands; only the entry is refused
+    });
+});
+
+// ── S3c: the popover's fields and the nudge keys land the SAME entries the drags do ───────────
+// Both surfaces write through the verbs above rather than through a second path, so what is at
+// stake is the identity: one commit, one entry, and an undo that puts the record back exactly.
+describe("the popover's fields — one gesture, one entry, per field", () => {
+    // RED: land a field's write without the `begin`/`commit` bracket (a bare setter call) and the
+    // typed edit lands NO entry — the value moves and undo takes back somebody else's edit.
+    test("each value field commits one entry and undoes to the pre-edit number", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10, 1);
+        const depth = h.undo.length;
+
+        // the exit field: `beginHandle` → setter → `commit`, exactly what `Popover.svelte` calls.
+        beginHandle(ecs, id, "exit");
+        setRecordHandle(ecs, id, "exit", 2.5);
+        commit(h);
+        expect(h.undo).toHaveLength(depth + 1);
+        expect(row(ecs, id).exit).toBe(2.5);
+        undo(h, ecs);
+        expect(row(ecs, id).exit).toBe(1);
+        redo(h, ecs);
+        expect(row(ecs, id).exit).toBe(2.5);
+
+        // the entry field, over the same lifecycle and its own column.
+        beginHandle(ecs, id, "entry");
+        setRecordHandle(ecs, id, "entry", 0.4);
+        commit(h);
+        expect(h.undo).toHaveLength(depth + 2);
+        undo(h, ecs);
+        expect(row(ecs, id).entry).toBe(1);
+    });
+
+    // RED: drop the label scrub's intermediate frames from the gesture (open a fresh gesture per
+    // frame) and one drag lands one entry PER FRAME — the coalescing the field law promises
+    // ("one undo") is exactly what a scrub tests.
+    test("a label scrub's many live frames coalesce into ONE entry", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10, 1);
+        const depth = h.undo.length;
+        beginHandle(ecs, id, "exit");
+        for (const v of [1.1, 1.4, 1.9, 2.2]) setRecordHandle(ecs, id, "exit", v);
+        commit(h);
+        expect(h.undo).toHaveLength(depth + 1);
+        undo(h, ecs);
+        expect(row(ecs, id).exit).toBe(1);
+    });
+
+    // RED: commit on Escape instead of cancelling and a reverted field lands the abandoned value
+    // as an entry — the field law's Escape stops meaning anything.
+    test("Escape reverts a field: the pre-edit value returns and nothing is recorded", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10, 1);
+        const depth = h.undo.length;
+        beginHandle(ecs, id, "exit");
+        setRecordHandle(ecs, id, "exit", 3);
+        cancel();
+        expect(row(ecs, id).exit).toBe(1);
+        expect(h.undo).toHaveLength(depth);
+    });
+
+    // RED: open the two station fields on `beginBody` rather than `beginEdge` and a `start` edit
+    // restores BOTH columns from a body snapshot — the same two columns here, but the arm pins
+    // that the far edge holds, which is what a start field means.
+    test("the start and end fields move their own station and hold the other", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 4, 14, 1);
+        const depth = h.undo.length;
+        beginEdge(ecs, id);
+        const span = clampSpanDrag("start", 6, 14);
+        setRecordSpan(ecs, id, span.start, span.end);
+        commit(h);
+        expect(row(ecs, id)).toMatchObject({ start: 6, end: 14 });
+        expect(h.undo).toHaveLength(depth + 1);
+        undo(h, ecs);
+        expect(row(ecs, id)).toMatchObject({ start: 4, end: 14 });
+    });
+
+    // RED: drop `setEase`'s own `record` call and the easing picker changes the curve with no
+    // entry behind it — the one field that is a single write rather than a gesture.
+    test("the easing picker lands one entry and undoes to the previous tag", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0, 10, 1);
+        const depth = h.undo.length;
+        expect(setEase(h, ecs, id, Easing.Quintic).id).toBe(id);
+        expect(h.undo).toHaveLength(depth + 1);
+        expect(row(ecs, id).ease).toBe(Easing.Quintic);
+        undo(h, ecs);
+        expect(row(ecs, id).ease).toBe(Easing.Linear);
+    });
+});
+
+describe("the nudge keys — the in-place tweak's own undo identity", () => {
+    /** the timeline's own applier, in the shape `Timeline.svelte` runs it: one gesture bracket
+     *  around one setter write, with the station channel floored at the origin exactly as a body
+     *  drag is. Driven through `nudgeAct` so the arm reads the real decision, not a hand-picked
+     *  direction. */
+    function press(
+        ecs: State,
+        h: History,
+        id: number,
+        lane: Lane,
+        key: string,
+        mods: { shift?: boolean; alt?: boolean } = {},
+    ): void {
+        const r = row(ecs, id);
+        const act = nudgeAct(
+            { key },
+            {
+                dragging: false,
+                selected: true,
+                shift: mods.shift ?? false,
+                alt: mods.alt ?? false,
+                ownsEntry: r.entry !== undefined,
+            },
+        );
+        if (act === null) return;
+        if (act.kind === "station") {
+            const shift = act.sign * S_GRID;
+            const span = clampSpanDrag("body", r.start + shift, r.end + shift);
+            beginBody(ecs, id);
+            setRecordSpan(ecs, id, span.start, span.end);
+            commit(h);
+            return;
+        }
+        const base = act.which === "entry" ? r.entry : r.exit;
+        if (base === undefined) return;
+        beginHandle(ecs, id, act.which);
+        setRecordHandle(ecs, id, act.which, base + act.sign * nudgeQuantum(lane));
+        commit(h);
+    }
+
+    // RED: drop the `commit` after the setter write and each arrow press leaves the gesture open —
+    // the next press coalesces into it and one undo takes back every nudge at once.
+    test("one press is one entry, on both channels", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 4, 14, 1);
+        const depth = h.undo.length;
+        press(ecs, h, id, Lane.Force, "ArrowRight");
+        expect(row(ecs, id)).toMatchObject({ start: 5, end: 15 });
+        press(ecs, h, id, Lane.Force, "ArrowUp", { shift: true });
+        expect(row(ecs, id).exit).toBeCloseTo(1 + nudgeQuantum(Lane.Force), 6);
+        expect(h.undo).toHaveLength(depth + 2);
+        undo(h, ecs);
+        expect(row(ecs, id).exit).toBe(1);
+        undo(h, ecs);
+        expect(row(ecs, id)).toMatchObject({ start: 4, end: 14 });
+    });
+
+    // RED: skip `clampSpanDrag` in the station channel and an arrow walks the span below 0, where
+    // `lanes.segmentBeforeOrigin` refuses it — the setter declines every frame and the key goes
+    // dead instead of sliding the span to the wall (the origin law, landed S3a).
+    test("the station nudge slides to the origin with its length held, never below it", () => {
+        const { ecs, h } = fixture();
+        const id = addForce(ecs, h, 0.5, 10.5, 1);
+        press(ecs, h, id, Lane.Force, "ArrowLeft");
+        expect(row(ecs, id)).toMatchObject({ start: 0, end: 10 });
+        const depth = h.undo.length;
+        press(ecs, h, id, Lane.Force, "ArrowLeft"); // already at the wall: nothing moves
+        expect(row(ecs, id)).toMatchObject({ start: 0, end: 10 });
+        expect(h.undo).toHaveLength(depth); // a no-change gesture records nothing
+    });
+
+    // RED: nudge the entry without the ownership guard and an inferred entry becomes an OWNED one
+    // as a side effect of an arrow press — a different document from the one the person had.
+    test("the Alt form leaves an inferred entry alone rather than minting ownership", () => {
+        const { ecs, h } = fixture();
+        addForce(ecs, h, 0, 10, 1);
+        const w = createRecord(ecs, Lane.Force, {
+            start: 10,
+            end: 20,
+            ease: Easing.Linear,
+            exit: 2,
+        });
+        if (w.id === null) throw new Error("refused");
+        const depth = h.undo.length;
+        press(ecs, h, w.id, Lane.Force, "ArrowUp", { shift: true, alt: true });
+        expect(row(ecs, w.id).entry).toBeUndefined();
+        expect(h.undo).toHaveLength(depth);
+        // the exit form still lands on the same record — the guard is the ENTRY's, not the key's.
+        press(ecs, h, w.id, Lane.Force, "ArrowUp", { shift: true });
+        expect(h.undo).toHaveLength(depth + 1);
     });
 });

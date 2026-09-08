@@ -15,31 +15,18 @@ import {
     RESERVED,
     type Reserved,
 } from "../src/menu";
-import {
-    forceKeyAct,
-    type ForceKeyState,
-    modeKeyAct,
-    type ModeKeyState,
-    nodeKeyAct,
-    sectionKeyAct,
-    type SectionKeyState,
-} from "../src/keys";
+import { nudgeAct, type NudgeKeyState, timelineKeyAct, type TimelineKeyState } from "../src/keys";
 import * as menus from "../src/menus";
 import {
-    appendMenu,
-    keyframeMenu,
-    type KeyframeMenuState,
-    nodeMenu,
-    type NodeMenuState,
+    rowMenu,
+    type RowMenuState,
     rulerMenu,
     type RulerMenuState,
-    sectionMenu,
-    type SectionMenuState,
-    stripMenu,
+    spanMenu,
+    type SpanMenuState,
 } from "../src/menus";
 import { Easing } from "../src/profile";
-import { Domain, SectionKind } from "../src/section";
-import { TangentMode } from "../src/spline";
+import { Domain } from "../src/section";
 
 describe("menuFit — root context menu viewport fit (flip up/left, clamp)", () => {
     const Vp = { w: 1280, h: 800 };
@@ -168,458 +155,7 @@ function recorder<K extends string>(...names: K[]): Record<K, () => void> & { lo
     return rec;
 }
 
-describe("sectionMenu — the section context menu's rows", () => {
-    const base: SectionMenuState = {
-        inMode: false,
-        solving: false,
-        pinSolvable: false,
-        kind: SectionKind.Geo,
-        multi: false,
-        modeOpen: false,
-        canSolve: true,
-        canSolveShape: false,
-        canPin: false,
-        canReset: true,
-        canDelete: true,
-    };
-    const acts = () =>
-        recorder(
-            "solve",
-            "solveShape",
-            "pinSolve",
-            "pinExit",
-            "pinEnter",
-            "reset",
-            "remove",
-            "removeSet",
-        );
-
-    test("a single GEO section: Convert, Reset, Delete", () => {
-        expect(shape(sectionMenu(base, acts()))).toEqual([
-            { label: "Convert", group: "modify", shortcut: "D", enabled: true },
-            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
-            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
-        ]);
-    });
-    test("a single FORCE section adds Pin after Convert", () => {
-        const s = {
-            ...base,
-            kind: SectionKind.Force,
-            canSolve: false,
-            canSolveShape: true,
-            canPin: true,
-        };
-        expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", group: "modify", shortcut: "D", enabled: true },
-            { label: "Pin", group: "modify", shortcut: "P", enabled: true },
-            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: true },
-            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
-        ]);
-    });
-    test("a multi-set grays the single-subject rows, OMITS Pin, and carries no set-lifted structure row of its own (force set included)", () => {
-        const s = {
-            ...base,
-            kind: SectionKind.Force,
-            multi: true,
-            canSolve: false,
-            canSolveShape: false,
-            canPin: false,
-            canReset: false,
-        };
-        expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Convert", group: "modify", shortcut: "D", enabled: false },
-            { label: "Reset", group: "lifecycle", shortcut: "R", enabled: false },
-            { label: "Delete", group: "lifecycle", shortcut: "Del", danger: true, enabled: true },
-        ]);
-    });
-    test("an open session on ANOTHER section still grays Pin on this one", () => {
-        const s = { ...base, kind: SectionKind.Force, canPin: true, modeOpen: true };
-        expect(shape(sectionMenu(s, acts()))[1]).toEqual({
-            label: "Pin",
-            group: "modify",
-            shortcut: "P",
-            enabled: false,
-        });
-    });
-    test("in-mode on THIS section: the mode's own two rows replace the menu", () => {
-        const s = {
-            ...base,
-            kind: SectionKind.Force,
-            inMode: true,
-            modeOpen: true,
-            pinSolvable: true,
-        };
-        expect(shape(sectionMenu(s, acts()))).toEqual([
-            { label: "Solve", group: "modify", shortcut: "Enter", enabled: true },
-            { label: "Exit", group: "modify", shortcut: "Esc" },
-        ]);
-        expect(shape(sectionMenu({ ...s, solving: true }, acts()))[0].enabled).toBe(false);
-        expect(shape(sectionMenu({ ...s, pinSolvable: false }, acts()))[0].enabled).toBe(false);
-    });
-    test("Convert's action follows the kind; Delete's follows the set", () => {
-        const geo = acts();
-        sectionMenu(base, geo)[0].action?.();
-        expect(geo.log).toEqual(["solve()"]);
-        const force = acts();
-        sectionMenu({ ...base, kind: SectionKind.Force }, force)[0].action?.();
-        expect(force.log).toEqual(["solveShape()"]);
-        const single = acts();
-        sectionMenu(base, single)[2].action?.();
-        expect(single.log).toEqual(["remove()"]);
-        const multi = acts();
-        sectionMenu({ ...base, multi: true }, multi)[2].action?.();
-        expect(multi.log).toEqual(["removeSet()"]);
-    });
-});
-
-// ── the descriptor-laziness gate (`menus.ts`'s module header contract, kex2d-gate-hardening
-// stage 5). `App.svelte` hands `sectionMenu` four fields — `canSolve`, `canSolveShape`, `canPin`,
-// `canReset` — as GETTERS specifically because each runs `bakeLive(ecs)`, a full-track
-// `authoredHash` walk, and the in-mode fork (the branch that swaps in the mode's own two rows)
-// must never pay for one. Declared as ONE list, not four separate hand-written asserts, so a
-// fifth expensive predicate is a deliberate edit here rather than a silent omission.
-const LazyFields = ["canSolve", "canSolveShape", "canPin", "canReset"] as const;
-
-function countingDescriptor(inMode: boolean): {
-    state: SectionMenuState;
-    reads: Record<(typeof LazyFields)[number], number>;
-} {
-    const reads = { canSolve: 0, canSolveShape: 0, canPin: 0, canReset: 0 };
-    const state: SectionMenuState = {
-        inMode,
-        solving: false,
-        pinSolvable: true,
-        kind: SectionKind.Force,
-        multi: false,
-        modeOpen: false,
-        canDelete: true,
-        get canSolve() {
-            reads.canSolve++;
-            return true;
-        },
-        get canSolveShape() {
-            reads.canSolveShape++;
-            return true;
-        },
-        get canPin() {
-            reads.canPin++;
-            return true;
-        },
-        get canReset() {
-            reads.canReset++;
-            return true;
-        },
-    };
-    return { state, reads };
-}
-
-describe("sectionMenu — descriptor laziness (the lazy-getter contract, menus.ts's header)", () => {
-    const acts = () =>
-        recorder(
-            "solve",
-            "solveShape",
-            "pinSolve",
-            "pinExit",
-            "pinEnter",
-            "reset",
-            "remove",
-            "removeSet",
-        );
-
-    // the positive control: proves the counting descriptor can actually SEE a read, rather than
-    // reporting zero because it's blind. A force section out-of-mode reads three of the four
-    // (Convert → `canSolveShape` since a force section converts to geo; Pin → `canPin`; Reset →
-    // `canReset`); `canSolve` stays unread because the Convert row's ONE branch took the other arm.
-    test("positive control: the out-of-mode fork DOES read some of the four", () => {
-        const { state, reads } = countingDescriptor(false);
-        sectionMenu(state, acts());
-        expect(reads.canSolveShape, "canSolveShape").toBe(1);
-        expect(reads.canPin, "canPin").toBe(1);
-        expect(reads.canReset, "canReset").toBe(1);
-        expect(reads.canSolve, "canSolve").toBe(0);
-    });
-
-    // the gate itself: in-mode, the mode's own two rows (Solve, Exit) replace the menu entirely,
-    // and none of the four `authoredHash`-walking fields may be touched to build them.
-    test("in-mode: none of the four authoredHash-walking predicates are read", () => {
-        const { state, reads } = countingDescriptor(true);
-        sectionMenu(state, acts());
-        for (const field of LazyFields)
-            expect(
-                reads[field],
-                `"${field}" was read ${reads[field]} time(s) building the in-mode fork`,
-            ).toBe(0);
-    });
-});
-
-describe("nodeMenu — the node context menu's rows", () => {
-    const base: NodeMenuState = {
-        multi: false,
-        isEntry: false,
-        ok: true,
-        mode: TangentMode.Aligned,
-        editing: false,
-        isEnd: false,
-        canTrim: false,
-        suffixOk: false,
-    };
-    const acts = () =>
-        recorder(
-            "remove",
-            "removeSet",
-            "add",
-            "toggleHandles",
-            "pickMode",
-            "pickModeSet",
-            "reset",
-            "resetSet",
-        );
-    const tangents = (enabled: boolean, mode: TangentMode): Row => ({
-        label: "Tangents",
-        group: "modify",
-        enabled,
-        children: [
-            { label: "Mirror", group: "modify", checked: mode === TangentMode.Mirror },
-            { label: "Aligned", group: "modify", checked: mode === TangentMode.Aligned },
-            { label: "Free", group: "modify", checked: mode === TangentMode.Free },
-        ],
-    });
-    const handles = (checked: boolean | undefined, enabled: boolean): Row => ({
-        label: "Handles",
-        group: "modify",
-        checked,
-        enabled,
-    });
-    const del = (enabled: boolean): Row => ({
-        label: "Delete",
-        group: "lifecycle",
-        shortcut: "Del",
-        danger: true,
-        enabled,
-    });
-    const add = (enabled: boolean): Row => ({
-        label: "Add",
-        group: "create",
-        shortcut: "Enter",
-        enabled,
-    });
-    const reset = (enabled: boolean): Row => ({
-        label: "Reset",
-        group: "lifecycle",
-        shortcut: "R",
-        enabled,
-    });
-
-    test("an INTERIOR node: Add + Delete both gated off, Handles / Tangents / Reset between", () => {
-        expect(shape(nodeMenu(base, acts()))).toEqual([
-            add(false),
-            handles(false, true),
-            tangents(true, TangentMode.Aligned),
-            reset(true),
-            del(false),
-        ]);
-    });
-    test("a CHAIN-END node lights Add + Delete", () => {
-        const s = {
-            ...base,
-            isEnd: true,
-            canTrim: true,
-            editing: true,
-            mode: TangentMode.Free,
-        };
-        expect(shape(nodeMenu(s, acts()))).toEqual([
-            add(true),
-            handles(true, true),
-            tangents(true, TangentMode.Free),
-            reset(true),
-            del(true),
-        ]);
-    });
-    test("NODE 0 carries Handles + Reset only (no Add/Delete, no mode submenu)", () => {
-        expect(shape(nodeMenu({ ...base, isEntry: true }, acts()))).toEqual([
-            handles(false, true),
-            reset(true),
-        ]);
-    });
-    test("NODE 0's Handles check lights in tangent edit, like every other node's", () => {
-        expect(shape(nodeMenu({ ...base, isEntry: true, editing: true }, acts()))).toEqual([
-            handles(true, true),
-            reset(true),
-        ]);
-    });
-    test("node 0's rows act on the single target — Reset is `reset`, never `resetSet`", () => {
-        const rec = acts();
-        const rows = nodeMenu({ ...base, isEntry: true }, rec);
-        rows[0].action?.();
-        rows[1].action?.();
-        expect(rec.log).toEqual(["toggleHandles()", "reset()"]);
-    });
-    test("a MULTI set holding node 0 keeps the bulk menu — the multi fork outranks isEntry", () => {
-        // shift-click node 0 into a set, then right-click it: the set is the subject, so the bulk
-        // rows win. node 0's own two-row menu is the SINGLE-subject shape only.
-        const s = { ...base, multi: true, isEntry: true, suffixOk: true, mode: TangentMode.Mirror };
-        expect(shape(nodeMenu(s, acts()))).toEqual([
-            add(false),
-            handles(undefined, false),
-            tangents(true, TangentMode.Mirror),
-            reset(true),
-            del(true),
-        ]);
-    });
-    test("a MULTI set: bulk Delete on a suffix run, Add + Handles grayed, no Handles check", () => {
-        const s = { ...base, multi: true, suffixOk: true, mode: TangentMode.Mirror };
-        expect(shape(nodeMenu(s, acts()))).toEqual([
-            add(false),
-            handles(undefined, false),
-            tangents(true, TangentMode.Mirror),
-            reset(true),
-            del(true),
-        ]);
-    });
-    test("the lockdown grays every edit row, single and multi alike", () => {
-        const single = shape(nodeMenu({ ...base, ok: false, isEnd: true, canTrim: true }, acts()));
-        expect(single.map((r) => r.enabled)).toEqual([false, false, false, false, false]);
-        const multi = shape(nodeMenu({ ...base, ok: false, multi: true, suffixOk: true }, acts()));
-        expect(multi.map((r) => r.enabled)).toEqual([false, false, false, false, false]);
-        const zero = shape(nodeMenu({ ...base, ok: false, isEntry: true }, acts()));
-        expect(zero.map((r) => r.enabled)).toEqual([false, false]);
-    });
-    test("the single rows act on the target, the multi rows on the set", () => {
-        // EVERY submenu row is invoked, in order: three near-identical copy-pasted rows per branch
-        // is exactly where a mis-paste (a set row bound to the single action, or two rows sharing
-        // one mode) lands, and a one-of-three spot check can't see it.
-        const one = acts();
-        const rows = nodeMenu(base, one);
-        rows[0].action?.();
-        rows[1].action?.();
-        for (const c of rows[2].children ?? []) c.action?.();
-        rows[3].action?.();
-        rows[4].action?.();
-        expect(one.log).toEqual([
-            "add()",
-            "toggleHandles()",
-            `pickMode(${TangentMode.Mirror})`,
-            `pickMode(${TangentMode.Aligned})`,
-            `pickMode(${TangentMode.Free})`,
-            "reset()",
-            "remove()",
-        ]);
-        const set = acts();
-        const bulk = nodeMenu({ ...base, multi: true }, set);
-        for (const c of bulk[2].children ?? []) c.action?.();
-        bulk[3].action?.();
-        bulk[4].action?.();
-        expect(set.log).toEqual([
-            `pickModeSet(${TangentMode.Mirror})`,
-            `pickModeSet(${TangentMode.Aligned})`,
-            `pickModeSet(${TangentMode.Free})`,
-            "resetSet()",
-            "removeSet()",
-        ]);
-    });
-});
-
-describe("keyframeMenu — the force-keyframe context menu's rows", () => {
-    // explicit per-keyframe force handles (Custom provenance, the Tangents ▸ mode submenu) left
-    // with `kex2d-segment-removal` S3 — every segment is now named, so `KeyframeMenuState` carries
-    // no `custom`/`hasHandles`/`mode`/`customGlyph` fields and the menu never grows a Tangents ▸
-    // row. The retired cases' heir is the surviving Easing ▸ shape below: a preset row's `checked`
-    // now reads the tag alone (never anded with "not custom"), and the lockdown/action-log tests
-    // cover exactly the rows that remain.
-    const base: KeyframeMenuState = {
-        setOk: true,
-        lock: null,
-        multi: false,
-        terminal: false,
-        easeTargets: 1,
-        ease: Easing.Cubic,
-        presetGlyph: (e) => `preset:${e}`,
-    };
-    const acts = () => recorder("remove", "toggleLock", "setEase");
-    const easing = (enabled: boolean, checked: Easing | null): Row => ({
-        label: "Easing",
-        group: "modify",
-        enabled,
-        children: [
-            {
-                label: "Linear",
-                group: "modify",
-                glyph: "preset:0",
-                checked: checked === Easing.Linear,
-            },
-            {
-                label: "Cubic",
-                group: "modify",
-                glyph: "preset:1",
-                checked: checked === Easing.Cubic,
-            },
-            {
-                label: "Quintic",
-                group: "modify",
-                glyph: "preset:2",
-                checked: checked === Easing.Quintic,
-            },
-        ],
-    });
-    const del = (enabled: boolean): Row => ({
-        label: "Delete",
-        group: "lifecycle",
-        shortcut: "Del",
-        danger: true,
-        enabled,
-    });
-
-    test("a single NON-TERMINAL keyframe: Easing ▸ (the tag checked), then Delete", () => {
-        expect(shape(keyframeMenu(base, acts()))).toEqual([easing(true, Easing.Cubic), del(true)]);
-    });
-    test("a single TERMINAL keyframe shows Delete alone", () => {
-        expect(shape(keyframeMenu({ ...base, terminal: true, easeTargets: 0 }, acts()))).toEqual([
-            del(true),
-        ]);
-    });
-    test("a MULTI set keeps Easing ▸ even on a terminal active", () => {
-        const s = { ...base, multi: true, terminal: true, easeTargets: 2 };
-        expect(shape(keyframeMenu(s, acts()))).toEqual([easing(true, Easing.Cubic), del(true)]);
-    });
-    test("no applicable easing target grays the row", () => {
-        const s = { ...base, easeTargets: 0 };
-        expect(shape(keyframeMenu(s, acts()))[0]).toEqual(easing(false, Easing.Cubic));
-    });
-    test("in-mode: the Lock row leads, and Delete still lands last", () => {
-        const locked = shape(keyframeMenu({ ...base, lock: "Lock" }, acts()));
-        expect(locked[0]).toEqual({ label: "Lock", group: "modify", shortcut: "Q" });
-        expect(locked.at(-1)).toEqual(del(true));
-        expect(locked).toHaveLength(3);
-        expect(shape(keyframeMenu({ ...base, lock: "Unlock" }, acts()))[0]).toEqual({
-            label: "Unlock",
-            group: "modify",
-            shortcut: "Q",
-        });
-    });
-    test("the lockdown: the set gates Delete + Easing", () => {
-        const rows = shape(keyframeMenu({ ...base, setOk: false }, acts()));
-        expect(rows[0].enabled).toBe(false); // Easing ▸
-        expect(rows[1].enabled).toBe(false); // Delete
-    });
-    test("the rows act on their subjects", () => {
-        // every submenu row is invoked, in order — three near-identical preset rows are where a
-        // mis-paste lands.
-        const rec = acts();
-        const rows = keyframeMenu({ ...base, lock: "Lock" }, rec);
-        rows[0].action?.(); // Lock
-        for (const c of rows[1].children ?? []) c.action?.(); // Easing ▸
-        rows[2].action?.(); // Delete
-        expect(rec.log).toEqual([
-            "toggleLock()",
-            `setEase(${Easing.Linear})`,
-            `setEase(${Easing.Cubic})`,
-            `setEase(${Easing.Quintic})`,
-            "remove()",
-        ]);
-    });
-});
-
-describe("rulerMenu / appendMenu — the flat two-row menus", () => {
+describe("rulerMenu — the flat two-row unit picker", () => {
     test("Meters | Seconds, `checked` on the live domain", () => {
         const rec = recorder("pick");
         expect(
@@ -651,67 +187,113 @@ describe("rulerMenu / appendMenu — the flat two-row menus", () => {
         for (const r of rows) r.action?.();
         expect(rec.log).toEqual([`pick(${Domain.Distance})`, `pick(${Domain.Time})`]);
     });
-    test("the append flyout: Geo | Force, both always live, each with its a11y name", () => {
-        const rec = recorder("append");
-        expect(shape(appendMenu(rec))).toEqual([
-            { label: "Geo", group: "create", aria: "Append geometry section" },
-            { label: "Force", group: "create", aria: "Append force section" },
+});
+
+// ── the lane timeline's own two menus (S3c). The pose era's five builders went with their
+// subjects (`retired/pose-ux`); these two replace them, and are characterized the same way.
+describe("rowMenu — the lane column's menu", () => {
+    const acts = () => recorder("add", "toggleExpand");
+
+    // RED: label the Add row with a bare "Add segment" and the row stops naming WHICH lane it
+    // authors into — the one thing a menu summoned on a row of three has to say.
+    test("Add names the row's own quantity, then the step-in toggle", () => {
+        const a = acts();
+        expect(shape(rowMenu({ name: "force", expanded: false, canAdd: true }, a))).toEqual([
+            { label: "Add force segment", group: "create", enabled: true },
+            { label: "Expand", group: "modify" },
         ]);
-        for (const r of appendMenu(rec)) r.action?.();
-        expect(rec.log).toEqual([`append(${SectionKind.Geo})`, `append(${SectionKind.Force})`]);
     });
-    // W7's canCreate refusal: the strip menu's "Add velocity strip" row is GRAYED (not silently
-    // inert) when canCreate is false — a station whose min-extent span overlaps an existing strip.
-    // This arm fails if `canCreate` is stubbed to constant `true` in the builder.
-    test("stripMenu grays Add when canCreate is false (W7 refusal arm)", () => {
-        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
-        const rows = stripMenu(
-            { strip: -1, editable: true, canCreate: false, oneShotExists: true },
-            sa,
-        );
-        expect(rows.length).toBe(1);
-        expect(rows[0].label).toBe("Add velocity strip");
+
+    // RED: read `expanded` for a `checked` field instead of the label and the open row's toggle
+    // says "Expand" while the row already is — a mixed-capable toggle names its ACTION
+    // (`editor-ui.md`).
+    test("the toggle names the act it will perform, never the state it is in", () => {
+        const a = acts();
+        expect(rowMenu({ name: "geo", expanded: true, canAdd: true }, a)[1].label).toBe("Collapse");
+        expect(rowMenu({ name: "geo", expanded: false, canAdd: true }, a)[1].label).toBe("Expand");
+        // and it carries no check either way: the row is an act, not a state row.
+        for (const open of [true, false])
+            expect(rowMenu({ name: "geo", expanded: open, canAdd: true }, a)[1].checked).toBe(
+                undefined,
+            );
+    });
+
+    // RED: stub `canAdd` to a constant true and a station inside a record offers an Add that
+    // cannot land — grayed, never hidden, is the law the refusal has to reach.
+    test("Add grays where the station has no room, and never hides", () => {
+        const a = acts();
+        const rows = rowMenu({ name: "velocity", expanded: false, canAdd: false }, a);
+        expect(rows[0].label).toBe("Add velocity segment");
         expect(rows[0].enabled).toBe(false);
+        expect(rows).toHaveLength(2);
     });
-    test("stripMenu enables Add when canCreate is true and editable", () => {
-        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
-        const rows = stripMenu(
-            { strip: -1, editable: true, canCreate: true, oneShotExists: true },
-            sa,
-        );
-        expect(rows[0].enabled).toBe(true);
+
+    test("each row fires its own act", () => {
+        const a = acts();
+        for (const r of rowMenu({ name: "force", expanded: false, canAdd: true }, a)) r.action?.();
+        expect(a.log).toEqual(["add()", "toggleExpand()"]);
     });
-    // S3 (Locked decision): the empty-band menu's "Add initial velocity" row shows only while
-    // the track-start one-shot doesn't already exist — a singleton, never a second row/second
-    // one-shot once one lives.
-    test("stripMenu offers Add initial velocity on empty band only while none exists", () => {
-        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
-        const withNone = stripMenu(
-            { strip: -1, editable: true, canCreate: true, oneShotExists: false },
-            sa,
-        );
-        expect(withNone.map((r) => r.label)).toEqual([
-            "Add velocity strip",
-            "Add initial velocity",
+});
+
+describe("spanMenu — the selected record's menu", () => {
+    const acts = () => recorder("setEase", "remove");
+    const glyph = (e: Easing): string => `preset:${e}`;
+
+    // RED: flatten the three easing rows to the top level and the menu's own terminal Delete row
+    // stops being terminal — the danger row must be last (the grammar oracle's own law).
+    test("Easing ▸ then Delete, the danger row terminal", () => {
+        const a = acts();
+        expect(
+            shape(spanMenu({ ease: Easing.Cubic, presetGlyph: glyph, canDelete: true }, a)),
+        ).toEqual([
+            {
+                label: "Easing",
+                group: "modify",
+                children: [
+                    { label: "Linear", group: "modify", glyph: "preset:0", checked: false },
+                    { label: "Cubic", group: "modify", glyph: "preset:1", checked: true },
+                    { label: "Quintic", group: "modify", glyph: "preset:2", checked: false },
+                ],
+            },
+            {
+                label: "Delete",
+                group: "lifecycle",
+                shortcut: "Del",
+                danger: true,
+                enabled: true,
+            },
         ]);
-        const withOne = stripMenu(
-            { strip: -1, editable: true, canCreate: true, oneShotExists: true },
-            sa,
-        );
-        expect(withOne.map((r) => r.label)).toEqual(["Add velocity strip"]);
     });
-    // S3: the one-shot's own glyph (`strip: -2`) carries a single Delete row, routed to
-    // `removeOneShot` rather than `remove` (the strip's own deletion action).
-    test("stripMenu on the one-shot glyph (-2) offers Delete, routed to removeOneShot", () => {
-        const sa = recorder("addStrip", "remove", "addOneShot", "removeOneShot");
-        const rows = stripMenu(
-            { strip: -2, editable: true, canCreate: true, oneShotExists: true },
-            sa,
-        );
-        expect(rows.length).toBe(1);
-        expect(rows[0].label).toBe("Delete");
-        rows[0].action?.();
-        expect(sa.log).toEqual(["removeOneShot()"]);
+
+    // RED: check the row against a fixed `Easing.Linear` instead of the state's own tag and the
+    // lit row lies about what the record carries.
+    test("the checked easing row is the RECORD's own tag", () => {
+        const a = acts();
+        for (const ease of [Easing.Linear, Easing.Cubic, Easing.Quintic]) {
+            const rows = spanMenu({ ease, presetGlyph: glyph, canDelete: true }, a);
+            const checked = rows[0].children?.filter((r) => r.checked).map((r) => r.label);
+            expect(checked).toEqual([["Linear", "Cubic", "Quintic"][ease]]);
+        }
+    });
+
+    test("each easing row applies its OWN preset, and Delete removes", () => {
+        const a = acts();
+        const rows = spanMenu({ ease: Easing.Linear, presetGlyph: glyph, canDelete: true }, a);
+        for (const r of rows[0].children ?? []) r.action?.();
+        rows[1].action?.();
+        expect(a.log).toEqual([
+            `setEase(${Easing.Linear})`,
+            `setEase(${Easing.Cubic})`,
+            `setEase(${Easing.Quintic})`,
+            "remove()",
+        ]);
+    });
+
+    test("Delete grays where the record cannot be removed", () => {
+        const a = acts();
+        expect(
+            spanMenu({ ease: Easing.Linear, presetGlyph: glyph, canDelete: false }, a)[1].enabled,
+        ).toBe(false);
     });
 });
 
@@ -743,44 +325,22 @@ describe("the menu grammar — every builder, every state", () => {
     }
 
     const bool = [false, true] as const;
-    const modes = [TangentMode.Mirror, TangentMode.Aligned, TangentMode.Free] as const;
+    const easings = [Easing.Linear, Easing.Cubic, Easing.Quintic] as const;
 
-    const sectionStates = states<SectionMenuState>({
-        inMode: bool,
-        solving: bool,
-        pinSolvable: bool,
-        kind: [SectionKind.Geo, SectionKind.Force, null],
-        multi: bool,
-        modeOpen: bool,
-        canSolve: bool,
-        canSolveShape: bool,
-        canPin: bool,
-        canReset: bool,
-        canDelete: bool,
-    });
-    const nodeStates = states<NodeMenuState>({
-        multi: bool,
-        isEntry: bool,
-        ok: bool,
-        mode: modes,
-        editing: bool,
-        isEnd: bool,
-        canTrim: bool,
-        suffixOk: bool,
-    });
-    const keyframeStates = states<KeyframeMenuState>({
-        setOk: bool,
-        lock: ["Lock", "Unlock", null],
-        multi: bool,
-        terminal: bool,
-        easeTargets: [0, 1, 2],
-        ease: [Easing.Linear, Easing.Cubic, Easing.Quintic],
-        presetGlyph: [(e: Easing) => `preset:${e}`],
-    });
     const rulerStates = states<RulerMenuState>({
         domain: [Domain.Distance, Domain.Time],
         metersEnabled: bool,
         secondsEnabled: bool,
+    });
+    const rowStates = states<RowMenuState>({
+        name: ["geo", "force", "velocity"],
+        expanded: bool,
+        canAdd: bool,
+    });
+    const spanStates = states<SpanMenuState>({
+        ease: easings,
+        presetGlyph: [(e: Easing) => `preset:${e}`],
+        canDelete: bool,
     });
 
     // every menu the app can summon, as `(name, rows, state)` triples — the oracle's whole input.
@@ -792,65 +352,18 @@ describe("the menu grammar — every builder, every state", () => {
     type Menu = { name: string; rows: MenuItem[]; state: object; acts: { log: string[] } };
     function corpus(): Menu[] {
         const all: Menu[] = [];
-        const acts = () =>
-            recorder(
-                "solve",
-                "solveShape",
-                "pinSolve",
-                "pinExit",
-                "pinEnter",
-                "reset",
-                "remove",
-                "removeSet",
-                "add",
-                "toggleHandles",
-                "pickMode",
-                "pickModeSet",
-                "resetSet",
-                "toggleLock",
-                "setEase",
-                "pick",
-                "append",
-                "addStrip",
-                "addOneShot",
-                "removeOneShot",
-            );
-        for (const s of sectionStates) {
-            const a = acts();
-            all.push({ name: "sectionMenu", rows: sectionMenu(s, a), state: s, acts: a });
-        }
-        for (const s of nodeStates) {
-            const a = acts();
-            all.push({ name: "nodeMenu", rows: nodeMenu(s, a), state: s, acts: a });
-        }
-        for (const s of keyframeStates) {
-            const a = acts();
-            all.push({ name: "keyframeMenu", rows: keyframeMenu(s, a), state: s, acts: a });
-        }
+        const acts = () => recorder("pick", "add", "toggleExpand", "setEase", "remove");
         for (const s of rulerStates) {
             const a = acts();
             all.push({ name: "rulerMenu", rows: rulerMenu(s, a), state: s, acts: a });
         }
-        const a = acts();
-        all.push({ name: "appendMenu", rows: appendMenu(a), state: {}, acts: a });
-        // stripMenu: creation (strip -1) and deletion (strip 0 for a strip, -2 for the S3
-        // one-shot glyph), editable and not, canCreate true and false (W7's refusal must be
-        // swept, not pinned to true), oneShotExists true and false (governs the empty-band
-        // "Add initial velocity" row, S3).
-        for (const strip of [-1, -2, 0] as const) {
-            for (const editable of [true, false] as const) {
-                for (const canCreate of [true, false] as const) {
-                    for (const oneShotExists of [true, false] as const) {
-                        const sa = acts();
-                        all.push({
-                            name: "stripMenu",
-                            rows: stripMenu({ strip, editable, canCreate, oneShotExists }, sa),
-                            state: { strip, editable, canCreate, oneShotExists },
-                            acts: sa,
-                        });
-                    }
-                }
-            }
+        for (const s of rowStates) {
+            const a = acts();
+            all.push({ name: "rowMenu", rows: rowMenu(s, a), state: s, acts: a });
+        }
+        for (const s of spanStates) {
+            const a = acts();
+            all.push({ name: "spanMenu", rows: spanMenu(s, a), state: s, acts: a });
         }
         return all;
     }
@@ -989,18 +502,11 @@ describe("the menu grammar — every builder, every state", () => {
     // check reports. Adding a `checked` needs a line here that reads as a state in effect right
     // now; a state that only "was" or "would be" has no honest entry to write.
     const Checked: Record<string, string> = {
-        // the node's handles are summoned right now (`editor.tangentEdit` is this node).
-        "nodeMenu ▸ Handles": "the handles are on screen for this node",
-        // the node's DISPLAYED tangent mode — the pick governing its curve right now.
-        "nodeMenu ▸ Tangents ▸ Mirror": "this node's tangents are mirrored",
-        "nodeMenu ▸ Tangents ▸ Aligned": "this node's tangents are aligned",
-        "nodeMenu ▸ Tangents ▸ Free": "this node's tangents are free",
-        // the easing tag governing the addressed segment right now — exactly one of the three
-        // Easing rows is ever lit (explicit per-keyframe force handles, and the Custom row that
-        // used to clear this checkmark, left with `kex2d-segment-removal` S3).
-        "keyframeMenu ▸ Easing ▸ Linear": "this segment is driven by the Linear tag",
-        "keyframeMenu ▸ Easing ▸ Cubic": "this segment is driven by the Cubic tag",
-        "keyframeMenu ▸ Easing ▸ Quintic": "this segment is driven by the Quintic tag",
+        // the easing tag governing the addressed record right now — exactly one of the three
+        // Easing rows is ever lit.
+        "spanMenu ▸ Easing ▸ Linear": "this record is driven by the Linear tag",
+        "spanMenu ▸ Easing ▸ Cubic": "this record is driven by the Cubic tag",
+        "spanMenu ▸ Easing ▸ Quintic": "this record is driven by the Quintic tag",
         // the store's own unit (`Track.domain`) — what the chart reads right now.
         "rulerMenu ▸ Meters": "the track domain is meters of arclength",
         "rulerMenu ▸ Seconds": "the track domain is seconds of march time",
@@ -1040,61 +546,57 @@ describe("the menu grammar — every builder, every state", () => {
     // disagree flips its label to name the act the press performs instead, because a checkmark
     // cannot express a mixed set. That is the constraint `lockLabel` was actually written against.
     test("the single-subject toggle keeps its label and carries the check", () => {
-        // `Handles` — one node, so the label never moves and the check reports that node's own
-        // state. On a multi-set it has no single subject at all: it grays and drops the check
-        // rather than inventing a label flip.
+        // the ruler's unit picker — one subject (the track's own domain), so each row's label
+        // never moves and `checked` reports which unit the chart actually reads. Exactly one row
+        // may be lit: the domain is a single value, and two lit rows would claim it is both.
         expect(
             violations(({ name, rows, state }) => {
-                if (name !== "nodeMenu") return [];
-                const s = state as NodeMenuState;
+                if (name !== "rulerMenu") return [];
+                const s = state as RulerMenuState;
                 const bad: string[] = [];
+                const lit = rows.filter((r) => r.checked === true);
+                if (lit.length !== 1)
+                    bad.push(`${label(name, rows)} — ${lit.length} rows lit, exactly 1 owed`);
                 for (const row of rows) {
-                    if (row.label !== "Handles") continue;
-                    const where = `${label(name, rows)} — "Handles"`;
-                    if (s.multi && row.checked !== undefined)
-                        bad.push(`${where} checks a multi-SET (a checkmark can't express a mix)`);
-                    if (!s.multi && typeof row.checked !== "boolean")
+                    if (row.separator) continue;
+                    const where = `${label(name, rows)} — "${row.label}"`;
+                    if (typeof row.checked !== "boolean")
                         bad.push(`${where} is single-subject but reports no state`);
+                    const own = row.label === "Meters" ? Domain.Distance : Domain.Time;
+                    if (row.checked !== (s.domain === own))
+                        bad.push(`${where} lights against the live domain`);
                 }
                 return bad;
-            }),
-        ).toEqual([]);
-        // and it is ONE row under one name: `Handles` never shows beside a second spelling of
-        // itself, the way a flipping toggle's two labels would if they ever both materialized.
-        expect(
-            violations(({ name, rows }) => {
-                const hits = rows.filter((r) => r.label === "Handles");
-                return hits.length > 1 ? [`${label(name, rows)} — two Handles rows`] : [];
             }),
         ).toEqual([]);
     });
 
-    test("the set-valued toggle flips its label to the act and never carries a check", () => {
-        // `Lock`/`Unlock` — the selected keyframe SET, whose members can disagree. Both labels must
-        // be reachable (a toggle that never flips is single-subject and owes a checkmark instead),
-        // and neither may ever light up.
+    test("the act-naming toggle flips its label to the act and never carries a check", () => {
+        // the lane row's step-in — `Expand`/`Collapse`, one row wearing two names. Both labels
+        // must be reachable (a toggle that never flips owes a checkmark instead), neither may ever
+        // light up, and the label must name what the PRESS does, not the state the row is in
+        // (`editor-ui.md`: a mixed-capable toggle names the action without a check).
         const seen = new Set<string>();
         expect(
             violations(({ name, rows, state }) => {
-                if (name !== "keyframeMenu") return [];
-                const s = state as KeyframeMenuState;
+                if (name !== "rowMenu") return [];
+                const s = state as RowMenuState;
                 const bad: string[] = [];
-                const pair = rows.filter((r) => r.label === "Lock" || r.label === "Unlock");
-                // the two labels are one row wearing two names — never two rows.
-                if (pair.length > 1) bad.push(`${label(name, rows)} — Lock and Unlock co-occur`);
-                for (const row of rows) {
-                    if (row.label !== "Lock" && row.label !== "Unlock") continue;
-                    seen.add(row.label);
+                const pair = rows.filter((r) => r.label === "Expand" || r.label === "Collapse");
+                if (pair.length > 1)
+                    bad.push(`${label(name, rows)} — Expand and Collapse co-occur`);
+                for (const row of pair) {
+                    seen.add(row.label as string);
                     const where = `${label(name, rows)} — "${row.label}"`;
                     if (row.checked !== undefined)
-                        bad.push(`${where} carries a check over a SET that can disagree`);
-                    if (row.label !== s.lock)
-                        bad.push(`${where} does not name the act its state demands (${s.lock})`);
+                        bad.push(`${where} carries a check while naming an act`);
+                    if (row.label !== (s.expanded ? "Collapse" : "Expand"))
+                        bad.push(`${where} does not name the act its state demands`);
                 }
                 return bad;
             }),
         ).toEqual([]);
-        expect([...seen].sort()).toEqual(["Lock", "Unlock"]);
+        expect([...seen].sort()).toEqual(["Collapse", "Expand"]);
     });
 
     // ── `shortcut` appears iff a keyboard binding invokes the SAME action (stage 3, tightened in
@@ -1144,26 +646,11 @@ describe("the menu grammar — every builder, every state", () => {
     // that fires the `append` BINDING) collide only in ENGLISH, not in the table — two acts, kept
     // apart by name, one bound and one not.
     const Acts: Record<string, keyof typeof BINDINGS | null> = {
-        solve: "convert",
-        solveShape: "convert",
-        pinSolve: "solve",
-        pinExit: "exitMode",
-        pinEnter: "pin",
-        reset: "reset",
-        remove: "remove",
-        removeSet: "remove",
-        add: "append",
-        toggleHandles: null,
-        pickMode: null,
-        pickModeSet: null,
-        resetSet: "reset",
-        toggleLock: "lock",
-        setEase: null,
         pick: null,
-        append: null,
-        addStrip: null,
-        addOneShot: null,
-        removeOneShot: "remove",
+        add: null,
+        toggleExpand: null,
+        setEase: null,
+        remove: "remove",
     };
 
     test("`Acts` censuses every act name the corpus recorder declares", () => {
@@ -1185,7 +672,11 @@ describe("the menu grammar — every builder, every state", () => {
     // emits is collected from the deciders' own return values, never fabricated inline (the
     // declared-registry law's own clause, editor-ui.md Menus: the control must exercise the
     // driver). `MenulessBindings` then covers only a binding no decider ever emits.
-    const MenulessBindings: Partial<Record<keyof typeof BINDINGS, { why: string }>> = {};
+    const MenulessBindings: Partial<Record<keyof typeof BINDINGS, { why: string }>> = {
+        exitMode: {
+            why: "Escape is the dismissal LADDER, not an act: `Timeline.svelte` peels a live gesture, then a summoned menu, then the popover, then the selection, and each rung is a different subject rather than one named act a decider could return",
+        },
+    };
 
     // every DISTINCT `key` any `BINDINGS` entry declares — the production table, not a hand-typed
     // copy, so a rebind moves this census with it. Deduplicated by literal value, not by
@@ -1241,64 +732,19 @@ describe("the menu grammar — every builder, every state", () => {
             }
         return pairs;
     }
-    const sectionKeyStates = states<SectionKeyState>({
-        opsAllowed: bool,
-        multi: bool,
-        canSolve: bool,
-        canSolveShape: bool,
-        canPin: bool,
-        canReset: bool,
-    });
-    // `NodeKeyState` is a discriminated union on `multi` (`keys.ts`) — the multi branch carries no
-    // `endSelected` field, so its full state space is the two branches' matrices driven
-    // separately, not one cartesian product over all three fields (which isn't expressible
-    // against the type any more, and would have driven the multi branch redundantly over an
-    // `endSelected` it never reads). `nodeKeyAct` is overloaded per branch, so each matrix is
-    // driven through its own `driveKeyAct` call rather than concatenated into one `NodeKeyState[]`
-    // — a union array defeats the overload's own per-branch narrowing at the call site.
-    const nodeKeyStatesMulti = states<{ editable: boolean; multi: true }>({
-        editable: bool,
-        multi: [true],
-    });
-    const nodeKeyStatesSingle = states<{
-        editable: boolean;
-        multi: false;
-        endSelected: boolean;
-    }>({
-        editable: bool,
-        multi: [false],
-        endSelected: bool,
-    });
-    // plain (non-overloaded) wrappers: passed BARE, `nodeKeyAct`'s overload set resolves against
-    // whichever signature the last overload happens to expose to a generic callback position,
-    // not per call site — these pin each branch to its own overload explicitly.
-    const nodeKeyActMulti = (key: string, s: { editable: boolean; multi: true }) =>
-        nodeKeyAct(key, s);
-    const nodeKeyActSingle = (
-        key: string,
-        s: { editable: boolean; multi: false; endSelected: boolean },
-    ) => nodeKeyAct(key, s);
-    const forceKeyStates = states<ForceKeyState>({
-        pinning: bool,
-        size: [0, 1, 2],
-    });
-    const modeKeyStates = states<ModeKeyState>({
-        modeOpen: bool,
-        menuOpen: bool,
-        editing: bool,
+    // The lane timeline's rung is the one decider left: the pose era's four (section, node,
+    // force keyframe, pin mode) went with the subjects they pressed against. `nudgeAct` emits no
+    // `BINDINGS` act at all — the arrows are a `RESERVED` press with no menu row — so it is driven
+    // for its own matrix in `keys` coverage below rather than through this seam.
+    const timelineKeyStates = states<TimelineKeyState>({
+        dragging: bool,
+        ctrl: bool,
+        shift: bool,
         selected: bool,
-        solvable: bool,
-        solving: bool,
     });
 
     function keyActPairs(): { binding: keyof typeof BINDINGS; act: string }[] {
-        return [
-            ...driveKeyAct(sectionKeyAct, sectionKeyStates),
-            ...driveKeyAct(nodeKeyActMulti, nodeKeyStatesMulti),
-            ...driveKeyAct(nodeKeyActSingle, nodeKeyStatesSingle),
-            ...driveKeyAct(forceKeyAct, forceKeyStates),
-            ...driveKeyAct(modeKeyAct, modeKeyStates),
-        ];
+        return [...driveKeyAct(timelineKeyAct, timelineKeyStates)];
     }
 
     test("positive control: driving the deciders emits at least one pair per binding they cover", () => {
@@ -1307,21 +753,7 @@ describe("the menu grammar — every builder, every state", () => {
         const pairs = keyActPairs();
         expect(pairs.length, "the deciders emitted no pairs at all").toBeGreaterThan(0);
         const seen = new Set(pairs.map((p) => `${p.binding}:${p.act}`));
-        expect([...seen].sort()).toEqual(
-            [
-                "remove:remove",
-                "remove:removeSet",
-                "append:add",
-                "exitMode:pinExit",
-                "lock:toggleLock",
-                "convert:solve",
-                "convert:solveShape",
-                "pin:pinEnter",
-                "solve:pinSolve",
-                "reset:reset",
-                "reset:resetSet",
-            ].sort(),
-        );
+        expect([...seen].sort()).toEqual(["remove:remove"]);
     });
 
     test("every emitted (binding, act) pair agrees with `Acts`", () => {
@@ -1388,13 +820,7 @@ describe("the menu grammar — every builder, every state", () => {
     // (`retired/pose-ux`), so `keys.ts` is every binding's only live home until S3 re-wires them.
     const Handlers: Record<keyof typeof BINDINGS, string[]> = {
         remove: ["keys.ts"],
-        append: ["keys.ts"],
-        exitMode: ["keys.ts", "Timeline.svelte"],
-        lock: ["keys.ts"],
-        convert: ["keys.ts"],
-        pin: ["keys.ts"],
-        solve: ["keys.ts"],
-        reset: ["keys.ts"],
+        exitMode: ["Timeline.svelte"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
@@ -1402,22 +828,10 @@ describe("the menu grammar — every builder, every state", () => {
     const RawKeys: Record<string, { files: string[]; why: string }> = {
         Delete: { files: [], why: "every Del press is the remove binding" },
         Backspace: { files: [], why: "Del's twin, same binding" },
-        Enter: {
-            files: [],
-            why: "the popover fields whose commit-and-blur held this left with the pose UX",
-        },
         Escape: {
-            files: [],
-            why: "the dismissal ladder (modal cancel, menu close, landing skip, drag/selection peel) left with the surfaces that owned its rungs",
+            files: ["Popover.svelte"],
+            why: "the popover field's own revert-and-blur, the innermost rung of the dismissal ladder — `Timeline.svelte` reads the same key through `bound(BINDINGS.exitMode)` for the rungs above it",
         },
-        q: { files: [], why: "the lock toggle only" },
-        Q: { files: [], why: "the lock toggle only" },
-        d: { files: [], why: "the Convert binding only" },
-        D: { files: [], why: "the Convert binding only" },
-        p: { files: [], why: "the Pin binding only" },
-        P: { files: [], why: "the Pin binding only" },
-        r: { files: [], why: "the Reset binding only" },
-        R: { files: [], why: "the Reset binding only" },
     };
     const src = (file: string): string =>
         readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
@@ -1551,6 +965,108 @@ describe("the menu grammar — every builder, every state", () => {
     // machinery for free.
     test("GROUPS holds exactly the three surviving categories, canonically ordered", () => {
         expect(GROUPS).toEqual(["create", "modify", "lifecycle"]);
+    });
+});
+
+// ── the nudge rung (S3c): the one decider with no `BINDINGS` act, driven over its own full state
+// matrix the same way the grammar oracle drives a builder. Its four literals are `RESERVED.nudge`,
+// so the registry oracle below already pins that they are claimed; what is left is the DECISION.
+describe("nudgeAct — the in-place tweak's two channels", () => {
+    const bool = [false, true] as const;
+    function states<S extends object>(matrix: { [K in keyof S]: readonly S[K][] }): S[] {
+        let out: S[] = [{} as S];
+        for (const key of Object.keys(matrix) as (keyof S)[]) {
+            const next: S[] = [];
+            for (const partial of out)
+                for (const value of matrix[key]) {
+                    const s = {} as S;
+                    for (const k of Object.keys(partial) as (keyof S)[]) s[k] = partial[k];
+                    s[key] = value;
+                    next.push(s);
+                }
+            out = next;
+        }
+        return out;
+    }
+    const all = states<NudgeKeyState>({
+        dragging: bool,
+        selected: bool,
+        shift: bool,
+        alt: bool,
+        ownsEntry: bool,
+    });
+    const Arrows = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"] as const;
+    const live: NudgeKeyState = {
+        dragging: false,
+        selected: true,
+        shift: false,
+        alt: false,
+        ownsEntry: true,
+    };
+
+    // RED: drop the `shift` branch and ←/→ answer on the value channel too — one press meaning
+    // two things, which is exactly the one-meaning-per-channel law this split exists to keep.
+    test("the horizontal pair is the STATION channel, the shifted vertical pair the VALUE channel", () => {
+        expect(nudgeAct({ key: "ArrowRight" }, live)).toEqual({ kind: "station", sign: 1 });
+        expect(nudgeAct({ key: "ArrowLeft" }, live)).toEqual({ kind: "station", sign: -1 });
+        expect(nudgeAct({ key: "ArrowUp" }, { ...live, shift: true })).toEqual({
+            kind: "value",
+            which: "exit",
+            sign: 1,
+        });
+        expect(nudgeAct({ key: "ArrowDown" }, { ...live, shift: true })).toEqual({
+            kind: "value",
+            which: "exit",
+            sign: -1,
+        });
+        // and the two unclaimed halves stay null in BOTH modes: a bare vertical would read as
+        // "change row" over a stack of lanes, and a shifted horizontal has no second meaning.
+        expect(nudgeAct({ key: "ArrowUp" }, live)).toBeNull();
+        expect(nudgeAct({ key: "ArrowDown" }, live)).toBeNull();
+        expect(nudgeAct({ key: "ArrowRight" }, { ...live, shift: true })).toBeNull();
+        expect(nudgeAct({ key: "ArrowLeft" }, { ...live, shift: true })).toBeNull();
+    });
+
+    // RED: drop the `ownsEntry` guard and Alt+Shift+↑ over an INFERRED entry mints an owned
+    // handle as a side effect of an arrow press — authoring ownership nobody asked for.
+    test("Alt narrows a value nudge to the entry, and only where the record owns one", () => {
+        const alt = { ...live, shift: true, alt: true };
+        expect(nudgeAct({ key: "ArrowUp" }, alt)).toEqual({
+            kind: "value",
+            which: "entry",
+            sign: 1,
+        });
+        expect(nudgeAct({ key: "ArrowUp" }, { ...alt, ownsEntry: false })).toBeNull();
+        // without Alt an inferred entry is irrelevant: the exit is always owned.
+        expect(nudgeAct({ key: "ArrowUp" }, { ...live, shift: true, ownsEntry: false })).toEqual({
+            kind: "value",
+            which: "exit",
+            sign: 1,
+        });
+    });
+
+    // RED: drop either guard and the whole matrix's null legs collapse — a nudge lands mid-drag
+    // (behind the open gesture) or with no subject at all.
+    test("every arm is null mid-gesture and null with nothing selected, over the whole matrix", () => {
+        for (const s of all)
+            for (const key of Arrows) {
+                const act = nudgeAct({ key }, s);
+                if (s.dragging || !s.selected) expect(act, JSON.stringify({ key, s })).toBeNull();
+            }
+        // and the matrix is not vacuous: with the two guards clear, some arm DOES fire.
+        expect(
+            all
+                .filter((s) => !s.dragging && s.selected)
+                .some((s) => Arrows.some((key) => nudgeAct({ key }, s) !== null)),
+        ).toBe(true);
+    });
+
+    // RED: claim a fifth key (say `Home`) and this goes red — the decider answers only for the
+    // four keys `RESERVED.nudge` declares, and nothing else on the keyboard.
+    test("no key outside the four arrows is ever a nudge", () => {
+        for (const s of all)
+            for (const key of ["Home", "End", "PageUp", "w", "Enter", "Escape", " "])
+                expect(nudgeAct({ key }, s), key).toBeNull();
     });
 });
 
@@ -1771,18 +1287,22 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         expect(resolverBad(population(), declared(BINDINGS, RESERVED))).toEqual([]);
     });
 
-    test("positive control: the real `Enter` literal genuinely hits the ambiguous, scope-legal branch", () => {
-        // proves the relaxation isn't dead code exercised only by a synthetic table: `Enter`
-        // really is claimed by TWO production entries (`BINDINGS.append`, unscoped;
-        // `BINDINGS.solve`, pin-scoped) and really is compared raw in `src/` (App.svelte's and
-        // Timeline.svelte's popover-field blur, `RawKeys.Enter`).
-        const table = declared(BINDINGS, RESERVED);
+    test("positive control: the scope-legal relaxation is reachable at all", () => {
+        // production carries no shared key any more (`BINDINGS.append`'s unscoped `Enter` and
+        // `BINDINGS.solve`'s pin-scoped one left with the pose UX), so the relaxation is driven
+        // against a synthetic table rather than a live pair — what it must still prove is that
+        // two entries differing only by scope resolve as ONE legal claim, not as a collision.
+        const scoped: Record<string, Binding> = {
+            append: { keys: ["Enter"], hint: "Enter" },
+            solve: { keys: ["Enter"], hint: "Enter", scope: "aMode" },
+        };
+        const table = declared(scoped, {});
         const matches = table.filter((d) => d.form === "key" && d.value === "Enter");
         expect(matches.length).toBeGreaterThan(1);
         expect(collisions(matches)).toEqual([]); // the two don't collide (differing scope)
-        // the raw `Enter` compares this once also read (the popover fields' commit-and-blur) went
-        // with the pose UX, so the live population no longer carries one; the scope-aware
-        // relaxation is what this control exists for, and the declared table above still holds it.
+        expect(resolverBad([{ form: "key", value: "Enter", file: "synthetic" }], table)).toEqual(
+            [],
+        );
     });
 
     test("positive control: the resolver still flags a literal claimed by entries that DO collide, even inside a larger match set", () => {
@@ -1791,6 +1311,7 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         // read "more than one match" as blanket-fine — it has to keep checking pairwise.
         const synthetic: Record<string, Binding> = {
             ...BINDINGS,
+            append: { keys: ["Enter"], hint: "Enter" },
             solveDup: { keys: ["Enter"], hint: "Enter", scope: "pin" },
             solveDup2: { keys: ["Enter"], hint: "Enter", scope: "pin" },
         };
@@ -1836,14 +1357,14 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
         // all, not a second named one. `Binding.scope` is what makes this representable in
         // `BINDINGS` itself, so the control drives a real `Binding`, not a `Reserved` stand-in.
         const unscopedVsScoped: Record<string, Binding> = {
-            append: BINDINGS.append, // unscoped Enter, unchanged
+            append: { keys: ["Enter"], hint: "Enter" }, // stand-in for the retired unscoped row
             solve: { keys: ["Enter"], hint: "Enter", scope: "pin" }, // stand-in for stage 3's row
         };
         expect(collisions(declared(unscopedVsScoped, {}))).toEqual([]);
         // and the SAME scope on both sides is still a real collision — the exception is narrow,
         // not "any scoped entry is exempt".
         const sameScopeTwice: Record<string, Binding> = {
-            append: BINDINGS.append,
+            append: { keys: ["Enter"], hint: "Enter" },
             solveDup: { keys: ["Enter"], hint: "Enter", scope: "pin" },
             solveDup2: { keys: ["Enter"], hint: "Enter", scope: "pin" },
         };

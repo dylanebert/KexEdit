@@ -9,6 +9,9 @@ import { Domain } from "../src/section";
 import { BakeSystem, createTrack, endColumn, lanesOf, setEnd } from "../src/track";
 import {
     arcToTime,
+    authoredPolylines,
+    bakeStations,
+    chartY,
     clampSpanDrag,
     clampView,
     COLUMN_W,
@@ -33,6 +36,12 @@ import {
     niceStep,
     nodeArc,
     nudgeQuantum,
+    popoverFit,
+    recoveredPolyline,
+    reorderDrop,
+    reordered,
+    rowChart,
+    spanResidual,
     defaultHandle,
     ROW_EXPANDED_H,
     ROW_GAP,
@@ -1300,5 +1309,181 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
         expect(drivenSpans(lanes, 0, [Lane.Velocity, Lane.Geo, Lane.Force])).toEqual(
             drivenSpans(lanes, 0),
         );
+    });
+});
+
+describe("S3c — the driven residual, the step-in curve view, the popover anchor and the reorder drop (Validation 4)", () => {
+    const rec = (over: Partial<LaneSegment> = {}): LaneSegment => ({
+        id: 1,
+        start: 0,
+        end: 10,
+        ease: Easing.Linear,
+        entry: 1,
+        exit: 2,
+        ...over,
+    });
+    const view: View = { pan: 0, pxPerU: 10 };
+
+    // RED: sum `ds` from index 0 into `station[0]` and every sample reads one edge ahead — the
+    // whole bake slides half a cell against the ruler and every residual below is measured at the
+    // wrong station.
+    test("bake stations are the running sum of the per-edge `ds`, opening at 0", () => {
+        expect([...bakeStations([2, 3, 5], 4)]).toEqual([0, 2, 5, 10]);
+        expect([...bakeStations([], 0)]).toEqual([]);
+        expect([...bakeStations([1], 1)]).toEqual([0]); // one sample, no edge to sum
+    });
+
+    // RED: return the residual at the LAST station inside the span rather than the worst one, and
+    // a miss that peaks in the middle of the span reads as whatever the ends happen to agree on —
+    // 0 here, so the arm fails on a record that is visibly not achieved.
+    test("the residual is recovered minus demanded, signed, at the worst station of the span", () => {
+        // a record demanding a Linear 1 → 2 over [0, 10); the bake recovers a flat 1.5, so the
+        // miss is +0.5 at the start and −0.5 at the end, and the WORST is either of those.
+        const station = [0, 2, 4, 6, 8, 10];
+        const flat = [1.5, 1.5, 1.5, 1.5, 1.5, 1.5];
+        const r = spanResidual({ station, value: flat, n: 6 }, rec(), 1);
+        expect(r).toBeCloseTo(0.5, 6);
+        // a bake that peaks INSIDE the span: demanded 1.4 at s=4, recovered 2.4 there, and the
+        // ends agree exactly — a last-station reading would report 0.
+        const peak = [1, 1.2, 2.4, 1.6, 1.8, 2];
+        expect(spanResidual({ station, value: peak, n: 6 }, rec(), 1)).toBeCloseTo(1.0, 6);
+        // the sign is RECOVERED minus DEMANDED, so an under-achieving bake reads negative.
+        const under = [1, 1.2, 0.4, 1.6, 1.8, 2];
+        expect(spanResidual({ station, value: under, n: 6 }, rec(), 1)).toBeCloseTo(-1.0, 6);
+        // an unowned entry reads the exit, exactly as the drawn curve does (a level record).
+        expect(
+            spanResidual({ station, value: flat, n: 6 }, rec({ entry: undefined }), undefined),
+        ).toBeCloseTo(-0.5, 6);
+    });
+
+    // RED: report 0 where the bake covers none of the span and a missing premise becomes a
+    // perfect fit — `checks.md`'s own rule, in the reading itself.
+    test("a span the bake does not cover reads `undefined`, never a zero miss", () => {
+        const read = { station: [0, 2, 4], value: [1, 1, 1], n: 3 };
+        expect(spanResidual(read, rec({ start: 20, end: 30 }), 1)).toBeUndefined();
+        expect(spanResidual({ station: [], value: [], n: 0 }, rec(), 1)).toBeUndefined();
+    });
+
+    // RED: fit the chart to the AUTHORED handles alone and a recovered curve that overshoots them
+    // draws outside the box — the one thing the step-in exists to let a person see.
+    test("an expanded row's chart fits every authored handle AND the recovered reading", () => {
+        const rows = laneRows(
+            { velocity: [], force: [rec({ id: 2, entry: 1, exit: 2 })], geo: [] },
+            [Lane.Force, Lane.Geo, Lane.Velocity],
+            30,
+            new Set([Lane.Force]),
+        );
+        const chart = rowChart(rows[0], [1], [0.5, 3.5]);
+        expect(chart.lo).toBe(0.5);
+        expect(chart.hi).toBe(3.5);
+        expect(chart.top).toBeLessThan(chart.bottom);
+        expect(chart.bottom).toBeLessThanOrEqual(rows[0].top + ROW_EXPANDED_H);
+        // value UP is pixel-y DOWN, and the two bounds land on the two edges.
+        expect(chartY(chart, chart.hi)).toBe(chart.top);
+        expect(chartY(chart, chart.lo)).toBe(chart.bottom);
+        expect(chartY(chart, (chart.lo + chart.hi) / 2)).toBeCloseTo(
+            (chart.top + chart.bottom) / 2,
+            6,
+        );
+        // a lane with no spread at all still gets a finite window rather than dividing by zero.
+        const flatRows = laneRows(
+            { velocity: [], force: [rec({ id: 3, entry: 2, exit: 2 })], geo: [] },
+            [Lane.Force, Lane.Geo, Lane.Velocity],
+            30,
+            new Set([Lane.Force]),
+        );
+        const flat = rowChart(flatRows[0], [2]);
+        expect(flat.hi - flat.lo).toBeGreaterThan(0);
+        expect(Number.isFinite(chartY(flat, 2))).toBe(true);
+    });
+
+    // RED: draw ONE polyline across the lane instead of one per record and the line runs through
+    // a gap — claiming an authored value where the lane authored nothing.
+    test("the authored curve is one polyline PER record, so a gap is never drawn through", () => {
+        const lanes: Lanes = {
+            velocity: [],
+            force: [rec({ id: 1, start: 0, end: 10 }), rec({ id: 2, start: 20, end: 30 })],
+            geo: [],
+        };
+        const rows = laneRows(
+            lanes,
+            [Lane.Force, Lane.Geo, Lane.Velocity],
+            30,
+            new Set([Lane.Force]),
+        );
+        const chart = rowChart(rows[0], [1, 1]);
+        const lines = authoredPolylines(rows[0], [1, 1], chart, view, 40);
+        expect(lines).toHaveLength(2);
+        expect(lines[0][0].x).toBe(40); // the first record opens at its own start
+        expect(lines[0].at(-1)!.x).toBe(140);
+        expect(lines[1][0].x).toBe(240); // and the second at ITS start, across the gap
+        // each polyline rises with its own record: entry 1 at the floor, exit 2 at the ceiling.
+        expect(lines[0][0].y).toBeCloseTo(chartY(chart, 1), 6);
+        expect(lines[0].at(-1)!.y).toBeCloseTo(chartY(chart, 2), 6);
+    });
+
+    // RED: project the recovered curve through the record's own local frame instead of the
+    // ruler's absolute stations and the dashed line no longer sits under the solid one.
+    test("the recovered curve projects the bake's own stations through the same view", () => {
+        const rows = laneRows(
+            { velocity: [], force: [rec()], geo: [] },
+            [Lane.Force, Lane.Geo, Lane.Velocity],
+            30,
+            new Set([Lane.Force]),
+        );
+        const chart = rowChart(rows[0], [1], [1, 2]);
+        const pts = recoveredPolyline(
+            { station: [0, 5, 10], value: [1, 1.5, 2], n: 3 },
+            chart,
+            view,
+            40,
+        );
+        expect(pts.map((p) => p.x)).toEqual([40, 90, 140]);
+        expect(pts[0].y).toBeCloseTo(chartY(chart, 1), 6);
+        expect(pts[2].y).toBeCloseTo(chartY(chart, 2), 6);
+    });
+
+    // RED: drop the flip and a span near the dock's floor opens its popover off the bottom edge —
+    // the panel the person just summoned is unreadable (`ui.md`: opaque panels flip and clamp).
+    test("the popover opens below its span, flips above at the floor, and clamps inside the dock", () => {
+        const dock = { w: 600, h: 240 };
+        const size = { w: 180, h: 132 };
+        const mid = { id: 1, x0: 200, x1: 300, y0: 40, y1: 66 };
+        const below = popoverFit(mid, size, dock);
+        expect(below.flipped).toBe(false);
+        expect(below.y).toBe(72); // a gap under the span's band
+        expect(below.x).toBe(160); // centred on the span
+        // a span low in the dock: opening down would clip, and there is room above.
+        const low = { id: 1, x0: 200, x1: 300, y0: 190, y1: 216 };
+        const flipped = popoverFit(low, size, dock);
+        expect(flipped.flipped).toBe(true);
+        expect(flipped.y).toBe(190 - 6 - 132);
+        // and the horizontal clamp keeps the whole panel on both walls.
+        expect(popoverFit({ ...mid, x0: 0, x1: 20 }, size, dock).x).toBe(6);
+        expect(popoverFit({ ...mid, x0: 580, x1: 600 }, size, dock).x).toBe(600 - 6 - 180);
+    });
+
+    // RED: resolve the drop off the pointer's own row only (return `from`) and a drag can never
+    // move a row at all — `history.setOrder` is never called with anything new.
+    test("the reorder drop reads the row band under the pointer, and clamps at both ends", () => {
+        const rows = laneRows({ velocity: [], force: [], geo: [] }, DEFAULT_ORDER, 30);
+        expect(reorderDrop(rows, 0)).toBe(0); // above the first row
+        expect(reorderDrop(rows, 35)).toBe(0);
+        expect(reorderDrop(rows, 30 + ROW_H + ROW_GAP + 4)).toBe(1);
+        expect(reorderDrop(rows, 9999)).toBe(2); // below the last row
+        expect(reorderDrop([], 40)).toBe(0);
+    });
+
+    // RED: splice without lifting first (insert before removing) and a downward move lands one
+    // row short; return a fresh array for a no-move and the caller records an entry that changes
+    // nothing (`history.setOrder` writes the resolved default over an absent column).
+    test("a reorder lifts and re-inserts, and returns the SAME array when nothing moves", () => {
+        const order = [Lane.Geo, Lane.Force, Lane.Velocity] as const;
+        expect(reordered(order, 0, 2)).toEqual([Lane.Force, Lane.Velocity, Lane.Geo]);
+        expect(reordered(order, 2, 0)).toEqual([Lane.Velocity, Lane.Geo, Lane.Force]);
+        expect(reordered(order, 1, 0)).toEqual([Lane.Force, Lane.Geo, Lane.Velocity]);
+        expect(reordered(order, 1, 1)).toBe(order); // identity: the caller skips
+        expect(reordered(order, 0, 5)).toBe(order); // out of range is no move, never a throw
+        expect(reordered(order, -1, 0)).toBe(order);
     });
 });

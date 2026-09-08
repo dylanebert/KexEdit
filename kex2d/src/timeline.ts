@@ -917,3 +917,243 @@ export function defaultHandle(lanes: Lanes, lane: Lane, station: number): number
     if (best) return best.exit;
     return lane === Lane.Velocity ? V0 : 0;
 }
+
+// ── S3c: the driven overlay's residual, the step-in curve view, the popover anchor and the
+// column's reorder drop ─────────────────────────────────────────────────────────────────────
+//
+// Still pure: plain records, plain bake arrays and a `View` in, geometry and numbers out, so
+// every arm below is a headless read (Validation 4) and `Timeline.svelte` keeps owning only
+// pixels and pointers.
+
+/** one reading of the bake against the ruler: `station[i]` is sample `i`'s absolute arclength and
+ *  `value[i]` the recovered quantity there. A per-EDGE column (`bakeOut.fN`) is read
+ *  piecewise-constant at its own opening sample — the same `edgeAt` convention the pitch fit's
+ *  comparison landed on at S2d, because smearing a step across a cell is the grid artefact, not
+ *  the reading — so a force read passes `n = count − 1` and a pitch read `n = count`. */
+export interface BakeRead {
+    station: ArrayLike<number>;
+    value: ArrayLike<number>;
+    n: number;
+}
+
+/** cumulative absolute arclength per SAMPLE off the bake's per-edge `ds` — `station[0] = 0`, each
+ *  later sample the running sum. The one projection from the flat bake onto the ruler every
+ *  residual and every recovered curve below reads, so the two never drift into two dialects. */
+export function bakeStations(ds: ArrayLike<number>, count: number): Float64Array {
+    const out = new Float64Array(Math.max(0, count));
+    let s = 0;
+    for (let i = 1; i < count; i++) {
+        s += ds[i - 1] ?? 0;
+        out[i] = s;
+    }
+    return out;
+}
+
+/** the residual over one record's span: RECOVERED minus DEMANDED, reported at the station where
+ *  the miss is largest, signed (`editor-ui.md`'s constraint-solver UX: show demand/achieved
+ *  residual, and a driven record measures only).
+ *
+ *  Demanded is the record's own curve through `profile.ts`'s one sampler — the same two handles
+ *  `spanCurve` draws and `projection.curveAt` threads — so this is the record's own promise read
+ *  against what the march actually produced (`fN_bake − sampleForce(record)` for force,
+ *  `θ_bake − sampleForce(record)` for pitch, spec Locked decision). `undefined` when the bake
+ *  covers none of the span (no sample inside it), which is a missing premise, never a zero miss.
+ *  `entry` is the record's resolved entry value ({@link recordEntry}); an unowned entry reads the
+ *  exit, exactly as the drawn curve does. */
+export function spanResidual(
+    read: BakeRead,
+    record: LaneSegment,
+    entry: number | undefined,
+): number | undefined {
+    const from = entry ?? record.exit;
+    const points: ForcePoint[] = [
+        { s: record.start, g: from, ease: record.ease as Easing },
+        { s: record.end, g: record.exit, ease: record.ease as Easing },
+    ];
+    let worst: number | undefined;
+    for (let i = 0; i < read.n; i++) {
+        const s = read.station[i]!;
+        if (s < record.start || s > record.end) continue;
+        const miss = (read.value[i] ?? 0) - sampleForce(points, s);
+        if (worst === undefined || Math.abs(miss) > Math.abs(worst)) worst = miss;
+    }
+    return worst;
+}
+
+/** an expanded row's own value chart: the px band the curves draw in and the value range they are
+ *  normalized against. The range covers every authored handle on the lane AND the recovered
+ *  reading, so the dashed recovery never leaves the box the solid authoring sits in — the whole
+ *  point of the step-in is reading the two against each other. A lane with no spread at all (one
+ *  flat record) still gets a finite window, so nothing divides by zero. */
+export interface RowChart {
+    top: number;
+    bottom: number;
+    lo: number;
+    hi: number;
+}
+
+/** the fraction of an expanded row's height the top strip keeps — the row still shows its spans,
+ *  the curve view takes the rest (Animate's tween span plus its inline Motion Editor). */
+const CHART_PAD = 6;
+
+/** the value window one expanded row draws in. `extra` is any further reading that must fit (the
+ *  recovered curve's own min/max); `undefined` entries are skipped, the way an unowned entry is
+ *  nothing to fit. */
+export function rowChart(
+    row: LaneRow,
+    entries: readonly (number | undefined)[],
+    extra: readonly number[] = [],
+): RowChart {
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    const see = (v: number | undefined): void => {
+        if (v === undefined || !Number.isFinite(v)) return;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+    };
+    for (const rec of row.records) see(rec.exit);
+    for (const v of entries) see(v);
+    for (const v of extra) see(v);
+    if (lo > hi) {
+        lo = 0;
+        hi = 1;
+    }
+    if (hi - lo < 1e-9) {
+        lo -= 0.5;
+        hi += 0.5;
+    }
+    return { top: row.top + ROW_H + CHART_PAD, bottom: row.top + row.height - CHART_PAD, lo, hi };
+}
+
+/** a value's y in an expanded row's chart — value UP is pixel-y DOWN, {@link spanCurve}'s own rule. */
+export function chartY(chart: RowChart, value: number): number {
+    const f = (value - chart.lo) / (chart.hi - chart.lo);
+    return chart.bottom - f * (chart.bottom - chart.top);
+}
+
+/** the AUTHORED curve of one expanded row: one polyline per record, each sampled from the
+ *  record's own easing across its own span (`profile.ts`'s sampler again) and projected through
+ *  the view. One polyline PER RECORD rather than one across the lane, because a gap is not a
+ *  value the lane authored — it is inferred, and drawing through it would claim otherwise. Drawn
+ *  SOLID under the kind-color law; {@link recoveredPolyline} is its dashed twin. */
+export function authoredPolylines(
+    row: LaneRow,
+    entries: readonly (number | undefined)[],
+    chart: RowChart,
+    v: View,
+    left = 0,
+): CurvePoint[][] {
+    return row.records.map((rec, i) => {
+        const from = entries[i] ?? rec.exit;
+        const points: ForcePoint[] = [
+            { s: rec.start, g: from, ease: rec.ease as Easing },
+            { s: rec.end, g: rec.exit, ease: rec.ease as Easing },
+        ];
+        const span = rec.end - rec.start;
+        const out: CurvePoint[] = [];
+        for (let k = 0; k < CURVE_SAMPLES; k++) {
+            const f = k / (CURVE_SAMPLES - 1);
+            const s = rec.start + f * span;
+            out.push({ x: left + uToPx(v, s), y: chartY(chart, sampleForce(points, s)) });
+        }
+        return out;
+    });
+}
+
+/** the RECOVERED curve of one expanded row: the bake's own reading across the whole ruler,
+ *  projected the same way. Drawn dashed (`editor-ui.md`: recovered dashed/faded, authored
+ *  solid/bright), so the step-in reads demand against achievement without a legend. */
+export function recoveredPolyline(
+    read: BakeRead,
+    chart: RowChart,
+    v: View,
+    left = 0,
+): CurvePoint[] {
+    const out: CurvePoint[] = [];
+    for (let i = 0; i < read.n; i++)
+        out.push({
+            x: left + uToPx(v, read.station[i]!),
+            y: chartY(chart, read.value[i] ?? 0),
+        });
+    return out;
+}
+
+/** where the contextual popover's box lands, anchored to the selected span (`ui.md`: opaque
+ *  panels flip and clamp; the popover is the value editor, never a docked panel).
+ *
+ *  It opens BELOW the span's band by `gap`, centred on the span, and flips ABOVE when opening
+ *  down would run past the dock's bottom and there is room above — the standard summoned-panel
+ *  flip, `menuFit`'s own shape over a box anchor rather than a cursor point. Horizontally it is
+ *  clamped inside the dock a `pad` in, so a span at either wall keeps its whole panel readable.
+ *  Pure, so the anchor is an arm of Validation 4 rather than a thing only a screenshot can see. */
+export function popoverFit(
+    box: SpanBox,
+    size: { w: number; h: number },
+    dock: { w: number; h: number },
+    gap = 6,
+    pad = 6,
+): { x: number; y: number; flipped: boolean } {
+    const below = box.y1 + gap;
+    const above = box.y0 - gap - size.h;
+    const flipped = below + size.h > dock.h - pad && above >= pad;
+    const y = flipped ? above : Math.min(below, Math.max(pad, dock.h - pad - size.h));
+    const cx = (box.x0 + box.x1) / 2 - size.w / 2;
+    const x = Math.min(Math.max(cx, pad), Math.max(pad, dock.w - pad - size.w));
+    return { x, y, flipped };
+}
+
+/** where a lane-column reorder drag would DROP: the index in `order` the dragged row lands at,
+ *  read off the pointer's y against the rows' own bands. Above the first row is 0, below the last
+ *  is the last index, and a row's own band answers with its own index — so a drag that never
+ *  leaves its row reports no move and `history.setOrder` is never called with the order it
+ *  already has. */
+export function reorderDrop(rows: readonly LaneRow[], py: number): number {
+    if (rows.length === 0) return 0;
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i]!;
+        if (py < row.top + row.height) return i;
+    }
+    return rows.length - 1;
+}
+
+/** the `order` a reorder drag lands: `from` lifted out and re-inserted at `to`. Returns the SAME
+ *  array reference when nothing moves, so the caller skips the gesture by identity rather than
+ *  recording an entry that changes nothing. */
+export function reordered(order: readonly Lane[], from: number, to: number): readonly Lane[] {
+    if (from === to || from < 0 || from >= order.length || to < 0 || to >= order.length)
+        return order;
+    const next = order.slice();
+    const [lifted] = next.splice(from, 1);
+    next.splice(to, 0, lifted!);
+    return next;
+}
+
+/** one field of the contextual popover (`Popover.svelte`), declared here rather than in the
+ *  component so the shape is a pure type the caller and the renderer share — and so a check can
+ *  build one without a DOM. Every field is a closure over a `history.ts` gesture, which is what
+ *  keeps the popover a VIEW: it writes authored state only the way a drag does.
+ *
+ *  The field law is root `ui.md`'s: key / value / unit, an `ew-resize` label that scrubs at a
+ *  fixed `rate`, `precision` decimals, Enter commits, Escape reverts, ONE undo per commit. */
+export interface FieldSpec {
+    /** the quantity's short name — the field's key. */
+    key: string;
+    /** the unit suffix (`m`, `g`, `m/s`, `\u00b0`). */
+    unit: string;
+    /** the live value in the DISPLAY unit (pitch arrives in degrees). */
+    value: number;
+    /** decimals the readout prints. */
+    precision: number;
+    /** display units per pixel of label scrub — the field law's fixed rate. */
+    rate: number;
+    /** drawn but never editable (a driven record's residual). */
+    readonly?: boolean;
+    /** open the gesture (`history.beginHandle` / `beginEdge`). */
+    begin: () => void;
+    /** write one live frame through the setter. */
+    write: (v: number) => void;
+    /** land the gesture as one undo entry. */
+    commit: () => void;
+    /** abort the gesture, restoring the pre-edit value. */
+    cancel: () => void;
+}

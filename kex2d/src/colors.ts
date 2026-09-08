@@ -33,6 +33,20 @@ export const COLOR_VELOCITY = "#7fb08a"; // rgb(127, 176, 138)
  *  SAME hex, a shared constant rather than two hand-matched hardcodes. */
 export const COLOR_INFEASIBLE = "#e26d5c";
 
+/** the DRIVEN overlay's hatch (spec `kex2d-segment-gestures` Locked decision, "geo and force
+ *  overlap: store both, lane order drives"; the person's check-in two point 9: "some sort of gray
+ *  striped overlay, disabled indication"). `editor-ui.md`'s Mode vocabulary gives it both halves:
+ *  HATCH is the subject register (a driven record is still the subject — it keeps its handles and
+ *  stays editable, it just does not get to shape the track there), and the ink is the neutral
+ *  guide gray, not a kind hue, so the overlay reads as a state ABOUT the span rather than as a
+ *  second span of some other lane. It is drawn OVER the span's own fill, never a recolor, so the
+ *  record keeps its lane color underneath — a driven force span is still gold.
+ *
+ *  `HATCH_GAP` is the stripe pitch in px; the diagonal is 45°, one register, drawn by the row
+ *  render. A fixed SCREEN pitch, like `SNAP_PX`, so the stripes read the same at any zoom. */
+export const COLOR_HATCH = COLOR_GUIDE_RAY;
+export const HATCH_GAP = 6;
+
 /** the out-of-scope dim wash (`editor-ui.md` Mode vocabulary): while a mode is open,
  *  everything outside its subject steps back one rung under this wash — one meaning, both
  *  surfaces. Mirrors App.svelte's `--dim` CSS custom property (Timeline.svelte's `.mode-dim`

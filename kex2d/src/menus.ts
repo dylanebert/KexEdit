@@ -1,7 +1,6 @@
 import { BINDINGS, type MenuItem } from "./menu";
 import { Easing } from "./profile";
-import { Domain, SectionKind } from "./section";
-import { TangentMode } from "./spline";
+import { Domain } from "./section";
 
 /**
  * The editor's context menus as PURE builders over the shared `MenuItem` language: each takes a
@@ -12,7 +11,7 @@ import { TangentMode } from "./spline";
  * `tests/menu.test.ts` can read a menu.
  *
  * Purity is a MODULE-GRAPH property, not just a claim about these bodies: this module reaches
- * only the other pure atoms (`menu`, `profile`, `section`, `spline`) — never the ECS, `editor`,
+ * only the other pure atoms (`menu`, `profile`, `section`) — never the ECS, `editor`,
  * the DOM, or `localStorage`. That is what lets the tests import it with no shim, and it is
  * asserted as a graph walk in `tests/menu.test.ts` (`refine.test.ts`'s precedent).
  *
@@ -20,373 +19,13 @@ import { TangentMode } from "./spline";
  * hash walk) declares it lazily so a builder branch that never reads it never pays for it. A
  * builder therefore reads each field at most where it needs it, and never caches one across
  * branches.
+ *
+ * The pose era's five builders — the section context menu, the node menu, the force-keyframe
+ * menu, the velocity-strip band menu and the append flyout — went with the subjects they
+ * summoned on (`retired/pose-ux`): there are no sections, nodes, keyframes or strips left to
+ * right-click. Their replacements are the lane timeline's own two, a ROW menu on the lane column
+ * and a SPAN menu on a record, plus the ruler's unchanged unit picker.
  */
-
-/** the section context menu's state (`App.svelte`'s `ctx*` deriveds). */
-export type SectionMenuState = {
-    /** a live pin session on THIS section — the mode's own rows replace the menu. */
-    inMode: boolean;
-    /** the mode's own blocking gate (`editor.pinSolving`). */
-    solving: boolean;
-    /** enough free keys for the solve to have something to move. */
-    pinSolvable: boolean;
-    /** the target section's kind. */
-    kind: SectionKind | null;
-    /** a multi-set section selection. */
-    multi: boolean;
-    /** any pin session is open (`editor.pinning !== null`). */
-    modeOpen: boolean;
-    canSolve: boolean;
-    canSolveShape: boolean;
-    canPin: boolean;
-    canReset: boolean;
-    canDelete: boolean;
-};
-
-export type SectionMenuActions = {
-    solve: () => void;
-    solveShape: () => void;
-    pinSolve: () => void;
-    pinExit: () => void;
-    pinEnter: () => void;
-    reset: () => void;
-    remove: () => void;
-    removeSet: () => void;
-};
-
-/** The ONE conversion row. A section is always exactly one kind, so only one direction was ever
- *  live — two rows spent the menu's space on a row that could never fire. The row's label and its
- *  action fit the target's kind (geo → force, force → geo), and it still GRAYS rather than hides
- *  when the kind fits but the invoke can't run (no live bake, a multi-set): the affordance stays
- *  discoverable, which is what the grayed-never-hidden law is for. */
-function convertRow(s: SectionMenuState, a: SectionMenuActions): MenuItem {
-    const toGeo = s.kind === SectionKind.Force;
-    return {
-        // `Convert`, no destination noun (stage 7, menus law): the section's kind implies the
-        // direction — force converts to geo, geo to force — and the row is summoned ON the
-        // section, so the label carries the verb alone.
-        label: "Convert",
-        group: "modify",
-        shortcut: BINDINGS.convert.hint,
-        enabled: toGeo ? s.canSolveShape : s.canSolve,
-        action: toGeo ? a.solveShape : a.solve,
-    };
-}
-
-/** the context menu as data: one array of MenuItems, rendered by the shared menu language —
- *  the conversion row, Pin (force only), Reset, then Delete. multi-select (Premiere multi-clip):
- *  the single-subject rows gray (a set has no single subject, `selected === 1`); Delete carries
- *  the set-lifted enablement, Pin OMITS instead (a multi-set has no single subject to pin) and
- *  carries no set-lifted structure row of its own (Join and Cut, the former `structure` group's
- *  only occupants, both retired `kex2d-segment-removal` S1/S2 — the group itself left with them).
- *  the destructive Convert row (both single and bulk) was removed (kex2d-geoforce-editor stage 5):
- *  redundant with delete + append; Reset is its kind-HELD successor (kex2d-idioms stage 2) — back
- *  to the kind's default, not a flip. */
-export function sectionMenu(s: SectionMenuState, a: SectionMenuActions): MenuItem[] {
-    // inside a live pin session on THIS section: the mode's own rows replace the normal
-    // menu entirely — convert/delete aren't available inside the mode (the locked
-    // decision's consent-boundary law). Solve gates on the same headroom read as the panel's
-    // button (below MIN_FREE free keys there is nothing to solve — pure counting).
-    if (s.inMode) {
-        return [
-            {
-                label: "Solve",
-                group: "modify",
-                shortcut: BINDINGS.solve.hint,
-                action: a.pinSolve,
-                enabled: !s.solving && s.pinSolvable,
-            },
-            {
-                label: "Exit",
-                group: "modify",
-                shortcut: BINDINGS.exitMode.hint,
-                action: a.pinExit,
-            },
-        ];
-    }
-    const del = s.multi ? a.removeSet : a.remove;
-    const items: MenuItem[] = [convertRow(s, a)];
-    // the mode's entry row — a force section only (the terse verb alone: the menu is summoned
-    // ON the section, so the noun restates the invoker — menus law), and only when no other
-    // pin session is already open (one mode at a time, mirroring the conversion tier's
-    // per-section lock). Entry needs a live bake (the stamp is read off it), NOT headroom —
-    // adding keys in-mode is the sanctioned way to create give.
-    if (s.kind === SectionKind.Force && !s.multi) {
-        items.push({
-            label: "Pin",
-            group: "modify",
-            shortcut: BINDINGS.pin.hint,
-            enabled: s.canPin && !s.modeOpen,
-            action: a.pinEnter,
-        });
-    }
-    // Reset clears an authored velocity control (strip); undo restores it. The label carries
-    // the verb alone and must not imply the control survives a reset.
-    items.push({
-        label: "Reset",
-        group: "lifecycle",
-        shortcut: BINDINGS.reset.hint,
-        enabled: s.canReset,
-        action: a.reset,
-    });
-    items.push({
-        label: "Delete",
-        group: "lifecycle",
-        shortcut: BINDINGS.remove.hint,
-        danger: true,
-        enabled: s.canDelete,
-        action: del,
-    });
-    return items;
-}
-
-/** the node context menu's state (`App.svelte`'s `node*` deriveds). */
-export type NodeMenuState = {
-    /** a multi-set node selection. */
-    multi: boolean;
-    /** the target is node 0 — its section's entry anchor. */
-    isEntry: boolean;
-    /** the lockdown: no pin session is open, so geo-node edit rows are live. */
-    ok: boolean;
-    /** the target node's displayed tangent mode. */
-    mode: TangentMode;
-    /** the target node's handles are summoned (it's in tangent edit). */
-    editing: boolean;
-    /** the target is its section's chain end (append acts only there). */
-    isEnd: boolean;
-    /** the chain-end target can be trimmed (the section keeps its two nodes). */
-    canTrim: boolean;
-    /** the selected set is a Delete-able suffix run. */
-    suffixOk: boolean;
-};
-
-export type NodeMenuActions = {
-    remove: () => void;
-    removeSet: () => void;
-    add: () => void;
-    toggleHandles: () => void;
-    pickMode: (mode: TangentMode) => void;
-    pickModeSet: (mode: TangentMode) => void;
-    reset: () => void;
-    resetSet: () => void;
-};
-
-/** the node menu as data (the shared MenuItem language), in the grammar's canonical order: Add
- *  (`create`), then a Handles toggle over a Tangents submenu (`modify`), then Reset and Delete
- *  (`lifecycle`, the destructive row terminal). Add and Delete are both chain-end-only, so both
- *  are enablement-gated — the menu is Delete's only pointer path, the ring carries no trash
- *  button. Reset is the Reset idiom law: one click from anywhere, back to the state a fresh
- *  author would get — Reset RE-CREATES the node (default-chord continuation, tangents Auto). it's
- *  enabled whenever the subject is editable, never gated on "has something to clear" — a reset that
- *  changes nothing records no undo entry (`sameNodes`), the same no-op guard every Reset row leans
- *  on. node 0 (the entry anchor) is the exception — never appendable/trimmable (it's the section
- *  entry — a structural impossibility rather than a contextual one, so it's OMITTED like Add/Delete,
- *  not grayed), and its handle is a single free entry handle (no
- *  coupled in-side), so it carries NO Add/Delete and NO mode submenu: just Handles + Reset (back
- *  to the Auto C1 exit). */
-export function nodeMenu(s: NodeMenuState, a: NodeMenuActions): MenuItem[] {
-    // a multi-selection: the bulk rows (the gray-never-hide law). Delete acts on the whole set iff
-    // it's a valid suffix run (else grayed); Add + Handles are single-subject, so they gray out;
-    // Tangents ▸ modes + the top-level Reset apply to every member in one entry. the mode `checked` reflects the
-    // ACTIVE member (Blender active-only).
-    if (s.multi) {
-        return [
-            { label: "Add", group: "create", shortcut: BINDINGS.append.hint, enabled: false },
-            { label: "Handles", group: "modify", enabled: false },
-            {
-                label: "Tangents",
-                group: "modify",
-                enabled: s.ok,
-                children: [
-                    {
-                        label: "Mirror",
-                        group: "modify",
-                        checked: s.mode === TangentMode.Mirror,
-                        action: () => a.pickModeSet(TangentMode.Mirror),
-                    },
-                    {
-                        label: "Aligned",
-                        group: "modify",
-                        checked: s.mode === TangentMode.Aligned,
-                        action: () => a.pickModeSet(TangentMode.Aligned),
-                    },
-                    {
-                        label: "Free",
-                        group: "modify",
-                        checked: s.mode === TangentMode.Free,
-                        action: () => a.pickModeSet(TangentMode.Free),
-                    },
-                ],
-            },
-            {
-                label: "Reset",
-                group: "lifecycle",
-                shortcut: BINDINGS.reset.hint,
-                enabled: s.ok,
-                action: a.resetSet,
-            },
-            {
-                label: "Delete",
-                group: "lifecycle",
-                shortcut: BINDINGS.remove.hint,
-                danger: true,
-                enabled: s.suffixOk && s.ok,
-                action: a.removeSet,
-            },
-        ];
-    }
-    if (s.isEntry) {
-        return [
-            {
-                label: "Handles",
-                group: "modify",
-                checked: s.editing,
-                enabled: s.ok,
-                action: a.toggleHandles,
-            },
-            {
-                label: "Reset",
-                group: "lifecycle",
-                shortcut: BINDINGS.reset.hint,
-                enabled: s.ok,
-                action: a.reset,
-            },
-        ];
-    }
-    return [
-        {
-            label: "Add",
-            group: "create",
-            shortcut: BINDINGS.append.hint,
-            enabled: s.isEnd && s.ok,
-            action: a.add,
-        },
-        {
-            label: "Handles",
-            group: "modify",
-            checked: s.editing,
-            enabled: s.ok,
-            action: a.toggleHandles,
-        },
-        {
-            label: "Tangents",
-            group: "modify",
-            enabled: s.ok,
-            children: [
-                {
-                    label: "Mirror",
-                    group: "modify",
-                    checked: s.mode === TangentMode.Mirror,
-                    action: () => a.pickMode(TangentMode.Mirror),
-                },
-                {
-                    label: "Aligned",
-                    group: "modify",
-                    checked: s.mode === TangentMode.Aligned,
-                    action: () => a.pickMode(TangentMode.Aligned),
-                },
-                {
-                    label: "Free",
-                    group: "modify",
-                    checked: s.mode === TangentMode.Free,
-                    action: () => a.pickMode(TangentMode.Free),
-                },
-            ],
-        },
-        {
-            label: "Reset",
-            group: "lifecycle",
-            shortcut: BINDINGS.reset.hint,
-            enabled: s.ok,
-            action: a.reset,
-        },
-        {
-            label: "Delete",
-            group: "lifecycle",
-            shortcut: BINDINGS.remove.hint,
-            danger: true,
-            enabled: s.canTrim && s.ok,
-            action: a.remove,
-        },
-    ];
-}
-
-/** the force-keyframe context menu's state (`Timeline.svelte`'s `fmenu*` deriveds). */
-export type KeyframeMenuState = {
-    /** every selected keyframe's section is editable under the live lockdown. */
-    setOk: boolean;
-    /** the mode-scoped Lock/Unlock row's label, or null when the row does not EXIST. */
-    lock: "Lock" | "Unlock" | null;
-    /** a multi-set keyframe selection. */
-    multi: boolean;
-    /** the active keyframe is the last in its section (it governs no following segment). */
-    terminal: boolean;
-    /** how many selected keyframes govern a following segment (the bulk Easing targets). */
-    easeTargets: number;
-    /** the active keyframe's easing tag. */
-    ease: Easing;
-    /** the row glyph for an easing preset (the real curve, drawn by the surface). */
-    presetGlyph: (ease: Easing) => string;
-};
-
-export type KeyframeMenuActions = {
-    remove: () => void;
-    toggleLock: () => void;
-    setEase: (ease: Easing) => void;
-};
-
-/** the menu as data, in the grammar's canonical order: the mode-scoped Lock/Unlock, an Easing ▸
- *  submenu (`modify`), then Delete last — the whole SET in one entry, force multi-delete being
- *  unconditional. Easing ▸ is Linear | Cubic | Quintic, checked by the ACTIVE keyframe's tag. the
- *  preset rows apply to ALL selected non-terminal keyframes — the caller resolves that member set
- *  and reports only its size (`easeTargets`), so the row grays when none is applicable. each row
- *  carries its real curve glyph (drawn from the same influence the segment uses, so the icon can't
- *  drift). explicit per-keyframe force handles (Custom provenance, the Tangents ▸ mode submenu)
- *  left with `kex2d-segment-removal` S3 — every segment is now named. a single terminal keyframe
- *  governs no segment, so it shows Delete alone. */
-export function keyframeMenu(s: KeyframeMenuState, a: KeyframeMenuActions): MenuItem[] {
-    const items: MenuItem[] = [];
-    // the Lock/Unlock row (kex2d stage 6): SHOWN only in pin mode on the pinning
-    // section's own keys, HIDDEN everywhere else (`lockLabel`'s omit-vs-gray law) — the mouse
-    // path to the same set-toggle `Q` drives, over the same filtered member set.
-    if (s.lock !== null)
-        items.push({
-            label: s.lock,
-            group: "modify",
-            shortcut: BINDINGS.lock.hint,
-            action: a.toggleLock,
-        });
-    // shown whenever any easing target could exist (a multi-set, or a single non-terminal keyframe);
-    // enabled only when the selection has a non-terminal member — else grayed, never hidden.
-    if (s.multi || !s.terminal) {
-        const easeRow = (label: string, e: Easing): MenuItem => ({
-            label,
-            group: "modify",
-            glyph: s.presetGlyph(e),
-            checked: s.ease === e,
-            action: () => a.setEase(e),
-        });
-        items.push({
-            label: "Easing",
-            group: "modify",
-            enabled: s.easeTargets > 0 && s.setOk,
-            children: [
-                easeRow("Linear", Easing.Linear),
-                easeRow("Cubic", Easing.Cubic),
-                easeRow("Quintic", Easing.Quintic),
-            ],
-        });
-    }
-    items.push({
-        label: "Delete",
-        group: "lifecycle",
-        shortcut: BINDINGS.remove.hint,
-        danger: true,
-        enabled: s.setOk,
-        action: a.remove,
-    });
-    return items;
-}
 
 /** the ruler context menu's state (`Timeline.svelte`'s `rulerMenuItems`). */
 export type RulerMenuState = {
@@ -421,108 +60,93 @@ export function rulerMenu(s: RulerMenuState, a: { pick: (target: Domain) => void
     ];
 }
 
-/** the append flyout as data, one instance of the shared menu language. both choices are
- *  always possible (a chain end always accepts a geo or force section), so neither declares
- *  enablement — the substrate carries it, this menu just has nothing to disable. */
-export function appendMenu(a: { append: (kind: SectionKind) => void }): MenuItem[] {
+// ── the lane timeline's own two menus (S3c) ───────────────────────────────────────
+// A row menu on the lane column and a span menu on a record — the two subjects the rebuilt
+// timeline actually has. Neither takes a `Lane`: a builder that imported the lane enum would put
+// `lanes.ts` on this module's graph for a label it is handed anyway (`menus.ts`'s own purity
+// pin), so the caller passes the quantity's NAME and the rows print it.
+
+/** the lane row menu's state (`Timeline.svelte`'s row `ctx*` deriveds). */
+export type RowMenuState = {
+    /** the row's authored quantity, for the Add row's own label (`lanes.laneName`). */
+    name: string;
+    /** the row stands open in the curve view — the toggle names the act it will perform. */
+    expanded: boolean;
+    /** a record CAN be added at the clicked station: the station falls in a gap with at least
+     *  `RECORD_FLOOR` of room before the next record. Grayed, never hidden, when it can't. */
+    canAdd: boolean;
+};
+
+export type RowMenuActions = {
+    /** author a flat record at the clicked station (`history.addRecord`, the drag-out's twin). */
+    add: () => void;
+    /** expand or collapse this row in place (`timeline.toggleExpanded`). */
+    toggleExpand: () => void;
+};
+
+/** the row menu as data: Add first (the one row that changes the document), then the step-in
+ *  toggle. The toggle names the ACT rather than carrying a check — a row that says "Collapse"
+ *  while open tells the person what the click does, which is what `editor-ui.md` asks of a
+ *  mixed-capable toggle. No Delete: a row is a lane, and a lane is not a thing a person removes. */
+export function rowMenu(s: RowMenuState, a: RowMenuActions): MenuItem[] {
     return [
         {
-            label: "Geo",
+            label: `Add ${s.name} segment`,
             group: "create",
-            aria: "Append geometry section",
-            action: () => a.append(SectionKind.Geo),
+            enabled: s.canAdd,
+            action: a.add,
         },
         {
-            label: "Force",
-            group: "create",
-            aria: "Append force section",
-            action: () => a.append(SectionKind.Force),
+            label: s.expanded ? "Collapse" : "Expand",
+            group: "modify",
+            action: a.toggleExpand,
         },
     ];
 }
 
-/** the velocity-strip band context menu's state. `strip` is the targeted strip's stable id,
- *  -1 when the right-click landed on empty band (creation), or -2 when it landed on the
- *  track-start one-shot's own glyph (S3, Locked decision — its own structurally distinct
- *  point kind, `-2` a sentinel since it's never a `Strip.id`). `canCreate` is whether a
- *  strip CAN be created at the clicked station — the min-extent span exists and doesn't
- *  overlap an existing strip — so the "Add" row is grayed (not silently inert) when it
- *  can't. `oneShotExists` governs the empty-band row set (below) — the one-shot's own
- *  "Add" row shows there only while none exists, since it's a singleton (`entryOneShot`'s
- *  "at most one" reading). */
-export type StripMenuState = {
-    /** the targeted strip's stable id, -1 for creation (empty band), or -2 for the
-     *  track-start one-shot's own glyph. */
-    strip: number;
-    /** whether the section is editable (not under a pin session lockdown). */
-    editable: boolean;
-    /** whether a new strip can be created at the clicked station (min-extent span exists
-     *  and doesn't overlap an existing strip). */
-    canCreate: boolean;
-    /** whether the track-start one-shot already exists — governs the empty-band "Add
-     *  initial velocity" row (S3): shown only while it doesn't. */
-    oneShotExists: boolean;
+/** the span menu's state (`Timeline.svelte`'s span `ctx*` deriveds). */
+export type SpanMenuState = {
+    /** the record's own easing tag — what the Easing ▸ rows check against. */
+    ease: Easing;
+    /** the row glyph for an easing preset (the real curve, drawn by the surface). */
+    presetGlyph: (ease: Easing) => string;
+    /** the record can be deleted — false only while a live gesture holds it. */
+    canDelete: boolean;
 };
 
-/** the velocity-strip band context menu's actions. */
-export type StripMenuActions = {
-    /** create a velocity strip at the clicked station at minimum extent (creation). */
-    addStrip: () => void;
-    /** delete the targeted strip (deletion). */
+export type SpanMenuActions = {
+    setEase: (ease: Easing) => void;
     remove: () => void;
-    /** create the track-start one-shot (S3) — the empty-band row shown only while
-     *  `oneShotExists` is false. */
-    addOneShot: () => void;
-    /** delete the track-start one-shot (S3) — the `-2` sentinel's own row. */
-    removeOneShot: () => void;
 };
 
-/** the velocity-strip band context menu as data — one instance of the shared menu language.
- *  On empty band: "Add velocity strip" (the summoned, named creation act — Locked
- *  decision), plus "Add initial velocity" when the track-start one-shot doesn't already
- *  exist (S3). On an existing strip, or on the one-shot's own glyph: a single "Delete" row
- *  (the same menu's deletion path, routed to the matching subject). Empty band space is
- *  otherwise inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
- *  (the rescope that retired C5's rejected idiom). */
-export function stripMenu(s: StripMenuState, a: StripMenuActions): MenuItem[] {
-    if (s.strip === -2) {
-        return [
-            {
-                label: "Delete",
-                group: "lifecycle",
-                danger: true,
-                enabled: s.editable,
-                shortcut: BINDINGS.remove.hint,
-                action: a.removeOneShot,
-            },
-        ];
-    }
-    if (s.strip < 0) {
-        const rows: MenuItem[] = [
-            {
-                label: "Add velocity strip",
-                group: "create",
-                enabled: s.editable && s.canCreate,
-                action: a.addStrip,
-            },
-        ];
-        if (!s.oneShotExists) {
-            rows.push({
-                label: "Add initial velocity",
-                group: "create",
-                enabled: s.editable,
-                action: a.addOneShot,
-            });
-        }
-        return rows;
-    }
+/** the span menu as data: an Easing ▸ submenu checked by the record's own tag, then Delete as the
+ *  menu's terminal danger row. Easing is a submenu rather than three flat rows because the menu
+ *  has a sibling row to justify the nesting, unlike {@link rulerMenu}'s two. Every span owns an
+ *  easing (the record carries the tag on every lane, spec Wire v4), so the row never grays. */
+export function spanMenu(s: SpanMenuState, a: SpanMenuActions): MenuItem[] {
+    const easeRow = (label: string, e: Easing): MenuItem => ({
+        label,
+        group: "modify",
+        glyph: s.presetGlyph(e),
+        checked: s.ease === e,
+        action: () => a.setEase(e),
+    });
     return [
+        {
+            label: "Easing",
+            group: "modify",
+            children: [
+                easeRow("Linear", Easing.Linear),
+                easeRow("Cubic", Easing.Cubic),
+                easeRow("Quintic", Easing.Quintic),
+            ],
+        },
         {
             label: "Delete",
             group: "lifecycle",
-            danger: true,
-            enabled: s.editable,
             shortcut: BINDINGS.remove.hint,
+            danger: true,
+            enabled: s.canDelete,
             action: a.remove,
         },
     ];
