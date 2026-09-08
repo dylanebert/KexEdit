@@ -1047,9 +1047,19 @@ function validateDocument(raw: Record<string, unknown>): Kex2dDocument {
     // v4 retired the one-shot array: the start speed is `track.v0` and nothing else.
     if (raw.oneShot !== undefined)
         fail(`oneShot is not a valid field on a v${CURRENT_VERSION} document (use track.v0)`);
-    // `segments`/`strips` left the wire at S2e-i. A file written by the bridge build still
-    // carries them; they are IGNORED rather than refused, because the lanes beside them already
-    // say everything they said (spec S2e-i punch list item 3).
+    // `segments`/`strips` left the wire at S2e-i, and `migrations[3]` reads a v3 payload away
+    // rather than carrying it through, so a document that still holds either column here came
+    // in stamped v4 from the bridge build: it is a BRIDGED document, not a v4 one. One shape
+    // over every lane admits no shadow column, and loading the lanes while ignoring the column
+    // would silently drop whatever the column alone said. Refused by name with a remedy, the
+    // pose-handle refusal's shape (spec S2f punch list item 0; user, 2026-09-07, reversing
+    // S2e-i's ignore-on-load).
+    for (const k of ["segments", "strips"] as const) {
+        if (raw[k] !== undefined)
+            fail(
+                `${k} is not a valid field on a v${CURRENT_VERSION} document — this column was written by a bridged build; open the file with the retired/pose-ux build or re-migrate its v3 original from tests/fixtures/v3/`,
+            );
+    }
     return {
         version: raw.version as number,
         track: validateTrack(raw.track),
@@ -1328,8 +1338,8 @@ function sectionsToSegments(doc: Record<string, unknown>): Record<string, unknow
  *  Pure document-to-document, and total on a well-shaped v3 file: it derives `lanes` from the v3
  *  `segments`/`strips` payload through {@link lanesFromChain} (the same derivation `docFromEcs`
  *  runs, so a migrated file is a fixed point of a save), moves the one-shot's value onto
- *  `track.v0`, and drops the `oneShot` array. The v3 payload itself is carried through unchanged
- *  — the ECS still loads from it until S2 (see {@link CURRENT_VERSION}).
+ *  `track.v0`, and drops the `oneShot` array and the `segments`/`strips` payload it just read —
+ *  a v4 document is its lanes and nothing beside them.
  *
  *  Tolerant of a malformed shape, like every step before it: a non-array `segments`/`strips` or a
  *  non-object entry passes through and derives no lanes rather than throwing, leaving
@@ -1357,17 +1367,20 @@ function refuseKeysPastRunExtent(segments: DocSegment[]): void {
 }
 
 function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
-    const { oneShot, ...rest } = doc;
+    // the v3 payload is READ AWAY here, never carried through: at S2e the store loads from the
+    // lanes alone, so a v4 document carrying `segments`/`strips` beside them would be a shadow
+    // column `validateDocument` now refuses by name (spec S2f punch list item 0).
+    const { oneShot, segments: v3Segments, strips: v3Strips, ...rest } = doc;
     const rawTrack = isPlainObject(rest.track) ? rest.track : {};
     const rows = Array.isArray(oneShot) ? oneShot : [];
     const first = rows[0];
     const v0 = isPlainObject(first) && isFiniteNumber(first.value) ? first.value : undefined;
     const wellShaped =
-        Array.isArray(rest.segments) &&
-        Array.isArray(rest.strips) &&
-        rest.segments.every(isPlainObject) &&
-        rest.strips.every(isPlainObject);
-    if (wellShaped) refuseKeysPastRunExtent(rest.segments as DocSegment[]);
+        Array.isArray(v3Segments) &&
+        Array.isArray(v3Strips) &&
+        v3Segments.every(isPlainObject) &&
+        v3Strips.every(isPlainObject);
+    if (wellShaped) refuseKeysPastRunExtent(v3Segments as unknown as DocSegment[]);
     const track: DocTrack = {
         ds: isFiniteNumber(rawTrack.ds) ? rawTrack.ds : DS_NOMINAL,
         domain: isInt(rawTrack.domain) ? rawTrack.domain : Domain.Distance,
@@ -1378,8 +1391,8 @@ function chainToLanes(doc: Record<string, unknown>): Record<string, unknown> {
     const lanes = wellShaped
         ? lanesFromChain({
               track,
-              segments: rest.segments as DocSegment[],
-              strips: rest.strips as DocStrip[],
+              segments: v3Segments as unknown as DocSegment[],
+              strips: v3Strips as unknown as DocStrip[],
           })
         : emptyLanes();
     return {
