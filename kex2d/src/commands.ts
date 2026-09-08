@@ -216,9 +216,9 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
 
         case "record-delete": {
             if (!finite(op.id)) return opShape("record-delete needs a finite id");
-            if (!removeRecord(h, ecs, op.id))
-                return refused("recordNotFound", `no record ${op.id}`);
-            return ok(op.id);
+            // the verb's own outcome names the guard — `recordNotFound` for an id nothing
+            // holds, and the store's own refusal otherwise (reviewer note 2).
+            return fromWrite(removeRecord(h, ecs, op.id));
         }
 
         // a span edit is the timeline's body drag performed headlessly: the same

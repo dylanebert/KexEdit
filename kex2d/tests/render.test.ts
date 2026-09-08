@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { State, System } from "@dylanebert/shallot";
-import { deselectAll, editor } from "../src/editor";
+import { clearSelection, editor } from "../src/editor";
 import { infeasibleSpans } from "../src/render";
 import { bakeOut, Track } from "../src/track";
 import { Canvas2D, frameCamera } from "../src/view";
@@ -48,12 +48,11 @@ function _draw(system: System, state: State): void {
 }
 
 beforeEach(() => {
-    // editor is a module singleton too — every hover/tangent-edit field a prior test left set
-    // would otherwise bleed into the next.
+    // editor is a module singleton too — every hover field or selected member a prior test left
+    // set would otherwise bleed into the next.
     editor.hoverNode = null;
     editor.hoverKnob = null;
-    editor.tangentEdit = null;
-    deselectAll();
+    clearSelection();
 });
 
 // ── the double's own contract: `recording-ctx.ts`'s JSDoc promises save()/restore() fidelity

@@ -1,38 +1,33 @@
 import type { Plugin, State, System } from "@dylanebert/shallot";
 import { arcToTime, type Mapping, timeToArc } from "./timeline";
 import { cumulativeArclength } from "./stats";
-import { bakeOut, samples, runSpans, toLocal, Track } from "./track";
-
-/** a content-anchored park position: the section (stable id) the parked playhead is
- *  glued to, and its `offset` within that section — section-local arclength (m). the
- *  park stays arclength-anchored regardless of `Track.domain`: it's a geometric feature
- *  of the ride (where on the curve the cart sits), projected onto the chart's own axis
- *  through `dToU` like any other arclength-authored subject — not a per-section-domain
- *  quantity. the parked cart is derived from this through the live bake, so an edit
- *  re-times the ride but the playhead holds its track feature. */
-export interface Park {
-    section: number;
-    offset: number;
-}
+import { bakeOut, samples, Track } from "./track";
 
 /** per-track cart state. `held` picks which of two owners drives the clock:
  *  - **playing** (`held` false): `t` (cumulative time, mod loopTime) advances and IS
- *    the truth; `park` is ignored.
- *  - **parked** (`held` true): the truth is the content anchor `park`, and `t` is
+ *    the truth; `parkS` is ignored.
+ *  - **parked** (`held` true): the truth is the ABSOLUTE ARCLENGTH `parkS`, and `t` is
  *    *derived* from it through the current bake on every re-bake (live during a drag),
  *    so a re-time slides the ride under a stationary playhead, not the reverse.
- *  `lastClock` is the last wall-clock the advance loop saw; `parkS` is the last
- *  cumulative arclength `park` derived to (re-resolves the anchor if its section is
- *  deleted, and backs the `__kex` cart-arclength read); `parkHash` is the `bakeOut`
- *  hash `t` was last derived against, so a static park skips the per-frame re-derive.
+ *
+ *  `parkS` is absolute arclength on the ruler and nothing else. It used to be a content anchor
+ *  `{section, offset}` glued to a DERIVED run — and a derived run is not content: its id is the
+ *  opening record's or synthetic (`projection.ts`), so a body drag on the record that opens it
+ *  carried the playhead along with it (parked at 10 m, the geo record moved [0, 20) → [3, 23),
+ *  the playhead read 13 m; probed 2026-09-07, the person's check-in two point 8). The ruler is
+ *  the park's frame, the same frame every record's `start` is authored in.
+ *
+ *  `lastClock` is the last wall-clock the advance loop saw; `parkHash` is the `bakeOut` hash `t`
+ *  was last derived against, so a static park skips the per-frame re-derive; `resume` is the
+ *  playing state a gesture hold captured, restored on release ({@link holdForGesture}).
  *  plain Map — purely transient, not canonical bake state, so it lives outside ECS. */
 interface CartState {
     t: number;
     lastClock: number;
     held: boolean;
-    park: Park | null;
     parkS: number;
     parkHash: string;
+    resume: boolean;
 }
 export const cartState = new Map<number, CartState>();
 
@@ -61,7 +56,7 @@ export const CartSystem: System = {
         for (const trackEid of ecs.query([Track])) {
             let st = cartState.get(trackEid);
             if (!st) {
-                st = { t: 0, lastClock: now, held: false, park: null, parkS: 0, parkHash: "" };
+                st = { t: 0, lastClock: now, held: false, parkS: 0, parkHash: "", resume: false };
                 cartState.set(trackEid, st);
                 continue;
             }
@@ -70,10 +65,10 @@ export const CartSystem: System = {
             const out = bakeOut.get(trackEid);
             if (!out || Track.count.get(trackEid) < 2) continue;
             if (st.held) {
-                // parked: the content anchor owns the clock. re-derive `t` from `park`
-                // only when the bake changed (a keyframe drag, a convert), so a static
+                // parked: the ruler station owns the clock. re-derive `t` from `parkS`
+                // only when the bake changed (a span drag, a re-time), so a static
                 // park doesn't rebuild the mapping every frame.
-                if (st.park && st.parkHash !== out.hash) applyPark(ecs, trackEid, st, out);
+                if (st.parkHash !== out.hash) applyPark(trackEid, st, out);
                 continue;
             }
             // playing — the cart rides the baked track, paced by its recovered velocity.
@@ -89,67 +84,72 @@ export const CartSystem: System = {
 
 type BakeOut = NonNullable<ReturnType<typeof bakeOut.get>>;
 
-/** cumulative arclength (the global distance `d`) → a content anchor `{section, offset}`:
- *  the coordinate lens's `toLocal`, re-shaped into the cart's Park (offset = the local s).
- *  clamps to the track ends. null with no baked sections. */
-export function resolvePark(ecs: State, eid: number, cumS: number): Park | null {
-    const loc = toLocal(runSpans(ecs, eid), cumS);
-    return loc ? { section: loc.run, offset: loc.s } : null;
-}
-
-/** the parked anchor's cumulative arclength on the current bake: its section's live
- *  span, with the offset clamped into it (a trim/convert may have shortened the section
- *  under a fixed offset — so this is the lens's `toGlobal` plus the park's own reach
- *  clamp). null when the anchor section is gone (a delete / undo-of-append) — the caller
- *  re-resolves from the last cumulative s (`parkS`). */
-export function parkArc(ecs: State, eid: number, park: Park): number | null {
-    const sp = runSpans(ecs, eid).find((x) => x.id === park.section);
-    if (!sp) return null;
-    return sp.offset + Math.min(park.offset, sp.len);
-}
-
-/** derive the parked cart time from its anchor through the current bake and record the
- *  cumulative s + the hash it derived against. re-resolves the anchor onto whatever
- *  section now holds `parkS` if the anchored section is gone. used by the per-frame
- *  re-derive and by every gesture that captures a park. */
-function applyPark(ecs: State, eid: number, st: CartState, out: BakeOut): void {
-    if (!st.park) return;
-    let cumS = parkArc(ecs, eid, st.park);
-    if (cumS === null) {
-        st.park = resolvePark(ecs, eid, st.parkS);
-        cumS = st.park ? parkArc(ecs, eid, st.park) : null;
-    }
+/** derive the parked cart time from its ruler station through the current bake, and record the
+ *  hash it derived against. The station is clamped into the bake's own extent — a shortened track
+ *  pulls the playhead back to its end rather than leaving it past the last sample — and the clamp
+ *  is written BACK to `parkS`, so the park is the place the cart actually sits and a later
+ *  lengthening does not teleport it forward to a station it was never left at. Used by the
+ *  per-frame re-derive and by every gesture that captures a park. */
+function applyPark(eid: number, st: CartState, out: BakeOut): void {
     st.parkHash = out.hash; // mark this bake handled even if there's nothing to derive to
-    if (cumS === null) return;
     const m = trackMapping(eid);
     if (!m) return;
-    st.t = clamp(arcToTime(m, cumS), 0, out.tTotal);
-    st.parkS = cumS;
+    const s = clamp(st.parkS, 0, m.arc[m.n - 1] ?? 0);
+    st.parkS = s;
+    st.t = clamp(arcToTime(m, s), 0, out.tTotal);
 }
 
-/** park the cart at a cumulative arclength — the ruler scrub, native to the chart's
- *  distance axis. captures the content anchor and the derived time. */
+/** park the cart at an absolute arclength — the ruler scrub, native to the chart's distance
+ *  axis, and the one write that names the park's truth. */
 export function parkAtArc(ecs: State, eid: number, cumS: number): void {
     const st = cartState.get(eid);
     const out = bakeOut.get(eid);
     if (!st || !out) return;
-    st.park = resolvePark(ecs, eid, cumS);
+    void ecs;
     st.parkS = cumS;
-    applyPark(ecs, eid, st, out);
+    applyPark(eid, st, out);
 }
 
-/** capture the park anchor from the cart's current time — for a gesture that works in
- *  time (the player slider, arrow step, Space-pause): project `t` → cumulative s →
- *  `{section, offset}`. */
+/** capture the park station from the cart's current time — for a gesture that works in time (the
+ *  player slider, Space-pause): project `t` → absolute arclength. */
 export function parkFromTime(ecs: State, eid: number): void {
     const st = cartState.get(eid);
     const out = bakeOut.get(eid);
     const m = trackMapping(eid);
     if (!st || !out || !m) return;
-    const cumS = timeToArc(m, st.t);
-    st.park = resolvePark(ecs, eid, cumS);
-    st.parkS = cumS;
-    applyPark(ecs, eid, st, out);
+    void ecs;
+    st.parkS = timeToArc(m, st.t);
+    applyPark(eid, st, out);
+}
+
+/** hold the cart at its own ruler station for the duration of one authoring gesture, remembering
+ *  whether it was playing. A live span or end gesture must not re-time the ride under itself: the
+ *  cart boots PLAYING (`CartSystem` mints `held: false`) and a playing cart is time-truth, so a
+ *  velocity drag moved it in arclength while the person watched (one `t` read 20.09 m before and
+ *  18.30 m after; probed 2026-09-07). This is `editor-ui.md`'s "time is frozen-per-gesture
+ *  projection", and it is the player slider's own `sliderResume` pattern, hoisted here so every
+ *  gesture shares one. Idempotent: a second hold inside one gesture keeps the FIRST capture, so a
+ *  nested open can't record `held: true` as the state to resume to. */
+export function holdForGesture(eid: number): void {
+    const st = cartState.get(eid);
+    const out = bakeOut.get(eid);
+    if (!st || !out) return;
+    if (st.held) return; // already parked — its own station is already the truth
+    const m = trackMapping(eid);
+    st.resume = true; // it was playing, so the release resumes it
+    if (m) st.parkS = timeToArc(m, st.t);
+    st.held = true;
+    applyPark(eid, st, out);
+}
+
+/** release a gesture's hold, restoring the playing state {@link holdForGesture} captured. A cart
+ *  that was already parked when the gesture opened stays parked (`resume` was never set), so a
+ *  scrub-then-drag never starts playback the person didn't ask for. */
+export function releaseGesture(eid: number): void {
+    const st = cartState.get(eid);
+    if (!st) return;
+    if (st.resume) st.held = false;
+    st.resume = false;
 }
 
 /** the cart's current arclength on the bake — its `t` projected onto the distance axis.

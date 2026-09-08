@@ -1602,7 +1602,13 @@ describe("the closed key registry — BINDINGS + RESERVED collision oracle", () 
             out.push({ form: "key", value: m[1], file });
         for (const m of text.matchAll(/\.code\s*[!=]==\s*"([^"]+)"/g))
             out.push({ form: "code", value: m[1], file });
-        for (const dm of text.matchAll(/\bconst\s+(\w+)\s*=\s*[\w.]*\.key\.toLowerCase\(\);/g)) {
+        // the derived-local shape, keyed on the DERIVATION (a `key` source lowercased into a
+        // local), never on the local's name: `e.key.toLowerCase()` at an event site, and the bare
+        // `key.toLowerCase()` a pure decider in `keys.ts` reads off its own parameter — the same
+        // shape, one seam short of the event.
+        for (const dm of text.matchAll(
+            /\bconst\s+(\w+)\s*=\s*(?:[\w.]+\.)?key\.toLowerCase\(\);/g,
+        )) {
             const re = new RegExp(`\\b${dm[1]}\\s*[!=]==\\s*"([^"]+)"`, "g");
             for (const m of text.matchAll(re)) out.push({ form: "key", value: m[1], file });
         }

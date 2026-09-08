@@ -6,11 +6,13 @@ import {
     cartState,
     CartSystem,
     forceCurve,
+    holdForGesture,
     loopTime,
     parkAtArc,
+    releaseGesture,
     velocityCurve,
 } from "../src/cart";
-import { bakeOut, runsOf } from "../src/track";
+import { bakeOut } from "../src/track";
 import { build } from "./helpers/build";
 
 // cartPose rides the baked track; forceCurve reads the baked force per-sample over
@@ -150,7 +152,7 @@ function forceTrack(): {
     return { bd, state: bd.ecs, eid: bd.trackEid, sec };
 }
 
-test("a parked anchor holds its arclength while an edit re-times the ride", () => {
+test("a parked station holds its arclength while an edit re-times the ride", () => {
     const { bd, state, eid, sec } = forceTrack();
     const st = cartState.get(eid);
     if (!st) throw new Error("cartState missing after step");
@@ -162,9 +164,7 @@ test("a parked anchor holds its arclength while an edit re-times the ride", () =
     expect(arc1).toBeCloseTo(20, 1);
 
     // an airtime crest re-times the traversal (velocity changes) at a fixed extent —
-    // the spec's keyframe-drag case: the parked place must not slide. (the section's reset
-    // seed already carries two flat continuation keyframes — this test doesn't need an
-    // exact keyframe set, just an airtime shape layered on top, so no clearing gotcha here.)
+    // the spec's span-drag case: the parked place must not slide.
     bd.span(sec, 0, 16);
     bd.handle(sec, "exit", 0);
     bd.force(16, 32, 0, 1);
@@ -172,7 +172,7 @@ test("a parked anchor holds its arclength while an edit re-times the ride", () =
 
     const arc2 = cartArc(eid);
     if (arc2 === null) throw new Error("cartArc null after re-time");
-    expect(arc2).toBeCloseTo(arc1, 1); // playhead stays glued to the track feature
+    expect(arc2).toBeCloseTo(arc1, 1); // playhead stays glued to its ruler station
     expect(t2Differs(t1, st.t)).toBe(true); // but the ride re-timed
 });
 
@@ -181,40 +181,76 @@ function t2Differs(a: number, b: number): boolean {
     return Math.abs(a - b) > 0.02;
 }
 
-test("a parked offset clamps into the section when it shortens", () => {
+// RED (the S3b defect, check-in two point 8): restore the run-anchored park — `{section, offset}`
+// resolved through `runSpans`, `t` derived from the anchor's live span — and this arm reads 13,
+// not 10. A derived run is not content: the run [0, 20) is the geo record's own, so moving the
+// record moved the anchor and carried the playhead with it.
+test("a parked station survives a body drag on the record it sits inside — the run is not the anchor", () => {
+    const bd = build();
+    bd.ecs.addSystem(CartSystem);
+    const geo = bd.geo(0, 20, 0, 0);
+    bd.force(20, 40, 1);
+    bd.bake();
+    const st = cartState.get(bd.trackEid);
+    if (!st) throw new Error("cartState missing");
+    st.held = true;
+    parkAtArc(bd.ecs, bd.trackEid, 10);
+    expect(cartArc(bd.trackEid)).toBeCloseTo(10, 1);
+
+    bd.span(geo, 3, 23); // the head record's body moves 3 m downstream
+    bd.bake();
+    expect(cartArc(bd.trackEid)).toBeCloseTo(10, 1); // the ruler station is the truth
+});
+
+// RED: drop `holdForGesture`'s `held` write (or its `resume` capture) and a PLAYING cart re-times
+// under the drag — the probed defect, one `t` reading 20.09 m before and 18.30 m after.
+test("a playing cart is held at its station through a gesture and resumes on release", () => {
+    const { bd, eid } = forceTrack();
+    const st = cartState.get(eid);
+    if (!st) throw new Error("cartState missing");
+    st.held = false; // the cart boots playing (`CartSystem` mints `held: false`)
+    st.t = 0.5;
+    const arc = cartArc(eid);
+    if (arc === null) throw new Error("cartArc null");
+
+    holdForGesture(eid);
+    expect(st.held).toBe(true);
+    bd.startSpeed(30); // a re-time under the gesture
+    bd.bake();
+    expect(cartArc(eid)).toBeCloseTo(arc, 1); // the station held through the re-time
+
+    releaseGesture(eid);
+    expect(st.held).toBe(false); // and the playing state came back
+});
+
+test("a hold on an ALREADY parked cart leaves it parked on release", () => {
+    const { eid } = forceTrack();
+    const st = cartState.get(eid);
+    if (!st) throw new Error("cartState missing");
+    st.held = true;
+    holdForGesture(eid);
+    releaseGesture(eid);
+    expect(st.held).toBe(true); // a scrub-then-drag never starts playback
+});
+
+test("a park past a shortened track clamps to the track end", () => {
     const { bd, state, eid, sec } = forceTrack();
     bd.span(sec, 0, 40);
     bd.bake();
     const st = cartState.get(eid);
     if (!st) throw new Error("cartState missing");
     st.held = true;
-    parkAtArc(state, eid, 30); // near the end of the 40m section
+    parkAtArc(state, eid, 30); // near the end of the 40m record
     expect(cartArc(eid)).toBeCloseTo(30, 1);
 
-    bd.span(sec, 0, 20); // shorten under the parked offset
+    bd.span(sec, 0, 20); // shorten under the parked station
     bd.bake();
     expect(cartArc(eid)).toBeCloseTo(20, 1); // clamped to the new extent, not 30
-});
 
-test("a parked anchor re-resolves onto the chain when its run is deleted", () => {
-    const bd = build();
-    bd.ecs.addSystem(CartSystem);
-    const a = bd.geo(0, 32, 0, 0);
-    const b = bd.force(32, 62, 1);
+    // RED: drop `applyPark`'s `st.parkS = s` write-back (leave the clamp on `t` alone, which
+    // `arcToTime` performs anyway) and the park springs back to 30 the moment the track is long
+    // enough again — the playhead teleports to a station the person never left it at.
+    bd.span(sec, 0, 40);
     bd.bake();
-    const { ecs: state, trackEid: eid } = bd;
-
-    const st = cartState.get(eid);
-    if (!st) throw new Error("cartState missing");
-    st.held = true;
-    parkAtArc(state, eid, 16); // mid the FIRST run
-    const first = runsOf(state)[0];
-    expect(st.park?.section).toBe(first!.id);
-
-    bd.remove(a); // the anchored run's record is gone
-    bd.bake();
-    expect(st.park?.section).toBe(runsOf(state)[0]!.id); // re-resolved onto the survivor
-    expect(cartArc(eid)).not.toBeNull();
-    expect(cartArc(eid)).toBeCloseTo(16, 0); // ~same track place
-    void b;
+    expect(cartArc(eid)).toBeCloseTo(20, 1);
 });

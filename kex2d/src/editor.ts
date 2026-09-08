@@ -2,17 +2,19 @@
  *  doesn't persist (no save/load, no replay). plain mutable singleton; Svelte reads
  *  it via the per-RAF tick pattern in App.
  *
- *  there are no tools or modes: you select a node and drag it in the viewport, a
- *  force point on the timeline curve, a whole section, a velocity strip in the header
- *  band, the track START anchor, or the track-start one-shot (S3, its own point kind) —
- *  six selection kinds (below) behind one unified container, so a contextual action
- *  never fights over its target. */
+ *  There are no tools or modes, and over the lane substrate there is exactly ONE selection kind:
+ *  a lane record, addressed by the stable id its lane row and every authoring verb already use
+ *  (`record`, below). The six pose-era kinds (node, force, segment, section, strip, strip
+ *  keyframe, plus the two singletons) went with the subjects they addressed; the unified
+ *  container they were built to share stays, because it is what makes the one surviving kind a
+ *  set rather than a scalar — Shift toggles membership, an empty click clears the set, and undo
+ *  restores the whole set, not just its active member. */
 
 import type { State } from "@dylanebert/shallot";
 import { recordAt } from "./track";
 
-/** which end of a node's tangent a knob edits. The node substrate is retired at S2e-i; the type
- *  survives as the selection's own shape until S3 rewrites the surfaces. */
+/** which end of a node's tangent a knob edits. The node substrate is retired; the type survives
+ *  as the canvas hover seam's own shape until the geo control wiring returns over pitch. */
 export type TangentSide = "in" | "out";
 
 /** the editor surface the pointer is over — the router for surface-scoped keys
@@ -67,35 +69,22 @@ export function toggleMember(sel: Selection, id: number): void {
 }
 
 // ── the unified selection container (S1) ────────────────────────────────────────
-// one ordered member set of {kind, id} + one active {kind, id}. the per-kind `Selection`
-// records (`nodes`, `forces`, `sections`, `strips`, `stripKfs`) and the two booleans
-// (`start`, `oneShot`) are derived reads over this set — they stop being storage. the
-// `exclusive*` family is deleted: a plain click replace-selects, clearing every member of
-// every kind, and shift/marquee toggle within one kind after sweeping the others.
+// one ordered member set of {kind, id} + one active {kind, id}. `editor.records` is a derived
+// read over this set, never storage. The container survives the kind census down to one because
+// the SET is the substrate: a plain click replace-selects, Shift toggles membership, an empty
+// click clears, and the history hook snapshots every member.
 
-/** the selection kinds — one per subject type. `start` and `oneShot` are singleton kinds
- *  (at most one of each per track), carried with a constant id 0. */
-export type SelKind =
-    | "node"
-    | "force"
-    | "segment"
-    | "section"
-    | "strip"
-    | "stripKf"
-    | "start"
-    | "oneShot";
+/** the selection kinds. One kind over the lane substrate: a lane record, addressed by the stable
+ *  id `track.ts`'s setters and `commands.ts`'s ops already address it by, so a selected span, a
+ *  headless op and an undo entry all name the same thing. Kept as a UNION (of one) rather than
+ *  collapsed away, because the container's shape is per-kind and the next authored subject the
+ *  timeline gains — a run, a boundary — joins here rather than reopening the container. */
+export type SelKind = "record";
 
 /** a typed subject reference in the unified selection set. */
 export interface Member {
     kind: SelKind;
     id: number;
-    /** the stored containment flag — carried only by `"stripKf"` members: the stable id of
-     *  the strip that owns the keyframe, recorded at add time by EVERY add path (the replace
-     *  sweep, the shift-click toggle, the marquee multi-write) from the owner the caller's own
-     *  hit data supplies (`StripKfPt.strip`, never an ECS read). reading containment off the
-     *  member (`stripKfOwner`) is the no-ECS alternative to the Delete path's
-     *  `owningStrip`/track.ts read, so a reader never waits on a store catch-up. */
-    owner?: number;
 }
 
 const _members = new Map<string, Member>();
@@ -103,12 +92,8 @@ let _active: Member | null = null;
 
 const memberKey = (kind: SelKind, id: number): string => `${kind}:${id}`;
 
-function memberAdd(kind: SelKind, id: number, owner?: number): void {
-    _members.set(memberKey(kind, id), { kind, id, owner });
-}
-
-function memberRemove(kind: SelKind, id: number): void {
-    _members.delete(memberKey(kind, id));
+function memberAdd(kind: SelKind, id: number): void {
+    _members.set(memberKey(kind, id), { kind, id });
 }
 
 function memberHas(kind: SelKind, id: number): boolean {
@@ -118,17 +103,6 @@ function memberHas(kind: SelKind, id: number): boolean {
 function clearAllMembers(): void {
     _members.clear();
     _active = null;
-}
-
-function clearKind(kind: SelKind): void {
-    for (const [key, m] of _members) if (m.kind === kind) _members.delete(key);
-    if (_active !== null && _active.kind === kind) _active = lastMemberOfAny();
-}
-
-function sweepOtherKinds(keep: readonly SelKind[]): void {
-    const keepSet = new Set(keep);
-    for (const [key, m] of _members) if (!keepSet.has(m.kind)) _members.delete(key);
-    if (_active !== null && !keepSet.has(_active.kind)) _active = lastMemberOfAny();
 }
 
 function lastMemberOfAny(): Member | null {
@@ -162,49 +136,24 @@ export function activeKind(): SelKind | null {
     return _active?.kind ?? null;
 }
 
-/** whether the selection has more than one subject. A selected strip whose id is the stored
- *  owner of a selected strip-keyframe member is that keyframe's owning ancestor, not a second
- *  subject; all other members count. Context readers use this set-level predicate, while bulk-op
- *  applicability readers remain per-kind.
+/** whether the selection has more than one subject — the set-level predicate contextual
+ *  single-subject chrome reads (the popover binds to one span, so it hides on a multi-set).
  *
  *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal.
- *  App.svelte's derived context readers touch `tick`; Timeline.svelte's markup guards re-run when
- *  their tracked `selPoint`, `selStripKfPt`, or `stripTipDismissed` dependencies invalidate (the
- *  first two are tick-paced derived reads). `multi()` itself provides no invalidation.
+ *  A derived caller must touch its own `tick` dependency, as the surrounding readers do.
  *
  *  @example
- *  // hide the viewport ring on a multi-set (App.svelte)
+ *  // hide the span popover on a multi-set
  *  if (multi()) return null;
  */
 export function multi(): boolean {
-    const containedStrips = new Set<number>();
-    for (const member of _members.values()) {
-        if (member.kind === "stripKf" && member.owner !== undefined)
-            containedStrips.add(member.owner);
-    }
-
-    let subjects = 0;
-    for (const member of _members.values()) {
-        if (member.kind === "strip" && containedStrips.has(member.id)) continue;
-        subjects += 1;
-    }
-    return subjects > 1;
+    return _members.size > 1;
 }
 
-/** whether any raw member of any kind is selected — exactly `_members.size > 0`.
- *  This deliberately differs from `multi()`: `multi()` ignores a selected strip when it is the
- *  stored owner of a selected strip-keyframe, but that containment-kept strip is still a live
- *  member here. Thus a strip + its owned keyframe reads `anySelected() === true` and `multi() ===
- *  false`; this predicate answers whether the selection dismissal rung has anything to clear, while
- *  `multi()` answers whether contextual single-subject chrome is valid.
+/** whether anything is selected — exactly `_members.size > 0`. The dismissal rung's read: what
+ *  an empty click or an Escape has to clear before it peels the next layer.
  *
- *  a plain function, not a `$derived`: `editor` is a plain singleton with no invalidation signal
- *  of its own. The production pin-mode caller reads it at event time, where the member set is fresh;
- *  a derived caller must touch its own `tick` dependency, as the surrounding readers do.
- *
- *  @example
- *  // the pin-mode Escape rung's live-selection layer (App.svelte's modeKeyAct call)
- *  selected: anySelected(),
+ *  a plain function, not a `$derived`, for the reason {@link multi} gives.
  */
 export function anySelected(): boolean {
     return _members.size > 0;
@@ -223,110 +172,20 @@ function kindView(kind: SelKind): Selection {
     };
 }
 
-/** the singleton id for the two singleton kinds (`start`, `oneShot`). */
-const SINGLETON_ID = 0;
-
 interface EditorState {
-    /** the selected geo nodes — a derived `Selection` view over the unified member set, filtered
-     *  to the `"node"` kind. ids are live eids, resolved fresh each pick and re-resolved by stable
-     *  (section, order) across an undo (the eid recycles). */
-    nodes: Selection;
-    /** the selected force keyframes — a derived view over the unified set, filtered to `"force"`.
-     *  addressed by stable `Force.id`. */
-    forces: Selection;
-    /** canonical force segments selected on the timeline, addressed by stable Segment.id. */
-    segments: Selection;
-    /** the selected sections — a derived view over the unified set, filtered to `"section"`.
-     *  addressed by stable `Section.id`. */
-    sections: Selection;
-    /** the selected velocity strips — a derived view over the unified set, filtered to `"strip"`,
-     *  addressed by stable `Strip.id`. */
-    strips: Selection;
-    /** the selected velocity-strip keyframes — a derived view over the unified set, filtered to
-     *  `"stripKf"`, addressed by stable `StripKeyframe.id`, layered under strip selection like
-     *  {@link stripKf} always was (`stripKfs.ids` non-empty implies `editor.strip !== null`). */
-    stripKfs: Selection;
-    /** the active geo node eid, or null — a derived read: the active member's id when its kind
-     *  is `"node"`, else null. assigning it is a replace-select (`select`). */
-    selection: number | null;
-    /** the active force keyframe id, or null — a derived read: the active member's id when its
-     *  kind is `"force"`, else null. */
-    force: number | null;
-    /** the active canonical force segment id, or null. */
-    segment: number | null;
-    /** the active section id, or null — a derived read: the active member's id when its kind is
-     *  `"section"`, else null. */
-    section: number | null;
-    /** the active velocity strip id, or null — a derived read: the active member's id when its
-     *  kind is `"strip"`, else null. */
-    strip: number | null;
-    /** eid of the node in tangent-edit mode (its handles are summoned), or null — a
-     *  sub-mode layered on node selection: `tangentEdit !== null` implies the node set is exactly
-     *  `{tangentEdit}` with it active. entered by double-clicking a node (Figma vector edit);
-     *  any selection change to a different subject (or the set growing past it), Esc, or click-away
-     *  exits it. NOT a fifth mutually-exclusive selection — a refinement of the node-selection state. */
-    /** the active velocity-strip keyframe's stable id, or null — a derived read: the active
-     *  member's id when its kind is `"stripKf"`, else null. a sub-selection layered on strip
-     *  selection: non-empty `stripKfs` implies `editor.strip !== null` (the owning strip is
-     *  selected, so its keyframe diamonds are drawn). Clicking a diamond selects it for Delete
-     *  (shift-click toggles membership); Escape peels the set before clearing the strip selection
-     *  (the force keyframe's own Escape ladder). NOT a mutually-exclusive selection kind.
-     *  READ-ONLY, unlike its sibling active views: the replace-select sweep is per-member
-     *  containment and needs the owning strip — a value this module deliberately lacks (it
-     *  lives in the caller's own hit data, `StripKfPt.strip`, never in an ECS read — selection
-     *  lives outside the ECS). the clearing path is `selectStripKf(null)`, and the
-     *  plain-click number path passes that owner and calls `selectStripKf(id, "replace", owner)`. */
-    readonly stripKf: number | null;
-    tangentEdit: number | null;
-    /** whether the track START anchor is selected — a derived read: true iff the unified set
-     *  contains a `"start"` member. there's one START per track; selecting it summons the field
-     *  popover for the friction/drag coefficients (`Track.friction`/`.resistance`'s own authoring
-     *  surface) — initial speed (v0) moved out (S5, now the track-start one-shot, S3's own point
-     *  kind, `oneShot` below). */
-    start: boolean;
-    /** whether the track-start one-shot (S3, Locked decision — its own structurally distinct
-     *  point kind, never a degenerate `Strip`) is selected — a derived read: true iff the unified
-     *  set contains an `"oneShot"` member. */
-    oneShot: boolean;
-    /** the section right-click menu (Convert / Pin / Reset / Delete): screen position + target
-     *  section id, or null when closed. shared so the clip strip and the viewport span both
-     *  open the same menu, rendered once at the app root — the graph never opens it at all (the
-     *  chart's only right-click subject is a keyframe diamond, `Timeline.svelte forceCtx`,
-     *  through the separate `fmenu`). */
-    context: {
-        x: number;
-        y: number;
-        section: number;
-    } | null;
-    /** the node context menu (`Handles` toggle + a `Tangents ▸` submenu): screen position +
-     *  the target node eid, or null when closed. opened by right-click on any pickable node
-     *  (any mode) — the same shared menu language as `context`, rendered once at the app root. */
-    nodeMenu: { x: number; y: number; eid: number } | null;
-    /** the force keyframe right-click menu (Delete / Easing ▸ / Handles / Reset): screen
-     *  position + the target point's stable id, or null when closed. the force analogue of
-     *  `nodeMenu`, the same shared menu language. */
-    forceMenu: { x: number; y: number; id: number } | null;
+    /** the selected lane records — a derived `Selection` view over the unified member set,
+     *  addressed by the stable record id every setter, op and undo entry already uses. */
+    records: Selection;
+    /** the active (last-selected) record id, or null — a derived read over the same set. The
+     *  single subject the popover, the nudge keys and the Delete rung bind to. Assigning it is a
+     *  replace-select (`selectRecord`). */
+    record: number | null;
     /** the ruler context menu (Meters / Seconds — the track domain picker): screen position,
      *  or null when closed. summoned by right-clicking the ruler scrub zone (the Premiere/
-     *  REAPER/Cubase reference: time-display format lives on the ruler's own context menu), the
-     *  same shared menu language as `context`/`nodeMenu`/`forceMenu`. No target id — it has one
-     *  subject, the timeline itself. A row's pick is a pure view write
+     *  REAPER/Cubase reference: time-display format lives on the ruler's own context menu). No
+     *  target id — it has one subject, the timeline itself. A row's pick is a pure view write
      *  (`domain.convertDomain` writes `Track.domain` alone), so no basis state lives here. */
     rulerMenu: { x: number; y: number } | null;
-    /** the velocity-strip band context menu (Add / Delete): screen position + the clicked
-     *  track-global station `d` (meters of arclength from track start — strips are
-     *  track-global, S2 Locked decision, so there is no owning section to carry), or null
-     *  when closed. Summoned by right-clicking the band — on empty space for creation (the
-     *  row names the thing; the strip appears at the clicked station at minimum extent,
-     *  selected, curve flattened and solid), on an existing strip for deletion. Empty band
-     *  space is inert — no plain-drag-on-empty, no modifier-drag, no standing mode toggle
-     *  (Locked decision, the rescope that retired C5's create-drag). `strip` is the targeted
-     *  strip's stable id, -1 when the right-click landed on empty band (creation of a strip
-     *  or — S3's own row, when none exists — the one-shot), or -2 when the right-click
-     *  landed on the track-start one-shot's own glyph (its Delete row, `menus.stripMenu`'s
-     *  own `-2` branch — a sentinel, not a `Strip.id`, since the one-shot is never a strip
-     *  row, S3 Locked decision). */
-    stripMenu: { x: number; y: number; d: number; strip: number } | null;
     /** whether a pointer drag is in flight (any gesture routed through `beginDrag`). App
      *  projects it as `data-dragging` on the app root; a CSS rule then suppresses `:hover`
      *  on the chrome under the cursor. ephemeral, read via the per-RAF tick. */
@@ -400,69 +259,16 @@ export function easeOut(t: number): number {
 }
 
 export const editor: EditorState = {
-    get nodes(): Selection {
-        return kindView("node");
+    get records(): Selection {
+        return kindView("record");
     },
-    get forces(): Selection {
-        return kindView("force");
+    get record(): number | null {
+        return kindActiveId("record");
     },
-    get segments(): Selection {
-        return kindView("segment");
+    set record(v: number | null) {
+        selectRecord(v);
     },
-    get sections(): Selection {
-        return kindView("section");
-    },
-    get strips(): Selection {
-        return kindView("strip");
-    },
-    get stripKfs(): Selection {
-        return kindView("stripKf");
-    },
-    get selection(): number | null {
-        return kindActiveId("node");
-    },
-    set selection(v: number | null) {
-        select(v);
-    },
-    get force(): number | null {
-        return kindActiveId("force");
-    },
-    set force(v: number | null) {
-        selectForce(v);
-    },
-    get segment(): number | null {
-        return kindActiveId("segment");
-    },
-    set segment(v: number | null) {
-        selectSegment(v);
-    },
-    get section(): number | null {
-        return kindActiveId("section");
-    },
-    set section(v: number | null) {
-        selectSection(v);
-    },
-    get strip(): number | null {
-        return kindActiveId("strip");
-    },
-    set strip(v: number | null) {
-        selectStrip(v);
-    },
-    get stripKf(): number | null {
-        return kindActiveId("stripKf");
-    },
-    tangentEdit: null,
-    get start(): boolean {
-        return memberHas("start", SINGLETON_ID);
-    },
-    get oneShot(): boolean {
-        return memberHas("oneShot", SINGLETON_ID);
-    },
-    context: null,
-    nodeMenu: null,
-    forceMenu: null,
     rulerMenu: null,
-    stripMenu: null,
     dragging: false,
     hoverSection: null,
     hoverNode: null,
@@ -744,366 +550,51 @@ export function endDrag(): void {
  *  "toggle" (shift-click add/remove membership). */
 export type SelectMode = "replace" | "toggle";
 
-/** replace-select a single member of `kind`, clearing every member of every kind first. */
-function selectSingle(kind: SelKind, id: number | null): void {
-    if (id !== null) {
-        clearAllMembers();
-        memberAdd(kind, id);
-        _active = { kind, id };
-    } else {
-        clearKind(kind);
-    }
+/** replace-select a single record, clearing the set first — the plain-click form. `null` clears. */
+export function selectRecord(id: number | null): void {
+    clearAllMembers();
+    if (id === null) return;
+    memberAdd("record", id);
+    _active = { kind: "record", id };
 }
 
-/** toggle-select a member of `kind` — shift-click extends across kinds (S2): the other kinds
- *  are NOT swept, so force and strip keyframes can be co-selected as members of one set. the
- *  optional `owner` is the `"stripKf"` flag carrier: `selectStripKf`'s toggle form passes the
- *  owning strip (REQUIRED on that caller — every non-null stripKf add stores one) from the
- *  click's own hit data, so the added member stores containment like every other add path;
- *  the other kinds have no owner to carry and pass none. */
-function toggleSingle(kind: SelKind, id: number, owner?: number): void {
-    if (memberHas(kind, id)) {
-        memberRemove(kind, id);
-        if (_active !== null && _active.kind === kind && _active.id === id)
-            _active = lastMemberOfAny();
-    } else {
-        memberAdd(kind, id, owner);
-        _active = { kind, id, owner };
+/** toggle a record's membership — the Shift-click form: add it and make it active, or remove it,
+ *  promoting the most-recently-added survivor active when the removed member was the active one
+ *  (`lastMemberOfAny`, the same promotion every other path here performs). */
+export function toggleRecord(id: number): void {
+    if (_members.delete(memberKey("record", id))) {
+        if (_active !== null && _active.id === id) _active = lastMemberOfAny();
+        return;
     }
+    memberAdd("record", id);
+    _active = { kind: "record", id };
 }
 
-/** replace a kind's membership with a computed set (the marquee's atomic write). a non-empty set
- *  clears only its own kind and writes the set — the marquee extends across kinds (S2), so other
- *  kinds are NOT swept. an empty set clears only that kind, leaving the rest for the caller to
- *  sweep (matching empty-click). */
-function selectSet(kind: SelKind, ids: number[], activeId: number | null): void {
-    if (ids.length) {
-        clearKind(kind);
-        for (const id of ids) memberAdd(kind, id);
-        if (activeId !== null && memberHas(kind, activeId)) _active = { kind, id: activeId };
-        else _active = lastMemberOfAny();
-    } else {
-        clearKind(kind);
-    }
+/** replace the selection with a computed set (a marquee's atomic write, and the restore path's
+ *  own shape), `active` anchored when it is a member and the last-inserted survivor otherwise. */
+export function selectRecords(ids: readonly number[], active: number | null): void {
+    clearAllMembers();
+    for (const id of ids) memberAdd("record", id);
+    _active =
+        active !== null && memberHas("record", active)
+            ? { kind: "record", id: active }
+            : lastMemberOfAny();
 }
 
-/** promote an already-selected member to active without disturbing set membership — the
- *  map's own member object, so the active carries the member's stripKf owner flag instead of
- *  being rebuilt as a flag-less twin of it. */
-function activateMember(kind: SelKind, id: number): void {
-    const m = _members.get(memberKey(kind, id));
+/** promote an already-selected record to ACTIVE without disturbing membership — grabbing a member
+ *  of a multi-set makes it the single subject the popover and the nudge keys bind to. No-op when
+ *  `id` isn't a member (the Blender active-object model, over a set). */
+export function activateRecord(id: number): void {
+    const m = _members.get(memberKey("record", id));
     if (m !== undefined) _active = m;
 }
 
-/** clear every member and every sub-mode at once — the empty-ruler / empty-lane deselect
- *  (`kex2d-event-lane` S4, "one selection model": clicking empty space with no object under the
- *  pointer clears segments, spans, keyframes, and nodes together). */
-export function deselectAll(): void {
+/** clear the whole selection — the empty-lane / empty-ruler click and Escape's selection rung
+ *  (`kex2d-event-lane` S4, "one selection model": a click with no subject under the pointer clears
+ *  everything). The pose era's `deselectAll` was this plus a node sub-mode reset; the sub-mode
+ *  went with the nodes, so one name is left. */
+export function clearSelection(): void {
     clearAllMembers();
-    editor.tangentEdit = null;
-}
-
-/** drop tangent edit unless the node selection is exactly its subject (a set that grew past one, or
- *  whose active moved off it, leaves the single-subject sub-mode). */
-function reconcileTangent(): void {
-    if (
-        editor.tangentEdit !== null &&
-        (kindIds("node").size !== 1 || kindActiveId("node") !== editor.tangentEdit)
-    )
-        editor.tangentEdit = null;
-}
-
-/** select a geo node. "replace" (default) collapses the node set to `eid` (or clears it when null) —
- *  today's behavior; "toggle" adds/removes `eid` (shift-click). either non-clearing form sweeps the
- *  other kinds. a select to a different subject exits tangent edit; re-selecting the edited node (as
- *  the sole member) keeps it, so grabbing its own handle or nudging it doesn't drop the mode. */
-export function select(eid: number | null, mode: SelectMode = "replace"): void {
-    if (eid === null || mode === "replace") selectSingle("node", eid);
-    else toggleSingle("node", eid);
-    reconcileTangent();
-}
-
-/** replace the node selection with a computed set (the marquee's atomic write): members `ids`,
- *  `active` active, the other kinds swept when non-empty. the set-valued analog of `select` — one
- *  write of a whole merged hit set, same exclusivity + reconcile. an empty set clears the node kind
- *  only (the caller sweeps the rest for a full deselect, matching empty-click). */
-export function selectNodes(ids: number[], active: number | null): void {
-    selectSet("node", ids, active);
-    reconcileTangent();
-}
-
-/** replace the force selection with a computed set (the marquee's atomic write) — the force
- *  analog of `selectNodes`. */
-export function selectForces(ids: number[], active: number | null): void {
-    selectSet("force", ids, active);
-}
-
-/** Replace the canonical force-segment membership atomically (marquee/programmatic selection). */
-export function selectSegments(ids: number[], active: number | null): void {
-    selectSet("segment", ids, active);
-}
-
-/** enter tangent-edit mode on a node — the summon (double-click). collapses the node selection to
- *  this one subject (clearing the other kinds) and layers the edit sub-mode on it, so its handles
- *  render and grab. node 0 (the entry anchor) is editable too — it exposes its single out-handle
- *  (the entry handle), reached at the START diamond or, at a geo→geo boundary, stitched onto its
- *  coincident upstream tip. */
-export function enterTangentEdit(eid: number): void {
-    select(eid);
-    editor.tangentEdit = eid;
-}
-
-/** exit tangent-edit mode, keeping the node selected (Esc's first peel). */
-export function exitTangentEdit(): void {
-    editor.tangentEdit = null;
-}
-
-/** select a force keyframe by stable id. "replace" (default) collapses the force set to `id` (or
- *  clears it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps
- *  the other kinds. */
-export function selectForce(id: number | null, mode: SelectMode = "replace"): void {
-    if (id === null || mode === "replace") selectSingle("force", id);
-    else toggleSingle("force", id);
-}
-
-/** promote an already-selected force keyframe to the ACTIVE member without disturbing set
- *  membership — grabbing or right-clicking a member of a multi-set makes it the single subject the
- *  popover, readout, and single-subject menu rows bind to (the anchor). no-op when `id` isn't a
- *  member (the grammar's Blender active-object model, over a set). */
-export function activateForce(id: number): void {
-    activateMember("force", id);
-}
-
-/** Select a canonical force segment. Geo clips intentionally continue to use section selection. */
-export function selectSegment(id: number | null, mode: SelectMode = "replace"): void {
-    if (id === null || mode === "replace") selectSingle("segment", id);
-    else toggleSingle("segment", id);
-}
-
-/** Promote a selected segment to active without changing membership. */
-export function activateSegment(id: number): void {
-    activateMember("segment", id);
-}
-
-/** select a section by stable id. "replace" (default) collapses the section set to `id` (or clears
- *  it when null); "toggle" adds/removes it (shift-click). either non-clearing form sweeps the
- *  other kinds. */
-export function selectSection(id: number | null, mode: SelectMode = "replace"): void {
-    if (id === null || mode === "replace") selectSingle("section", id);
-    else toggleSingle("section", id);
-}
-
-/** select a velocity strip by stable id. "replace" (default) collapses the strip set to `id`
- *  (or clears it when null); "toggle" adds/removes it (shift-click, unused by today's gestures,
- *  kept for bulk strip selection). either non-clearing form sweeps the other kinds, mirroring
- *  `selectSection`. */
-export function selectStrip(id: number | null, mode: SelectMode = "replace"): void {
-    if (id === null || mode === "replace") selectSingle("strip", id);
-    else toggleSingle("strip", id);
-    if (editor.strip === null) clearKind("stripKf");
-}
-
-/** ensure a strip member is in the unified set without clearing other kinds (S2: shift-click on
- *  a strip keyframe from a different strip adds the owning strip to the set rather than
- *  replace-selecting it, so the co-selection survives). no-op when the strip is already a
- *  member; when it ADDS, the new member becomes the active one — the same last-added-member
- *  promotion every add-path here performs (the singleton `selectStrip`/`selectStripKfs`'
- *  marquee set write), so the marquee's last ensured strip is the active strip. */
-export function ensureStrip(id: number): void {
-    if (!memberHas("strip", id)) {
-        memberAdd("strip", id);
-        _active = { kind: "strip", id };
-    }
-}
-
-/** select a velocity-strip keyframe by its stable id — `selectForce`'s own two-form shape,
- *  reached through the same `Timeline.svelte kfDesc` descriptor `keyframeDown` calls for either
- *  kind (S9, F7). "replace" (default) collapses the set to `id` (or clears it when null);
- *  "toggle" adds/removes it (shift-click). the replace form sweeps the other top-level kinds,
- *  then keeps ONLY the strip that owns the clicked keyframe (`owner`, required with a non-null
- *  id, supplied by the plain-click caller from the click's own hit data — `StripKfPt.strip`,
- *  the strip-kf render point `keyframeDown` receives, so the path reads no ECS at all) —
- *  containment is per member, not per kind, so a
- *  co-selected strip that owns nothing in the new set drops like any other sibling. this is
- *  the plain-click path, and `sweepOtherKinds` survives here alone (S2 deleted it from the
- *  shift/marquee paths). the toggle form takes the same owner REQUIRED (the state
- *  invariant this API now carries: a stripKf member never exists without its owner, so
- *  every non-null add form stores one) — the shift-click caller's hit data supplies it,
- *  and the added member stores it as its containment flag, the same flag the replace sweep
- *  records, so `stripKfOwner` reads true for a shift-clicked keyframe too. the null form
- *  is the CLEAR, distinct from both adds, and takes no owner. the implementation carries
- *  a fail-closed backstop behind the overloads (a non-null call with no owner selects
- *  NOTHING — no member, no active write), so the descriptor's shared optional-owner seam
- *  cannot smuggle an owner-null member past the type. a sub-selection layered on strip
- *  selection: the owning strip stays selected (its diamonds are drawn), and the set becomes
- *  the Delete/Escape target. selection state in editor, Delete through the history wrapper. */
-export function selectStripKf(id: null, mode?: SelectMode): void;
-export function selectStripKf(id: number, mode: "toggle", owner: number): void;
-export function selectStripKf(id: number, mode: "replace", owner: number): void;
-export function selectStripKf(
-    id: number | null,
-    mode: SelectMode = "replace",
-    owner?: number,
-): void {
-    // the state invariant's runtime backstop: the overloads make the owner mandatory on
-    // every non-null form, but the implementation signature (and the `kfDesc` descriptor's
-    // shared select field, whose owner param stays optional for the force kind) can still
-    // reach here owner-less — such a call selects NOTHING rather than an owner-null member
-    // (fail closed, the same direction the replace sweep's containment exception takes)
-    if (id === null) {
-        clearKind("stripKf");
-        return;
-    }
-    if (owner === undefined) return;
-    if (mode === "replace") {
-        sweepOtherKinds(["stripKf", "strip"]);
-        // containment is per member: only the strip that OWNS the clicked keyframe survives
-        // the sweep — the strip kind as a whole is not an ancestor. a co-selected strip
-        // that owns nothing in the new set is a sibling, and drops exactly like every
-        // other kind. `owner` is the strip the plain-click caller reads off the click's own
-        // hit data (never the ECS — a read that races the click was the measured defect
-        // here), so this sweep is where containment is decided and where it is STORED:
-        // the new member carries `owner` (the stored containment flag, `Member`'s own
-        // field), the no-ECS answer to the Delete path's `owningStrip`/track.ts read.
-        for (const [key, m] of _members)
-            if (m.kind === "strip" && m.id !== owner) _members.delete(key);
-        clearKind("stripKf");
-        memberAdd("stripKf", id, owner);
-        // the active mirrors the member — the same owner flag, so the set's own object
-        // and the active never read as two shapes
-        _active = { kind: "stripKf", id, owner };
-    } else {
-        toggleSingle("stripKf", id, owner);
-    }
-}
-
-/** the stored containment flag's read: the owning strip id recorded on a selected strip
- *  keyframe's member at add time — whichever add path selected it (replace sweep, shift-click
- *  toggle, or marquee multi-write; each reads the owner off the caller's own hit data, never
- *  an ECS read) — or null when the keyframe isn't selected. the no-ECS answer to the Delete
- *  path's `owningStrip`/track.ts read — a reader off the member never waits on a store
- *  catch-up, which is the defect that repaired the plain-click path here. */
-export function stripKfOwner(id: number): number | null {
-    return _members.get(memberKey("stripKf", id))?.owner ?? null;
-}
-
-/** replace the strip-keyframe selection with a computed set (the marquee's atomic write) —
- *  `selectForces`' own strip-keyframe form (S9, F7's finding (a): before, `marqueeUp` never
- *  built a strip-keyframe candidate pool at all, so a rubber-band never took one). S2: the
- *  marquee extends across kinds, so other kinds are NOT swept here. `owners` — keyed by
- *  keyframe id, REQUIRED — is the marquee's own hit data (`StripKfPt.strip`, never an ECS
- *  read): each added member stores its owning strip as the containment flag, the same flag
- *  every other add path records (the state invariant `selectStripKf`'s overloads carry:
- *  a stripKf member never exists without its owner). the descriptor's shared `selectMany`
- *  field type keeps the param OPTIONAL (the force kind's two-parameter write has no owner to
- *  record and stays assignable to it), and strictFunctionTypes refuses a required param under
- *  an optional field — so `Timeline.svelte`'s `kfDesc` supplies a wrapper at that seam, whose
- *  owner-less calls land on an empty map (nothing added, the same fail-closed per-id read).
- *  an id with no entry in the map is not added — fail closed per id, the same
- *  no-member-over-owner-null-member direction the toggle form's backstop takes. */
-export function selectStripKfs(
-    ids: number[],
-    active: number | null,
-    owners: ReadonlyMap<number, number>,
-): void {
-    if (ids.length) {
-        clearKind("stripKf");
-        for (const id of ids) {
-            // the state invariant's runtime backstop: the typed surface requires the map,
-            // but the descriptor's shared `selectMany` field keeps the param optional (the
-            // force kind passes none) — an id the map does not cover selects NOTHING, never
-            // an owner-null member
-            const owner = owners?.get(id);
-            if (owner !== undefined) memberAdd("stripKf", id, owner);
-        }
-        // the active write takes the map's own member object — it carries the owner flag the
-        // loop just stored, so the set's member and the active never read as two shapes
-        const am = active !== null ? _members.get(memberKey("stripKf", active)) : undefined;
-        _active = am ?? lastMemberOfAny();
-    } else {
-        clearKind("stripKf");
-    }
-}
-
-/** promote an already-selected strip keyframe to the ACTIVE member without disturbing set
- *  membership — `activateForce`'s strip-keyframe form, reached through the same `kfDesc`
- *  descriptor: grabbing a member of a multi-set makes it the single subject the popover binds
- *  to. no-op when `id` isn't a member. */
-export function activateStripKf(id: number): void {
-    activateMember("stripKf", id);
-}
-
-/** select (or clear) the track START anchor — the friction/drag coefficient popover's
- *  own target (v0 moved out, S5/S3: see `oneShot`). */
-export function selectStart(on: boolean): void {
-    if (on) {
-        clearAllMembers();
-        memberAdd("start", SINGLETON_ID);
-        _active = { kind: "start", id: SINGLETON_ID };
-        editor.tangentEdit = null;
-    } else {
-        clearKind("start");
-    }
-}
-
-/** select (or clear) the track-start one-shot (S3, Locked decision — its own structurally
- *  distinct point kind). mirrors `selectStart`'s own shape: a boolean, since there's at
- *  most one `OneShot` entity per track. */
-export function selectOneShot(on: boolean): void {
-    if (on) {
-        clearAllMembers();
-        memberAdd("oneShot", SINGLETON_ID);
-        _active = { kind: "oneShot", id: SINGLETON_ID };
-        editor.tangentEdit = null;
-    } else {
-        clearKind("oneShot");
-    }
-}
-
-/** open the section context menu at a screen point, targeting a section. a right-click on a
- *  member of a multi-set keeps the set and promotes the target to active (the bulk rows — Delete,
- *  Convert — act on the whole set; single-subject rows, like Convert's named destination, read the
- *  active); a right-click outside the set replace-selects just it (today's single-select behavior).
- *  mirrors `openNodeMenu`/`openForceMenu`. */
-export function openContext(x: number, y: number, section: number): void {
-    if (memberHas("section", section)) activateMember("section", section);
-    else selectSection(section);
-    editor.context = { x, y, section };
-}
-
-/** close the section context menu. */
-export function closeContext(): void {
-    editor.context = null;
-}
-
-/** open the node context menu at a screen point, targeting a pickable node. a right-click on a
- *  member of a multi-set keeps the set and promotes the target to active (the bulk rows — Delete,
- *  Tangents, Reset — act on the whole set; single-subject rows on the active); a right-click outside
- *  the set replace-selects just it (today's single-select behavior). mirrors `openForceMenu`. */
-export function openNodeMenu(x: number, y: number, eid: number): void {
-    if (memberHas("node", eid)) activateMember("node", eid);
-    else select(eid);
-    editor.nodeMenu = { x, y, eid };
-}
-
-/** close the node context menu. */
-export function closeNodeMenu(): void {
-    editor.nodeMenu = null;
-}
-
-/** open the force keyframe context menu at a screen point, targeting a point. a right-click on a
- *  member of a multi-set keeps the set and promotes the target to active (bulk rows — Delete,
- *  Easing — act on the whole set; single-subject rows on the active); a right-click outside the set
- *  replace-selects just it (today's single-select behavior). */
-export function openForceMenu(x: number, y: number, id: number): void {
-    if (memberHas("force", id)) activateMember("force", id);
-    else selectForce(id);
-    editor.forceMenu = { x, y, id };
-}
-
-/** close the force keyframe context menu. */
-export function closeForceMenu(): void {
-    editor.forceMenu = null;
 }
 
 /** open the ruler context menu at a screen point (Meters / Seconds, the track domain picker).
@@ -1117,56 +608,25 @@ export function closeRulerMenu(): void {
     editor.rulerMenu = null;
 }
 
-/** open the velocity-strip band context menu at a screen point — `d` is the track-global
- *  station (arclength from track start) the click landed at, `strip` the targeted strip's
- *  stable id (-1 for empty band, i.e. creation). */
-export function openStripMenu(x: number, y: number, d: number, strip: number): void {
-    editor.stripMenu = { x, y, d, strip };
-}
-
-/** close the strip band context menu. */
-export function closeStripMenu(): void {
-    editor.stripMenu = null;
-}
-
 // ── history selection hook ────────────────────────────────────────────────────────
 // the editor's snapshot/restore for undo/redo, injected into `history` at boot (`setSelectionHook`)
 // so the coupling points inward — history calls this, never imports editor. the whole selection SET
-// is snapshotted: every member with its kind, so a mixed-set drag's undo/redo restores every kind,
-// not just the active one. a NODE is recorded by its stable (section, order), not its eid
-// (`restoreSection`/`restoreAll` recycle the allocator LIFO, so a raw eid would remap to a DIFFERENT
-// node after an undo); force, section, strip, stripKf by stable id; start/oneShot by their singleton
-// id. the active member and the tangentEdit sub-mode ride along. undo
-// restores each command's pre-selection, redo its post; a selection change alone is never a command.
+// is snapshotted, not just its active member, so a multi-span drag's undo restores the set it was
+// made on. A record is recorded by its STABLE id, the id the setters, the ops and the wire all
+// address it by, so it survives the replay exactly when the record does — a deleted record's
+// membership is dropped on restore rather than resurrected as a dangling id. Undo restores each
+// command's pre-selection, redo its post; a selection change alone is never a command.
 
-/** a single member in the restorable snapshot — kind-tagged so restore does not switch on the
- *  active member's kind (the old shape dropped the passive kind on a mixed-set undo/redo). */
+/** a single member in the restorable snapshot — kind-tagged, so the container's shape survives a
+ *  second kind joining it later without the snapshot silently flattening the two. */
 interface MemberSnap {
     kind: SelKind;
-    /** node only — re-resolved across the eid recycle on restore. */
-    section: number;
-    /** node only. */
-    order: number;
-    /** non-node kinds — the stable id. 0 for node. */
-    id: number;
-    /** stripKf only — the stored containment flag (`Member`'s own `owner`), so an undo/redo
-     *  restore preserves the owning strip exactly as the replace sweep recorded it. */
-    owner?: number;
-}
-
-/** the active member in the restorable snapshot — same shape as {@link MemberSnap} minus the kind
- *  tag on the restore side (it carries its own). */
-interface ActiveSnap {
-    kind: SelKind;
-    section: number;
-    order: number;
     id: number;
 }
 
 interface SelSnapshotData {
     members: MemberSnap[];
-    active: ActiveSnap | null;
-    tangentEdit: { section: number; order: number } | null;
+    active: MemberSnap | null;
 }
 type SelSnapshot = SelSnapshotData | null;
 
@@ -1174,45 +634,27 @@ type SelSnapshot = SelSnapshotData | null;
  *  restorable form + restore it. history holds the snapshot opaquely. */
 export const selectionHook = {
     snapshot(ecs: State): SelSnapshot {
+        void ecs;
         if (_members.size === 0) return null;
         const members: MemberSnap[] = [];
-        for (const m of _members.values()) {
-            if (m.kind === "node") continue; // the node substrate is retired
-            members.push({ kind: m.kind, section: 0, order: 0, id: m.id, owner: m.owner });
-        }
-        const active =
-            _active === null || _active.kind === "node"
-                ? null
-                : { kind: _active.kind, section: 0, order: 0, id: _active.id };
-        void ecs;
-        return { members, active, tangentEdit: null };
+        for (const m of _members.values()) members.push({ kind: m.kind, id: m.id });
+        const active = _active === null ? null : { kind: _active.kind, id: _active.id };
+        return { members, active };
     },
     restore(ecs: State, snap: unknown): void {
-        editor.nodeMenu = null; // its rows (checked mode, enablement) went stale when the document changed
-        editor.forceMenu = null; // same — the force keyframe menu's rows go stale on any restore
-        editor.stripMenu = null; // same — the strip menu's rows go stale on any restore
+        editor.rulerMenu = null; // its rows went stale the moment the document changed
         const s = snap as SelSnapshot;
         if (s === null) {
-            deselectAll(); // clears every kind + (below) every sub-mode
+            clearSelection();
             return;
         }
         clearAllMembers();
-        for (const m of s.members) {
-            if (m.kind === "start") memberAdd("start", SINGLETON_ID);
-            else if (m.kind === "node")
-                continue; // the node substrate is retired
-            // every other authored member is a lane record, addressed by its stable id: it
-            // survives the replay only when the record does.
-            else if (recordAt(ecs, m.id) !== null) memberAdd(m.kind, m.id, m.owner);
-        }
-        // restore the active member
-        if (s.active !== null && s.active.kind !== "node") {
-            // `ActiveSnap` carries no owner field, but the member loop above already restored
-            // each member with its flag — so the active takes the map's own member object.
-            _active = _members.get(memberKey(s.active.kind, s.active.id)) ?? lastMemberOfAny();
-        } else {
-            _active = lastMemberOfAny();
-        }
-        editor.tangentEdit = null;
+        // a member survives the replay only when its record does: `recordAt` is the store's own
+        // read, so an undo past a delete restores the set MINUS the record that is gone rather
+        // than a member addressing nothing.
+        for (const m of s.members) if (recordAt(ecs, m.id) !== null) memberAdd(m.kind, m.id);
+        _active =
+            (s.active !== null ? _members.get(memberKey(s.active.kind, s.active.id)) : undefined) ??
+            lastMemberOfAny();
     },
 };

@@ -51,6 +51,22 @@ export function laneColor(lane: Lane): string {
     return lane === Lane.Velocity ? COLOR_VELOCITY : lane === Lane.Force ? COLOR_FORCE : COLOR_GEO;
 }
 
+/** the three states a lane span draws in, in PRIORITY order: a selected span reads selected even
+ *  while the pointer rests on it, so a click never dims what it just picked. */
+export type LaneTone = "base" | "hover" | "selected";
+
+/** one span's fill color: its lane's own hue at the rung its state names — the Ableton/Premiere
+ *  selected-clip idiom, never a flat accent recolor (which reads as NO selection on a force span,
+ *  whose own hue already IS the accent). `selected` and `hovered` own the two OKLCH steps; this is
+ *  the one seam that PICKS between them, so the row render carries no priority logic of its own
+ *  and the priority is testable without a canvas. */
+export function laneTone(lane: Lane, tone: LaneTone): string {
+    const base = laneColor(lane);
+    if (tone === "selected") return selected(base);
+    if (tone === "hover") return hovered(base);
+    return base;
+}
+
 /** the selection tone-variant knobs — how a selected element's own color brightens (the
  *  Ableton/Premiere selected-clip idiom). derived in OKLCH so the variant stays vivid: an
  *  sRGB mix toward white drains chroma (white has none), reading washed out. lift lightness,
