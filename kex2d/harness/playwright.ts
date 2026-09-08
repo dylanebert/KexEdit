@@ -1,9 +1,7 @@
-import { isWSL, type Stage, stageOnWindows, type WindowsPaths } from "./wsl";
-
-// The one place that runs `playwright test`. Native it spawns directly; under WSL it stages the
-// config + flow onto the Windows host and drives them through powershell so the host's real-GPU
-// Chrome runs them. The caller owns its config + flow and reads its screenshots back from
-// `staged.wsl`. Mirrors shallot's harness/core + orrstead's harness.
+// The one place that runs `playwright test`, and it runs it natively. The browser is this seat's own
+// headed Chrome on the session's display (`capture.ts` owns the display guard); there is no host
+// transport left to stage onto, so the caller's config and flow files run where they live and its
+// screenshots are written straight into `--out`. Mirrors orrstead's harness.
 
 export interface RunArgs {
     /** dir holding the playwright config + flow files — the harness's own directory */
@@ -12,15 +10,9 @@ export interface RunArgs {
     config: string;
     /** trailing `playwright test` args */
     args?: string[];
-    /** WSL staging: the persistent host dir the run is mirrored into (`wsl.ts`) */
-    stage: Stage;
-    /** env for the run, built from the staged paths (`null` when native) so output dirs resolve host-side */
-    env: (staged: WindowsPaths | null) => Record<string, string>;
-    /**
-     * hard ceiling on the whole spawn — a backstop above Playwright's own timeout, never the guard.
-     * Under WSL it kills the powershell child only; Windows-side grandchildren can survive it
-     * (`wsl.ts`, stage cleanup).
-     */
+    /** env for the run (ports, out dir, knobs) */
+    env: Record<string, string>;
+    /** hard ceiling on the whole spawn — a backstop above Playwright's own timeout, never the guard */
     timeoutMs: number;
 }
 
@@ -28,55 +20,20 @@ export interface RunResult {
     /** null when the spawn ceiling fired and the child never exited (`args.ts` `verdict` reads it) */
     exitCode: number | null;
     stdout: string;
-    /** the Windows staging paths (WSL only, else `null`) — read screenshots back from `.wsl` */
-    staged: WindowsPaths | null;
-}
-
-const quote = (s: string): string => s.replace(/'/g, "''");
-
-function decode(stdout: Uint8Array | null | undefined): string {
-    const out = new TextDecoder().decode(stdout ?? new Uint8Array());
-    process.stdout.write(out);
-    return out;
 }
 
 export function runPlaywright(run: RunArgs): RunResult {
-    if (!isWSL) {
-        const env = run.env(null);
-        const result = Bun.spawnSync(
-            ["bunx", "playwright", "test", "--config", run.config, ...(run.args ?? [])],
-            {
-                cwd: run.dir,
-                stdout: "pipe",
-                stderr: "inherit",
-                timeout: run.timeoutMs,
-                env: { ...process.env, ...env },
-            },
-        );
-        return {
-            exitCode: result.exitCode,
-            stdout: decode(result.stdout),
-            staged: null,
-        };
-    }
-
-    const staged = stageOnWindows(run.dir, run.stage);
-    const env = run.env(staged);
-    const assigns = Object.entries(env)
-        .map(([k, v]) => `$env:${k} = '${quote(v)}';`)
-        .join(" ");
-    const tail = [run.config, ...(run.args ?? [])].map((a) => `'${quote(a)}'`).join(" ");
     const result = Bun.spawnSync(
-        [
-            "powershell.exe",
-            "-Command",
-            `$ErrorActionPreference = 'Stop'; ${assigns} cd '${staged.win}'; bunx playwright test --config ${tail}`,
-        ],
-        { stdout: "pipe", stderr: "inherit", timeout: run.timeoutMs },
+        ["bunx", "playwright", "test", "--config", run.config, ...(run.args ?? [])],
+        {
+            cwd: run.dir,
+            stdout: "pipe",
+            stderr: "inherit",
+            timeout: run.timeoutMs,
+            env: { ...process.env, ...run.env },
+        },
     );
-    return {
-        exitCode: result.exitCode,
-        stdout: decode(result.stdout),
-        staged,
-    };
+    const stdout = new TextDecoder().decode(result.stdout ?? new Uint8Array());
+    process.stdout.write(stdout);
+    return { exitCode: result.exitCode, stdout };
 }

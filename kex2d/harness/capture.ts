@@ -1,15 +1,6 @@
-import {
-    cpSync,
-    existsSync,
-    mkdirSync,
-    readdirSync,
-    rmSync,
-    statSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-    boolEnv,
     collectedCount,
     failedTitles,
     intEnv,
@@ -22,16 +13,17 @@ import {
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
 import { appendRun, RECORD_VERSION } from "./trend";
-import { detectDisplay } from "./wsl";
 
 // Wall-clock origin for the phase stamps `RUN.json` records. Taken before anything is parsed so
 // `total` is the whole process, and the stamped phases summing under it is what makes the
 // unattributed remainder visible rather than absorbed.
 const started = performance.now();
 
-// kex2d's screenshot harness — boot the vite dev server, drive the Playwright flow under the host's
-// real-GPU Chrome (shallot's runtime needs a device even though kex2d renders canvas2D), copy the
-// screenshots back. Display-gated; on WSL it runs via Windows Chrome, on a headed Linux box natively.
+// kex2d's screenshot harness — boot the vite dev server, drive the Playwright flow under a headed
+// local Chrome (shallot's runtime needs a real device even though kex2d renders canvas2D), write the
+// screenshots into `--out`. Display-gated: the browser runs headed, so a seat with no display is
+// refused rather than falling back to a software adapter (`detectDisplay` below, and the adapter
+// assertion every flow's `boot` carries in `flow.ts`).
 //
 //   bun run capture                     → screenshots into harness/shots/
 //   bun run capture --out DIR           → into DIR (`--out=DIR` too)
@@ -40,10 +32,11 @@ const started = performance.now();
 //                                         `--` passes through to `playwright test`, so
 //                                         `-g`/`--repeat-each`/`--reporter`/`--list` all work
 //
-// Env knobs, all validated here and forwarded explicitly to the staged host run: `KEX_WORKERS`
-// (default 4), `KEX_HEADED=1` for the visible browser, `KEX_SHOT_MS` for the pre-screenshot settle,
-// `KEX_PORT` (default 3014) + `KEX_STAGE` for the dev-server port and the host staging dir — the two
-// that make a second session's capture isolatable (a capture kills whatever holds its port).
+// Env knobs, all validated here and forwarded explicitly to the Playwright run: `KEX_WORKERS`
+// (default 4), `KEX_SHOT_MS` for the pre-screenshot settle, and `KEX_PORT` (default 3014) for the
+// dev-server port — the one that makes a second session's capture isolatable (a capture kills
+// whatever holds its port). There is no headless knob: headless Chrome reports a SwiftShader adapter
+// on this seat, which is not a real-GPU reading, so the gate is headed and only headed.
 //
 // A full run (no passthrough args) owns the shot set and wipes `--out` first — so it refuses to run
 // at all unless that dir is absent, empty, or a prior shot set (`args.ts` `wipeable`). A SELECTIVE
@@ -59,8 +52,8 @@ const started = performance.now();
 const harnessDir = import.meta.dir;
 const projectDir = resolve(harnessDir, "..");
 
-// The knob defaults. Forwarded explicitly, so the staged run, the RUN.json record, and the reference
-// gate all read one resolved value. `capture.pw.config.ts` (workers, headed) and `flow.ts`
+// The knob defaults. Forwarded explicitly, so the run, the RUN.json record, and the reference
+// gate all read one resolved value. `capture.pw.config.ts` (workers) and `flow.ts`
 // (settle) carry the same literals as their own fallback, for a direct `playwright test` run.
 const DEFAULT_PORT = 3014;
 const DEFAULT_WORKERS = 4;
@@ -88,16 +81,11 @@ function resolveArgs<T>(f: () => T): T {
 const { out, testArgs, selective, listing } = resolveArgs(() => parseArgs(process.argv.slice(2)));
 const outDir = resolve(out ?? join(harnessDir, "shots"));
 
-const { port, workers, shotMs, headed } = resolveArgs(() => ({
+const { port, workers, shotMs } = resolveArgs(() => ({
     port: intEnv(process.env, "KEX_PORT", DEFAULT_PORT, 1024, 65_535),
     workers: intEnv(process.env, "KEX_WORKERS", DEFAULT_WORKERS, 1, 64),
     shotMs: intEnv(process.env, "KEX_SHOT_MS", DEFAULT_SHOT_MS, 0, 60_000),
-    headed: boolEnv(process.env, "KEX_HEADED"),
 }));
-// The host staging dir is per-port by default, so two sessions on different ports never share one
-// `node_modules`/`shots` tree (the concurrent-capture hazard: a second capture kills the first's
-// server and rebinds the port with its own tree).
-const stageName = process.env.KEX_STAGE || `kex2d-harness-${port}`;
 
 // A full run wipes `--out` (below) and the path is caller-supplied, so the target is checked before
 // anything else happens: a directory holding files this harness did not write is a usage error, not
@@ -111,42 +99,50 @@ if (!selective) {
         );
 }
 
-if (!detectDisplay()) {
-    console.log("No display available. Skipping capture.");
-    process.exit(0);
+/** true if a real-GPU display is reachable — the browser gate runs headed, so it needs one. On this
+ *  seat that is the Wayland session. */
+function detectDisplay(): boolean {
+    if (process.platform !== "linux") return true;
+    return !!(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
+
+// Incomplete, not green: a capture that cannot open a window captured nothing, and the exit says so
+// rather than reporting a skipped gate as a pass.
+if (!detectDisplay()) {
+    fail(
+        "no display available: the capture runs headed and found neither DISPLAY nor WAYLAND_DISPLAY",
+    );
+}
+
+// The suite's declared file set. `capture.pw.config.ts` collects `*.pw.ts` by GLOB, and a glob
+// cannot say what the suite is SUPPOSED to hold: this list is the declaration the glob is checked
+// against, and `declared.ts` plus `tests/harness.test.ts` read it — a flow file landing without its
+// line here fails there rather than as a surprise in a run.
+export const suite = {
+    files: [
+        "capture.pw.config.ts",
+        "flow.ts",
+        // The gate's own display witness: it asserts the adapter is not a software one, so a
+        // capture can never report green off SwiftShader. Every pose-era flow drove a retired
+        // gesture and went with it (`retired/pose-ux`); the lane-gesture flows arrive with their
+        // gesture's check-in (spec `kex2d-segment-gestures`).
+        "adapter.pw.ts",
+    ],
+};
 
 const launch = (args: string[]): ReturnType<typeof runPlaywright> =>
     runPlaywright({
         dir: harnessDir,
         config: "capture.pw.config.ts",
         args,
-        stage: {
-            name: stageName,
-            files: [
-                "package.json",
-                "bun.lock",
-                "capture.pw.config.ts",
-                "flow.ts",
-                // No `*.pw.ts` flow is staged: every pose-era flow drove a retired gesture and
-                // went with it (`retired/pose-ux`). S3 adds one flow per shipped lane gesture,
-                // after the person's check-in on that gesture (spec `kex2d-segment-gestures`).
-            ],
-            clean: ["shots", "test-results"],
-            // the config collects by glob, so a flow file this repo deleted must not survive in the
-            // persistent stage and run beside the current set (`stalePrune`, wsl.ts).
-            stale: /\.pw\.ts$/,
-        },
-        // The staged host run is a fresh powershell environment, so a knob only reaches the run if
-        // it is passed here by name: `capture.pw.config.ts` reads KEX_WORKERS + KEX_HEADED,
-        // `flow.ts` reads KEX_PORT + KEX_OUT + KEX_SHOT_MS.
-        env: (staged) => ({
+        // A knob only reaches the run if it is passed here by name: `capture.pw.config.ts` reads
+        // KEX_WORKERS, `flow.ts` reads KEX_PORT + KEX_OUT + KEX_SHOT_MS.
+        env: {
             KEX_PORT: String(port),
-            KEX_OUT: staged ? `${staged.win}\\shots` : outDir,
+            KEX_OUT: outDir,
             KEX_WORKERS: String(workers),
-            KEX_HEADED: headed ? "1" : "0",
             KEX_SHOT_MS: String(shotMs),
-        }),
+        },
         timeoutMs: SPAWN_CEILING_MS,
     });
 
@@ -198,20 +194,15 @@ const runStart = performance.now();
 const run = launch(testArgs);
 const runMs = Math.round(performance.now() - runStart);
 
-if (run.staged) {
-    const wslShots = join(run.staged.wsl, "shots");
-    if (existsSync(wslShots)) cpSync(wslShots, outDir, { recursive: true });
-}
-
 // The gate decision lives in `args.ts` with every other harness predicate, where it is unit-tested:
 // what the run stands or dies on, and whether its shots may be stamped `reference`. Only the knobs
-// that change what the shot set IS reach it; the port and the stage dir are provenance (they change
-// where it ran, not what it captured).
+// that change what the shot set IS reach it; the port is provenance (it changes where it ran, not
+// what it captured).
 const counts = runCounts(run.stdout);
 // One resolved value: the gate reads it to decide whether the shots may be stamped `reference`, and
 // the recorded distribution reads it to decide whether this run's wall clock belongs in the same
 // population as the others (`trend.ts` — a non-default-knob run captured a different quantity).
-const defaultKnobs = workers === DEFAULT_WORKERS && !headed && shotMs === DEFAULT_SHOT_MS;
+const defaultKnobs = workers === DEFAULT_WORKERS && shotMs === DEFAULT_SHOT_MS;
 const titles = failedTitles(run.stdout);
 const { reference, failure } = verdict({
     selective,
@@ -247,7 +238,7 @@ writeFileSync(
             dirty,
             args: testArgs,
             exitCode: run.exitCode,
-            env: { workers, headed, shotMs, port, stage: stageName },
+            env: { workers, shotMs, port },
             // The oracle's two sides (`collected` vs `total`) plus the whole category split — a red
             // or flaky run's shape is what a post-mortem reads, and `runCounts` already computed it.
             // A summary that didn't parse leaves the categories absent, never zeroed.

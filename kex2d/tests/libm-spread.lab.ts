@@ -4,6 +4,12 @@ import { refine, type RefineResult } from "../src/refine";
 import { scenarios } from "../src/scenarios";
 import { bumpBy, WRAPPED, type WrappedFn } from "./helpers/libm";
 
+// ATTRIBUTION: every "Mac↔WSL" reading in this file — the drift signature, the 10.55% divergence
+// rate, the head reference it grades against — was measured against the WSL seat, which was retired
+// 2026-09-08 (`seat-map-omarchy`). The numbers stand as recorded on the seats that produced them;
+// none of them is a reading of the linux seat running this now, and nothing here re-attributes them
+// to it.
+
 /** `kex2d-golden-reproducibility` 3a'. 1c's single-site perturbation (±1..±4 ulps at ONE call)
  *  correctly killed the single-site amplification model, but a different libm never moves one
  *  call — it moves an UNKNOWN SUBSET of the ~583k calls a refine solve makes, each by up to 1

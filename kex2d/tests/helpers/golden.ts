@@ -24,8 +24,11 @@ export function bakeOf(name: string) {
 export const PLATFORM_STAMP = `${process.platform} ${process.arch}`;
 
 /** the declared registry of platform stamps `convert-golden.json`'s top-level namespace may
- *  carry — the two devices this unit's Approach names (Mac, where the drift was found; WSL,
- *  where the goldens were originally frozen, confirmed). One level above the per-scenario
+ *  carry — the two devices this unit's Approach names (Mac, where the drift was found; the WSL
+ *  seat, where the goldens were originally frozen, confirmed). That seat was retired 2026-09-08
+ *  (`seat-map-omarchy`) and its readings below are past measurements, not readings of the seat
+ *  running this now; the STAMPS are unchanged, because the linux host that replaced it stamps
+ *  `linux x64` too. One level above the per-scenario
  *  `FieldRegistry` below: `registryClosure` closes a scenario record's own fields; this closes
  *  which platforms may own a record at all (`compare.test.ts`). */
 export const KNOWN_STAMPS = ["darwin arm64", "linux x64"] as const;
