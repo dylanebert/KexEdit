@@ -21,6 +21,9 @@ import {
     entrySpeed,
     type LaneRefusal,
     laneOrderOf,
+    lanesOf,
+    publishRecordSpans,
+    setRecordEnd,
     orderColumn,
     type LaneWrite,
     recordOf,
@@ -340,6 +343,47 @@ function beginSpan(ecs: State, id: number): void {
 /** open an edge drag: one end of the span moves, the other holds (resize). */
 export function beginEdge(ecs: State, id: number): void {
     beginSpan(ecs, id);
+}
+
+/** Open one snapshot-frozen end gesture. The returned updater owns this lifecycle only;
+ *  commit/cancel or another begin makes it inert. Scope and ripple cannot change mid-gesture. */
+export function beginRecordEnd(ecs: State, id: number, ripple = false): (end: number) => LaneWrite {
+    const opening = lanesOf(ecs);
+    const pin = endColumn(ecs);
+    begin(
+        () =>
+            recordOf(ecs, id)
+                ? { lanes: lanesOf(ecs), selection: selHook?.snapshot(ecs) }
+                : undefined,
+        (st) => {
+            replayed(publishRecordSpans(ecs, st.lanes, pin, id), "restore spans", id);
+            if (st.selection !== undefined) selHook?.restore(ecs, st.selection);
+        },
+        (a, b) =>
+            Object.keys(a.lanes).every((key) => {
+                const name = key as keyof typeof a.lanes;
+                return (
+                    a.lanes[name].length === b.lanes[name].length &&
+                    a.lanes[name].every((row, i) => {
+                        const other = b.lanes[name][i]!;
+                        return (
+                            row.id === other.id &&
+                            Object.is(row.start, other.start) &&
+                            Object.is(row.end, other.end)
+                        );
+                    })
+                );
+            }),
+    );
+    const opened = gesture;
+    return (end) => {
+        if (!opened || gesture !== opened)
+            return {
+                id: null,
+                refusals: [{ guard: "gestureClosed", message: "record-end gesture is not open" }],
+            };
+        return setRecordEnd(ecs, id, end, ripple, opening, pin);
+    };
 }
 
 /** open a body drag: both ends move together (move). */

@@ -65,6 +65,48 @@ const TEMPLATE = serializeDocument(
     ),
 );
 
+test("record-end command shape, independent default, atomic undo and no-op", () => {
+    const { ecs, h } = loaded();
+    expect(
+        applyOp(ecs, h, {
+            type: "record-add",
+            lane: "force",
+            start: 70,
+            end: 80,
+            entry: 2,
+            exit: 1,
+        }).refusals,
+    ).toEqual([]);
+    h.undo.length = 0;
+    const before = saveDocument(ecs);
+    for (const op of [
+        { type: "record-end", id: 1, end: 72 },
+        { type: "record-end", id: 1, end: 72, ripple: false },
+        { type: "record-end", id: 1, end: 72, ripple: "true" },
+        { type: "record-end", id: 1, end: 72, ripple: null },
+        { type: "record-end", id: 9999, end: 72, ripple: true },
+        { type: "record-end", id: 1, end: Infinity, ripple: true },
+    ]) {
+        expect(applyOp(ecs, h, op as Op).applied).toBe(false);
+        expect(saveDocument(ecs)).toBe(before);
+        expect(h.undo).toHaveLength(0);
+    }
+    expect(applyOp(ecs, h, { type: "record-end", id: 1, end: 72, ripple: true }).refusals).toEqual(
+        [],
+    );
+    expect(laneRows(ecs, Lane.Force).map((r) => [r.start, r.end])).toEqual([
+        [40, 72],
+        [72, 82],
+    ]);
+    expect(h.undo).toHaveLength(1);
+    undo(h, ecs);
+    expect(saveDocument(ecs)).toBe(before);
+    expect(applyOp(ecs, h, { type: "record-end", id: 1, end: 70, ripple: true }).refusals).toEqual(
+        [],
+    );
+    expect(h.undo).toHaveLength(0);
+});
+
 describe("canonical creation and entry parity", () => {
     test("migrated successor discontinuity stays owned until explicit inherit, with exact undo", () => {
         const input = JSON.parse(

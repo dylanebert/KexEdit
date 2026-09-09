@@ -15,11 +15,13 @@ import {
     beginEdge,
     beginEnd,
     beginHandle,
+    beginRecordEnd,
     beginV0,
     cancel,
     commit,
     createHistory,
     type History,
+    history as appHistory,
     redo,
     removeRecord,
     setEase,
@@ -27,6 +29,7 @@ import {
     setSelectionHook,
     undo,
 } from "../src/history";
+import { saveDocument } from "../src/doc";
 import { Lane, type LaneSegment } from "../src/lanes";
 import { nudgeAct } from "../src/keys";
 import { Easing } from "../src/profile";
@@ -74,6 +77,85 @@ function row(ecs: State, id: number): LaneSegment {
     if (!found) throw new Error(`no record ${id}`);
     return found.row;
 }
+
+describe("record-end frozen gesture", () => {
+    for (const lane of [Lane.Velocity, Lane.Force, Lane.Geo]) {
+        test(`${lane}: one versus N, reversal, refusal, cancel, replay and selection`, () => {
+            const { ecs } = fixture();
+            const h = appHistory;
+            h.undo.length = 0;
+            h.redo.length = 0;
+            for (const [id, start, end, ease, entry, exit] of [
+                [101, 0, 10, 0, 12, 13],
+                [102, 10, 20, 1, undefined, 14],
+                [103, 23, 28, 2, 15, 16],
+            ] as const)
+                expect(
+                    createRecord(ecs, lane, { id, start, end, ease, entry, exit }).refusals,
+                ).toEqual([]);
+            expect(
+                createRecord(ecs, lane === Lane.Geo ? Lane.Force : Lane.Geo, {
+                    id: 104,
+                    start: 8,
+                    end: 17,
+                    ease: 0,
+                    entry: 0,
+                    exit: 0,
+                }).refusals,
+            ).toEqual([]);
+            expect(setEnd(ecs, 30)).toEqual([]);
+            let selection = [101, 104];
+            setSelectionHook({
+                snapshot: () => [...selection],
+                restore: (_ecs, snap) => {
+                    selection = snap as number[];
+                },
+            });
+            try {
+                const before = saveDocument(ecs);
+                let update = beginRecordEnd(ecs, 101, true);
+                expect(update(12).refusals).toEqual([]);
+                const once = saveDocument(ecs);
+                cancel();
+                expect(saveDocument(ecs)).toEqual(before);
+                expect(update(11).id).toBeNull();
+                update = beginRecordEnd(ecs, 101, true);
+                for (const end of [11, 8, 10, 10.1, 8.2, 11.3, 12]) {
+                    expect(update(end).refusals).toEqual([]);
+                    expect(h.undo).toHaveLength(0);
+                }
+                expect(saveDocument(ecs)).toEqual(once);
+                expect(update(13).id).toBeNull();
+                expect(saveDocument(ecs)).toEqual(once);
+                expect(update(9).refusals).toEqual([]);
+                expect(update(12).refusals).toEqual([]);
+                commit(h);
+                expect(h.undo).toHaveLength(1);
+                selection = [103];
+                undo(h, ecs);
+                expect(saveDocument(ecs)).toEqual(before);
+                expect(selection).toEqual([101, 104]);
+                redo(h, ecs);
+                expect(saveDocument(ecs)).toEqual(once);
+                expect(selection).toEqual([103]);
+                update = beginRecordEnd(ecs, 101, true);
+                expect(update(11).refusals).toEqual([]);
+                expect(update(12).refusals).toEqual([]);
+                commit(h);
+                expect(h.undo).toHaveLength(1);
+                update = beginRecordEnd(ecs, 101, true);
+                expect(update(0.5).id).toBeNull();
+                commit(h);
+                expect(h.undo).toHaveLength(1);
+            } finally {
+                cancel();
+                setSelectionHook(null);
+                h.undo.length = 0;
+                h.redo.length = 0;
+            }
+        });
+    }
+});
 
 describe("addRecord / removeRecord — the structural verbs", () => {
     // RED: drop `addRecord`'s `record(...)` call → the record lands but undo has nothing to pop,

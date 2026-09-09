@@ -31,6 +31,8 @@ import {
 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
 import {
+    candidateRefusals,
+    planRecordEnd,
     entryValue,
     Lane,
     type LaneSegment,
@@ -363,6 +365,62 @@ export function setRecordSpan(ecs: State, id: number, start: number, end: number
     if (refusals.length > 0) return declined(refusals);
     writeRow(eid, lane, next);
     return landed(id);
+}
+
+/** Publish a complete span candidate synchronously. Validation and entity resolution finish
+ *  before any column write; sparse columns have no observers and the bake runs after this call.
+ *  Replay uses document legality, not single-record authoring floors. */
+export function publishRecordSpans(ecs: State, lanes: Lanes, pin: number, id: number): LaneWrite {
+    const refusals = candidateRefusals(lanes, pin);
+    if (trackEntity(ecs) === null || !Object.is(endColumn(ecs), pin))
+        refusals.push({ guard: "transactionChanged", message: "track or opening pin changed" });
+    const writes: { eid: number; row: LaneSegment }[] = [];
+    for (const lane of [Lane.Velocity, Lane.Force, Lane.Geo]) {
+        const rows = lanes[laneNameOf(lane) as keyof Lanes];
+        const current = laneRows(ecs, lane);
+        if (rows.length !== current.length)
+            refusals.push({ guard: "transactionChanged", message: "opening record set changed" });
+        for (const row of rows) {
+            const found = recordOf(ecs, row.id);
+            const eid = recordAt(ecs, row.id);
+            if (
+                eid === null ||
+                !found ||
+                found.lane !== lane ||
+                !Object.is(found.row.entry, row.entry) ||
+                !Object.is(found.row.exit, row.exit) ||
+                found.row.ease !== row.ease
+            )
+                refusals.push({
+                    guard: "transactionChanged",
+                    message: `record ${row.id} changed or disappeared`,
+                });
+            else writes.push({ eid, row });
+        }
+    }
+    if (!writes.some(({ row }) => row.id === id))
+        refusals.push({ guard: "recordNotFound", message: `no record ${id}` });
+    if (refusals.length) return declined(refusals);
+    for (const { eid, row } of writes) {
+        LaneRecord.start.set(eid, row.start);
+        LaneRecord.end.set(eid, row.end);
+    }
+    return landed(id);
+}
+
+/** One end edit, optionally planned from a frozen gesture-opening record set. */
+export function setRecordEnd(
+    ecs: State,
+    id: number,
+    end: number,
+    ripple = false,
+    opening = lanesOf(ecs),
+    pin = endColumn(ecs),
+): LaneWrite {
+    const plan = planRecordEnd(opening, pin, id, end, ripple);
+    return plan.lanes === null
+        ? declined(plan.refusals)
+        : publishRecordSpans(ecs, plan.lanes, pin, id);
 }
 
 /** write one of a record's two handles. `entry` with `undefined` DISOWNS the entry handle, which

@@ -48,6 +48,84 @@ function teardown(): void {
     rmSync(workdir, { recursive: true, force: true });
 }
 
+test("record-end separate CLI processes: atomic single op versus non-atomic batch", () => {
+    setup();
+    try {
+        const path = join(workdir, "ripple.kex");
+        const run = (...args: string[]) => {
+            const result = Bun.spawnSync([process.execPath, "run", "cli", "--", ...args], {
+                cwd: join(import.meta.dir, ".."),
+            });
+            return {
+                exit: result.exitCode,
+                stdout: result.stdout.toString(),
+                stderr: result.stderr.toString(),
+            };
+        };
+        expect(run("new", path).exit).toBe(0);
+        const doc = JSON.parse(readFileSync(path, "utf8"));
+        doc.track.end = 29;
+        doc.lanes = {
+            velocity: [],
+            geo: [{ id: 4, start: 8, end: 17, ease: 0, entry: 0, exit: 0 }],
+            force: [
+                { id: 1, start: 0, end: 10, ease: 0, entry: 1, exit: 1.1 },
+                { id: 2, start: 10, end: 20, ease: 1, exit: 1.2 },
+                { id: 3, start: 23, end: 28, ease: 2, entry: 1.3, exit: 1 },
+            ],
+        };
+        writeFileSync(path, JSON.stringify(doc));
+        expect(run("fmt", path).exit).toBe(0);
+        const before = readFileSync(path, "utf8");
+        const op = { type: "record-end", id: 1, end: 12, ripple: true };
+        const refused = run("edit", path, "--ops", JSON.stringify(op));
+        expect(refused.exit).toBe(1);
+        expect(refused.stdout).toContain("spanWithinEnd");
+        expect(readFileSync(path, "utf8")).toBe(before);
+        expect(run("edit", path, "--ops", JSON.stringify({ type: "end", value: 30 })).exit).toBe(0);
+        const pinned = readFileSync(path, "utf8");
+        expect(run("edit", path, "--ops", JSON.stringify(op)).exit).toBe(0);
+        expect(run("dump", path).exit).toBe(0);
+        const landed = JSON.parse(readFileSync(path, "utf8"));
+        expect(
+            landed.lanes.force.map((r: { start: number; end: number }) => [r.start, r.end]),
+        ).toEqual([
+            [0, 12],
+            [12, 22],
+            [25, 30],
+        ]);
+        expect(landed.lanes.geo).toEqual(doc.lanes.geo);
+        expect(landed.track.end).toBe(30);
+        // One live ECS only, after all earlier process readers have exited.
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        loadDocument(ecs, pinned);
+        expect(applyOp(ecs, createHistory(), op as Op).refusals).toEqual([]);
+        expect(saveDocument(ecs)).toBe(readFileSync(path, "utf8"));
+        writeFileSync(path, pinned);
+        const batch = run(
+            "edit",
+            path,
+            "--ops",
+            JSON.stringify([
+                { type: "record-span", id: 3, start: 25, end: 30 },
+                { type: "record-span", id: 1, start: 0, end: 12 },
+            ]),
+        );
+        expect(batch.exit).toBe(1);
+        const partial = JSON.parse(readFileSync(path, "utf8"));
+        expect(
+            partial.lanes.force.map((r: { start: number; end: number }) => [r.start, r.end]),
+        ).toEqual([
+            [0, 10],
+            [10, 20],
+            [25, 30],
+        ]);
+    } finally {
+        teardown();
+    }
+});
+
 describe("fmt: round-trip byte-identity over the committed fixture corpus", () => {
     test("the corpus is non-empty", () => {
         expect(FIXTURE_NAMES.length).toBeGreaterThan(0);
