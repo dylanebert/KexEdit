@@ -15,15 +15,15 @@ import { nudgeAct, timelineKeyAct } from "./keys";
 import type { Easing } from "./profile";
 import { fitEditor, recoveredAt, bakeStations, clampSpanDrag, COLUMN_W, clampView, drivenSpans, endHandle, type FieldSpec, frameAll, hitEndHandle, hitRows, laneRows, laneMembers, marginArc, nudgeQuantum, recordEntry, reorderDrop, reordered, type RowHit, ROW_H, S_GRID, snapAxis, spanBoxes, spanCurve, spanResidualDetail, spanTargets, ticks, uToPx, pxToU, type View, zoomAt } from "./timeline";
 import { bakeOut, endColumn, lanesOf, laneOrderOf, recordOf, samples, setEnd, setRecordHandle, setRecordSpan, Track, trackEndOf, type LaneWrite } from "./track";
-import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, resize } from "./view";
+import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, ROWS_TOP, TOOL_STRIP_W, TOOL_GAP, resize } from "./view";
 
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
 const RULER_H = 26;
-const ROWS_TOP = 32;
 const DEAD_ZONE = 4;
 let canvas: HTMLCanvasElement;
 let dock: HTMLDivElement;
 let dockW = $state(0);
+let chartH = $state(0);
 let panelSize = $state({ w: 0, h: 0 });
 let hoverStation: number | null = $state(null);
 let view = $state<View>({ pan: 0, pxPerU: 0 });
@@ -260,7 +260,7 @@ const pop = $derived.by(() => {
     const row = rows.find((row) => row.lane === subject.lane)!;
     return fitEditor(panelSize, { w: window.innerWidth, h: window.innerHeight },
         { x: r.left, y: r.top - PLAYER_GAP - PLAYER_H, w: r.width, h: r.height + PLAYER_GAP + PLAYER_H },
-        { x: r.left + xOf(subject.row[focusKey === "start" ? "start" : "end"]), y: r.top + row.top, w: 2, h: ROW_H });
+        { x: canvas.getBoundingClientRect().left + xOf(subject.row[focusKey === "start" ? "start" : "end"]), y: canvas.getBoundingClientRect().top + row.top, w: 2, h: ROW_H });
 });
 const fields = $derived.by((): FieldSpec[] => {
     const p = subject;
@@ -437,10 +437,10 @@ onMount(() => {
 });
 
 function render(ctx: CanvasRenderingContext2D): void {
-    ctx.clearRect(0, 0, dockW, DOCK_HEIGHT);
+    ctx.clearRect(0, 0, dockW, chartH);
     ctx.font = '10px "JetBrains Mono", monospace';
     ctx.textBaseline = "middle";
-    ctx.save(); ctx.beginPath(); ctx.rect(COLUMN_W, 0, chartW, DOCK_HEIGHT); ctx.clip();
+    ctx.save(); ctx.beginPath(); ctx.rect(COLUMN_W, 0, chartW, chartH); ctx.clip();
     ctx.fillStyle = "rgba(255,255,255,.04)"; ctx.fillRect(COLUMN_W, 0, chartW, RULER_H);
     ctx.fillStyle = "#a09890"; ctx.textAlign = "center";
     for (const t of ticks(clamped, chartW)) ctx.fillText(t.label, t.s === 0 ? Math.max(COLUMN_W + ctx.measureText(t.label).width / 2 + 2, COLUMN_W + t.px) : COLUMN_W + t.px, 12);
@@ -489,14 +489,14 @@ function render(ctx: CanvasRenderingContext2D): void {
     if (endH) { ctx.strokeStyle = endH.pinned ? "#ece8e3" : "#898580"; ctx.lineWidth = onEnd ? 2 : 1; ctx.beginPath(); ctx.moveTo(endH.px, 0); ctx.lineTo(endH.px, 24); ctx.stroke(); }
     for (const [x, color] of [[guide, COLOR_GUIDE_RAY], [playhead === null ? null : xOf(playhead), "#f0ece8"]] as const) {
         if (x === null || x < COLUMN_W) continue;
-        ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, DOCK_HEIGHT - 8); ctx.stroke();
+        ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ROWS_TOP + 3 * ROW_H + 4); ctx.stroke();
     }
 }
 $effect(() => {
     void tick; void revision; void clamped; void rows; void hover; void onEnd; void selected; void driven; void playhead; void ripple; void guide;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    if (ctx) { resize(canvas, ctx, dockW, DOCK_HEIGHT); render(ctx); }
+    if (ctx) { resize(canvas, ctx, dockW, chartH); render(ctx); }
 });
 $effect(() => { if (!framed && chartW > 0 && total > 0) { framed = true; view = frameAll(chartW, total, marginArc(total, 50)); } });
 const feedback = $derived.by(() => {
@@ -508,14 +508,14 @@ const feedback = $derived.by(() => {
 });
 </script>
 
-<div class="tool-strip" role="group" aria-label="Timeline tools" style="bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP}px">
-    <button type="button" aria-pressed={tool === "select"} disabled={busy} title="Select ({BINDINGS.selectTool.hint})" onclick={() => switchTool("select")}>Select ({BINDINGS.selectTool.hint})</button>
-    <button type="button" aria-pressed={tool === "add"} disabled={busy} title="Add Segment ({BINDINGS.addTool.hint})" onclick={() => switchTool("add")}>Add Segment ({BINDINGS.addTool.hint})</button>
+<div class="tool-strip" role="group" aria-label="Timeline tools" style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px; width: {TOOL_STRIP_W}px">
+    <button type="button" aria-label="Select ({BINDINGS.selectTool.hint})" aria-pressed={tool === "select"} disabled={busy} title="Select ({BINDINGS.selectTool.hint})" onclick={() => switchTool("select")}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 1.5v12l3.3-3.3 2.4 4.3 2-1.1-2.4-4.2H13Z" /></svg></button>
+    <button type="button" aria-label="Add Segment ({BINDINGS.addTool.hint})" aria-pressed={tool === "add"} disabled={busy} title="Add Segment ({BINDINGS.addTool.hint})" onclick={() => switchTool("add")}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2 4v8m0-4h7m0-4v8m3-10v6m-3-3h6" /></svg></button>
 </div>
-<div class="dock" bind:this={dock} bind:clientWidth={dockW} style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px" tabindex="-1" role="group" aria-label="Timeline"
+<div class="dock" bind:this={dock} style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px; left: {DOCK_INSET + TOOL_STRIP_W + TOOL_GAP}px" tabindex="-1" role="group" aria-label="Timeline"
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => { editor.hover = "viewport"; hover = null; hoverStation = null; onEnd = false; }}>
-    <canvas class="chart" bind:this={canvas} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height, records: r.records.map(({ id, start, end }) => ({ id, start, end })) })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
+    <canvas class="chart" bind:this={canvas} bind:clientWidth={dockW} bind:clientHeight={chartH} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height, records: r.records.map(({ id, start, end }) => ({ id, start, end })) })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
     <div class="read-station">Recovered @ {readingStation === null ? "unavailable" : `${readingStation.toFixed(2)} m`}</div>
     {#each readings as reading (reading.lane)}<div class="recovered" data-lane={reading.lane} style="top: {reading.top}px">{reading.text}</div>{/each}
     {#if feedback}<div class="feedback" role="status">{feedback}</div>{/if}
@@ -539,19 +539,22 @@ const feedback = $derived.by(() => {
     <span>{seconds.toFixed(2)} / {duration.toFixed(2)} s</span>
 </div>
 <style>
-    .dock { position: absolute; left: 50%; transform: translateX(-50%); width: calc(100% - 32px); max-width: 1280px; background: var(--bg-solid); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; outline: none; }
+    .dock { position: absolute; right: 16px; background: var(--bg-solid); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; outline: none; }
     .chart { display: block; width: 100%; height: 100%; touch-action: none; }
     .tool-strip, .player { position: absolute; display: flex; align-items: center; gap: 6px; font: 11px "JetBrains Mono", monospace; color: var(--fg); }
-    .tool-strip { left: 16px; z-index: 3; }
+    .tool-strip { left: 16px; z-index: 3; flex-direction: column; padding-top: 4px; background: var(--bg-solid); border-radius: 6px; }
+    .tool-strip button { width: 32px; height: 32px; padding: 7px; display: grid; place-items: center; }
+    .tool-strip svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+    button:hover:not(:disabled), button:focus-visible { color: var(--accent); border-color: var(--accent); }
     .player { right: 16px; }
     button { font: inherit; color: inherit; background: var(--bg-solid); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; cursor: pointer; }
     button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
     button:disabled { opacity: .5; cursor: default; }
     .scrub { width: 160px; height: 6px; background: var(--border); cursor: pointer; touch-action: none; }
     .fill { height: 100%; background: var(--fg); pointer-events: none; }
-    .feedback { position: absolute; bottom: 4px; left: 80px; font: 10px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); pointer-events: none; }
+    .feedback { position: absolute; bottom: 2px; left: 8px; right: 200px; overflow-wrap: anywhere; font: 10px/14px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); pointer-events: none; }
     .read-station, .recovered { position: absolute; right: 4px; background: var(--bg-solid); color: var(--fg); font: 10px "JetBrains Mono", monospace; pointer-events: none; padding: 3px; }
     .read-station { bottom: 0; }
-    .recovered { line-height: 26px; }
+    .recovered { line-height: 26px; padding: 0 3px; }
     .menu-anchor { position: fixed; z-index: 8; }
 </style>

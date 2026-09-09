@@ -1,5 +1,270 @@
 import { expect, test, kexCall, type Page, OUT, SHOT_MS, join } from "./flow";
 
+test("S3h direct startup — controlled CSS/backing DPR contrast", async ({ browser }) => {
+    const geometries: Record<string, unknown> = {};
+    let cases = 0;
+    // Native appearance is the person's next witness, not an automated emulation arm.
+    for (const arm of [
+        ...[1280, 800].flatMap((width) =>
+            [1, 2].map((deviceScaleFactor) => ({
+                name: `${width}-dpr${deviceScaleFactor}`,
+                viewport: { width, height: width === 1280 ? 720 : 600 },
+                deviceScaleFactor,
+            })),
+        ),
+    ]) {
+        cases++;
+        const context = await browser.newContext(arm);
+        const page = await context.newPage();
+        const errors: string[] = [];
+        page.on("pageerror", (e) => errors.push(e.message));
+        try {
+            await page.goto(`http://localhost:${process.env.KEX_PORT ?? 3014}/`);
+            await expect(page.locator(".dock")).toBeVisible();
+            await page.evaluate(() => document.fonts.ready);
+            const reading = await page.evaluate(async () => {
+                const box = (selector: string) => {
+                    const el = document.querySelector(selector)!;
+                    const r = el.getBoundingClientRect(),
+                        style = getComputedStyle(el);
+                    return {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                        clientWidth: el.clientWidth,
+                        clientHeight: el.clientHeight,
+                        zoom: style.zoom,
+                        font: style.font,
+                    };
+                };
+                const canvas = document.querySelector<HTMLCanvasElement>(".chart")!;
+                const adapter = await (navigator as unknown as { gpu: GPU }).gpu.requestAdapter();
+                const tx = canvas.getContext("2d")!.getTransform();
+                return {
+                    url: location.href,
+                    top: window === top,
+                    scripts: [...document.scripts].map((s) => s.src),
+                    inner: [innerWidth, innerHeight],
+                    outer: [outerWidth, outerHeight],
+                    screen: [screen.width, screen.height],
+                    visual: [visualViewport!.width, visualViewport!.height, visualViewport!.scale],
+                    dpr: devicePixelRatio,
+                    gpu: adapter ? `${adapter.info.vendor}/${adapter.info.architecture}` : null,
+                    root: [
+                        document.documentElement.clientWidth,
+                        document.documentElement.clientHeight,
+                        document.documentElement.scrollWidth,
+                        document.documentElement.scrollHeight,
+                    ],
+                    dock: box(".dock"),
+                    chart: box(".chart"),
+                    strip: box(".tool-strip"),
+                    player: box(".player"),
+                    station: box(".read-station"),
+                    readings: [...document.querySelectorAll(".recovered")].map((el) =>
+                        box(`.recovered[data-lane="${el.getAttribute("data-lane")}"]`),
+                    ),
+                    buttons: [...document.querySelectorAll(".tool-strip button")].map((el) => {
+                        const r = el.getBoundingClientRect();
+                        const svg = el.querySelector("svg")?.getBoundingClientRect();
+                        return {
+                            width: r.width,
+                            height: r.height,
+                            text: el.textContent?.trim(),
+                            name: el.getAttribute("aria-label"),
+                            title: el.getAttribute("title"),
+                            glyph: svg ? [svg.width, svg.height] : null,
+                        };
+                    }),
+                    backing: [canvas.width, canvas.height],
+                    transform: [tx.a, tx.d],
+                    rows: JSON.parse(canvas.dataset.rows!),
+                };
+            });
+            console.log(`S3h ${arm.name} ${JSON.stringify(reading)}`);
+            await page.screenshot({ path: join(OUT, `S3h-${arm.name}.png`) });
+            expect.soft(errors).toEqual([]);
+            expect.soft(reading.top).toBe(true);
+            expect.soft(reading.scripts.some((s) => s.endsWith("/src/main.ts"))).toBe(true);
+            expect.soft(reading.gpu).not.toBeNull();
+            expect
+                .soft(reading.gpu)
+                .not.toMatch(/swiftshader|llvmpipe|lavapipe|warp|basic render/i);
+            expect.soft(reading.root.slice(2)).toEqual(reading.inner);
+            expect.soft(reading.dock.height, "content-derived resting dock").toBe(140);
+            expect
+                .soft(reading.backing)
+                .toEqual([
+                    Math.round(reading.chart.width * reading.dpr),
+                    Math.round(reading.chart.height * reading.dpr),
+                ]);
+            expect.soft(reading.transform).toEqual([reading.dpr, reading.dpr]);
+            expect.soft(reading.strip.width).toBe(40);
+            expect.soft(reading.strip.x + reading.strip.width + 8).toBe(reading.dock.x);
+            expect
+                .soft(reading.player.y + reading.player.height)
+                .toBeLessThanOrEqual(reading.dock.y - 8);
+            expect(reading.buttons).toHaveLength(2);
+            expect(reading.rows).toHaveLength(3);
+            expect(reading.readings).toHaveLength(3);
+            for (const [i, row] of reading.rows.entries()) {
+                expect(row.height).toBe(26);
+                const r = reading.readings[i]!;
+                expect(r.y).toBe(reading.chart.y + row.top);
+                expect(r.y + r.height).toBeLessThanOrEqual(reading.chart.y + row.top + 26);
+                expect(r.x + r.width).toBeLessThanOrEqual(reading.chart.x + reading.chart.width);
+            }
+            const rowBottom = reading.chart.y + 114;
+            expect(reading.station.y).toBeGreaterThanOrEqual(rowBottom);
+            expect(reading.station.y + reading.station.height).toBeLessThanOrEqual(
+                reading.chart.y + reading.chart.height,
+            );
+            expect(reading.player.y + reading.player.height).toBeLessThanOrEqual(reading.strip.y);
+            for (const [i, button] of reading.buttons.entries()) {
+                expect.soft([button.width, button.height]).toEqual([32, 32]);
+                expect.soft(button.glyph).toEqual([16, 16]);
+                expect.soft(button.text).toBe("");
+                expect.soft(button.name).toBe(i ? "Add Segment (A)" : "Select (V)");
+                expect.soft(button.title).toBe(button.name);
+            }
+            const logical = {
+                dock: reading.dock,
+                chart: reading.chart,
+                strip: reading.strip,
+                player: reading.player,
+                buttons: reading.buttons,
+            };
+            if (arm.name.endsWith("dpr1")) geometries[arm.viewport!.width] = logical;
+            if (arm.name.endsWith("dpr2"))
+                expect.soft(logical).toEqual(geometries[arm.viewport!.width]);
+            await pause(page);
+            const opening = await snapshot(page);
+            const select = page.getByRole("button", { name: "Select (V)", exact: true });
+            const add = page.getByRole("button", { name: "Add Segment (A)", exact: true });
+            await add.click();
+            await expect(add).toHaveAttribute("aria-pressed", "true");
+            await select.click();
+            await expect(select).toHaveAttribute("aria-pressed", "true");
+            expect(await snapshot(page)).toEqual(opening);
+            await page.keyboard.press("a");
+            await expect(add).toHaveAttribute("aria-pressed", "true");
+            await page.keyboard.press("v");
+            await expect(select).toHaveAttribute("aria-pressed", "true");
+            await add.click();
+            await drag(page, "geo", 30, 38);
+            await expect(select).toHaveAttribute("aria-pressed", "true");
+            expect((await kexCall(page, "lanes")).geo.find((r) => r.start === 30)?.end).toBe(38);
+            expect(await kexCall(page, "undoDepth")).toBe(opening.undo + 1);
+            await page.keyboard.press("ControlOrMeta+z");
+            await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+            // Real refused Add preview and release must expose the complete reason in the footer.
+            await add.click();
+            const gap = await point(page, "geo", 30),
+                occupied = await point(page, "geo", 10);
+            await page.mouse.move(gap.x, gap.y);
+            await page.mouse.down();
+            await page.mouse.move(occupied.x, occupied.y, { steps: 4 });
+            const feedback = page.getByRole("status");
+            await expect(feedback).toContainText("Overlaps a segment in this lane");
+            for (const held of [true, false]) {
+                if (!held) await page.mouse.up();
+                const f = await feedback.evaluate((el) => {
+                    const r = el.getBoundingClientRect();
+                    return {
+                        x: r.x,
+                        y: r.y,
+                        right: r.right,
+                        bottom: r.bottom,
+                        height: el.clientHeight,
+                        scroll: el.scrollHeight,
+                        text: el.textContent,
+                        overflow: getComputedStyle(el).textOverflow,
+                    };
+                });
+                expect(f.text).toContain("Overlaps a segment in this lane");
+                expect(f.y).toBeGreaterThanOrEqual(rowBottom);
+                expect(f.bottom).toBeLessThanOrEqual(reading.chart.y + reading.chart.height);
+                expect(f.right).toBeLessThanOrEqual(reading.station.x);
+                expect(f.scroll).toBe(f.height);
+                expect(f.overflow).not.toBe("ellipsis");
+            }
+            expect(await snapshot(page)).toEqual(opening);
+            await page.keyboard.press("Escape");
+            const origin = await point(page, "geo", 0),
+                end = await point(page, "force", 54);
+            expect(origin.x).toBeGreaterThan(reading.chart.x);
+            expect(end.x).toBeLessThan(reading.chart.x + reading.chart.width - 150);
+            for (const p of [origin, end]) {
+                expect(p.y).toBeGreaterThan(reading.chart.y);
+                expect(p.y).toBeLessThan(rowBottom);
+                expect((await ink(page, p)).some((v, i) => i % 4 === 3 && v > 0)).toBe(true);
+            }
+            await page.mouse.click(origin.x + 1, origin.y);
+            await expect(page.locator("#pf-start")).toBeFocused();
+            await page.keyboard.press("Escape");
+            await drag(page, "geo", 20, 23);
+            await expect.poll(async () => (await kexCall(page, "lanes")).geo[0]!.end).toBe(23);
+            await page.keyboard.press("ControlOrMeta+z");
+            await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+            const body = await point(page, "velocity", 9);
+            await page.mouse.click(body.x, body.y);
+            const panel = page.locator(".popover");
+            await expect(panel).toBeVisible();
+            await disclose(page);
+            const field = page.locator("#pf-exit");
+            await field.fill("123456.123456");
+            const longBox = (await field.boundingBox())!,
+                longPanel = (await panel.boundingBox())!;
+            expect(longBox.x).toBeGreaterThanOrEqual(longPanel.x);
+            expect(longBox.x + longBox.width).toBeLessThanOrEqual(longPanel.x + longPanel.width);
+            expect(longPanel.x).toBeGreaterThanOrEqual(0);
+            expect(longPanel.x + longPanel.width).toBeLessThanOrEqual(reading.inner[0]!);
+            expect(longPanel.y).toBeGreaterThanOrEqual(0);
+            expect(longPanel.y + longPanel.height).toBeLessThanOrEqual(reading.player.y - 8);
+            for (const key of ["a", "v"]) await field.press(key);
+            await expect(select).toHaveAttribute("aria-pressed", "true");
+            await field.press("Escape");
+            await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+            await expect
+                .poll(async () => {
+                    const r = (await panel.boundingBox())!;
+                    return r.y + r.height;
+                })
+                .toBe(reading.player.y - 8);
+            const fitted = (await panel.boundingBox())!;
+            expect(fitted.x).toBeGreaterThanOrEqual(0);
+            expect(fitted.y).toBeGreaterThanOrEqual(0);
+            expect(fitted.x + fitted.width).toBeLessThanOrEqual(reading.inner[0]!);
+            expect(fitted.y + fitted.height).toBeLessThanOrEqual(reading.player.y - 8);
+            const label = page.locator('label[for="pf-exit"]');
+            const lb = (await label.boundingBox())!;
+            await page.mouse.move(lb.x + lb.width / 2, lb.y + lb.height / 2);
+            await page.mouse.down();
+            await page.mouse.move(lb.x + lb.width / 2 + 12, lb.y + lb.height / 2, { steps: 4 });
+            expect(await panel.boundingBox()).toEqual(fitted);
+            expect(await kexCall(page, "save")).not.toBe(opening.save);
+            await page.keyboard.press("Escape");
+            await page.mouse.up();
+            await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+            await page.locator(".ease-control").click();
+            await page.keyboard.press("a");
+            await expect(select).toHaveAttribute("aria-pressed", "true");
+            for (const row of await page.getByRole("menuitem").all()) {
+                const r = (await row.boundingBox())!;
+                expect(r.x).toBeGreaterThanOrEqual(0);
+                expect(r.y + r.height).toBeLessThanOrEqual(reading.inner[1]!);
+            }
+            await page.keyboard.press("Escape");
+            await page.screenshot({ path: join(OUT, `S3h-${arm.name}-disclosed.png`) });
+            expect(errors).toEqual([]);
+        } finally {
+            await context.close();
+        }
+    }
+    expect(cases).toBe(4);
+});
+
 // The display gate's own witness, and the smallest flow in the suite.
 //
 // `bun run capture` exists to run kex2d's UI under a REAL GPU: shallot's `run()` acquires a device
@@ -966,15 +1231,39 @@ test("S3f field composition — screen hold, live bake, playhead hold and releas
     const opening = await snapshot(page);
     const park = await kexCall(page, "cartArc"),
         time = await kexCall(page, "tTotal");
+    const panel = page.locator(".popover");
+    // Wait for the measured compact panel to refit before caching pointer coordinates.
+    await expect
+        .poll(async () => {
+            const p = (await panel.boundingBox())!,
+                player = (await page.locator(".player").boundingBox())!;
+            return p.y + p.height - player.y;
+        })
+        .toBe(-8);
     const label = page.locator('label[for="pf-exit"]'),
         box = (await label.boundingBox())!;
-    const panel = page.locator(".popover"),
-        bounds = (await panel.boundingBox())!;
+    const bounds = (await panel.boundingBox())!;
+    const target = (await kexCall(page, "lanes")).velocity[0]!.exit;
+    console.log("S3h field settled", JSON.stringify({ box, bounds, target, time, opening }));
     await page.mouse.move(box.x + 10, box.y + 10);
     await page.mouse.down();
     await page.mouse.move(box.x + 22, box.y + 10, { steps: 4 });
     await expect.poll(() => kexCall(page, "tTotal")).not.toBe(time);
     const held = (await panel.boundingBox())!;
+    const changed = await snapshot(page),
+        liveTarget = (await kexCall(page, "lanes")).velocity[0]!.exit;
+    expect(liveTarget).not.toBe(target);
+    expect(changed.save).not.toBe(opening.save);
+    console.log(
+        "S3h field held",
+        JSON.stringify({
+            held,
+            label: await label.boundingBox(),
+            target: liveTarget,
+            time: await kexCall(page, "tTotal"),
+            changed,
+        }),
+    );
     expect(held.x).toBe(bounds.x);
     expect(held.y).toBe(bounds.y);
     expect(await kexCall(page, "cartArc")).toBeCloseTo(park!, 5);
