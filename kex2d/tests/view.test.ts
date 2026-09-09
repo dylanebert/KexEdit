@@ -89,9 +89,8 @@ describe("defaultCamera — HUD-aware framing", () => {
     });
 
     test("centers the origin vertically in the region above the dock", () => {
-        // dock reserves 240 + 16 = 256px at the bottom; the origin sits at the middle of
-        // what remains above it, not the canvas center.
-        expect(cam.oy).toBe((H - 256) / 2);
+        // Three 26px rows + gaps/top/footer/borders = 140; inset and transport total 224.
+        expect(cam.oy).toBe((H - 224) / 2);
         expect(cam.oy).toBeLessThan(H / 2); // lifted above center to clear the dock
     });
 
@@ -169,7 +168,7 @@ describe("zoomAt — zoom limits", () => {
 describe("frameContent — fit a box in the region above the dock", () => {
     const W = 1000;
     const H = 800;
-    const availH = H - 256; // the dock reserve, the region frameContent centers within
+    const availH = H - 224; // dock, inset and separate transport
 
     test("centers the box in the region above the dock", () => {
         const cam = frameContent(W, H, { minX: 5, minY: 2, maxX: 15, maxY: 8 });
@@ -193,7 +192,7 @@ describe("frameContent — fit a box in the region above the dock", () => {
     test("a degenerate point clamps to MAX_ZOOM and stays centered", () => {
         const cam = frameContent(2000, 2000, { minX: 10, minY: 5, maxX: 10, maxY: 5 });
         expect(cam.zoom).toBe(MAX_ZOOM);
-        const c = worldAt(cam, 2000 / 2, (2000 - 256) / 2);
+        const c = worldAt(cam, 2000 / 2, (2000 - 224) / 2);
         expect(c.x).toBeCloseTo(10, TOL);
         expect(c.y).toBeCloseTo(5, TOL);
     });

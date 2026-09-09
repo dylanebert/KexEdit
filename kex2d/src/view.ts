@@ -12,17 +12,21 @@ const VIEW_HALF_X = 280;
  *  dock element from (its rendered `height` and the `bottom` inset it floats above the
  *  canvas edge). the viewport reserves their sum below (`DOCK_RESERVE`); nothing else
  *  hardcodes the dock size. */
-export const DOCK_HEIGHT = 240;
+export const ROWS_TOP = 32;
+export const ROW_H = 26;
+export const ROW_GAP = 2;
+export const DOCK_FOOTER = 24;
+export const DOCK_HEIGHT = ROWS_TOP + 3 * ROW_H + 2 * ROW_GAP + DOCK_FOOTER + 2;
+export const TOOL_STRIP_W = 40;
+export const TOOL_GAP = 8;
 export const DOCK_INSET = 16;
-/** screen px kept clear at the bottom for the timeline dock. the default view centers the
- *  world origin ABOVE this band, not at the canvas center — the dock would otherwise cover
- *  the track's launch. also the floor the drag snap readout keeps clear of (`readoutFit`). */
-export const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET;
 /** the media player's geometry above the dock — like `DOCK_HEIGHT`/`DOCK_INSET`, the single
  *  source `Timeline.svelte` styles the player from, shared so a surface docking ABOVE the
  *  player (the pin-mode panel, App.svelte) derives its anchor instead of mirroring. */
 export const PLAYER_GAP = 32;
 export const PLAYER_H = 36;
+/** Logical bottom reservation includes the dock and the separate transport. */
+export const DOCK_RESERVE = DOCK_HEIGHT + DOCK_INSET + PLAYER_GAP + PLAYER_H;
 /** zoom limits (px per world meter). the affine viewport is an infinite canvas — pan is
  *  unclamped — but the scale is bounded so the track can't blow up or vanish. */
 export const MIN_ZOOM = 0.05;

@@ -10,7 +10,7 @@ Three independent **lanes** (velocity, force, geo) hold two-handle segments unde
 
 `ADAPTERS.md` is the test-read adapter inventory; it is empty.
 
-Pose UX stays at `retired/pose-ux`: pin mode, canvas authoring, conversion UI/flows. Timeline: local Select (V)/Add (A), precise handles, compact Target/unit/easing, disclosed entry/range/diagnostics; no expansion/row Add. `menus.ts`/`keys.ts` share actions. Canvas is read-only, controls pan/zoom, optimize unwired.
+Pose UX stays at `retired/pose-ux`: pin mode, canvas authoring, conversion. Timeline: left Select (V)/Add (A) icons, precise handles, Target/unit/easing, disclosed entry/range/diagnostics; no expansion/row Add. `menus.ts`/`keys.ts` share actions. Canvas is read-only; optimize unwired.
 
 Override uses field history; Inherit disowns. Ripple is end-only/same-lane, off per subject. Fields hold measured screen boxes/playhead, not bake; invalidating reflow cancels before refit.
 

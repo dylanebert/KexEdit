@@ -12,7 +12,7 @@ Live/undoable; disclose depth, never cap it. Infer tangents; translate mechanism
 
 ## The kexedit bend: the force curve earns persistence
 
-Opaque fixed timeline; on-object controls, scaffolding outside content. No standing viewport chrome. Global rail: toggles/key twins only; local Select (V)/Add (A) outside reorder column. Own palette, not Shallot's.
+140px dock, 26px rows. Left Select (V)/Add (A): 40px strip/8px gap, 32px buttons/16px glyphs, hover names. Logical CSS; only canvas backing/transform scales by DPR. Global rail: toggles/key twins.
 
 One clock: global transport/local authoring, no play/edit split. Authoring holds playhead; scrub never edits. Another render needs another camera.
 

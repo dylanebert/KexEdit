@@ -31,6 +31,8 @@ import { type Easing, type ForcePoint, sampleForce } from "./profile";
 import { Domain, SectionKind } from "./section";
 import { snapSteps } from "./settings";
 import { V0 } from "./track";
+import { ROW_H, ROW_GAP } from "./view";
+export { ROW_H, ROW_GAP } from "./view";
 
 /** view-state: a single affine over the chart's axis `u` (distance or time, per
  *  `Track.domain`). `pan` is the content pixel at the left edge (scroll-like);
@@ -578,12 +580,6 @@ export function ticks(v: View, width: number, domain: Domain = Domain.Distance):
 // Everything below is PURE — plain lane records and a `View` in, geometry and
 // hit answers out — so the press grammar is readable headlessly (Validation 4) and `Timeline.svelte`
 // owns only pixels and pointers.
-
-/** One lane band's height in px. */
-export const ROW_H = 26;
-
-/** the gap between two rows in px. */
-export const ROW_GAP = 2;
 
 /** the grab half-width of a span EDGE in px — a fixed on-screen distance like {@link SNAP_PX},
  *  so the resize grip is the same size at any zoom. A span narrower than two grips still resolves
