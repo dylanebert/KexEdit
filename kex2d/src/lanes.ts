@@ -115,6 +115,12 @@ export function segmentOverlapped<H>(
     return false;
 }
 
+/** Finite authored stations must stay within an unchanged pin (0 means follow).
+ *  Extent, origin and collision laws are checked separately on the edited subject. */
+export function spanWithinEnd(start: number, end: number, pin: number): boolean {
+    return Number.isFinite(start) && Number.isFinite(end) && (pin === 0 || end <= pin);
+}
+
 /** the lane's own exclusivity law, as a predicate over a whole lane: no two members overlap.
  *  Abutting members pass; a member with `start >= end` is degenerate and reported separately by
  *  {@link laneRefusals}. */

@@ -65,6 +65,16 @@ Usage:
   kex2d new <file> [--force]         seed a fresh document (refuses to overwrite unless --force)
   kex2d validate <file>              report load refusals + force-limit breaches
 
+Record ops (stations in meters; handles: force g, velocity m/s, geo radians):
+  record-add {lane,start,end,exit,entry?,ease?}: required finite start/end/exit;
+    omitted entry is unowned, omitted ease is Linear on every lane (0; Cubic 1, Quintic 2).
+    An explicit flat seed supplies entry=exit; start-speed changes initial speed, not entries.
+  record-span {id,start,end}: independent span edit; refuses overlap/origin/pin violations.
+  record-handle {id,which,value?}: which=entry with no value inherits; finite value overrides.
+    Inheriting an isolated velocity entry leaves its prescription unresolved/inactive.
+    which=exit requires a finite value. Entry ownership changes are undoable in the editor.
+Edit batches save successful ops even if another op refuses; they are not atomic.
+
 Every verb loads the file, acts, saves or reports, and exits — no session, no server. JSON to
 stdout on success; a refusal is a JSON error object ({guard, message}) and a non-zero exit.
 Exit codes: 0 ok, 1 a refusal the file/ops carry, 2 a usage error.`;

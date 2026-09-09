@@ -22,15 +22,15 @@ The start position is fixed at the origin. Initial speed is the authored `Track.
 
 ## Authoring API
 
-`track.ts` owns authored state; its lane setters are the ONLY authored writers and refuse structurally — an overlap is declined, never clamped. Stable ids survive restore; raw entity ids do not.
+`track.ts` alone writes authored lanes: finite stations, origin, overlap and pin guards refuse before writes. Stable ids survive restore; entity ids do not. Legacy neighbors below the authoring floor remain legal.
 
 `history.ts` owns the verbs: add/delete per lane, handle, edge, body, ease, end, order, start speed. Use the setters inside gestures, never write authored columns from read paths. Structural helpers bracket internally; continuous edits use `begin*`, setter, then `commit` or `cancel`; a declined write records nothing. Read signatures.
 
-`src/cli.ts` drives `src/commands.ts` over `.kex` JSON: `bun run cli -- new|edit|validate|stats|dump|fmt ...`. Ops name a record by the stable id `dump` reports; `record-add` names its lane. `new` migrates the boot seed from v3. Derive payloads from the command types and CLI help. Commands share UI setters/history and report refusals.
+`commands.ts`/`cli.ts`: `bun run cli -- new|edit|validate|stats|dump|fmt`. `record-add` requires lane/start/end/exit; omitted entry is unowned, ease Linear. `flatRecordArgs` seeds owned entry=exit without ease, never from bake. `record-handle` entry without value inherits; finite value overrides, exit requires value. `Track.v0` seeds creation, not unresolved velocity entries.
 
 `doc.ts` validates before replacing ECS state; geometry-dependent guards use exact in-place rollback. A refused load leaves the document untouched; a successful load clears undo. Loading owns ECS, not interactive selection: an interactive load must reconcile that too. Never create two live `State`s with overlapping eids: module-scoped component storage aliases. `checkDocumentSemantics` assumes one document per process.
 
-`doc.ts` load/rollback and DEV-only `__kex` bulk fixture setup are exceptions to ordinary edit gestures, not authoring precedents. `tests/purity.test.ts` catches direct component `.set` writes, not every helper-mediated mutation. `__kex.nudge` uses the command path; setup hooks never ship.
+Load/rollback and DEV-only `__kex` fixture setup are not authoring precedents. `tests/purity.test.ts` catches direct `.set` writes, not helper-mediated mutations. `__kex.nudge` uses commands; setup hooks never ship.
 
 One selection set plus active member lives in `editor.ts`; per-kind accessors are derived, not separate storage. Preserve byte-identical undo, including selection re-resolution and sandbox restoration.
 

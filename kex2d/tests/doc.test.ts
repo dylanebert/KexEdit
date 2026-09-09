@@ -16,11 +16,14 @@ import {
     saveDocument,
     serializeDocument,
 } from "../src/doc";
-import { Lane, emptyLanes, entryValue, laneExclusive } from "../src/lanes";
-import { DEFAULT_G, Easing } from "../src/profile";
+import { Lane, type LaneSegment, emptyLanes, entryValue, laneExclusive } from "../src/lanes";
+import { beginV0, commit, history } from "../src/history";
+import { DEFAULT_G, Easing, resolveStep } from "../src/profile";
 import { TangentMode } from "../src/spline";
 import {
     bakeOut,
+    authoredHash,
+    stripsForStep,
     BakeSystem,
     createRecord,
     createTrack,
@@ -78,6 +81,197 @@ function bakedArrays(eid: number) {
         ds: Array.from(out.ds.subarray(0, Math.max(0, count - 1))),
     };
 }
+
+describe("entry-resolved velocity admission", () => {
+    const row = (
+        id: number,
+        start: number,
+        end: number,
+        exit: number,
+        entry?: number,
+    ): LaneSegment => ({
+        id,
+        start,
+        end,
+        exit,
+        ease: 0,
+        ...(entry === undefined ? {} : { entry }),
+    });
+    const a = row(1, 2, 8, 19, 17);
+    const unresolvedA = row(1, 2, 8, 19);
+    function text(velocity: LaneSegment[], split = false): string {
+        return serializeDocument(
+            parseDocument(
+                JSON.stringify({
+                    version: 4,
+                    track: { ds: 0.5, domain: 0, friction: 0, resistance: 0, v0: 10 },
+                    lanes: {
+                        velocity,
+                        force: [],
+                        geo: split
+                            ? [row(90, 0, 10, 0, 0), row(91, 12, 24, 0, 0)]
+                            : [row(90, 0, 24, 0, 0)],
+                    },
+                }),
+            ),
+        );
+    }
+    const cases: {
+        name: string;
+        rows: LaneSegment[];
+        bad?: number;
+        frames: number;
+        split?: boolean;
+    }[] = [
+        { name: "isolated unresolved", rows: [unresolvedA], frames: 0 },
+        { name: "abutting inherited", rows: [a, row(2, 8, 14, 23)], frames: 2 },
+        {
+            name: "unresolved predecessor still owns exit",
+            rows: [unresolvedA, row(2, 8, 14, 23)],
+            frames: 1,
+        },
+        {
+            name: "unresolved predecessor collapsed successor",
+            rows: [unresolvedA, row(2, 8, 8.05, 23)],
+            frames: 1,
+            bad: 2,
+        },
+        { name: "gap never inherits", rows: [a, row(2, 9, 14, 23)], frames: 1 },
+        {
+            name: "inherited one edge below authoring floor",
+            rows: [a, row(2, 8, 8.5, 23)],
+            frames: 2,
+        },
+        {
+            name: "owned one edge below authoring floor",
+            rows: [a, row(2, 8, 8.5, 23, 19)],
+            frames: 2,
+        },
+        { name: "inherited collapsed edge", rows: [a, row(2, 8, 8.05, 23)], frames: 2, bad: 2 },
+        { name: "owned collapsed edge", rows: [a, row(2, 8, 8.05, 23, 19)], frames: 2, bad: 2 },
+        { name: "tiny unresolved has no point override", rows: [row(1, 5, 5.05, 17)], frames: 0 },
+        {
+            name: "tiny owned has point override",
+            rows: [row(1, 5, 5.05, 17, 17)],
+            frames: 1,
+            bad: 1,
+        },
+        {
+            name: "unresolved cannot hide bad active peer",
+            rows: [unresolvedA, row(2, 10, 10.05, 17, 17)],
+            frames: 1,
+            bad: 2,
+        },
+        {
+            name: "cross-run stable attribution",
+            rows: [row(1, 2, 6, 19, 17), row(2, 8, 14, 23, 19), row(3, 18, 22, 21, 23)],
+            frames: 3,
+            split: true,
+        },
+        {
+            name: "cross-run late collapsed record",
+            rows: [row(1, 2, 6, 19, 17), row(2, 8, 14, 23, 19), row(3, 18, 18.05, 21, 23)],
+            frames: 3,
+            split: true,
+            bad: 3,
+        },
+    ];
+    for (const c of cases) {
+        test(c.name, () => {
+            const input = text(c.rows, c.split);
+            // Semantics owns a scratch State; finish that read before creating the live State.
+            const refusals = checkDocumentSemantics(parseDocument(input));
+            expect(refusals.map((r) => r.guard)).toEqual(
+                c.bad === undefined ? [] : ["minExtentFloor"],
+            );
+            if (c.bad !== undefined) expect(refusals[0]!.message).toContain(`record ${c.bad} `);
+            const { state, eid } = flatTrack();
+            state.step(0);
+            if (c.bad !== undefined) {
+                beginV0(state);
+                setV0(state, 23);
+                commit(history);
+                state.step(0);
+                const before = {
+                    text: saveDocument(state),
+                    snap: snapshotAll(state),
+                    hash: authoredHash(state),
+                    bake: bakedArrays(eid),
+                    eid: trackEntity(state),
+                };
+                const undo = [...history.undo];
+                const redo = [...history.redo];
+                expect(() => loadDocument(state, input)).toThrow(/minExtentFloor/);
+                expect({
+                    text: saveDocument(state),
+                    snap: snapshotAll(state),
+                    hash: authoredHash(state),
+                    bake: bakedArrays(eid),
+                    eid: trackEntity(state),
+                }).toEqual(before);
+                expect(history.undo).toEqual(undo);
+                expect(history.redo).toEqual(redo);
+                return;
+            }
+            loadDocument(state, input);
+            state.step(0);
+            expect(saveDocument(state)).toBe(input);
+            expect(lanesOf(state).velocity).toEqual(c.rows);
+            expect(stripsForStep(state, 0, resolveStep(24, 0.5))?.length ?? 0).toBe(c.frames);
+            const before = {
+                snap: snapshotAll(state),
+                hash: authoredHash(state),
+                bake: bakedArrays(trackEntity(state)!),
+            };
+            loadDocument(state, saveDocument(state));
+            state.step(0);
+            expect(saveDocument(state)).toBe(input);
+            expect({
+                snap: snapshotAll(state),
+                hash: authoredHash(state),
+                bake: bakedArrays(trackEntity(state)!),
+            }).toEqual(before);
+        });
+    }
+
+    test("coverage refusal leaves an empty ECS empty", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        expect(() => loadDocument(state, text([row(1, 5, 5.05, 17, 17)]))).toThrow(
+            /minExtentFloor/,
+        );
+        expect(trackEntity(state)).toBeNull();
+    });
+
+    test("unresolved bake equals no prescription, owned speed changes the actual bake", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        loadDocument(state, text([]));
+        state.step(0);
+        const natural = bakedArrays(trackEntity(state)!);
+        loadDocument(state, text([row(1, 2, 8, 17)]));
+        state.step(0);
+        expect(bakedArrays(trackEntity(state)!)).toEqual(natural);
+        expect(stripsForStep(state, 0, resolveStep(24, 0.5))).toBeUndefined();
+        loadDocument(state, text([row(1, 2, 8, 17, 17)]));
+        state.step(0);
+        expect(bakedArrays(trackEntity(state)!).v).not.toEqual(natural.v);
+        expect(stripsForStep(state, 0, resolveStep(24, 0.5))).toHaveLength(1);
+    });
+
+    test("inherited frame reads predecessor exit; owned entry wins without materializing inheritance", () => {
+        const state = new State();
+        state.addSystem(BakeSystem);
+        const inherited = text([unresolvedA, row(2, 8, 14, 23)]);
+        loadDocument(state, inherited);
+        const frames = stripsForStep(state, 0, resolveStep(24, 0.5))!;
+        expect(frames).toHaveLength(1);
+        expect([frames[0]!.start, frames[0]!.end, frames[0]!.values![0]]).toEqual([16, 28, 361]);
+        expect(saveDocument(state)).toBe(inherited);
+        loadDocument(state, text([unresolvedA, row(2, 8, 14, 23, 21)]));
+        expect(stripsForStep(state, 0, resolveStep(24, 0.5))![0]!.values![0]).toBe(441);
+    });
+});
 
 test("a three-lane save and three reloads are an identity fixed point", () => {
     const { state } = laneTrack();

@@ -25,10 +25,12 @@ import {
     setEase,
     setOrder,
 } from "./history";
-import { Lane } from "./lanes";
+import { inferredEntry, Lane } from "./lanes";
 import type { Easing } from "./profile";
 import type { Domain } from "./section";
 import {
+    entrySpeed,
+    laneRows,
     setEnd,
     setRecordHandle,
     setRecordSpan,
@@ -95,6 +97,24 @@ export interface RecordAddOp {
     /** omitted leaves the record's entry UNOWNED — the entry law resolves it. */
     entry?: number;
     exit: number;
+}
+
+/** Explicit flat Add-tool seed, not a recovered reading. Replay as record-add with
+ *  ease omitted so every lane uses the same Linear default. */
+export function flatRecordArgs(
+    ecs: State,
+    lane: LaneName,
+    start: number,
+    end: number,
+): RecordAddOp {
+    const kind = LANES[lane];
+    const rows = laneRows(ecs, kind);
+    const preceding = rows.filter((row) => row.end <= start).at(-1);
+    const value =
+        inferredEntry(kind, rows, start) ??
+        preceding?.exit ??
+        (kind === Lane.Velocity ? entrySpeed(ecs) : 0);
+    return { type: "record-add", lane, start, end, entry: value, exit: value };
 }
 
 export interface RecordDeleteOp {
