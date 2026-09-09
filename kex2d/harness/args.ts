@@ -103,13 +103,25 @@ export function boolEnv(env: Record<string, string | undefined>, name: string): 
     return raw === "1";
 }
 
+/** Refuse alternate debug and browser launch routes before loading Playwright. */
+export function assertQuietEnv(env: Record<string, string | undefined>): void {
+    for (const name of Object.keys(env))
+        if (
+            env[name] !== undefined &&
+            /^(PWDEBUG$|SELENIUM_|npm_(?:config|package_config)_pwdebug$)/.test(name)
+        )
+            throw new UsageError(`KEX_QUIET refuses ${name}`);
+}
+
 /** Quiet mode permits selection, not launch/config/reporter/timeout overrides. */
 export function quietMode(env: Record<string, string | undefined>, args: string[]): boolean {
     const quiet = boolEnv(env, "KEX_QUIET");
     if (!quiet) return false;
+    // Ambient overrides are refused here; Playwright later adds its own worker markers.
     for (const name of Object.keys(env))
-        if (env[name] !== undefined && /^(PWDEBUG$|PW_|PLAYWRIGHT_)/.test(name))
+        if (env[name] !== undefined && /^(PW_|PLAYWRIGHT_)/.test(name))
             throw new UsageError(`KEX_QUIET refuses ${name}`);
+    assertQuietEnv(env);
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === "--list") continue;

@@ -171,6 +171,41 @@ describe("quiet carrier boundary", () => {
         expect(() => quietMode({ KEX_QUIET: "true" }, [])).toThrow(UsageError);
     });
 
+    const launchEnv: [string, string][] = [
+        ["npm_config_pwdebug", "1"],
+        ["npm_package_config_pwdebug", "1"],
+        ["SELENIUM_REMOTE_URL", "http://127.0.0.1:4444"],
+        ["SELENIUM_REMOTE_CAPABILITIES", '{"goog:chromeOptions":{"args":[]}}'],
+        ["SELENIUM_REMOTE_HEADERS", '{"x-quiet-test":"1"}'],
+    ];
+
+    test("debug aliases and Selenium routes refuse, absent overrides permit selection", () => {
+        expect(quietMode({ KEX_QUIET: "1" }, ["--list"])).toBe(true);
+        for (const [name, value] of launchEnv) {
+            for (const raw of [value, "", "0"])
+                expect(() => quietMode({ KEX_QUIET: "1", [name]: raw }, ["--list"])).toThrow(name);
+        }
+    });
+
+    // Always list-only, including on a broken guard: no browser/server/Selenium launch.
+    for (const [name, value] of launchEnv)
+        test(`capture entry refuses ${name} before list collection`, () => {
+            const result = Bun.spawnSync(["bun", "run", "harness/capture.ts", "--", "--list"], {
+                cwd: join(import.meta.dir, ".."),
+                env: { ...process.env, KEX_QUIET: "1", [name]: value },
+                stdout: "pipe",
+                stderr: "pipe",
+                timeout: 15_000,
+            });
+            const output =
+                new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+            expect(result.exitCode, name).toBe(2);
+            expect(output).toContain(`KEX_QUIET refuses ${name}`);
+            expect(output).not.toMatch(
+                /Listing tests|Collecting the suite|server ready|Running capture flow/,
+            );
+        });
+
     test("every selected test must pass once, even for declared reds and zero child exit", () => {
         for (const selective of [true, false]) {
             const facts = {
@@ -945,6 +980,9 @@ describe("the standalone-loaded files mirror the knob guards verbatim", () => {
     test("the copies are character-identical to args.ts", () => {
         expect(fn(config, "intEnv")).toBe(fn(args, "intEnv"));
         expect(fn(config, "boolEnv")).toBe(fn(args, "boolEnv"));
+        expect(fn(config, "assertQuietEnv")).toBe(fn(args, "assertQuietEnv"));
+        expect(config).toContain("if (quiet) assertQuietEnv(process.env)");
+        expect(fn(args, "quietMode")).toContain("assertQuietEnv(env)");
         expect(config).toContain('boolEnv(process.env, "KEX_QUIET")');
         expect(config).toContain("headless: quiet");
         expect(capture).toContain("quietMode(process.env, testArgs)");

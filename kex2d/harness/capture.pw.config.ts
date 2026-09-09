@@ -43,8 +43,17 @@ function boolEnv(env: Record<string, string | undefined>, name: string): boolean
     return raw === "1";
 }
 
+function assertQuietEnv(env: Record<string, string | undefined>): void {
+    for (const name of Object.keys(env))
+        if (
+            env[name] !== undefined &&
+            /^(PWDEBUG$|SELENIUM_|npm_(?:config|package_config)_pwdebug$)/.test(name)
+        )
+            throw new UsageError(`KEX_QUIET refuses ${name}`);
+}
+
 const quiet = boolEnv(process.env, "KEX_QUIET");
-if (quiet && process.env.PWDEBUG !== undefined) throw new UsageError("KEX_QUIET refuses PWDEBUG");
+if (quiet) assertQuietEnv(process.env);
 const workers = intEnv(process.env, "KEX_WORKERS", 4, 1, 64);
 
 export default defineConfig({
