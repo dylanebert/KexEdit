@@ -209,6 +209,48 @@ describe("spanMenu — the selected record's menu", () => {
     const acts = () => recorder("setEase", "remove");
     const glyph = (e: Easing): string => `preset:${e}`;
 
+    test("shared precision, entry ownership and inspection descriptors dispatch only explicit actions", () => {
+        for (const owned of [false, true]) {
+            const a = recorder("setEase", "remove", "field", "inherit", "inspect");
+            const rows = spanMenu(
+                {
+                    ease: Easing.Cubic,
+                    presetGlyph: glyph,
+                    canDelete: true,
+                    entry: { owned, summary: owned ? "Owned start" : "Unresolved entry" },
+                },
+                a,
+            );
+            expect(rows.map((r) => r.label)).toEqual([
+                "Target…",
+                "Start…",
+                "End…",
+                "Easing",
+                "Entry",
+                "Inspect result",
+                "Delete",
+            ]);
+            expect(a.log).toEqual([]);
+            for (const r of rows.slice(0, 3)) r.action!();
+            const entry = rows.find((r) => r.label === "Entry")!.children!;
+            expect(entry[0]!.enabled).toBe(false);
+            expect(entry[0]!.action).toBeUndefined();
+            expect(entry[1]!.label).toBe(owned ? "Edit entry…" : "Override entry…");
+            entry[1]!.action!();
+            expect(entry.length).toBe(owned ? 3 : 2);
+            if (owned) entry[2]!.action!();
+            rows.find((r) => r.label === "Inspect result")!.action!();
+            expect(a.log).toEqual([
+                "field(exit)",
+                "field(start)",
+                "field(end)",
+                "field(entry)",
+                ...(owned ? ["inherit()"] : []),
+                "inspect()",
+            ]);
+        }
+    });
+
     // RED: flatten the three easing rows to the top level and the menu's own terminal Delete row
     // stops being terminal — the danger row must be last (the grammar oracle's own law).
     test("Easing ▸ then Delete, the danger row terminal", () => {
@@ -306,6 +348,11 @@ describe("the menu grammar — every builder, every state", () => {
         ease: easings,
         presetGlyph: [(e: Easing) => `preset:${e}`],
         canDelete: bool,
+        entry: [
+            { owned: true, summary: "Owned start" },
+            { owned: false, summary: "Inherited start" },
+            { owned: false, summary: "Unresolved entry" },
+        ],
     });
 
     // every menu the app can summon, as `(name, rows, state)` triples — the oracle's whole input.
@@ -317,7 +364,7 @@ describe("the menu grammar — every builder, every state", () => {
     type Menu = { name: string; rows: MenuItem[]; state: object; acts: { log: string[] } };
     function corpus(): Menu[] {
         const all: Menu[] = [];
-        const acts = () => recorder("pick", "setEase", "remove");
+        const acts = () => recorder("pick", "setEase", "remove", "field", "inherit", "inspect");
         for (const s of rulerStates) {
             const a = acts();
             all.push({ name: "rulerMenu", rows: rulerMenu(s, a), state: s, acts: a });
@@ -582,6 +629,9 @@ describe("the menu grammar — every builder, every state", () => {
     // apart by name, one bound and one not.
     const Acts: Record<string, keyof typeof BINDINGS | null> = {
         pick: null,
+        field: null,
+        inherit: null,
+        inspect: null,
         selectTool: "selectTool",
         addTool: "addTool",
         setEase: null,

@@ -338,16 +338,9 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Menu.svelte", selector: ".menu-item", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
-    // the contextual popover (S3c): its dismissal button and its three easing picks are plain
-    // clickable chrome, and each field's KEY is the scrub affordance the field law names — the
-    // same `ew-resize` class the retired field rows carried, over the popover's own fields.
-    { file: "Popover.svelte", selector: ".peel", value: "pointer" },
+    // One actions control and the field law's horizontal label scrub.
+    { file: "Popover.svelte", selector: ".actions", value: "pointer" },
     { file: "Popover.svelte", selector: ".field label", value: "ew-resize" },
-    {
-        file: "Popover.svelte",
-        selector: ".disclosure, .ease-control, .entry-actions button",
-        value: "pointer",
-    },
 ];
 
 /** every scanned source file's raw text — `.svelte` (CSS) and `.ts` (canvas assignments) alike,
