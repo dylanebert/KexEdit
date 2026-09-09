@@ -1,7 +1,5 @@
-// The one place that runs `playwright test`, and it runs it natively. The browser is this seat's own
-// headed Chrome on the session's display (`capture.ts` owns the display guard); there is no host
-// transport left to stage onto, so the caller's config and flow files run where they live and its
-// screenshots are written straight into `--out`. Mirrors orrstead's harness.
+// Runs local Playwright with the caller's guarded mode and bounded timeout.
+// KEX_QUIET=1 uses headless Chrome; screenshots go directly into --out.
 
 export interface RunArgs {
     /** dir holding the playwright config + flow files — the harness's own directory */

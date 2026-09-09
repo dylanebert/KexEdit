@@ -44,4 +44,4 @@ Velocity is track-global: preserve values across structural edits, allow abuttin
 
 Keep substrate/selection, purity/writer and module tests. Physics authority: analytics, `tests/oracles/rk4.ts`, `tests/helpers/forward64.ts`, not self-consistency. Exactness reads whole pre-op state, not counts/boundaries.
 
-Run affected `./tests/*.oracle.ts` by path; fast sentinels remain in the default suite. Goldens are field-wise and platform-stamp matched where required; missing stamps fail, never skip. Capture/mutation flows, not unit helpers, prove DOM wiring. Keep one shared keyframe interaction path, not per-kind twins. Labs (`tests/*.lab.ts`, `*-lab.html`) run explicitly.
+Run affected `./tests/*.oracle.ts` by path; fast sentinels remain in the default suite. Goldens are field-wise and platform-stamp matched where required; missing stamps fail, never skip. Quiet flows/watched reds, not helpers, prove DOM wiring. Keep one shared keyframe interaction path, not per-kind twins. Labs (`tests/*.lab.ts`, `*-lab.html`) run explicitly.

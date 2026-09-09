@@ -13,7 +13,6 @@ import {
 } from "./args";
 import { runPlaywright } from "./playwright";
 import { startServer } from "./server";
-import { appendRun, RECORD_VERSION } from "./trend";
 
 // Wall-clock origin for the phase stamps `RUN.json` records. Taken before anything is parsed so
 // `total` is the whole process, and the stamped phases summing under it is what makes the
@@ -21,7 +20,7 @@ import { appendRun, RECORD_VERSION } from "./trend";
 const started = performance.now();
 
 // Existing capture carrier. KEX_QUIET=1 enforces headless selection accounting without display
-// preflight, reference claims or trend append. Adapter/assertion laws hold in either mode.
+// preflight or reference claims. Adapter/assertion laws hold in either mode.
 //
 //   bun run capture                     → screenshots into harness/shots/
 //   bun run capture --out DIR           → into DIR (`--out=DIR` too)
@@ -113,7 +112,7 @@ if (!quiet && !detectDisplay()) {
 
 // The suite's declared file set. `capture.pw.config.ts` collects `*.pw.ts` by GLOB, and a glob
 // cannot say what the suite is SUPPOSED to hold: this list is the declaration the glob is checked
-// against, and `declared.ts` plus `tests/harness.test.ts` read it — a flow file landing without its
+// against, and `tests/harness.test.ts` reads it — a flow file landing without its
 // line here fails there rather than as a surprise in a run.
 export const suite = {
     files: [
@@ -150,7 +149,7 @@ if (listing) {
     // a good set is how the reference flag was lost mid-spec).
     const list = launch(testArgs);
     const count = collectedCount(list.stdout);
-    if (quiet && (!count || list.exitCode !== 0)) fail("nonempty quiet selection did not collect");
+    if (!count || list.exitCode !== 0) fail("nonempty selection did not collect");
     process.exit(list.exitCode === 0 ? 0 : 1);
 }
 
@@ -160,10 +159,9 @@ if (listing) {
 let collectMs: number | null = null;
 let selectedTitles: string[] = [];
 const collected = ((): number | null => {
-    if (selective && !quiet) return null;
     console.log("Collecting the suite (--list)...");
     const listStart = performance.now();
-    const list = launch([...(quiet ? testArgs : []), "--list"]);
+    const list = launch([...testArgs, "--list"]);
     selectedTitles = list.stdout
         .split("\n")
         .filter((line) => line.includes(" › "))
@@ -171,8 +169,7 @@ const collected = ((): number | null => {
     collectMs = Math.round(performance.now() - listStart);
     if (list.exitCode !== 0) fail(`the suite did not collect (--list exit ${list.exitCode})`);
     const total = collectedCount(list.stdout);
-    if (total === null || (quiet && total === 0))
-        fail("the --list pre-pass reported no nonempty collected count");
+    if (!total) fail("the --list pre-pass reported no nonempty collected count");
     return total;
 })();
 
@@ -206,9 +203,7 @@ const runMs = Math.round(performance.now() - runStart);
 // that change what the shot set IS reach it; the port is provenance (it changes where it ran, not
 // what it captured).
 const counts = runCounts(run.stdout);
-// One resolved value: the gate reads it to decide whether the shots may be stamped `reference`, and
-// the recorded distribution reads it to decide whether this run's wall clock belongs in the same
-// population as the others (`trend.ts` — a non-default-knob run captured a different quantity).
+// Non-default knobs cannot produce a reference shot set.
 const defaultKnobs = workers === DEFAULT_WORKERS && shotMs === DEFAULT_SHOT_MS;
 const titles = failedTitles(run.stdout);
 const { reference, failure } = verdict({
@@ -232,7 +227,7 @@ const git = (args: string[]): string =>
     new TextDecoder()
         .decode(Bun.spawnSync(["git", ...args], { cwd: projectDir, stdout: "pipe" }).stdout)
         .trim();
-const head = git(["rev-parse", "--short", "HEAD"]) || null;
+const head = git(["rev-parse", "HEAD"]) || null;
 const dirty = git(["status", "--porcelain"]) !== "";
 // `--abbrev-ref HEAD` returns "HEAD" in a detached state — not a real branch name
 const branchRaw = git(["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -242,6 +237,10 @@ writeFileSync(
     `${JSON.stringify(
         {
             head,
+            tree: git(["rev-parse", "HEAD^{tree}"]),
+            diff: git(["diff", "HEAD", "--"]),
+            command: process.argv,
+            root: projectDir,
             ...(quiet
                 ? {
                       tier: "headless browser; controlled CSS viewport/DPR; not native appearance",
@@ -263,9 +262,7 @@ writeFileSync(
             // A summary that didn't parse leaves the categories absent, never zeroed.
             counts: { collected, ...counts },
             failedTitles: titles,
-            // What the run SPENT, per phase. A duration threshold gates the host and not the
-            // artifact (`checks.md`), so nothing reds on these — they are recorded, and
-            // `trend.ts` reads the distribution they accumulate into.
+            // Per-run timings are provenance, not a duration gate.
             durations,
             reference,
         },
@@ -273,22 +270,6 @@ writeFileSync(
         2,
     )}\n`,
 );
-
-// Same run, appended to the history `trend.ts` reads: `RUN.json` lives inside the shot set the next
-// full run WIPES, so it can record a run but never a distribution or an across-ship roster.
-if (!quiet)
-    appendRun({
-        at: new Date().toISOString(),
-        head,
-        branch,
-        dirty,
-        version: RECORD_VERSION,
-        selective,
-        defaultKnobs,
-        exitCode: run.exitCode,
-        failedTitles: titles,
-        durations,
-    });
 
 cleanup();
 if (failure !== null) {

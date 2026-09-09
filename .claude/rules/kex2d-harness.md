@@ -6,7 +6,7 @@ paths:
 
 # kex2d Capture Harness
 
-`kex2d/`: capture defaults headed. `KEX_QUIET=1 bun run capture -- -g '<selection>'`: headless, no display preflight/reference/trend append. Runtime/adapter/CSS+DPR aren't native appearance. Occupied ports refuse; only owned children stop.
+`kex2d/`: capture defaults headed. `KEX_QUIET=1 bun run capture -- -g '<selection>'`: headless, no display preflight/reference claim. Runtime/adapter/CSS+DPR aren't native appearance. Occupied ports refuse; only owned children stop.
 
 Playwright deps: `harness/package.json`/`bun.lock`, frozen by `check`; app wiring: entry Verify. Missing required display/adapter or software: incomplete.
 
@@ -14,7 +14,7 @@ Playwright deps: `harness/package.json`/`bun.lock`, frozen by `check`; app wirin
 
 `args.ts`/`capture.ts` own CLI/knobs/verdicts; `tests/harness.test.ts` pins guards. Validate before destruction; mirrors stay identical/reached. Bound calls; `globalTimeout` clears healthy full runs, spawn ceiling above it.
 
-Full/quiet: `--list` accounting, no skips/truncation, `forbidOnly`. Quiet requires nonempty/all-pass; refuses overrides/PWDEBUG. `RUN.json`: counts/titles/provenance. Wipe only absent/empty/`RUN.json` dirs; malformed `--out`/non-directory refuses. Listing touches no shots/stamp.
+All runs require nonempty/all-pass `--list` accounting, no skips/truncation, `forbidOnly`. Quiet refuses overrides/PWDEBUG. `RUN.json`: counts/titles/provenance. Wipe only absent/empty/`RUN.json` dirs; malformed `--out`/non-directory refuses. Listing touches no shots/stamp.
 
 `capture.ts`'s `suite.files`: `flow.ts`, all `*.pw.ts`, config. `boot` prints adapter, refuses software. Loaded files: no local imports. Mirrored constants cite sources. Use `kexCall`, typed batched reads.
 
@@ -30,10 +30,6 @@ Handler/key criteria need authored/history capture arms and handler-branch mutat
 
 ## Ship protocol
 
-Default: full capture. Quiet: scoped selection; native stays human. Unrelated multi-flow reds: rerun once; recurrence keeps `RUN.json`/reporter output. Single-flow reds are owned defects: targeted repro; green is inconclusive, take same-pass base full run, never inherited attribution. Read `bun run trend`, fix or declare with owner/first-seen evidence. No paired N-run escalation.
+Default: full capture. Quiet: scoped selection; native stays human. Unrelated multi-flow reds: rerun once; recurrence keeps `RUN.json`/reporter output. Single-flow reds are owned defects: targeted repro; green is inconclusive, take same-pass base full run, never inherited attribution. Every failure exits nonzero. Watch targeted handler breaks fail once, then reverse; no recurring mutation campaign.
 
-## Recorded distribution
-
-`declared.ts` tolerates only declared full-run reds, never stamps them reference; selective reds fail. Empty set retires no contracts. Evidence moves entries; dead owners/titles fail corpus checks. Reference needs full default-knob green. Iterate `bun run capture -- -g "pattern" --out DIR` separately; selective merges demote reference.
-
-`trend.ts` owns schema/windows/unit-keyed roster/removal summons. History is machine-stable outside checkouts; don't pool hosts. Only non-quiet `RUN.json` runs append. Missing/malformed fields fail loud. Serialize unlocked appends; never mask torn lines or add a lock instead. Duration isn't a test/check gate; removal summons never latches/fails.
+Screenshots are optional feedback, never taste or physics verdicts. `RUN.json` retains per-run command/tree/exit/count provenance; no cross-run history. Reference needs full default-knob green; quiet/selective runs never claim it.
