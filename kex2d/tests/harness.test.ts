@@ -17,6 +17,7 @@ import {
     failedTitles,
     intEnv,
     parseArgs,
+    quietMode,
     runCounts,
     UsageError,
     verdict,
@@ -46,6 +47,7 @@ import {
     type DeclaredEntry,
 } from "../harness/declared";
 import { type Baseline, readSurface } from "../harness/surface-budget";
+import { startServer } from "../harness/server";
 
 // The capture orchestrator's pure decision layer. Everything here decides something the gate's
 // honesty rests on: whether a run merges or WIPES the shot set, whether the host reinstalls, and
@@ -119,6 +121,100 @@ describe("parseArgs — the shot-set fate of a command line", () => {
     });
 });
 
+describe("quiet carrier boundary", () => {
+    test("selection only; launch, reporter and timeout overrides refuse", () => {
+        const env = { KEX_QUIET: "1" };
+        for (const args of [
+            [],
+            ["--list"],
+            ["-g", "S3f tools —"],
+            ["--grep=x"],
+            ["--grep-invert", "x"],
+        ])
+            expect(quietMode(env, args)).toBe(true);
+        for (const arg of [
+            "--headed",
+            "--debug",
+            "--ui",
+            "--ui-port=9222",
+            "--ui-host",
+            "--config=x",
+            "-c",
+            "-cx",
+            "--project=chromium",
+            "--browser=chromium",
+            "--reporter=html",
+            "--timeout=0",
+            "--global-timeout=0",
+            "--retries=1",
+            "--repeat-each=2",
+            "--pass-with-no-tests",
+            "--only-changed",
+            "--",
+            "--list=x",
+        ])
+            expect(() => quietMode(env, [arg])).toThrow("KEX_QUIET refuses");
+        for (const debug of ["", "0", "1", "console"])
+            expect(() => quietMode({ ...env, PWDEBUG: debug }, [])).toThrow("PWDEBUG");
+        for (const name of [
+            "PW_TEST_CONNECT_WS_ENDPOINT",
+            "PW_TEST_REUSE_CONTEXT",
+            "PW_TEST_SOURCE_TRANSFORM",
+            "PW_TEST_REPORTER",
+            "PLAYWRIGHT_HTML_OPEN",
+            "PLAYWRIGHT_DASHBOARD",
+        ])
+            expect(() => quietMode({ ...env, [name]: "1" }, [])).toThrow(name);
+        expect(() => quietMode(env, ["-g"])).toThrow("selection");
+        expect(quietMode({}, ["--headed"])).toBe(false);
+        expect(quietMode({ KEX_QUIET: "0" }, [])).toBe(false);
+        expect(() => quietMode({ KEX_QUIET: "true" }, [])).toThrow(UsageError);
+    });
+
+    test("every selected test must pass once, even for declared reds and zero child exit", () => {
+        for (const selective of [true, false]) {
+            const facts = {
+                quiet: true,
+                selective,
+                exitCode: 0,
+                collected: 2,
+                counts: runCounts("  2 passed\n"),
+                defaultKnobs: true,
+                failedTitles: [] as string[],
+            };
+            expect(verdict(facts)).toEqual({ reference: false, failure: null });
+            for (const category of ["failed", "skipped", "flaky", "interrupted", "did not run"])
+                expect(
+                    verdict({ ...facts, counts: runCounts(`  1 passed\n  1 ${category}\n`) })
+                        .failure,
+                ).not.toBeNull();
+            for (const collected of [0, null, 1, 3])
+                expect(verdict({ ...facts, collected }).failure).not.toBeNull();
+            expect(verdict({ ...facts, counts: null }).failure).not.toBeNull();
+            expect(verdict({ ...facts, exitCode: null }).failure).not.toBeNull();
+            expect(
+                verdict({ ...facts, exitCode: 1, failedTitles: ["red"] }, new Set(["red"])).failure,
+            ).toBe("Playwright exited 1");
+        }
+    });
+
+    test("occupied port refuses without harming its listener", async () => {
+        const listener = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch: () => new Response("owned scratch"),
+        });
+        try {
+            await expect(
+                startServer("/nonexistent-must-not-spawn", listener.port!),
+            ).rejects.toThrow("refusing occupied");
+            expect(await (await fetch(listener.url)).text()).toBe("owned scratch");
+        } finally {
+            await listener.stop(true);
+        }
+    });
+});
+
 describe("wipeable — what a full run is allowed to destroy", () => {
     test("a dir this harness could have written is fair game", () => {
         expect(wipeable(null)).toBe(true); // nothing there yet
@@ -137,10 +233,6 @@ describe("wipeable — what a full run is allowed to destroy", () => {
 });
 
 describe("intEnv / boolEnv — the fail-closed knob pass", () => {
-    // `boolEnv` has no live consumer since `KEX_HEADED` was retired with the headless option (the
-    // capture is headed and only headed — headless Chrome reports a software adapter on this seat).
-    // The guard itself survives in `args.ts` as the boolean half of the knob pass, so these arms
-    // cover it under a placeholder name and the next boolean knob inherits them.
     test("an unset knob takes the default", () => {
         expect(intEnv({}, "KEX_WORKERS", 4, 1, 64)).toBe(4);
         expect(boolEnv({}, "KEX_FLAG")).toBe(false);
@@ -852,6 +944,10 @@ describe("the standalone-loaded files mirror the knob guards verbatim", () => {
 
     test("the copies are character-identical to args.ts", () => {
         expect(fn(config, "intEnv")).toBe(fn(args, "intEnv"));
+        expect(fn(config, "boolEnv")).toBe(fn(args, "boolEnv"));
+        expect(config).toContain('boolEnv(process.env, "KEX_QUIET")');
+        expect(config).toContain("headless: quiet");
+        expect(capture).toContain("quietMode(process.env, testArgs)");
         expect(fn(flow, "intEnv")).toBe(fn(args, "intEnv"));
     });
 

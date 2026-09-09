@@ -50,16 +50,14 @@ export const SHOT_MS = intEnv(process.env, "KEX_SHOT_MS", 300, 0, 60_000);
 // exit 1. Restored `headless: false` and the same run passes at `nvidia / lovelace / `. Both
 // directions read on this seat, so the gate discriminates the two candidates it exists to separate.
 
-// A software adapter is not a real-GPU reading. The capture runs headed precisely because headless
-// Chrome falls back to SwiftShader on this seat, so the adapter identity is printed once per worker
-// and a software name fails the run rather than passing quietly.
+// A software adapter is refused in either mode. Adapter identity is not native appearance.
 const SOFTWARE = /swiftshader|llvmpipe|lavapipe|warp|basic render/i;
 
 let adapterPrinted = false;
 
 /** Read `adapter.info` from the page and fail the run on a software adapter. Every boot pays this
  *  (one `requestAdapter`), so no flow can screenshot a scene the software rasterizer drew. */
-async function assertRealAdapter(page: Page): Promise<void> {
+async function assertRealAdapter(page: Page): Promise<string> {
     const info = await page.evaluate(async () => {
         const gpu = (navigator as unknown as { gpu?: GPU }).gpu;
         if (!gpu) return null;
@@ -76,6 +74,7 @@ async function assertRealAdapter(page: Page): Promise<void> {
     expect(SOFTWARE.test(info as string), `software adapter, not a real-GPU reading: ${info}`).toBe(
         false,
     );
+    return info as string;
 }
 
 // The boot every flow shares, the adapter gate, and the uncaught-exception gate around it.
@@ -91,13 +90,29 @@ async function assertRealAdapter(page: Page): Promise<void> {
 type Boot = (path?: string) => Promise<void>;
 
 export const test = base.extend<{ boot: Boot }>({
-    boot: async ({ page }, use) => {
+    boot: async ({ page, browser, headless }, use) => {
+        if (process.env.KEX_QUIET === "1") expect(headless, "quiet requires headless").toBe(true);
         mkdirSync(OUT, { recursive: true });
         const thrown: string[] = [];
         page.on("pageerror", (e) => thrown.push(e.stack ?? e.message));
         await use(async (path = "/") => {
             await page.goto(`http://localhost:${PORT}${path}`, { waitUntil: "load" });
-            await assertRealAdapter(page);
+            const adapter = await assertRealAdapter(page);
+            if (process.env.KEX_QUIET === "1") {
+                const viewport = await page.evaluate(() => ({
+                    width: innerWidth,
+                    height: innerHeight,
+                    dpr: devicePixelRatio,
+                }));
+                process.stdout.write(
+                    `\nquiet observation: ${JSON.stringify({
+                        headless,
+                        browser: browser.version(),
+                        adapter,
+                        viewport,
+                    })}\n`,
+                );
+            }
             if (path === "/") await expect(page.locator(".dock")).toBeVisible();
         });
         expect(thrown, `the page threw an uncaught exception:\n${thrown.join("\n")}`).toEqual([]);

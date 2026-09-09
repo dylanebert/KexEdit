@@ -5,6 +5,7 @@ import {
     failedTitles,
     intEnv,
     parseArgs,
+    quietMode,
     runCounts,
     UsageError,
     verdict,
@@ -19,11 +20,8 @@ import { appendRun, RECORD_VERSION } from "./trend";
 // unattributed remainder visible rather than absorbed.
 const started = performance.now();
 
-// kex2d's screenshot harness — boot the vite dev server, drive the Playwright flow under a headed
-// local Chrome (shallot's runtime needs a real device even though kex2d renders canvas2D), write the
-// screenshots into `--out`. Display-gated: the browser runs headed, so a seat with no display is
-// refused rather than falling back to a software adapter (`detectDisplay` below, and the adapter
-// assertion every flow's `boot` carries in `flow.ts`).
+// Existing capture carrier. KEX_QUIET=1 enforces headless selection accounting without display
+// preflight, reference claims or trend append. Adapter/assertion laws hold in either mode.
 //
 //   bun run capture                     → screenshots into harness/shots/
 //   bun run capture --out DIR           → into DIR (`--out=DIR` too)
@@ -34,9 +32,7 @@ const started = performance.now();
 //
 // Env knobs, all validated here and forwarded explicitly to the Playwright run: `KEX_WORKERS`
 // (default 4), `KEX_SHOT_MS` for the pre-screenshot settle, and `KEX_PORT` (default 3014) for the
-// dev-server port — the one that makes a second session's capture isolatable (a capture kills
-// whatever holds its port). There is no headless knob: headless Chrome reports a SwiftShader adapter
-// on this seat, which is not a real-GPU reading, so the gate is headed and only headed.
+// dev-server port. An occupied port refuses; no holder belongs to this invocation.
 //
 // A full run (no passthrough args) owns the shot set and wipes `--out` first — so it refuses to run
 // at all unless that dir is absent, empty, or a prior shot set (`args.ts` `wipeable`). A SELECTIVE
@@ -79,6 +75,7 @@ function resolveArgs<T>(f: () => T): T {
 }
 
 const { out, testArgs, selective, listing } = resolveArgs(() => parseArgs(process.argv.slice(2)));
+const quiet = resolveArgs(() => quietMode(process.env, testArgs));
 const outDir = resolve(out ?? join(harnessDir, "shots"));
 
 const { port, workers, shotMs } = resolveArgs(() => ({
@@ -108,7 +105,7 @@ function detectDisplay(): boolean {
 
 // Incomplete, not green: a capture that cannot open a window captured nothing, and the exit says so
 // rather than reporting a skipped gate as a pass.
-if (!detectDisplay()) {
+if (!quiet && !detectDisplay()) {
     fail(
         "no display available: the capture runs headed and found neither DISPLAY nor WAYLAND_DISPLAY",
     );
@@ -138,6 +135,7 @@ const launch = (args: string[]): ReturnType<typeof runPlaywright> =>
         // A knob only reaches the run if it is passed here by name: `capture.pw.config.ts` reads
         // KEX_WORKERS, `flow.ts` reads KEX_PORT + KEX_OUT + KEX_SHOT_MS.
         env: {
+            KEX_QUIET: quiet ? "1" : "0",
             KEX_PORT: String(port),
             KEX_OUT: outDir,
             KEX_WORKERS: String(workers),
@@ -151,6 +149,8 @@ if (listing) {
     // exactly as the last capturing run left them (a `--list` probe stamping `reference: false` over
     // a good set is how the reference flag was lost mid-spec).
     const list = launch(testArgs);
+    const count = collectedCount(list.stdout);
+    if (quiet && (!count || list.exitCode !== 0)) fail("nonempty quiet selection did not collect");
     process.exit(list.exitCode === 0 ? 0 : 1);
 }
 
@@ -158,26 +158,30 @@ if (listing) {
 // browser) and taken before anything is wiped, so a config that collects nothing fails loud with the
 // shot set intact. Both sides of the oracle parse in `args.ts`, where they are unit-tested.
 let collectMs: number | null = null;
+let selectedTitles: string[] = [];
 const collected = ((): number | null => {
-    if (selective) return null;
+    if (selective && !quiet) return null;
     console.log("Collecting the suite (--list)...");
     const listStart = performance.now();
-    const list = launch(["--list"]);
+    const list = launch([...(quiet ? testArgs : []), "--list"]);
+    selectedTitles = list.stdout
+        .split("\n")
+        .filter((line) => line.includes(" › "))
+        .map((line) => line.trim());
     collectMs = Math.round(performance.now() - listStart);
     if (list.exitCode !== 0) fail(`the suite did not collect (--list exit ${list.exitCode})`);
     const total = collectedCount(list.stdout);
-    if (total === null) fail("the --list pre-pass reported no collected count");
+    if (total === null || (quiet && total === 0))
+        fail("the --list pre-pass reported no nonempty collected count");
     return total;
 })();
 
 if (!selective) rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
-const serverStart = performance.now();
-const server = await startServer(projectDir, port, "kex2d");
-const serverMs = Math.round(performance.now() - serverStart);
+let server: Awaited<ReturnType<typeof startServer>> | undefined;
 const cleanup = (): void => {
-    server.kill();
+    server?.kill();
 };
 process.on("exit", cleanup);
 process.on("SIGINT", () => {
@@ -189,6 +193,9 @@ process.on("SIGTERM", () => {
     process.exit(1);
 });
 
+const serverStart = performance.now();
+server = await startServer(projectDir, port, "kex2d");
+const serverMs = Math.round(performance.now() - serverStart);
 console.log("Running capture flow...");
 const runStart = performance.now();
 const run = launch(testArgs);
@@ -205,6 +212,7 @@ const counts = runCounts(run.stdout);
 const defaultKnobs = workers === DEFAULT_WORKERS && shotMs === DEFAULT_SHOT_MS;
 const titles = failedTitles(run.stdout);
 const { reference, failure } = verdict({
+    quiet,
     selective,
     exitCode: run.exitCode,
     collected,
@@ -234,6 +242,17 @@ writeFileSync(
     `${JSON.stringify(
         {
             head,
+            ...(quiet
+                ? {
+                      tier: "headless browser; controlled CSS viewport/DPR; not native appearance",
+                      runtime: { bun: Bun.version, platform: process.platform, arch: process.arch },
+                      observations: run.stdout
+                          .split("\n")
+                          .filter((line) => line.startsWith("quiet observation: "))
+                          .map((line) => JSON.parse(line.slice("quiet observation: ".length))),
+                      selectedTitles,
+                  }
+                : {}),
             branch,
             dirty,
             args: testArgs,
@@ -257,18 +276,19 @@ writeFileSync(
 
 // Same run, appended to the history `trend.ts` reads: `RUN.json` lives inside the shot set the next
 // full run WIPES, so it can record a run but never a distribution or an across-ship roster.
-appendRun({
-    at: new Date().toISOString(),
-    head,
-    branch,
-    dirty,
-    version: RECORD_VERSION,
-    selective,
-    defaultKnobs,
-    exitCode: run.exitCode,
-    failedTitles: titles,
-    durations,
-});
+if (!quiet)
+    appendRun({
+        at: new Date().toISOString(),
+        head,
+        branch,
+        dirty,
+        version: RECORD_VERSION,
+        selective,
+        defaultKnobs,
+        exitCode: run.exitCode,
+        failedTitles: titles,
+        durations,
+    });
 
 cleanup();
 if (failure !== null) {

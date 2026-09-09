@@ -48,4 +48,4 @@ Install app dependencies with `bun install --frozen-lockfile` when missing; insp
 
 Local `node_modules/.bin/tsc` resolves to `@typescript/native`; `svelte-check` resolves JavaScript `typescript` for compiler APIs including `ts.sys`. Keep both; inspect installed resolution/lockfile, not assumed matching patch versions.
 
-Unit tests are device-free. Run affected `./tests/*.oracle.ts` explicitly by path, not as a blanket corpus sweep. `bun run capture` and `bun run mutate` are display-gated; follow the capture rule, serialize the display seat, never kill host processes or start an interactive verification server.
+Unit tests are device-free; run affected `./tests/*.oracle.ts` by path. Quiet composition: `KEX_QUIET=1 bun run capture -- --list -g '<selection>'`, then omit `--list` with a fresh `--out DIR`. This is headless, not native/taste evidence. Default capture/mutate remain display-gated; follow the capture rule.
