@@ -36,7 +36,7 @@ Velocity records are track-global and survive structural edits without reseeding
 
 `optimize.ts`: only unlocked force ordinates change; pin `(x,y,theta)`, never exit speed as a fourth DOF. A stall certificate does not certify the landing: `finalize` checks landed energy injection against its derived rounding floor, and an awaited answer needs the live authored hash.
 
-`history.ts` holds the authored verbs and is the one recording path: structural verbs bracket internally, continuous ones open `begin*`, write through a setter every frame and coalesce on `commit`. A declined write leaves the state unmoved, so the release records nothing. Gestures snapshot the raw `end`/`order` COLUMNS: absence is not the default written out. `history` never imports `editor`; injected selection hooks re-resolve stable identities after restore.
+`history.ts` owns recording and injected stable-selection restore, never imports `editor`. Continuous `begin*`/update/commit coalesces; cancel restores opening, including raw absent columns. `beginRecordEnd` freezes records and ripple: `planRecordEnd` validates the whole candidate, `publishRecordSpans` publishes synchronously. Replay admits legal legacy sub-floor neighbors; resize floors only the subject. `tests/history.test.ts` pins one-vs-N and exact replay.
 
 ## Hard gotchas
 

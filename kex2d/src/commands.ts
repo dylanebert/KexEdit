@@ -17,6 +17,7 @@ import {
     beginFriction,
     beginHandle,
     beginResistance,
+    beginRecordEnd,
     beginV0,
     commit,
     type History,
@@ -129,6 +130,14 @@ export interface RecordSpanOp {
     end: number;
 }
 
+export interface RecordEndOp {
+    type: "record-end";
+    id: number;
+    end: number;
+    /** true translates later records in this lane; omitted/false resizes independently. */
+    ripple?: boolean;
+}
+
 export interface RecordHandleOp {
     type: "record-handle";
     id: number;
@@ -178,6 +187,7 @@ export type Op =
     | RecordAddOp
     | RecordDeleteOp
     | RecordSpanOp
+    | RecordEndOp
     | RecordHandleOp
     | RecordEaseOp
     | EndOp
@@ -248,6 +258,18 @@ export function applyOp(ecs: State, h: History, op: Op): OpResult {
                 return opShape("record-span needs a finite id, start and end");
             beginBody(ecs, op.id);
             const write = setRecordSpan(ecs, op.id, op.start, op.end);
+            commit(h);
+            return fromWrite(write);
+        }
+
+        case "record-end": {
+            if (
+                !finite(op.id, op.end) ||
+                (op.ripple !== undefined && typeof op.ripple !== "boolean")
+            )
+                return opShape("record-end needs finite id/end and an optional boolean ripple");
+            const update = beginRecordEnd(ecs, op.id, op.ripple);
+            const write = update(op.end);
             commit(h);
             return fromWrite(write);
         }

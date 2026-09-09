@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
     type LaneSegment,
+    emptyLanes,
+    candidateRefusals,
+    planRecordEnd,
     Lane,
     endPinnable,
     laneOrder,
@@ -37,6 +40,90 @@ test("finite span bounds: follow permits growth, a pin permits equality only", (
             expect(spanWithinEnd(0, value, pin)).toBe(false);
         }
     }
+});
+
+describe("record-end whole candidate", () => {
+    for (const name of ["velocity", "force", "geo"] as const) {
+        test(`${name}: opening boundary, gaps, values and legacy legality`, () => {
+            const opening = emptyLanes();
+            opening[name] = [
+                seg(1, 0, 10, 12, 11),
+                { ...seg(2, 10, 20, 13), ease: 1 },
+                { ...seg(3, 23, 28, 15, 14), ease: 2 },
+            ];
+            const cross = name === "geo" ? "force" : "geo";
+            opening[cross] = [seg(4, 8, 17, 1, 0)];
+            const bytes = JSON.stringify(opening);
+            for (const [end, spans] of [
+                [
+                    12,
+                    [
+                        [0, 12],
+                        [12, 22],
+                        [25, 30],
+                    ],
+                ],
+                [
+                    8,
+                    [
+                        [0, 8],
+                        [8, 18],
+                        [21, 26],
+                    ],
+                ],
+            ] as const) {
+                const plan = planRecordEnd(opening, 30, 1, end, true);
+                expect(plan.refusals).toEqual([]);
+                expect(plan.lanes![name].map((r) => [r.start, r.end])).toEqual(
+                    spans.map((span) => [...span]),
+                );
+                expect(plan.lanes![cross]).toEqual(opening[cross]);
+                expect(plan.lanes![name].map(({ start: _s, end: _e, ...rest }) => rest)).toEqual(
+                    opening[name].map(({ start: _s, end: _e, ...rest }) => rest),
+                );
+            }
+            expect(planRecordEnd(opening, 29, 1, 12, true).lanes).toBeNull();
+            for (const flag of [undefined, false])
+                expect(planRecordEnd(opening, 30, 1, 12, flag).lanes).toBeNull();
+            for (const end of [0, 0.5, NaN, Infinity, -Infinity])
+                expect(planRecordEnd(opening, 30, 1, end, true).lanes).toBeNull();
+            expect(planRecordEnd(opening, 30, 99, 12, true).lanes).toBeNull();
+            expect(planRecordEnd(opening, 30, 1, 12, 1 as unknown as boolean).lanes).toBeNull();
+            expect(JSON.stringify(opening)).toBe(bytes);
+            opening[name][1]!.end = 10.25;
+            expect(planRecordEnd(opening, 30, 1, 12, true).lanes![name][1]).toEqual({
+                ...opening[name][1]!,
+                start: 12,
+                end: 12.25,
+            });
+            expect(planRecordEnd(opening, 30, 2, 10.5, true).lanes).toBeNull();
+            const tail = planRecordEnd(opening, 30, 3, 29, true);
+            expect(tail.lanes![name].slice(0, 2)).toEqual(opening[name].slice(0, 2));
+        });
+    }
+    test("complete legality refuses malformed preserved records", () => {
+        for (const bad of [
+            { start: -1 },
+            { start: NaN },
+            { end: Infinity },
+            { end: 0 },
+            { exit: NaN },
+            { entry: Infinity },
+            { ease: 3 },
+            { id: -1 },
+        ]) {
+            const lanes = emptyLanes();
+            lanes.force = [seg(1, 0, 10, 1), { ...seg(2, 12, 15, 2), ...bad }];
+            expect(candidateRefusals(lanes, 0).length).toBeGreaterThan(0);
+            expect(planRecordEnd(lanes, 0, 1, 11, true).lanes).toBeNull();
+        }
+        const lanes = emptyLanes();
+        lanes.force = [seg(1, 0, 10, 1)];
+        lanes.velocity = [seg(2, 0, 10, 0)];
+        expect(planRecordEnd(lanes, 0, 1, 12, true).lanes).toBeNull();
+        lanes.velocity = [seg(1, 0, 10, 12)];
+        expect(planRecordEnd(lanes, 0, 1, 12, true).lanes).toBeNull();
+    });
 });
 
 describe("exclusivity: overlap is refused, abutting is legal", () => {

@@ -24,7 +24,7 @@ The start position is fixed at the origin. Initial speed is the authored `Track.
 
 `track.ts` alone writes authored lanes: finite stations, origin, overlap and pin guards refuse before writes. Stable ids survive restore; entity ids do not. Legacy neighbors below the authoring floor remain legal.
 
-`history.ts` owns the verbs: add/delete per lane, handle, edge, body, ease, end, order, start speed. Use the setters inside gestures, never write authored columns from read paths. Structural helpers bracket internally; continuous edits use `begin*`, setter, then `commit` or `cancel`; a declined write records nothing. Read signatures.
+`history.ts` owns undo: `begin*`/update/commit-or-cancel. `beginRecordEnd` freezes the updater: `record-end {id,end,ripple?}` is independent unless true shifts later same-lane spans atomically. Pin/other lanes hold; refusal keeps the last candidate, cancel restores opening, release records once at most. Stable selection also returns.
 
 `commands.ts`/`cli.ts`: `bun run cli -- new|edit|validate|stats|dump|fmt`. `record-add` requires lane/start/end/exit; omitted entry is unowned, ease Linear. `flatRecordArgs` seeds owned entry=exit without ease, never from bake. `record-handle` entry without value inherits; finite value overrides, exit requires value. `Track.v0` seeds creation, not unresolved velocity entries.
 

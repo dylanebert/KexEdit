@@ -13,7 +13,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { State } from "@dylanebert/shallot";
 import { loadDocument, saveDocument } from "../src/doc";
-import { beginBody, commit, createHistory } from "../src/history";
+import {
+    beginBody,
+    beginRecordEnd,
+    cancel,
+    commit,
+    createHistory,
+    undo,
+    redo,
+} from "../src/history";
 import { Lane, RECORD_FLOOR, trackEnd } from "../src/lanes";
 import { Easing } from "../src/profile";
 import { DEFAULT_ORDER } from "../src/projection";
@@ -41,6 +49,8 @@ import {
     setRecordEase,
     setRecordHandle,
     setRecordSpan,
+    setRecordEnd,
+    publishRecordSpans,
     setTrackDomain,
     setV0,
     snapshotAll,
@@ -67,6 +77,74 @@ function author(state: State, lane: Lane, row: Parameters<typeof createRecord>[2
     if (w.id === null) throw new Error("record refused");
     return w.id;
 }
+
+describe("record-end publication", () => {
+    test("whole last valid document/hash/bake survives pin refusal; legacy replay is exact", () => {
+        const { state, eid } = track();
+        author(state, Lane.Force, { id: 101, start: 0, end: 10, ease: 0, entry: 1, exit: 1.1 });
+        author(state, Lane.Force, { id: 102, start: 10, end: 20, ease: 1, exit: 1.2 });
+        author(state, Lane.Force, { id: 103, start: 23, end: 28, ease: 2, entry: 1.3, exit: 1 });
+        author(state, Lane.Geo, { id: 104, start: 8, end: 17, ease: 0, entry: 0, exit: 0 });
+        expect(setEnd(state, 29)).toEqual([]);
+        state.step(0);
+        const before = saveDocument(state);
+        const hash = authoredHash(state);
+        const baked = JSON.stringify(bakeOut.get(eid));
+        expect(setRecordEnd(state, 101, 12, true).id).toBeNull();
+        expect(saveDocument(state)).toEqual(before);
+        expect(authoredHash(state)).toBe(hash);
+        state.step(0);
+        expect(JSON.stringify(bakeOut.get(eid))).toBe(baked);
+        expect(setEnd(state, 30)).toEqual([]);
+        const previousBake = bakeOut.get(eid)!.hash;
+        expect(setRecordEnd(state, 101, 12, true).refusals).toEqual([]);
+        expect(lanesOf(state).force.map((r) => [r.start, r.end])).toEqual([
+            [0, 12],
+            [12, 22],
+            [25, 30],
+        ]);
+        // No callback/await inside publication: the scheduled bake sees only the whole result.
+        expect(bakeOut.get(eid)!.hash).toBe(previousBake);
+        state.step(0);
+        expect(bakeOut.get(eid)!.hash).toBe(authoredHash(state));
+        expect(bakeOut.get(eid)!.hash).not.toBe(previousBake);
+        const snap = snapshotAll(state);
+        snap.records.find((r) => r.id === 102)!.end = 12.25;
+        restoreAll(state, snap);
+        const legacy = saveDocument(state);
+        const h = createHistory();
+        const update = beginRecordEnd(state, 101, true);
+        expect(update(10).refusals).toEqual([]);
+        expect(lanesOf(state).force[1]!.end - lanesOf(state).force[1]!.start).toBe(0.25);
+        const moved = saveDocument(state);
+        commit(h);
+        undo(h, state);
+        expect(saveDocument(state)).toEqual(legacy);
+        redo(h, state);
+        expect(saveDocument(state)).toEqual(moved);
+        const cancelUpdate = beginRecordEnd(state, 101, true);
+        expect(cancelUpdate(11).refusals).toEqual([]);
+        cancel();
+        expect(saveDocument(state)).toEqual(moved);
+    });
+    test("prevalidate all entities and data before any write", () => {
+        const { state } = track();
+        author(state, Lane.Force, { id: 101, start: 0, end: 10, ease: 0, exit: 1 });
+        author(state, Lane.Force, { id: 102, start: 10, end: 20, ease: 0, exit: 1 });
+        const before = saveDocument(state);
+        const candidate = lanesOf(state);
+        candidate.force[0]!.end = 12;
+        candidate.force[1]!.start = 12;
+        candidate.force[1]!.end = 22;
+        candidate.force[1]!.exit = NaN;
+        expect(publishRecordSpans(state, candidate, 0, 101).id).toBeNull();
+        expect(saveDocument(state)).toEqual(before);
+        candidate.force[1]!.exit = 1;
+        candidate.force[1]!.id = 999;
+        expect(publishRecordSpans(state, candidate, 0, 101).id).toBeNull();
+        expect(saveDocument(state)).toEqual(before);
+    });
+});
 
 describe("the lane readers", () => {
     test("lanesOf returns each lane's records in span order, ties broken by id", () => {

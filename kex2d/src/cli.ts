@@ -70,6 +70,9 @@ Record ops (stations in meters; handles: force g, velocity m/s, geo radians):
     omitted entry is unowned, omitted ease is Linear on every lane (0; Cubic 1, Quintic 2).
     An explicit flat seed supplies entry=exit; start-speed changes initial speed, not entries.
   record-span {id,start,end}: independent span edit; refuses overlap/origin/pin violations.
+  record-end {id,end,ripple?}: holds start; omitted/false resizes independently.
+    true atomically translates later same-lane records from the opening end, preserving gaps.
+    Other lanes and the pin stay unchanged; any refusal leaves the whole candidate untouched.
   record-handle {id,which,value?}: which=entry with no value inherits; finite value overrides.
     Inheriting an isolated velocity entry leaves its prescription unresolved/inactive.
     which=exit requires a finite value. Entry ownership changes are undoable in the editor.

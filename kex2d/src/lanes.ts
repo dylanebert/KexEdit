@@ -121,6 +121,96 @@ export function spanWithinEnd(start: number, end: number, pin: number): boolean 
     return Number.isFinite(start) && Number.isFinite(end) && (pin === 0 || end <= pin);
 }
 
+/** Document legality for a complete transaction; preserved legacy spans have no authoring floor. */
+export function candidateRefusals(lanes: Lanes, pin: number): { guard: string; message: string }[] {
+    const out: { guard: string; message: string }[] = [];
+    const seen = new Set<number>();
+    for (const lane of [Lane.Velocity, Lane.Force, Lane.Geo]) {
+        const rows = lanes[laneName(lane) as keyof Lanes];
+        out.push(...laneRefusals(lane, rows));
+        for (const row of rows) {
+            if (!Number.isSafeInteger(row.id) || row.id < 0 || seen.has(row.id))
+                out.push({
+                    guard: "duplicateId",
+                    message: "record ids must be unique nonnegative integers",
+                });
+            seen.add(row.id);
+            if (!spanWithinEnd(row.start, row.end, pin))
+                out.push({
+                    guard: "spanWithinEnd",
+                    message: "record stations must be finite and not exceed the track pin",
+                });
+            if (
+                ![0, 1, 2].includes(row.ease) ||
+                !Number.isFinite(row.exit) ||
+                (row.entry !== undefined && !Number.isFinite(row.entry))
+            )
+                out.push({
+                    guard: "validRecord",
+                    message: "record easing and handles must be valid",
+                });
+            if (
+                lane === Lane.Velocity &&
+                (!validStripValue(row.exit) ||
+                    (row.entry !== undefined && !validStripValue(row.entry)))
+            )
+                out.push({
+                    guard: "validStripValue",
+                    message: "velocity handles must be positive",
+                });
+        }
+    }
+    if (!endPinnable(lanes, pin))
+        out.push({ guard: "spanWithinEnd", message: "candidate must fit the unchanged pin" });
+    return out;
+}
+
+/** Plan against the opening stations, never the last preview. No input is mutated. */
+export function planRecordEnd(
+    opening: Lanes,
+    pin: number,
+    id: number,
+    end: number,
+    ripple = false,
+):
+    | { lanes: Lanes; refusals: [] }
+    | { lanes: null; refusals: { guard: string; message: string }[] } {
+    if (typeof ripple !== "boolean")
+        return {
+            lanes: null,
+            refusals: [{ guard: "opFieldInvalid", message: "ripple must be boolean" }],
+        };
+    const subject = Object.values(opening)
+        .flat()
+        .find((row) => row.id === id);
+    if (!subject)
+        return { lanes: null, refusals: [{ guard: "recordNotFound", message: `no record ${id}` }] };
+    if (!Number.isFinite(end) || end - subject.start < RECORD_FLOOR)
+        return {
+            lanes: null,
+            refusals: [
+                {
+                    guard: "segmentDegenerate",
+                    message: "resized extent must be finite and meet the record floor",
+                },
+            ],
+        };
+    const delta = end - subject.end;
+    const lanes = emptyLanes();
+    for (const name of ["velocity", "force", "geo"] as const) {
+        const selected = opening[name].some((row) => row.id === id);
+        lanes[name] = opening[name].map((row) =>
+            row.id === id
+                ? { ...row, end }
+                : selected && ripple && row.start >= subject.end
+                  ? { ...row, start: row.start + delta, end: row.end + delta }
+                  : { ...row },
+        );
+    }
+    const refusals = candidateRefusals(lanes, pin);
+    return refusals.length ? { lanes: null, refusals } : { lanes, refusals: [] };
+}
+
 /** the lane's own exclusivity law, as a predicate over a whole lane: no two members overlap.
  *  Abutting members pass; a member with `start >= end` is degenerate and reported separately by
  *  {@link laneRefusals}. */
