@@ -1,111 +1,67 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import type { Easing } from "./profile";
-import { EASINGS, EASING_GLYPHS, spanMenu } from "./menus";
-import Menu from "./Menu.svelte";
-import { fitMenu } from "./menu";
 import type { FieldSpec, ScreenBox } from "./timeline";
 
-/** Presentational field lifecycle: hold the press value/rate and measured screen box while
- * authored writes and the bake remain live. The caller supplies shared history gestures. */
-
-const {
-    x,
-    y,
-    title,
-    fields,
-    ease,
-    onease,
-    residual,
-    onpeel,
-    focusKey = null,
-    focusRequest = 0,
-    ripple = false,
-    onripple,
-    busy = false,
-    onmeasure,
-    usable,
-    entrySummary,
-    owned,
-    onentry,
-}: {
-    x: number;
-    y: number;
-    title: string;
-    fields: FieldSpec[];
-    ease: Easing;
-    onease: (e: Easing) => void;
-    /** the driven residual, already formatted, or null where the record drives its own stretch. */
-    residual: string | null;
-    onpeel: () => void;
-    focusKey?: string | null;
-    focusRequest?: number;
-    ripple?: boolean;
-    onripple?: (value: boolean) => void;
-    busy?: boolean;
-    onmeasure: (w: number, h: number) => void;
-    usable: (box: ScreenBox) => boolean;
-    entrySummary: string;
-    owned: boolean;
-    onentry: () => string;
+/** One screen-held field; shared history and live bake belong to the caller. */
+const { x, y, record, field, focusRequest, focus = false, ripple, onripple, busy, onmeasure, usable, onpeel, onactions, result = null, notice = "" }: {
+    x: number; y: number; record: number; field: FieldSpec; focusRequest: number; focus?: boolean;
+    ripple: boolean; onripple: (value: boolean) => void; busy: boolean;
+    onmeasure: (w: number, h: number) => void; usable: (box: ScreenBox) => boolean;
+    onpeel: () => void; onactions: (button: HTMLButtonElement) => void;
+    result?: string | null; notice?: string;
 } = $props();
-
-let disclosed = $state(false);
-let overriding = $state(false);
-let pendingFocus: string | null = $state(null);
-let easingMenu: { x: number; y: number } | null = $state(null);
-const currentEase = $derived(EASINGS.find(([, value]) => value === ease)?.[0] ?? "Unknown");
-const visibleFields = $derived(fields.filter((f) => f.name === "exit" || (f.name === "entry" ? disclosed && (owned || overriding) : disclosed || focusKey === f.name)));
-
-
-const print = (f: FieldSpec): string => Number.isFinite(f.value) ? f.value.toFixed(f.precision) : "";
-
-// Hold the opening FieldSpec and screen position, not the tick-rebuilt closures.
 let panel: HTMLDivElement;
-let held: { x: number; y: number; w: number; h: number } | null = $state(null);
+let held: ScreenBox | null = $state(null);
 let edit: { field: FieldSpec; input?: HTMLInputElement; x0?: number; pointer?: number; label?: HTMLElement } | null = null;
 let error = $state("");
+let pending = $state(false);
+const print = (f: FieldSpec): string => Number.isFinite(f.value) ? f.value.toFixed(f.precision) : "";
+const label = $derived(field.name === "exit" ? "Target" : field.name[0]!.toUpperCase() + field.name.slice(1));
 function finish(land = false): void {
     const g = edit;
     if (!g) return;
-    edit = null; // blur/release cannot finish twice
-    if (land && !error) g.field.commit();
-    else g.field.cancel();
-    if (g.input && !land) g.input.value = print(g.field);
-    if (g.label && g.pointer !== undefined && g.label.hasPointerCapture(g.pointer))
-        g.label.releasePointerCapture(g.pointer);
+    edit = null;
+    if (land && !error) g.field.commit(); else g.field.cancel();
+    if (g.input && !land) {
+        g.input.value = print(g.field);
+        g.input.blur();
+    }
+    if (g.label && g.pointer !== undefined && g.label.hasPointerCapture(g.pointer)) g.label.releasePointerCapture(g.pointer);
     held = null;
-    if (g.field.name === "entry") overriding = false;
     error = "";
+}
+function cancelForLayout(): void {
+    const reason = error;
+    finish();
+    error = reason;
 }
 function open(f: FieldSpec): boolean {
     if (f.readonly) return false;
     finish();
+    error = "";
     if (f.begin() === false) return false;
-    const rect = panel.getBoundingClientRect();
-    held = { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
+    const r = panel.getBoundingClientRect();
+    held = { x: r.left, y: r.top, w: r.width, h: r.height };
     return true;
 }
 function write(value: number): void {
-    if (!edit) return;
-    error = Number.isFinite(value) ? (edit.field.write(value) ?? "") : "Enter a finite number";
+    if (edit) error = Number.isFinite(value) ? (edit.field.write(value) ?? "") : "Enter a finite number";
 }
 function scrubMove(e: PointerEvent): void {
-    if (!edit || edit.x0 === undefined || edit.pointer !== e.pointerId) return;
-    write(edit.field.value + (e.clientX - edit.x0) * edit.field.rate);
+    if (edit?.x0 !== undefined && edit.pointer === e.pointerId) write(edit.field.value + (e.clientX - edit.x0) * edit.field.rate);
 }
-function scrubDown(e: PointerEvent, f: FieldSpec): void {
+function scrubDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     e.preventDefault();
-    if (!open(f)) return;
+    if (!open(field)) return;
     const label = e.currentTarget as HTMLElement;
-    edit = { field: f, x0: e.clientX, pointer: e.pointerId, label };
+    edit = { field, x0: e.clientX, pointer: e.pointerId, label };
     label.setPointerCapture(e.pointerId);
 }
-function fieldFocus(e: FocusEvent, f: FieldSpec): void {
-    if (!open(f)) return;
+function fieldFocus(e: FocusEvent): void {
+    if (!open(field)) return;
     const input = e.currentTarget as HTMLInputElement;
-    edit = { field: f, input };
+    edit = { field, input };
     input.select();
 }
 function fieldInput(e: Event): void {
@@ -113,60 +69,39 @@ function fieldInput(e: Event): void {
     write(text === "" ? NaN : Number(text));
 }
 function fieldKey(e: KeyboardEvent): void {
-    if (e.key === "Enter" || e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        const input = e.currentTarget as HTMLInputElement;
-        finish(e.key === "Enter");
-        input.blur();
+    if (e.key !== "Enter" && e.key !== "Escape") return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === "Enter") {
+        const text = (e.currentTarget as HTMLInputElement).value.trim();
+        if (!text || !Number.isFinite(Number(text))) write(NaN);
+        if (error) return;
     }
+    finish(e.key === "Enter");
+    (e.currentTarget as HTMLInputElement).blur();
+    onpeel();
 }
-function fieldBlur(): void { finish(); }
+$effect(() => { void x; void y; if (held && !usable(held)) cancelForLayout(); });
+$effect(() => { void focusRequest; pending = focus; });
 $effect(() => {
     void x; void y;
-    if (held && !usable(held)) finish();
-});
-$effect(() => { void focusRequest; pendingFocus = focusKey; });
-$effect(() => {
-    void x; void y;
-    if (!panel || !pendingFocus) return;
-    const rect = panel.getBoundingClientRect();
-    if (!usable({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })) return;
-    const input = panel.querySelector<HTMLInputElement>(`#pf-${pendingFocus}`);
-    if (input) { pendingFocus = null; input.focus(); }
+    if (!panel || !pending) return;
+    const r = panel.getBoundingClientRect();
+    if (!usable({ x: r.left, y: r.top, w: r.width, h: r.height })) return;
+    const input = panel.querySelector<HTMLInputElement>(".field input");
+    if (input) { pending = false; input.focus(); }
 });
 onMount(() => {
     const measure = (): void => {
-        const rect = panel.getBoundingClientRect();
-        if (held && !usable({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })) finish();
-        onmeasure(rect.width, rect.height);
+        const r = panel.getBoundingClientRect();
+        if (held && !usable({ x: r.left, y: r.top, w: r.width, h: r.height })) cancelForLayout();
+        onmeasure(r.width, r.height);
     };
     const observer = new ResizeObserver(measure);
-    observer.observe(panel);
-    measure();
-    const dismiss = (e: PointerEvent): void => {
-        if (!(e.target as HTMLElement).closest(".ease-menu, .ease-control")) easingMenu = null;
-    };
-    window.addEventListener("pointerdown", dismiss);
-    const up = (e: PointerEvent): void => {
-        if (edit?.pointer === e.pointerId) finish(true);
-    };
+    observer.observe(panel); measure();
+    const up = (e: PointerEvent): void => { if (edit?.pointer === e.pointerId) { finish(true); onpeel(); } };
     const abort = (): void => finish();
     const key = (e: KeyboardEvent): void => {
-        if (e.key === "Escape" && !edit && (easingMenu || overriding || disclosed)) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            if (easingMenu) easingMenu = null;
-            else if (overriding) overriding = false;
-            else disclosed = false;
-            return;
-        }
-        if (easingMenu) { e.stopImmediatePropagation(); return; }
-        if (edit?.x0 !== undefined && e.key === "Escape") {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            finish();
-        }
+        if (edit?.x0 !== undefined && e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); finish(); }
     };
     window.addEventListener("pointermove", scrubMove);
     window.addEventListener("pointerup", up);
@@ -175,9 +110,7 @@ onMount(() => {
     window.addEventListener("resize", abort);
     window.addEventListener("keydown", key, true);
     return () => {
-        observer.disconnect();
-        window.removeEventListener("pointerdown", dismiss);
-        finish();
+        observer.disconnect(); finish();
         window.removeEventListener("pointermove", scrubMove);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", abort);
@@ -188,162 +121,40 @@ onMount(() => {
 });
 </script>
 
-<!-- opaque, flipped and clamped by the caller; it never covers its own span's handles because the
-     fit opens it a gap BELOW the band (or above, flipped). -->
-<div bind:this={panel} class="popover" style="left: {held?.x ?? x}px; top: {held?.y ?? y}px;" role="group" aria-label="{title} segment">
-    <div class="head">
-        <span class="quantity">{title}</span>
-        <button class="peel" type="button" onclick={onpeel} aria-label="Dismiss">×</button>
+<div bind:this={panel} data-record={record} class="popover" style="left: {held?.x ?? x}px; top: {held?.y ?? y}px;" role="group" aria-label="Selected segment">
+    <div class="line">
+        {#if result !== null}<span class="result" role="status">{result}</span>
+        {:else}
+            <div class="field">
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
+                <label for="pf-{field.name}" title="Scrub {label.toLowerCase()} horizontally; click value to type" onpointerdown={scrubDown} onclick={(e) => e.preventDefault()}>{label}</label>
+                <input id="pf-{field.name}" type="text" inputmode="decimal" value={print(field)} onfocus={fieldFocus} oninput={fieldInput} onkeydown={fieldKey} onblur={() => finish()} />
+                <span class="unit">{field.unit}</span>
+            </div>
+        {/if}
+        <button class="actions" type="button" aria-label="Segment actions" title="Segment actions" disabled={busy} onclick={(e) => onactions(e.currentTarget)}>⋯</button>
     </div>
-    {#each visibleFields as f (f.name)}
-        <div class="field" class:ro={f.readonly}>
-            <!-- Keyboard editing uses the associated input; prevent a scrub's synthetic click from opening a second edit. -->
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
-            <label for="pf-{f.name}" onpointerdown={(e) => scrubDown(e, f)} onclick={(e) => e.preventDefault()}>{f.name === "exit" ? "Target" : f.name}</label>
-            <input
-                id="pf-{f.name}"
-                type="text"
-                inputmode="decimal"
-                readonly={f.readonly}
-                value={print(f)}
-                onfocus={(e) => fieldFocus(e, f)}
-                oninput={fieldInput}
-                onkeydown={fieldKey}
-                onblur={fieldBlur}
-            />
-            <span class="unit">{f.unit}</span>
-        </div>
-    {/each}
-    <button class="ease-control" type="button" disabled={busy} title="Change easing" onclick={(e) => { const r = e.currentTarget.getBoundingClientRect(); easingMenu = easingMenu ? null : { x: r.left, y: r.bottom + 8 }; }} aria-expanded={easingMenu !== null}>
-        <svg viewBox="0 0 22 16" aria-hidden="true"><path d={EASING_GLYPHS[ease]} /></svg>Easing · {currentEase} ▾
-    </button>
-    <div class="scope">{entrySummary}</div>
-    <button class="disclosure" type="button" disabled={busy} aria-expanded={disclosed} onclick={() => disclosed = !disclosed}>{disclosed ? "▾" : "▸"} Entry, range & diagnostics</button>
-    {#if disclosed}
-        <div class="entry-actions">
-            {#if owned}<button type="button" disabled={busy} onclick={() => error = onentry()}>Inherit entry</button>
-            {:else}<button type="button" disabled={busy} onclick={() => { overriding = !overriding; pendingFocus = overriding ? "entry" : null; }}>Override entry</button>{/if}
-        </div>
-    {/if}
-    {#if onripple && (disclosed || focusKey === "end")} 
+    {#if field.name === "end" && result === null}
         <label class="ripple"><input type="checkbox" checked={ripple} disabled={busy} onchange={(e) => onripple(e.currentTarget.checked)} />Ripple later segments in this lane</label>
         <div class="scope">End resize only; other lanes stay at their stations</div>
     {/if}
-    <div role={error ? "status" : undefined} class="error">{error}</div>
-    {#if disclosed && residual !== null}
-        <!-- the driven readout (`editor-ui.md`: show demand/achieved residual; a driven record
-             measures only), so the hatch on the row has a number behind it. -->
-        <div class="residual">driven · {residual}</div>
-    {/if}
+    {#if error || notice}<div role="status" class="error">{error || notice}</div>{/if}
 </div>
-{#if easingMenu}
-    <div class="ease-menu menu" role="menu" use:fitMenu={easingMenu}>
-        <Menu items={spanMenu({ ease, presetGlyph: (value) => EASING_GLYPHS[value], canDelete: false }, { setEase: onease, remove: () => {} })[0]!.children!} onclose={() => easingMenu = null} />
-    </div>
-{/if}
 
 <style>
-    .popover {
-        position: fixed;
-        z-index: 6;
-        min-width: 168px;
-        padding: 6px;
-        background: var(--bg-solid);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: var(--shadow);
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        width: 270px;
-        box-sizing: border-box;
-        user-select: none;
-        -webkit-user-select: none;
-    }
-    .ripple { display: flex; align-items: center; font-size: 10px; gap: 4px; }
-    .scope, .error { font-size: 10px; padding: 4px; color: var(--muted); }
-    .error { color: var(--danger, #f08080); min-height: 12px; }
-    .head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 1px 4px 5px;
-    }
-    .quantity {
-        font-size: 11px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--muted);
-    }
-    .peel {
-        all: unset;
-        width: 14px;
-        height: 14px;
-        line-height: 12px;
-        text-align: center;
-        border-radius: 3px;
-        color: var(--muted);
-        cursor: pointer;
-    }
-    .peel:hover {
-        background: var(--neutral-soft);
-        color: var(--fg);
-    }
-
-    .field {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 1px 4px;
-        height: 22px;
-    }
-    .field label {
-        flex: none;
-        width: 42px;
-        font-size: 11px;
-        color: var(--muted);
-    }
-    .field label {
-        cursor: ew-resize;
-    }
-    .field input {
-        flex: 1;
-        min-width: 0;
-        box-sizing: border-box;
-        padding: 2px 5px;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid transparent;
-        border-radius: 3px;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 11px;
-        font-variant-numeric: tabular-nums;
-        color: var(--fg);
-    }
-    .field input:focus {
-        outline: none;
-        border-color: var(--accent);
-        background: rgba(255, 255, 255, 0.08);
-    }
-    .field.ro input {
-        color: var(--muted);
-        cursor: default;
-    }
-    .field .unit {
-        flex: none;
-        width: 24px;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        color: var(--muted);
-    }
-
-    .ease-control { display: flex; align-items: center; gap: 6px; width: 100%; }
-    .ease-control svg { width: 22px; height: 16px; fill: none; stroke: currentColor; }
-    .ease-menu { position: fixed; z-index: 9; }
-    .disclosure, .ease-control, .entry-actions button { font: 11px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); border: 1px solid var(--border); border-radius: 3px; padding: 4px; cursor: pointer; }
-    .entry-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
-
-    .residual {
-        padding: 4px 4px 1px;
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 10px;
-        color: var(--muted);
-    }
+    .popover { position: fixed; z-index: 6; padding: 3px 5px; background: var(--bg-solid); font: 11px "JetBrains Mono", ui-monospace, monospace; box-sizing: border-box; max-width: calc(100vw - 16px); user-select: none; -webkit-user-select: none; }
+    .line, .field { display: flex; align-items: center; gap: 6px; }
+    .field { height: 24px; }
+    .field label { color: var(--muted); cursor: ew-resize; }
+    .field input { width: 70px; min-width: 0; padding: 2px 3px; font: inherit; font-variant-numeric: tabular-nums; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: 3px; }
+    .field input:focus { outline: 1px solid var(--muted); background: var(--neutral-soft); }
+    .unit, .scope { color: var(--muted); }
+    .actions { width: 24px; height: 24px; padding: 0; font: inherit; color: var(--fg); background: transparent; border: 0; cursor: pointer; }
+    .actions:hover { background: var(--neutral-soft); }
+    .actions:focus-visible { outline: 1px solid var(--muted); }
+    .actions:disabled { opacity: .5; cursor: default; }
+    .ripple { display: flex; align-items: center; gap: 4px; font-size: 10px; }
+    .scope, .error { font-size: 10px; padding: 3px 0; max-width: 310px; overflow-wrap: anywhere; }
+    .error { color: var(--danger, #f08080); }
+    .result { max-width: 310px; }
 </style>

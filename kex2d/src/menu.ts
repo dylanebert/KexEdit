@@ -255,7 +255,7 @@ export function menuRows(items: MenuItem[]): MenuItem[] {
  * @example menuFit({ x: 1240, y: 780 }, { w: 132, h: 160 }, { w: 1280, h: 800 }) // flips up-left
  */
 export function menuFit(
-    anchor: { x: number; y: number },
+    anchor: { x: number; y: number; above?: number },
     size: { w: number; h: number },
     viewport: { w: number; h: number },
     pad = 4,
@@ -265,7 +265,8 @@ export function menuFit(
     // flip to open leftward when opening right would clip the right edge and the left has room
     if (x + size.w > viewport.w - pad && anchor.x - size.w >= pad) x = anchor.x - size.w;
     // flip to open upward when opening down would clip the bottom and above has room
-    if (y + size.h > viewport.h - pad && anchor.y - size.h >= pad) y = anchor.y - size.h;
+    const above = anchor.above ?? anchor.y;
+    if (y + size.h > viewport.h - pad && above - size.h >= pad) y = above - size.h;
     // last resort: a menu larger than the viewport fits neither way — keep the top-left on-screen
     x = Math.min(Math.max(x, pad), Math.max(pad, viewport.w - pad - size.w));
     y = Math.min(Math.max(y, pad), Math.max(pad, viewport.h - pad - size.h));
@@ -279,9 +280,9 @@ export function menuFit(
  *  menu, the section context menu, and the force keyframe menu all flip identically. */
 export function fitMenu(
     node: HTMLElement,
-    anchor: { x: number; y: number },
-): { update: (a: { x: number; y: number }) => void } {
-    const place = (a: { x: number; y: number }): void => {
+    anchor: { x: number; y: number; above?: number },
+): { update: (a: { x: number; y: number; above?: number }) => void } {
+    const place = (a: { x: number; y: number; above?: number }): void => {
         const fit = menuFit(
             a,
             { w: node.offsetWidth, h: node.offsetHeight },

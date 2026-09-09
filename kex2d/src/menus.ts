@@ -91,17 +91,19 @@ export type SpanMenuState = {
     presetGlyph: (ease: Easing) => string;
     /** the record can be deleted — false only while a live gesture holds it. */
     canDelete: boolean;
+    entry?: { owned: boolean; summary: string };
 };
 
 export type SpanMenuActions = {
     setEase: (ease: Easing) => void;
     remove: () => void;
+    field?: (key: "exit" | "start" | "end" | "entry") => void;
+    inherit?: () => void;
+    inspect?: () => void;
 };
 
-/** the span menu as data: an Easing ▸ submenu checked by the record's own tag, then Delete as the
- *  menu's terminal danger row. Easing is a submenu rather than three flat rows because the menu
- *  has a sibling row to justify the nesting, unlike {@link rulerMenu}'s two. Every span owns an
- *  easing (the record carries the tag on every lane, spec Wire v4), so the row never grays. */
+/** Shared secondary actions for the on-object line and span context click. Easing keeps its
+ * checked profile previews; ownership is disclosed only in Entry, and Delete stays terminal. */
 export function spanMenu(s: SpanMenuState, a: SpanMenuActions): MenuItem[] {
     const easeRow = (label: string, e: Easing): MenuItem => ({
         label,
@@ -111,11 +113,44 @@ export function spanMenu(s: SpanMenuState, a: SpanMenuActions): MenuItem[] {
         action: () => a.setEase(e),
     });
     return [
+        ...(a.field
+            ? ([
+                  { label: "Target…", group: "modify", action: () => a.field!("exit") },
+                  { label: "Start…", group: "modify", action: () => a.field!("start") },
+                  { label: "End…", group: "modify", action: () => a.field!("end") },
+              ] satisfies MenuItem[])
+            : []),
         {
             label: "Easing",
             group: "modify",
             children: [...EASINGS.map(([name, ease]) => easeRow(name, ease))],
         },
+        ...(s.entry && a.field && a.inherit
+            ? ([
+                  {
+                      label: "Entry",
+                      group: "modify",
+                      children: [
+                          { label: s.entry.summary, group: "modify", enabled: false },
+                          {
+                              label: s.entry.owned ? "Edit entry…" : "Override entry…",
+                              group: "modify",
+                              action: () => a.field!("entry"),
+                          },
+                          ...(s.entry.owned
+                              ? ([
+                                    { label: "Inherit entry", group: "modify", action: a.inherit },
+                                ] satisfies MenuItem[])
+                              : []),
+                      ],
+                  },
+              ] satisfies MenuItem[])
+            : []),
+        ...(a.inspect
+            ? ([
+                  { label: "Inspect result", group: "modify", action: a.inspect },
+              ] satisfies MenuItem[])
+            : []),
         {
             label: "Delete",
             group: "lifecycle",

@@ -1483,7 +1483,7 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
         expect(recoveredAt({ ...read, station: bakeStations([1, 1, 1], 4) }, 3)).not.toBe(9);
     });
 
-    test("measured editor clears dock and invoking handle, flips and clamps at viewport edges", () => {
+    test("measured editor stays adjacent to its invoker, flips and clamps at viewport edges", () => {
         for (const viewport of [
             { w: 1280, h: 720 },
             { w: 800, h: 600 },
@@ -1493,20 +1493,15 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
                     const size = { w: 270, h };
                     const dock = { x: 16, y: viewport.h - 200, w: viewport.w - 32, h: 180 };
                     const invoker = { x, y: dock.y + 32, w: 2, h: 32 };
-                    const fit = fitEditor(size, viewport, dock, invoker);
+                    const fit = fitEditor(size, viewport, [], invoker);
                     expect(fit.x).toBeGreaterThanOrEqual(8);
                     expect(fit.x + size.w).toBeLessThanOrEqual(viewport.w - 8);
                     expect(fit.y).toBeGreaterThanOrEqual(8);
-                    expect(fit.y + size.h).toBeLessThanOrEqual(dock.y - 8);
+                    expect(fit.y + size.h).toBe(invoker.y - 8);
                 }
         expect(
-            fitEditor(
-                { w: 270, h: 160 },
-                { w: 800, h: 600 },
-                { x: 0, y: 8, w: 800, h: 100 },
-                { x: 400, y: 20, w: 2, h: 32 },
-            ).y,
-        ).toBe(116);
+            fitEditor({ w: 270, h: 160 }, { w: 800, h: 600 }, [], { x: 400, y: 20, w: 2, h: 32 }).y,
+        ).toBe(60);
     });
 
     // RED: resolve the drop off the pointer's own row only (return `from`) and a drag can never

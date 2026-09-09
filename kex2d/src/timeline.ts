@@ -947,27 +947,63 @@ export interface ScreenBox {
     h: number;
 }
 
-/** Measured overlay outside the actual dock, with clearance from its invoker. */
+/** Nearest measured on-object placement, excluding actual controls, never their union. */
 export function fitEditor(
     size: { w: number; h: number },
     viewport: { w: number; h: number },
-    dock: ScreenBox,
+    obstacles: readonly ScreenBox[],
     invoker: ScreenBox,
 ): { x: number; y: number } {
     const gap = 8;
-    const x = Math.max(
-        gap,
-        Math.min(invoker.x + invoker.w / 2 - size.w / 2, viewport.w - size.w - gap),
+    const clampX = (x: number): number => Math.max(gap, Math.min(x, viewport.w - size.w - gap));
+    const clampY = (y: number): number => Math.max(gap, Math.min(y, viewport.h - size.h - gap));
+    const center = invoker.x + invoker.w / 2 - size.w / 2;
+    const above = invoker.y - size.h - gap;
+    const below = invoker.y + invoker.h + gap;
+    const exclusions = [invoker, ...obstacles];
+    const xs = [
+        clampX(center),
+        ...obstacles.flatMap((b) => [clampX(b.x - size.w - gap), clampX(b.x + b.w + gap)]),
+    ];
+    const ys = [
+        clampY(above),
+        clampY(below),
+        ...obstacles.flatMap((b) => [clampY(b.y - size.h - gap), clampY(b.y + b.h + gap)]),
+    ];
+    const candidates = xs.flatMap((x) => ys.map((y) => ({ x, y })));
+    candidates.sort(
+        (a, b) =>
+            Math.hypot(a.x - center, Math.min(Math.abs(a.y - above), Math.abs(a.y - below))) -
+            Math.hypot(b.x - center, Math.min(Math.abs(b.y - above), Math.abs(b.y - below))),
     );
-    const above = Math.min(dock.y, invoker.y) - size.h - gap;
-    const below = Math.max(dock.y + dock.h, invoker.y + invoker.h) + gap;
-    const y =
-        above >= gap
-            ? above
-            : below + size.h <= viewport.h - gap
-              ? below
-              : Math.max(gap, Math.min(above, viewport.h - size.h - gap));
-    return { x, y };
+    return (
+        candidates.find((p) => editorFits({ ...p, ...size }, viewport, exclusions)) ?? {
+            x: clampX(center),
+            y: clampY(above),
+        }
+    );
+}
+
+/** The held box must remain usable before any refit is allowed. */
+export function editorFits(
+    box: ScreenBox,
+    viewport: { w: number; h: number },
+    obstacles: readonly ScreenBox[],
+): boolean {
+    const gap = 8;
+    return (
+        box.x >= gap &&
+        box.y >= gap &&
+        box.x + box.w <= viewport.w - gap &&
+        box.y + box.h <= viewport.h - gap &&
+        obstacles.every(
+            (b) =>
+                box.x + box.w <= b.x - gap ||
+                box.x >= b.x + b.w + gap ||
+                box.y + box.h <= b.y - gap ||
+                box.y >= b.y + b.h + gap,
+        )
+    );
 }
 
 /** the residual over one record's span: RECOVERED minus DEMANDED, reported at the station where

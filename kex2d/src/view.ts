@@ -17,7 +17,7 @@ export const ROW_H = 26;
 export const ROW_GAP = 2;
 export const DOCK_FOOTER = 24;
 export const DOCK_HEIGHT = ROWS_TOP + 3 * ROW_H + 2 * ROW_GAP + DOCK_FOOTER + 2;
-export const TOOL_STRIP_W = 40;
+export const TOOL_STRIP_W = 36;
 export const TOOL_GAP = 8;
 export const DOCK_INSET = 16;
 /** the media player's geometry above the dock — like `DOCK_HEIGHT`/`DOCK_INSET`, the single
