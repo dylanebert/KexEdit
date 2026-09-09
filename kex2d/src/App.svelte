@@ -18,8 +18,7 @@ import { attachCanvas2D } from "./view";
  *  and the track-start dissipation fields — went with the gestures they drove
  *  (`retired/pose-ux`); `commands.ts`/`cli.ts` remain the headless authoring surface. */
 
-const { ecs }: { ecs: State } = $props();
-let canvas: HTMLCanvasElement;
+const { ecs, canvas, root }: { ecs: State; canvas: HTMLCanvasElement; root: HTMLElement } = $props();
 
 let trackEid = $state<number | null>(null);
 let tick = $state(0);
@@ -77,13 +76,17 @@ const dragging = $derived.by((): boolean => {
     return editor.dragging;
 });
 $effect(() => {
-    document.getElementById("app")?.toggleAttribute("data-dragging", dragging);
+    root.toggleAttribute("data-dragging", dragging);
 });
 </script>
 
-<!-- the shaping viewport. `.viewport` is its stable hook: the harness drives it by class, not
-     by depth under `#app`. -->
-<canvas class="viewport" bind:this={canvas}></canvas>
+<svelte:head>
+    <title>kex2d</title>
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</svelte:head>
 
 <!-- the standing infeasibility banner: the one status surface a read-only view still owes,
      since an infeasible bake is a property of the document, not of a gesture. -->
@@ -134,13 +137,6 @@ $effect(() => {
         --ease-out: cubic-bezier(0.33333, 1, 0.66667, 1); /* the one easing token (ui.md Motion) */
         --border: rgba(255, 255, 255, 0.08);
         --shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-    }
-
-    canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        cursor: default;
     }
 
     /* the standing infeasibility banner, top-center: status shifts nothing beside it. */

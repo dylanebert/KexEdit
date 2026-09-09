@@ -24,7 +24,7 @@ async function available(port: number, host: string): Promise<void> {
     });
 }
 
-/** Boot only an owned, bounded Vite child. strictPort closes the preflight/start race. */
+/** Boot only an owned, bounded Shallot child. strict-port closes the preflight/start race. */
 export async function startServer(
     cwd: string,
     port: number,
@@ -33,12 +33,15 @@ export async function startServer(
     await available(port, "127.0.0.1");
     await available(port, "::1");
     const url = `http://localhost:${port}`;
-    const proc = Bun.spawn(["bun", "run", "dev", "--port", String(port), "--strictPort"], {
-        cwd,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: { ...process.env, BROWSER: "none" },
-    });
+    const proc = Bun.spawn(
+        ["bunx", "shallot", "dev", ".", "--port", String(port), "--strict-port", "--no-open"],
+        {
+            cwd,
+            stdout: "pipe",
+            stderr: "pipe",
+            env: { ...process.env, BROWSER: "none" },
+        },
+    );
     // Also owns teardown if the caller exits while startup is still pending.
     const stop = (): void => {
         if (proc.exitCode === null) proc.kill();

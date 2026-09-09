@@ -4,9 +4,8 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev": "vite",
-        "build": "vite build",
-        "preview": "vite preview",
+        "dev": "bunx shallot dev",
+        "build": "bunx shallot build",
         "cli": "bun run src/cli.ts",
         "test": "bun test",
         "capture": "bun run harness/capture.ts",
@@ -16,7 +15,7 @@
         "format": "biome check --write"
     },
     "dependencies": {
-        "@dylanebert/shallot": "^0.9.4",
+        "@dylanebert/shallot": "0.9.5",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.4"
     },
@@ -28,7 +27,6 @@
         "@webgpu/types": "^0.1.72",
         "svelte-check": "^4.7.6",
         "typescript": "~6",
-        "unplugin-typegpu": "~0.12.3",
         "vite": "^8.2.2"
     }
 }

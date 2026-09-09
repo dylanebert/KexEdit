@@ -1,0 +1,6 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #0e0d0c; color: #f0ece8; font-family: "Outfit", system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; overflow: hidden; }
+#canvas.viewport { display: block; width: 100%; height: 100%; cursor: default; }
+.kex-overlay > * { pointer-events: auto; }
+[data-shallot-profile] { display: none !important; }
+body[data-shallot-debug] [data-shallot-profile] { display: block !important; }
