@@ -3,7 +3,7 @@
  *
  * - `create` — the document gains an object (Add, a lane row's own segment).
  * - `modify` — changes the subject that summoned the menu, or enters / acts in / leaves a mode
- *   scoped to it (Easing ▸, Expand/Collapse, Meters/Seconds). The residual class, honestly.
+ *   scoped to it (Easing ▸, Meters/Seconds). The residual class, honestly.
  * - `lifecycle` — the subject ends at its creation state or gone (Delete).
  *
  * A menu's rows sort by this order, then by frequency WITHIN a group (the old free-form
@@ -36,7 +36,7 @@ export type Binding = {
  * `hint`. So a rebind moves the hint with it and a row can't come to lie about its key — the
  * failure the `L` → `Q` rebind would have caused with the table living in a test.
  *
- * A pointer gesture is not a shortcut (the step-in is double-click and advertises nothing), and
+ * A pointer gesture is not a shortcut, and
  * the hint names the row's ACTION, not its live enablement — a grayed row keeps it.
  *
  * ONE entry survives the pose UX. `remove` — home `Timeline.svelte`, through `keys.ts`'s
@@ -54,6 +54,8 @@ export type Binding = {
  * raw literals, and `tests/menu.test.ts` pins exactly which files may hold one.
  */
 export const BINDINGS = {
+    selectTool: { keys: ["v"], hint: "V", scope: "timeline" },
+    addTool: { keys: ["a"], hint: "A", scope: "timeline" },
     remove: { keys: ["Delete", "Backspace"], hint: "Del" },
     exitMode: { keys: ["Escape"], hint: "Esc" },
 } as const satisfies Record<string, Binding>;
@@ -155,7 +157,7 @@ export const RESERVED = {
     // One entry, four keys: they are one gesture read on two channels, not four claims.
     nudge: {
         keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"],
-        why: "nudges the selected span: \u2190/\u2192 by the station quantum, Shift+\u2191/\u2193 the handle value (Alt: the owned entry)",
+        why: "nudges the selected span: \u2190/\u2192 by the station quantum, Shift+\u2191/\u2193 the absolute target",
     },
 } as const satisfies Record<string, Reserved>;
 

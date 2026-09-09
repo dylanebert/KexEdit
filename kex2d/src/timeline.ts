@@ -19,7 +19,6 @@
 import {
     endPinnable,
     entryValue,
-    inferredEntry,
     Lane,
     laneName,
     type LaneSegment,
@@ -575,17 +574,13 @@ export function ticks(v: View, width: number, domain: Domain = Domain.Distance):
 //
 // One row per authored lane on the shared arclength ruler, in `track.order` (spec
 // `kex2d-segment-gestures` Locked decision, "timeline layout follows Animate"): a lane's records
-// render as spans with two handles, gaps render empty, and a row expands IN PLACE into that
-// lane's curve view. Everything below is PURE — plain lane records and a `View` in, geometry and
+// render as spans with two handles; gaps stay empty. No curve-expansion route remains.
+// Everything below is PURE — plain lane records and a `View` in, geometry and
 // hit answers out — so the press grammar is readable headlessly (Validation 4) and `Timeline.svelte`
 // owns only pixels and pointers.
 
-/** a collapsed row's height in px — the strip band a span is drawn in. */
+/** One lane band's height in px. */
 export const ROW_H = 26;
-
-/** an expanded row's height in px: the in-place curve view (recovered dashed, authored solid),
- *  the row's own strip growing into a chart, its siblings unmoved except by the offset. */
-export const ROW_EXPANDED_H = 132;
 
 /** the gap between two rows in px. */
 export const ROW_GAP = 2;
@@ -614,33 +609,22 @@ export interface LaneRow {
     name: string;
     top: number;
     height: number;
-    expanded: boolean;
     records: LaneSegment[];
 }
 
-/** the rows of one document, top to bottom in `order` — the whole layout in one pure function.
- *  `top` is the first row's y (below the ruler band); `expanded` is the set of lanes standing
- *  open in the curve view, so an expanded row grows in place and pushes its siblings down
- *  without changing their order or their spans. */
-export function laneRows(
-    lanes: Lanes,
-    order: readonly Lane[],
-    top: number,
-    expanded: ReadonlySet<Lane> = new Set(),
-): LaneRow[] {
+/** Fixed-height rows in lane order, starting below the ruler. No expansion state. */
+export function laneRows(lanes: Lanes, order: readonly Lane[], top: number): LaneRow[] {
     const out: LaneRow[] = [];
     let y = top;
     for (let i = 0; i < order.length; i++) {
         const lane = order[i]!;
-        const open = expanded.has(lane);
-        const height = open ? ROW_EXPANDED_H : ROW_H;
+        const height = ROW_H;
         out.push({
             lane,
             index: i,
             name: laneName(lane),
             top: y,
             height,
-            expanded: open,
             records: ordered(laneMembers(lanes, lane)),
         });
         y += height + ROW_GAP;
@@ -653,17 +637,8 @@ export function laneMembers(lanes: Lanes, lane: Lane): LaneSegment[] {
     return lane === Lane.Velocity ? lanes.velocity : lane === Lane.Force ? lanes.force : lanes.geo;
 }
 
-/** flip one row open or shut, returning a NEW set — the expand/collapse state is the view's, and
- *  a row expands in place, so nothing about the document moves. */
-export function toggleExpanded(expanded: ReadonlySet<Lane>, lane: Lane): Set<Lane> {
-    const next = new Set(expanded);
-    if (!next.delete(lane)) next.add(lane);
-    return next;
-}
-
 /** one span's box in dock-local px: `x0`/`x1` are its two stations projected through the view,
- *  `y0`/`y1` the row's strip band (a collapsed row's whole height; an expanded row's top strip,
- *  the curve view taking the rest). */
+ *  `y0`/`y1` delimit the fixed-height lane band. */
 export interface SpanBox {
     id: number;
     x0: number;
@@ -812,18 +787,16 @@ const CURVE_SAMPLES = 25;
  *
  *  Normalized to the record's own two handles, not to the lane's range: this is a SHAPE, not a
  *  reading — a span conveys how its value moves without a label, which is what the person asked
- *  for when the chips came off (check-in two, point 11). A flat record (equal handles, or an
- *  unowned entry that reads the exit) draws a level line down the box's middle rather than
- *  dividing by a zero span. `entry` is the value the record's lane entry law resolved to
- *  (`lanes.entryValue`); `undefined` means the record opens off a gap and owns no entry the view
- *  can draw from, so the line is level at the exit. */
+ *  for when the chips came off. Equal resolved handles draw a level line. An unresolved
+ *  entry draws no curve; its authored span and target remain selectable. */
 export function spanCurve(
     record: LaneSegment,
     entry: number | undefined,
     box: SpanBox,
     pad = 3,
 ): CurvePoint[] {
-    const from = entry ?? record.exit;
+    if (entry === undefined) return [];
+    const from = entry;
     const span = record.end - record.start;
     const top = box.y0 + pad;
     const bot = box.y1 - pad;
@@ -864,10 +837,16 @@ export function clampSpanDrag(
     which: "start" | "end" | "body",
     start: number,
     end: number,
+    pin = 0,
 ): { start: number; end: number } {
-    if (which === "body") return start >= 0 ? { start, end } : { start: 0, end: end - start };
-    if (which === "start") return { start: Math.max(0, start), end };
-    return { start, end };
+    if (which === "body") {
+        const length = end - start;
+        const at = Math.max(0, pin > 0 ? Math.min(start, pin - length) : start);
+        return { start: at, end: at + length };
+    }
+    if (which === "start")
+        return { start: Math.max(0, pin > 0 ? Math.min(start, pin) : start), end };
+    return { start, end: pin > 0 ? Math.min(end, pin) : end };
 }
 
 /** the landmark pool one span drag snaps to, in AXIS units (metres) — the caller projects them
@@ -901,25 +880,8 @@ export function recordEntry(lanes: Lanes, lane: Lane, record: LaneSegment): numb
     return entryValue(lane, laneMembers(lanes, lane), record) as number | undefined;
 }
 
-/** the handle value a record minted by a gap drag-out opens and closes at — a FLAT record at
- *  whatever the lane already holds there, so adding a span changes the document's shape by
- *  nothing until the person edits a handle (the Animate rule: a new span inherits, it does not
- *  jump). The lane's own law answers first (`lanes.inferredEntry`: force dwells at the last exit,
- *  `DEFAULT_G` before any), then the nearest preceding record's exit, then the lane's own floor
- *  value — `V0` for velocity, because a prescribed speed of 0 is a march with no direction and
- *  the setter refuses it, and level (0 rad) for pitch. */
-export function defaultHandle(lanes: Lanes, lane: Lane, station: number): number {
-    const rows = laneMembers(lanes, lane);
-    const inferred = inferredEntry(lane, rows, station);
-    if (inferred !== undefined) return inferred;
-    let best: LaneSegment | undefined;
-    for (const r of rows) if (r.end <= station && (!best || r.end > best.end)) best = r;
-    if (best) return best.exit;
-    return lane === Lane.Velocity ? V0 : 0;
-}
-
-// ── S3c: the driven overlay's residual, the step-in curve view, the popover anchor and the
-// column's reorder drop ─────────────────────────────────────────────────────────────────────
+// ── Retained sampling/measurement kernels, field fit and reorder geometry ──
+// Chart kernels below have no live expansion UI; gap/sample/projection properties survive.
 //
 // Still pure: plain records, plain bake arrays and a `View` in, geometry and numbers out, so
 // every arm below is a headless read (Validation 4) and `Timeline.svelte` keeps owning only
@@ -958,14 +920,14 @@ export function bakeStations(ds: ArrayLike<number>, count: number): Float64Array
  *  against what the march actually produced (`fN_bake − sampleForce(record)` for force,
  *  `θ_bake − sampleForce(record)` for pitch, spec Locked decision). `undefined` when the bake
  *  covers none of the span (no sample inside it), which is a missing premise, never a zero miss.
- *  `entry` is the record's resolved entry value ({@link recordEntry}); an unowned entry reads the
- *  exit, exactly as the drawn curve does. */
+ *  `entry` is resolved by {@link recordEntry}; unresolved demand is unavailable. */
 export function spanResidual(
     read: BakeRead,
     record: LaneSegment,
     entry: number | undefined,
 ): number | undefined {
-    const from = entry ?? record.exit;
+    if (entry === undefined) return undefined;
+    const from = entry;
     const points: ForcePoint[] = [
         { s: record.start, g: from, ease: record.ease as Easing },
         { s: record.end, g: record.exit, ease: record.ease as Easing },
@@ -974,16 +936,18 @@ export function spanResidual(
     for (let i = 0; i < read.n; i++) {
         const s = read.station[i]!;
         if (s < record.start || s > record.end) continue;
-        const miss = (read.value[i] ?? 0) - sampleForce(points, s);
+        const value = read.value[i];
+        if (value === undefined || !Number.isFinite(value)) continue;
+        const miss = value - sampleForce(points, s);
         if (worst === undefined || Math.abs(miss) > Math.abs(worst)) worst = miss;
     }
     return worst;
 }
 
-/** an expanded row's own value chart: the px band the curves draw in and the value range they are
+/** A standalone chart's pixel band and value range. These retained kernels are
  *  normalized against. The range covers every authored handle on the lane AND the recovered
  *  reading, so the dashed recovery never leaves the box the solid authoring sits in — the whole
- *  point of the step-in is reading the two against each other. A lane with no spread at all (one
+ *  comparison uses both channels. A lane with no spread at all (one
  *  flat record) still gets a finite window, so nothing divides by zero. */
 export interface RowChart {
     top: number;
@@ -992,11 +956,10 @@ export interface RowChart {
     hi: number;
 }
 
-/** the fraction of an expanded row's height the top strip keeps — the row still shows its spans,
- *  the curve view takes the rest (Animate's tween span plus its inline Motion Editor). */
+/** Chart inset below the lane band for standalone curve sampling. */
 const CHART_PAD = 6;
 
-/** the value window one expanded row draws in. `extra` is any further reading that must fit (the
+/** The standalone value window. `extra` is any further reading that must fit (the
  *  recovered curve's own min/max); `undefined` entries are skipped, the way an unowned entry is
  *  nothing to fit. */
 export function rowChart(
@@ -1025,13 +988,13 @@ export function rowChart(
     return { top: row.top + ROW_H + CHART_PAD, bottom: row.top + row.height - CHART_PAD, lo, hi };
 }
 
-/** a value's y in an expanded row's chart — value UP is pixel-y DOWN, {@link spanCurve}'s own rule. */
+/** A value's y in a chart — value UP is pixel-y DOWN, {@link spanCurve}'s own rule. */
 export function chartY(chart: RowChart, value: number): number {
     const f = (value - chart.lo) / (chart.hi - chart.lo);
     return chart.bottom - f * (chart.bottom - chart.top);
 }
 
-/** the AUTHORED curve of one expanded row: one polyline per record, each sampled from the
+/** The authored curve of one lane: one polyline per record, each sampled from the
  *  record's own easing across its own span (`profile.ts`'s sampler again) and projected through
  *  the view. One polyline PER RECORD rather than one across the lane, because a gap is not a
  *  value the lane authored — it is inferred, and drawing through it would claim otherwise. Drawn
@@ -1044,7 +1007,8 @@ export function authoredPolylines(
     left = 0,
 ): CurvePoint[][] {
     return row.records.map((rec, i) => {
-        const from = entries[i] ?? rec.exit;
+        const from = entries[i];
+        if (from === undefined) return [];
         const points: ForcePoint[] = [
             { s: rec.start, g: from, ease: rec.ease as Easing },
             { s: rec.end, g: rec.exit, ease: rec.ease as Easing },
@@ -1060,9 +1024,9 @@ export function authoredPolylines(
     });
 }
 
-/** the RECOVERED curve of one expanded row: the bake's own reading across the whole ruler,
+/** The recovered curve of one lane: the bake's own reading across the whole ruler,
  *  projected the same way. Drawn dashed (`editor-ui.md`: recovered dashed/faded, authored
- *  solid/bright), so the step-in reads demand against achievement without a legend. */
+ *  solid/bright) for callers comparing demand and achievement. */
 export function recoveredPolyline(
     read: BakeRead,
     chart: RowChart,
@@ -1149,9 +1113,9 @@ export interface FieldSpec {
     /** drawn but never editable (a driven record's residual). */
     readonly?: boolean;
     /** open the gesture (`history.beginHandle` / `beginEdge`). */
-    begin: () => void;
+    begin: () => boolean | void;
     /** write one live frame through the setter. */
-    write: (v: number) => void;
+    write: (v: number) => string | void;
     /** land the gesture as one undo entry. */
     commit: () => void;
     /** abort the gesture, restoring the pre-edit value. */

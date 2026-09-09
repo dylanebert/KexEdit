@@ -42,8 +42,6 @@ import {
     reordered,
     rowChart,
     spanResidual,
-    defaultHandle,
-    ROW_EXPANDED_H,
     ROW_GAP,
     ROW_H,
     pxToU,
@@ -59,7 +57,6 @@ import {
     T_GRID,
     ticks,
     timeToArc,
-    toggleExpanded,
     trimTargets,
     uToD,
     uToDExtend,
@@ -78,6 +75,46 @@ import { snapSteps } from "../src/settings";
 // the distance-domain lead-out floor — most of these tests exercise the pure math over a
 // generic axis unit, so they pass this in wherever `floor` used to default to `MARGIN_M`.
 const M = marginFloor(Domain.Distance);
+
+describe("S3f handle arbitration and rigid pointer bounds", () => {
+    test("all lanes: shared boundary picks preceding end, thin midpoint picks start", () => {
+        for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity]) {
+            const record = (id: number, start: number, end: number): LaneSegment => ({
+                id,
+                start,
+                end,
+                entry: 1,
+                exit: 1,
+                ease: 0,
+            });
+            const records = [record(9, 0, 10), record(2, 10, 10.2)];
+            const lanes: Lanes = { geo: [], force: [], velocity: [] };
+            lanes[lane === Lane.Geo ? "geo" : lane === Lane.Force ? "force" : "velocity"] = records;
+            const rows = laneRows(lanes, [lane], 0),
+                v = { pan: 0, pxPerU: 10 };
+            expect(hitRows(rows, v, 100, 10)).toEqual({ kind: "edge", lane, id: 9, which: "end" });
+            expect(hitRows(rows, v, 100.5, 10)).toEqual({
+                kind: "edge",
+                lane,
+                id: 2,
+                which: "start",
+            });
+            expect(hitRows(rows, v, 101.5, 10)).toEqual({
+                kind: "edge",
+                lane,
+                id: 2,
+                which: "end",
+            });
+            expect(hitRows(rows, v, 50, 10)).toEqual({ kind: "body", lane, id: 9 });
+        }
+    });
+    test("pin and origin clamp body rigidly; each edge holds the other station", () => {
+        expect(clampSpanDrag("body", 18, 28, 20)).toEqual({ start: 10, end: 20 });
+        expect(clampSpanDrag("body", -4, 6, 20)).toEqual({ start: 0, end: 10 });
+        expect(clampSpanDrag("start", -5, 18, 20)).toEqual({ start: 0, end: 18 });
+        expect(clampSpanDrag("end", 4, 28, 20)).toEqual({ start: 4, end: 20 });
+    });
+});
 
 describe("timeToArc / arcToTime — display mapping", () => {
     // a non-uniform monotone table (arc accelerates while time is even): the
@@ -1183,8 +1220,8 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
         // a flat record (equal handles) draws a level line down the middle, never a divide by 0.
         const flat = spanCurve({ ...rec, exit: 0 }, 0, box, 3);
         expect(flat.map((p) => p.y)).toEqual([23, 23]);
-        // an unowned entry opens off a gap: nothing to draw from, so the line is level at the exit.
-        expect(spanCurve(rec, undefined, box, 3).map((p) => p.y)).toEqual([23, 23]);
+        // An unresolved entry has no authored curve. The span/target still exists.
+        expect(spanCurve(rec, undefined, box, 3)).toEqual([]);
     });
 
     // RED: return `G_GRID` for every lane and the pitch nudge quantizes a heading in radians to
@@ -1197,19 +1234,8 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
 
     // RED: mint the record at a fixed 1 g and the gap drag-out steps the force lane at the seam —
     // adding a span would change the bake before any handle is touched.
-    test("a gap drag-out's record opens flat at whatever the lane already holds there", () => {
-        const lanes = doc();
-        // force dwells at the last exit at or before the station (`lanes.inferredEntry`).
-        expect(defaultHandle(lanes, Lane.Force, 40)).toBe(2);
-        // before any force record, the lane's own dwell is `DEFAULT_G`.
-        expect(defaultHandle({ velocity: [], force: [], geo: [] }, Lane.Force, 5)).toBe(1);
-        // geo infers nothing across a gap, so the nearest preceding exit answers.
-        expect(defaultHandle(lanes, Lane.Geo, 25)).toBe(0.1);
-        // and with nothing behind it, each lane's own floor value: a prescribed 0 m/s is a march
-        // with no direction, which the setter refuses, so velocity opens at `V0`.
-        expect(defaultHandle({ velocity: [], force: [], geo: [] }, Lane.Velocity, 5)).toBe(V0);
-        expect(defaultHandle({ velocity: [], force: [], geo: [] }, Lane.Geo, 5)).toBe(0);
-    });
+    // Creation defaults moved to commands.test.ts's flatRecordArgs all-lane/v0/CLI parity
+    // witnesses. The production Add handler is covered in adapter.pw.ts; no second owner remains.
 
     // RED: `hitRows` taking the fixed `EDGE_PX` grip instead of half the span's width → a 6 px
     // span's two grips overlap, the `end` edge is unreachable, and this arm reads `start` twice.
@@ -1271,28 +1297,12 @@ describe("S3 lane rows — layout, press grammar, end handle, driven overlay (Va
         });
     });
 
-    // RED: `toggleExpanded` mutating the set in place (returning the same reference) → the
-    // caller's previous state is gone and the "collapse returns the row" assertion below reads
-    // the mutated set.
-    test("expand/collapse: a row opens in place and pushes only the rows below it", () => {
-        const collapsed = laneRows(doc(), DEFAULT_ORDER, Top);
-        const open = toggleExpanded(new Set<Lane>(), Lane.Geo);
-        const rows = laneRows(doc(), DEFAULT_ORDER, Top, open);
-        expect(rows[0].expanded).toBe(true);
-        expect(rows[0].height).toBe(ROW_EXPANDED_H);
-        expect(rows[0].top).toBe(collapsed[0].top); // the row expands IN PLACE
-        expect(rows[1].expanded).toBe(false);
-        expect(rows[1].top).toBe(Top + ROW_EXPANDED_H + ROW_GAP);
-        // the sibling rows keep their spans while one row is open.
+    test("lane layout has no expansion state; every span keeps its band", () => {
+        const rows = laneRows(doc(), DEFAULT_ORDER, Top);
+        expect(rows.map((r) => r.height)).toEqual([ROW_H, ROW_H, ROW_H]);
+        expect(rows[1].top).toBe(Top + ROW_H + ROW_GAP);
         expect(rows[1].records.map((r) => r.id)).toEqual([2]);
-        // a collapsed row's strip band is its whole height; an expanded one's is the top strip.
         expect(spanBoxes(rows[0], view)[0].y1).toBe(Top + ROW_H);
-        // collapse returns a NEW set: the caller's own state is never mutated under it, so a
-        // row that opened and shut leaves the previous view state readable.
-        const shut = toggleExpanded(open, Lane.Geo);
-        expect(shut.has(Lane.Geo)).toBe(false);
-        expect(open.has(Lane.Geo)).toBe(true);
-        expect(shut).not.toBe(open);
     });
 
     // RED: `drivenSpans` marking a record driven under a run of its OWN kind → geo reads itself
@@ -1350,10 +1360,10 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
         // the sign is RECOVERED minus DEMANDED, so an under-achieving bake reads negative.
         const under = [1, 1.2, 0.4, 1.6, 1.8, 2];
         expect(spanResidual({ station, value: under, n: 6 }, rec(), 1)).toBeCloseTo(-1.0, 6);
-        // an unowned entry reads the exit, exactly as the drawn curve does (a level record).
+        // Unresolved demand cannot produce a residual, even with valid recovered samples.
         expect(
             spanResidual({ station, value: flat, n: 6 }, rec({ entry: undefined }), undefined),
-        ).toBeCloseTo(-0.5, 6);
+        ).toBeUndefined();
     });
 
     // RED: report 0 where the bake covers none of the span and a missing premise becomes a
@@ -1371,13 +1381,12 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
             { velocity: [], force: [rec({ id: 2, entry: 1, exit: 2 })], geo: [] },
             [Lane.Force, Lane.Geo, Lane.Velocity],
             30,
-            new Set([Lane.Force]),
         );
-        const chart = rowChart(rows[0], [1], [0.5, 3.5]);
+        const chart = rowChart({ ...rows[0], height: 132 }, [1], [0.5, 3.5]);
         expect(chart.lo).toBe(0.5);
         expect(chart.hi).toBe(3.5);
         expect(chart.top).toBeLessThan(chart.bottom);
-        expect(chart.bottom).toBeLessThanOrEqual(rows[0].top + ROW_EXPANDED_H);
+        expect(chart.bottom).toBeLessThanOrEqual(rows[0].top + 132);
         // value UP is pixel-y DOWN, and the two bounds land on the two edges.
         expect(chartY(chart, chart.hi)).toBe(chart.top);
         expect(chartY(chart, chart.lo)).toBe(chart.bottom);
@@ -1390,9 +1399,8 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
             { velocity: [], force: [rec({ id: 3, entry: 2, exit: 2 })], geo: [] },
             [Lane.Force, Lane.Geo, Lane.Velocity],
             30,
-            new Set([Lane.Force]),
         );
-        const flat = rowChart(flatRows[0], [2]);
+        const flat = rowChart({ ...flatRows[0], height: 132 }, [2]);
         expect(flat.hi - flat.lo).toBeGreaterThan(0);
         expect(Number.isFinite(chartY(flat, 2))).toBe(true);
     });
@@ -1405,13 +1413,8 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
             force: [rec({ id: 1, start: 0, end: 10 }), rec({ id: 2, start: 20, end: 30 })],
             geo: [],
         };
-        const rows = laneRows(
-            lanes,
-            [Lane.Force, Lane.Geo, Lane.Velocity],
-            30,
-            new Set([Lane.Force]),
-        );
-        const chart = rowChart(rows[0], [1, 1]);
+        const rows = laneRows(lanes, [Lane.Force, Lane.Geo, Lane.Velocity], 30);
+        const chart = rowChart({ ...rows[0], height: 132 }, [1, 1]);
         const lines = authoredPolylines(rows[0], [1, 1], chart, view, 40);
         expect(lines).toHaveLength(2);
         expect(lines[0][0].x).toBe(40); // the first record opens at its own start
@@ -1429,9 +1432,8 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
             { velocity: [], force: [rec()], geo: [] },
             [Lane.Force, Lane.Geo, Lane.Velocity],
             30,
-            new Set([Lane.Force]),
         );
-        const chart = rowChart(rows[0], [1], [1, 2]);
+        const chart = rowChart({ ...rows[0], height: 132 }, [1], [1, 2]);
         const pts = recoveredPolyline(
             { station: [0, 5, 10], value: [1, 1.5, 2], n: 3 },
             chart,

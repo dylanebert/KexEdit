@@ -3,6 +3,7 @@ import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { attachControls } from "./controls";
 import { editor } from "./editor";
+import { inputOwnsKey } from "./keys";
 import Timeline from "./Timeline.svelte";
 import { bakeOut, Track } from "./track";
 import { attachCanvas2D } from "./view";
@@ -25,6 +26,12 @@ let tick = $state(0);
 let controls: ReturnType<typeof attachControls> | undefined;
 
 onMount(() => {
+    const inputKey = (e: KeyboardEvent): void => {
+        const target = e.target as HTMLElement | null;
+        const field = !!target && (target.matches("input, textarea, select") || target.isContentEditable);
+        if (inputOwnsKey(e.key, field, document.querySelector(".menu-anchor") !== null)) e.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", inputKey, true);
     attachCanvas2D(canvas);
     controls = attachControls(canvas, ecs);
     for (const eid of ecs.query([Track])) {
@@ -38,6 +45,7 @@ onMount(() => {
     };
     raf = requestAnimationFrame(loop);
     return () => {
+        window.removeEventListener("keydown", inputKey, true);
         controls?.detach();
         cancelAnimationFrame(raf);
     };

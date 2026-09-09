@@ -12,7 +12,7 @@ Direct, live, undoable authoring; summon depth, never cap expressiveness. Infer 
 
 ## The kexedit bend: the force curve earns persistence
 
-Only force timeline docks: opaque, fixed, quiet. On-object controls; scaffolding outside content. No standing viewport chrome. Icon rail: global toggles/keyboard twins only; grouping/scrolling means something leaves. Own palette, not Shallot's.
+Only force timeline docks: opaque, fixed, quiet. On-object controls; scaffolding outside content. No standing viewport chrome. Global rail: toggles/key twins only. Timeline adds local Select (V)/Add (A), outside its reorder column. Own palette, not Shallot's.
 
 One clock, global transport/local authoring, no play/edit split. Read playhead, never move it; scrub never edits. Another render requires another camera.
 
@@ -28,15 +28,15 @@ Content never pans/zooms, append included. Navigation fits lead-out (50 m floor)
 
 User increments at snap-toggle right-click, fixed timeline grids. Resolved fields; invoker-only dismissal exemption. Readouts follow ring geometry, match authored snap/write, never bake values/cursor chips.
 
-4 px dead-zone; delay capture for double-click. Blur reverts/clears capture/guides; Esc cancels gesture before mode/selection. Guides require live drag.
+4 px dead-zone: timeline edge click opens station field, drag resizes; no double-click act. Cancel/blur/deletion/teardown revert/release; pointerup commits. Live-drag guides only. Fields own keys: Enter once, Escape/blur revert.
 
 ## Multiselect
 
-`editor.ts` owns one typed set/active, promotion/containment. Stable-address history. Shift toggles, empty clears, Ctrl/Cmd isn't selection. Left marquee selects atoms, never pans. Keys: active kind then hover, never twice.
+`editor.ts`: one stable-id set/active; Shift toggles, empty clears, Ctrl/Cmd isn't selection. Multi highlights only, no fields/bulk edit. Plain drag edits its subject.
 
-Multi context UI counts siblings, not owner+child. No rings/knobs/readouts/popovers/count/Mixed/delta chrome; highlight members/active. Esc clears set; submodes collapse to subject; blocked bulk rows gray.
+Select gaps clear; Add previews/creates one lane/undo, then Select. Refusal keeps Add; Escape cancels. V/A: local focus/hover, not typing/menu/gesture. Escape peels field/gesture, menu, Add, editor, selection.
 
-Snapshot delta preserves offsets; snap then rigid clamp. Mixed force/velocity moves station only; cross-surface nudge scopes to hovered active kind. Geo bulk nudge: frozen-chain polar, only moved tip re-heads. One undo. `controls.test.ts`/`timeline.test.ts` own cases.
+Nudges: station left/right, target Shift+up/down; no Alt entry binding.
 
 ## Tangent editing
 
@@ -58,7 +58,7 @@ Reset: top-level, normal color, no confirm, creation state; keyframes pick easin
 
 ## Kind color
 
-`colors.ts`/tests own palette and priority: red > brightened own-color selection > hover > kind. Hover lifts ink/fill, never size; selected bodies suppress, resize handles don't. Foreign gestures suppress, own-surface retains; no cross-surface sync.
+`colors.ts`/tests own palette and priority: red > brightened own-color selection > hover > kind. Hover lifts ink/fill, never size; selected bodies suppress, resize handles don't. Timeline: ew-resize, independent handle states above hatch; same shared-edge hit for hover/press. Foreign gestures suppress, own-surface retains; no cross-surface sync.
 
 ## Mode vocabulary
 

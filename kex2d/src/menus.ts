@@ -23,8 +23,8 @@ import { Domain } from "./section";
  * The pose era's five builders — the section context menu, the node menu, the force-keyframe
  * menu, the velocity-strip band menu and the append flyout — went with the subjects they
  * summoned on (`retired/pose-ux`): there are no sections, nodes, keyframes or strips left to
- * right-click. Their replacements are the lane timeline's own two, a ROW menu on the lane column
- * and a SPAN menu on a record, plus the ruler's unchanged unit picker.
+ * right-click. The live timeline has only the span's secondary menu. The ruler's pure unit
+ * picker remains for its domain contract; no lane/gap menu or expansion route remains.
  */
 
 /** the ruler context menu's state (`Timeline.svelte`'s `rulerMenuItems`). */
@@ -60,49 +60,7 @@ export function rulerMenu(s: RulerMenuState, a: { pick: (target: Domain) => void
     ];
 }
 
-// ── the lane timeline's own two menus (S3c) ───────────────────────────────────────
-// A row menu on the lane column and a span menu on a record — the two subjects the rebuilt
-// timeline actually has. Neither takes a `Lane`: a builder that imported the lane enum would put
-// `lanes.ts` on this module's graph for a label it is handed anyway (`menus.ts`'s own purity
-// pin), so the caller passes the quantity's NAME and the rows print it.
-
-/** the lane row menu's state (`Timeline.svelte`'s row `ctx*` deriveds). */
-export type RowMenuState = {
-    /** the row's authored quantity, for the Add row's own label (`lanes.laneName`). */
-    name: string;
-    /** the row stands open in the curve view — the toggle names the act it will perform. */
-    expanded: boolean;
-    /** a record CAN be added at the clicked station: the station falls in a gap with at least
-     *  `RECORD_FLOOR` of room before the next record. Grayed, never hidden, when it can't. */
-    canAdd: boolean;
-};
-
-export type RowMenuActions = {
-    /** author a flat record at the clicked station (`history.addRecord`, the drag-out's twin). */
-    add: () => void;
-    /** expand or collapse this row in place (`timeline.toggleExpanded`). */
-    toggleExpand: () => void;
-};
-
-/** the row menu as data: Add first (the one row that changes the document), then the step-in
- *  toggle. The toggle names the ACT rather than carrying a check — a row that says "Collapse"
- *  while open tells the person what the click does, which is what `editor-ui.md` asks of a
- *  mixed-capable toggle. No Delete: a row is a lane, and a lane is not a thing a person removes. */
-export function rowMenu(s: RowMenuState, a: RowMenuActions): MenuItem[] {
-    return [
-        {
-            label: `Add ${s.name} segment`,
-            group: "create",
-            enabled: s.canAdd,
-            action: a.add,
-        },
-        {
-            label: s.expanded ? "Collapse" : "Expand",
-            group: "modify",
-            action: a.toggleExpand,
-        },
-    ];
-}
+// Secondary span actions. Creation is the explicit local Add tool, not a row menu.
 
 /** the span menu's state (`Timeline.svelte`'s span `ctx*` deriveds). */
 export type SpanMenuState = {

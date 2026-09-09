@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onMount } from "svelte";
 import { flyoutFit, type MenuItem, menuRows } from "./menu";
 import Menu from "./Menu.svelte"; // self-reference: a submenu is another Menu (Svelte 5 recursion)
 
@@ -14,6 +15,8 @@ const { items, onclose }: { items: MenuItem[]; onclose?: () => void } = $props()
 // Every row also publishes its `data-group`, so the capture harness can cross-check the rendered
 // DOM against the same pure builder the grammar oracle reads.
 const rows = $derived(menuRows(items));
+let root: HTMLDivElement;
+onMount(() => { root.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus(); });
 
 // the index of the row whose submenu is open (one at a time). hovering a submenu row opens
 // its flyout; hovering a sibling leaf closes it (the standard menu hover model).
@@ -55,6 +58,7 @@ function enter(i: number, item: MenuItem): void {
     open = item.children ? i : null; // hovering a leaf sibling closes any open submenu
 }
 function leaf(item: MenuItem): void {
+    if (item.enabled === false) return;
     item.action?.();
     onclose?.(); // a leaf action dismisses the whole menu (standard context-menu close)
 }
@@ -63,7 +67,7 @@ function leaf(item: MenuItem): void {
 <!-- the rows live in an inner wrapper that owns the rounded-corner clip (its overflow:hidden
      trims each row's hover wash to the corners); the flyout is hoisted OUT of it below, a direct
      child of the outer `.menu`, so the clip can't swallow it. -->
-<div class="menu-rows">
+<div class="menu-rows" bind:this={root}>
     {#each rows as item, i (i)}
         {#if item.separator}
             <div class="menu-sep" role="separator"></div>
@@ -78,6 +82,7 @@ function leaf(item: MenuItem): void {
                 data-group={item.group}
                 disabled={item.enabled === false}
                 aria-disabled={item.enabled === false || undefined}
+                onfocus={() => item.enabled !== false && enter(i, item)}
                 onmouseenter={() => item.enabled !== false && enter(i, item)}
                 onclick={() => item.enabled !== false && (open = i)}
                 bind:this={rowEls[i]}
@@ -96,6 +101,7 @@ function leaf(item: MenuItem): void {
                 aria-label={item.aria}
                 disabled={item.enabled === false}
                 aria-disabled={item.enabled === false || undefined}
+                onfocus={() => enter(i, item)}
                 onmouseenter={() => enter(i, item)}
                 onclick={() => leaf(item)}
             >
@@ -135,6 +141,34 @@ function leaf(item: MenuItem): void {
 {/each}
 
 <style>
+    :global(.menu) {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-solid);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        box-shadow: var(--shadow);
+        overflow: visible;
+        font: 11px "JetBrains Mono", ui-monospace, monospace;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    .menu-item {
+        all: unset;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 5px 10px;
+        color: var(--muted);
+        cursor: pointer;
+    }
+    .menu-item:not(:disabled):hover, .menu-item:focus-visible { background: var(--accent-soft); color: var(--fg); }
+    .menu-item:disabled { opacity: .4; cursor: default; }
+    .menu-item.danger, .menu-item.danger:hover { color: var(--danger); }
+    .menu-item.checked, .tick { color: var(--accent); }
+    .sk { font: 10px "JetBrains Mono", monospace; color: var(--muted); }
     /* the inner rows-wrapper owns the corner clip: overflow:hidden trims each row's hover wash to
        the menu's rounded corners. The submenu flyout is a SIBLING of this (a direct child of the
        outer `.menu`, which is `overflow: visible`), so the clip can't swallow it. radius is the
