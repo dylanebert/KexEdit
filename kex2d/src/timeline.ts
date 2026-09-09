@@ -905,10 +905,73 @@ export function bakeStations(ds: ArrayLike<number>, count: number): Float64Array
     const out = new Float64Array(Math.max(0, count));
     let s = 0;
     for (let i = 1; i < count; i++) {
-        s += ds[i - 1] ?? 0;
+        s += ds[i - 1] ?? NaN;
         out[i] = s;
     }
     return out;
+}
+
+/** Read a published column at an absolute station, without extrapolation or missing-input seeds.
+ * Edge columns hold their opening value; sample columns interpolate unwrapped values. */
+export function recoveredAt(read: BakeRead, s: number, edge = false): number | undefined {
+    const count = read.n;
+    const last = read.station[edge ? count : count - 1];
+    if (
+        count < 1 ||
+        !Number.isFinite(s) ||
+        last === undefined ||
+        !Number.isFinite(last) ||
+        s < 0 ||
+        s > last
+    )
+        return undefined;
+    let i = 0;
+    while (i + 1 < count && read.station[i + 1]! <= s) i++;
+    const value = read.value[i];
+    if (value === undefined || !Number.isFinite(value)) return undefined;
+    if (edge || i === count - 1 || s === read.station[i]) return value;
+    const next = read.value[i + 1],
+        a = read.station[i]!,
+        b = read.station[i + 1]!;
+    if (
+        next === undefined ||
+        !Number.isFinite(next) ||
+        !Number.isFinite(a) ||
+        !Number.isFinite(b) ||
+        b <= a
+    )
+        return undefined;
+    return value + ((next - value) * (s - a)) / (b - a);
+}
+
+export interface ScreenBox {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+}
+
+/** Measured overlay outside the actual dock, with clearance from its invoker. */
+export function fitEditor(
+    size: { w: number; h: number },
+    viewport: { w: number; h: number },
+    dock: ScreenBox,
+    invoker: ScreenBox,
+): { x: number; y: number } {
+    const gap = 8;
+    const x = Math.max(
+        gap,
+        Math.min(invoker.x + invoker.w / 2 - size.w / 2, viewport.w - size.w - gap),
+    );
+    const above = Math.min(dock.y, invoker.y) - size.h - gap;
+    const below = Math.max(dock.y + dock.h, invoker.y + invoker.h) + gap;
+    const y =
+        above >= gap
+            ? above
+            : below + size.h <= viewport.h - gap
+              ? below
+              : Math.max(gap, Math.min(above, viewport.h - size.h - gap));
+    return { x, y };
 }
 
 /** the residual over one record's span: RECOVERED minus DEMANDED, reported at the station where
@@ -926,20 +989,29 @@ export function spanResidual(
     record: LaneSegment,
     entry: number | undefined,
 ): number | undefined {
-    if (entry === undefined) return undefined;
+    return spanResidualDetail(read, record, entry)?.value;
+}
+
+export function spanResidualDetail(
+    read: BakeRead,
+    record: LaneSegment,
+    entry: number | undefined,
+): { value: number; station: number } | undefined {
+    if (entry === undefined || !Number.isFinite(entry)) return undefined;
     const from = entry;
     const points: ForcePoint[] = [
         { s: record.start, g: from, ease: record.ease as Easing },
         { s: record.end, g: record.exit, ease: record.ease as Easing },
     ];
-    let worst: number | undefined;
+    let worst: { value: number; station: number } | undefined;
     for (let i = 0; i < read.n; i++) {
         const s = read.station[i]!;
-        if (s < record.start || s > record.end) continue;
+        if (!Number.isFinite(s) || s < record.start || s > record.end) continue;
         const value = read.value[i];
         if (value === undefined || !Number.isFinite(value)) continue;
         const miss = value - sampleForce(points, s);
-        if (worst === undefined || Math.abs(miss) > Math.abs(worst)) worst = miss;
+        if (worst === undefined || Math.abs(miss) > Math.abs(worst.value))
+            worst = { value: miss, station: s };
     }
     return worst;
 }
@@ -1100,8 +1172,8 @@ export function reordered(order: readonly Lane[], from: number, to: number): rea
  *  The field law is root `ui.md`'s: key / value / unit, an `ew-resize` label that scrubs at a
  *  fixed `rate`, `precision` decimals, Enter commits, Escape reverts, ONE undo per commit. */
 export interface FieldSpec {
-    /** the quantity's short name — the field's key. */
-    key: string;
+    /** Quantity name, distinct from a keyboard event's key. */
+    name: string;
     /** the unit suffix (`m`, `g`, `m/s`, `\u00b0`). */
     unit: string;
     /** the live value in the DISPLAY unit (pitch arrives in degrees). */

@@ -343,7 +343,11 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     // same `ew-resize` class the retired field rows carried, over the popover's own fields.
     { file: "Popover.svelte", selector: ".peel", value: "pointer" },
     { file: "Popover.svelte", selector: ".field label", value: "ew-resize" },
-    { file: "Popover.svelte", selector: ".ease button", value: "pointer" },
+    {
+        file: "Popover.svelte",
+        selector: ".disclosure, .ease-control, .entry-actions button",
+        value: "pointer",
+    },
 ];
 
 /** every scanned source file's raw text — `.svelte` (CSS) and `.ts` (canvas assignments) alike,

@@ -4,19 +4,19 @@ Shallot + Svelte + canvas2D prototype. Read the parent entry and rules: `kex2d-m
 
 ## Model and landed boundary
 
-The authored track is three independent **lanes** — velocity, force, geo — of two-handle segments over one track-level end. A segment is one change of one parameter over a `[start, end)` arclength span with a named easing; it owns its exit always and its entry only when the record carries one. Spans abut but never overlap; a gap is the lane's inferred value.
+Three independent **lanes** (velocity, force, geo) hold two-handle segments under one track end. Each changes one parameter over `[start, end)` arclength with named easing, owned exit and optional owned entry. Spans abut, never overlap; gaps infer.
 
 `lanes.ts` holds the laws, `track.ts` the store (`LaneRecord`, `Track.end`/`order`/`v0`), `projection.ts` the derived run partition: lane order is priority, the higher shape lane cuts.
 
 `ADAPTERS.md` is the test-read adapter inventory; it is empty.
 
-The store, the v4 wire, the derived partition, the VERBS and the lane timeline have landed.
+Pose UX stays at `retired/pose-ux`: pin mode, canvas authoring, conversion UI/flows. Timeline: local Select (V)/Add (A), precise handles, compact Target/unit/easing, disclosed entry/range/diagnostics; no expansion/row Add. `menus.ts`/`keys.ts` share actions. Canvas is read-only, controls pan/zoom, optimize unwired.
 
-The pose UX is retired to the kexedit tag `retired/pose-ux`: pin mode, canvas control wiring, the conversion UI and capture flows; read the tag, never a copy. `Timeline.svelte`: Select (V) / Add (A), spans, station fields, Easing/Delete menus; no expansion/row Add. `menus.ts`/`keys.ts` share actions. The canvas draws the bake read-only, `controls.ts` is pan/zoom, `optimize.ts` unwired.
+Override uses field history; Inherit disowns. Ripple is end-only/same-lane, off per subject. Fields hold measured screen boxes/playhead, not bake; invalidating reflow cancels before refit.
 
 Geo authors PITCH — an absolute unwrapped world heading in radians — over an authored span, the same scalar record shape force uses; both allow arbitrary density, and rates are derived or invoked-fit views, never geometry storage.
 
-The dense bake is **derived display**, never authored state. Both kinds display geometry-recovered force, not demanded force; cart and timeline read the same bake. Direct authoring is deterministic, not an intent-arbitrating solver; optimization is a scoped, invoked tool.
+The bake is derived, never authored. Cart and timeline share published `ds` stations and unwrapped heading; one recovered reading per lane follows hover, else playhead. Missing coverage/unresolved entries read unavailable; targets stay absolute. Direct authoring is deterministic; optimization is invoked.
 
 The start position is fixed at the origin. Initial speed is the authored `Track.v0` column, falling back to `V0` when absent. Every lane record's stations are track-global arclength and f64; the derived runs carry the run-local frames. `Track.domain` is an undoable display lens: it changes no positions, extents or bake hash.
 

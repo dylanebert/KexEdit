@@ -26,7 +26,7 @@ Friction/drag make speed path-dependent; height-only conservation holds only at 
 
 ## Velocity strips
 
-Velocity records are track-global and survive structural edits without reseeding; abutting and run-crossing spans are legal, overlap is refused. Each frames as ONE `edgeStrips` row, so abutting rows never average across their seam. Restore bypasses the setter guards: a migrated document may hold a record below the floor. `entrySpeed` reads `Track.v0`. `domain.ts` changes only the display lens; `timeline.ts` projects coordinates, frozen per gesture, with matched extrapolating inverses during extent growth.
+Velocity is track-global: preserve values across structural edits, allow abutting/run-crossing spans, refuse overlap. Each `edgeStrips` row keeps its seam; restore admits migrated sub-floor records. `entrySpeed` reads `Track.v0`. `domain.ts` is display-only; `timeline.ts` holds gesture projections with matched extrapolating inverses.
 
 ## Invoked tools and history
 
@@ -40,8 +40,8 @@ Velocity records are track-global and survive structural edits without reseeding
 
 ## Hard gotchas
 
-`controls.ts` attaches input on mount with teardown, never a module-level attached flag. `editor.ts` owns one selection set/active member. Tick-derived values lag: swallowing listeners must read live state, and reactive reads return primitives rather than a mutated singleton reference. `menus.ts`/`keys.ts` are pure descriptors; `Menu.svelte` renders them. `render.ts`/`cart.ts` only read the bake.
+`controls.ts` owns mount/teardown listeners; `editor.ts` owns selection. Swallowing listeners read live state despite tick lag; reactive reads return primitives, not mutated singletons. `menus.ts`/`keys.ts` describe, `Menu.svelte` renders. `Popover.svelte` measures/holds screen boxes and shares field history; `timeline.ts` reads published bake stations, never exit fallbacks.
 
-Keep `tests/substrate.test.ts` (selection), `tests/purity.test.ts` (writes/adapters) and module-named behavioral tests. Physics authority is independent convergence: `tests/oracles/rk4.ts`, analytics and `tests/helpers/forward64.ts`, not self-consistency. Structural exactness checks sample the whole pre-op observable, not just counts or boundaries.
+Keep substrate/selection, purity/writer and module tests. Physics authority: analytics, `tests/oracles/rk4.ts`, `tests/helpers/forward64.ts`, not self-consistency. Exactness reads whole pre-op state, not counts/boundaries.
 
 Run affected `./tests/*.oracle.ts` by path; fast sentinels remain in the default suite. Goldens are field-wise and platform-stamp matched where required; missing stamps fail, never skip. Capture/mutation flows, not unit helpers, prove DOM wiring. Keep one shared keyframe interaction path, not per-kind twins. Labs (`tests/*.lab.ts`, `*-lab.html`) run explicitly.
