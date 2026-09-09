@@ -12,6 +12,7 @@ import {
     ordered,
     segmentOverlapped,
     trackEnd,
+    spanWithinEnd,
 } from "../src/lanes";
 import { DEFAULT_G, Easing } from "../src/profile";
 
@@ -24,6 +25,19 @@ import { DEFAULT_G, Easing } from "../src/profile";
 function seg(id: number, start: number, end: number, exit: number, entry?: number): LaneSegment {
     return { id, start, end, ease: Easing.Linear, exit, ...(entry === undefined ? {} : { entry }) };
 }
+
+test("finite span bounds: follow permits growth, a pin permits equality only", () => {
+    expect(spanWithinEnd(0, 25, 0)).toBe(true);
+    expect(spanWithinEnd(0, 20, 20)).toBe(true);
+    expect(spanWithinEnd(0, 25, 20)).toBe(false);
+    expect(spanWithinEnd(21, 24, 20)).toBe(false);
+    for (const pin of [0, 20]) {
+        for (const value of [NaN, Infinity, -Infinity]) {
+            expect(spanWithinEnd(value, 10, pin)).toBe(false);
+            expect(spanWithinEnd(0, value, pin)).toBe(false);
+        }
+    }
+});
 
 describe("exclusivity: overlap is refused, abutting is legal", () => {
     const lane = [seg(1, 0, 10, 5), seg(2, 20, 30, 7)];

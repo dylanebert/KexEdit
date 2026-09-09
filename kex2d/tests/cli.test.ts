@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { $ } from "bun";
 import { describe, expect, test } from "bun:test";
 import { State } from "@dylanebert/shallot";
-import { applyOp, type Op } from "../src/commands";
+import { applyOp, flatRecordArgs, type Op } from "../src/commands";
 import { dispatch } from "../src/cli";
 import { loadDocument, parseDocument, saveDocument } from "../src/doc";
 import { createHistory } from "../src/history";
@@ -133,6 +133,81 @@ describe("stats / dump: structured readback over the fixture corpus", () => {
         } finally {
             teardown();
         }
+    });
+});
+
+describe("canonical Add arguments through CLI", () => {
+    test("builder replay, missing ease/entry, inherit/override and refusal bytes agree", async () => {
+        setup();
+        try {
+            const path = join(workdir, "parity.kex");
+            expect((await dispatch(["new", path])).exitCode).toBe(0);
+            const seed = readFileSync(path, "utf8");
+            const normalize = (text: string, id: number) =>
+                text.replaceAll(`"id":${id},`, '"id":NEW,');
+            for (const lane of ["force", "geo", "velocity"] as const) {
+                for (const owned of [false, true]) {
+                    const ecs = new State();
+                    ecs.addSystem(BakeSystem);
+                    loadDocument(ecs, seed);
+                    const op = flatRecordArgs(ecs, lane, 25, 27);
+                    if (!owned) delete op.entry;
+                    const direct = applyOp(ecs, createHistory(), op);
+                    expect(direct.refusals).toEqual([]);
+                    const expected = normalize(saveDocument(ecs), direct.id!);
+                    writeFileSync(path, seed);
+                    const cli = await dispatch(["edit", path, "--ops", JSON.stringify(op)]);
+                    expect(cli.exitCode).toBe(0);
+                    const id = JSON.parse(cli.stdout).results[0].id;
+                    const after = readFileSync(path, "utf8");
+                    expect(normalize(after, id)).toBe(expected);
+                    const row = parseDocument(after).lanes[lane].find((r) => r.id === id)!;
+                    expect(row.ease).toBe(Easing.Linear);
+                    expect(row.entry).toBe(owned ? op.exit : undefined);
+                    for (const value of [
+                        lane === "geo" ? 0.01 : lane === "force" ? 1.1 : 19,
+                        undefined,
+                    ]) {
+                        const handle = { type: "record-handle", id, which: "entry", value };
+                        const result = await dispatch([
+                            "edit",
+                            path,
+                            "--ops",
+                            JSON.stringify(handle),
+                        ]);
+                        expect({ lane, owned, value, result }).toMatchObject({
+                            result: { exitCode: 0 },
+                        });
+                        expect(
+                            parseDocument(readFileSync(path, "utf8")).lanes[lane].find(
+                                (r) => r.id === id,
+                            )!.entry,
+                        ).toBe(value);
+                    }
+                    const beforeRefusal = readFileSync(path, "utf8");
+                    for (const invalid of [
+                        { type: "record-handle", id, which: "exit" },
+                        { type: "record-add", lane, start: 30, end: 32 },
+                        { type: "record-add", lane, start: 30, end: 32, exit: "bad" },
+                    ]) {
+                        expect(
+                            (await dispatch(["edit", path, "--ops", JSON.stringify(invalid)]))
+                                .exitCode,
+                        ).toBe(1);
+                        expect(readFileSync(path, "utf8")).toBe(beforeRefusal);
+                    }
+                }
+            }
+        } finally {
+            teardown();
+        }
+    });
+
+    test("help explains required args, Linear and explicit inheritance", async () => {
+        const help = await dispatch(["--help"]);
+        expect(help.stdout).toContain("omitted ease is Linear on every lane");
+        expect(help.stdout).toContain("which=entry with no value inherits");
+        expect(help.stdout).toContain("which=exit requires a finite value");
     });
 });
 

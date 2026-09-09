@@ -13,15 +13,19 @@
  *  Every arm is red-proven by a mutation recorded beside it. Device-free: no GPU, no canvas. */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { State } from "@dylanebert/shallot";
-import { applyOp, type Op } from "../src/commands";
+import { applyOp, flatRecordArgs, type LaneName, type Op } from "../src/commands";
 import { loadDocument, parseDocument, saveDocument, serializeDocument } from "../src/doc";
 import { createHistory, type History, undo } from "../src/history";
-import { Lane } from "../src/lanes";
-import { Easing } from "../src/profile";
+import { entryValue, Lane } from "../src/lanes";
+import { Easing, resolveStep } from "../src/profile";
 import { Domain } from "../src/section";
 import {
     bakeOut,
+    laneRows,
+    recordOf,
+    stripsForStep,
     BakeSystem,
     createRecord,
     DEFAULT_FRICTION,
@@ -60,6 +64,139 @@ const TEMPLATE = serializeDocument(
         }),
     ),
 );
+
+describe("canonical creation and entry parity", () => {
+    test("migrated successor discontinuity stays owned until explicit inherit, with exact undo", () => {
+        const input = JSON.parse(
+            readFileSync(
+                new URL("./fixtures/force/adjacent-force-runs.kex", import.meta.url),
+                "utf8",
+            ),
+        );
+        input.sections[1].points[0].g = 1.5;
+        const ecs = new State();
+        ecs.addSystem(BakeSystem);
+        loadDocument(ecs, JSON.stringify(input));
+        const h = createHistory();
+        const rows = laneRows(ecs, Lane.Force);
+        expect(rows).toHaveLength(2);
+        expect(rows[0]!.exit).toBe(2);
+        expect(rows[1]!.entry).toBe(1.5);
+        expect(rows[0]!.end).toBe(rows[1]!.start);
+        const before = saveDocument(ecs);
+        expect(flatRecordArgs(ecs, "force", 9, 11).entry).toBe(0.75);
+        expect(saveDocument(ecs)).toBe(before);
+        expect(
+            applyOp(ecs, h, { type: "record-handle", id: rows[1]!.id, which: "entry" }).refusals,
+        ).toEqual([]);
+        const inherited = laneRows(ecs, Lane.Force);
+        expect(entryValue(Lane.Force, inherited, inherited[1]!)).toBe(2);
+        expect(inherited[0]).toEqual(rows[0]!);
+        undo(h, ecs);
+        expect(saveDocument(ecs)).toBe(before);
+    });
+    test("flat Add arguments own the seed, omit easing and ignore other lanes' easing", () => {
+        const { ecs, h } = loaded();
+        const cases: [LaneName, number, number][] = [
+            ["force", 0, 1],
+            ["force", 70, 2.5],
+            ["force", 80, 2.5],
+            ["geo", 40, 0.24],
+            ["geo", 80, 0.24],
+            ["velocity", 0, 22],
+            ["velocity", 20, 26],
+            ["velocity", 30, 26],
+        ];
+        for (const [lane, start, value] of cases) {
+            const op = flatRecordArgs(ecs, lane, start, start + 2);
+            expect(op).toEqual({
+                type: "record-add",
+                lane,
+                start,
+                end: start + 2,
+                entry: value,
+                exit: value,
+            });
+            expect(setRecordEase(ecs, FORCE, Easing.Quintic).refusals).toEqual([]);
+            expect(flatRecordArgs(ecs, lane, start, start + 2)).toEqual(op);
+        }
+        for (const lane of ["force", "geo", "velocity"] as const) {
+            const before = saveDocument(ecs);
+            const op = flatRecordArgs(ecs, lane, 80, 82);
+            const result = applyOp(ecs, h, JSON.parse(JSON.stringify(op)));
+            expect(result.refusals).toEqual([]);
+            expect(recordOf(ecs, result.id!)!.row).toMatchObject({
+                ease: Easing.Linear,
+                entry: op.entry,
+                exit: op.exit,
+            });
+            const correct = normalizeNewId(saveDocument(ecs), result.id);
+            undo(h, ecs);
+            expect(saveDocument(ecs)).toBe(before);
+            const wrong = applyOp(ecs, h, { ...op, exit: op.exit + 1 });
+            expect(normalizeNewId(saveDocument(ecs), wrong.id)).not.toBe(correct);
+            undo(h, ecs);
+        }
+        deleteRecord(ecs, GEO);
+        expect(flatRecordArgs(ecs, "geo", 0, 2).entry).toBe(0);
+        expect(setV0(ecs, 31)).toEqual([]);
+        expect(flatRecordArgs(ecs, "velocity", 0, 2).entry).toBe(31);
+        expect(flatRecordArgs(ecs, "geo", 0, 2).entry).toBe(0);
+        expect(recordOf(ecs, VELOCITY)!.row.entry).toBe(20);
+    });
+
+    test("inherit/override preserves ownership semantics and exact undo on all lanes", () => {
+        const { ecs, h } = loaded();
+        for (const [id, lane, inherited] of [
+            [FORCE, Lane.Force, 1],
+            [GEO, Lane.Geo, undefined],
+            [VELOCITY, Lane.Velocity, undefined],
+        ] as const) {
+            const before = saveDocument(ecs);
+            const count = h.undo.length;
+            expect(applyOp(ecs, h, { type: "record-handle", id, which: "entry" }).refusals).toEqual(
+                [],
+            );
+            const found = recordOf(ecs, id)!;
+            expect(found.row.entry).toBeUndefined();
+            expect(entryValue(lane, laneRows(ecs, lane), found.row)).toBe(inherited);
+            expect(h.undo).toHaveLength(count + 1);
+            if (lane === Lane.Velocity)
+                expect(stripsForStep(ecs, 0, resolveStep(70, 0.5))).toBeUndefined();
+            undo(h, ecs);
+            expect(saveDocument(ecs)).toBe(before);
+            expect(
+                applyOp(ecs, h, { type: "record-handle", id, which: "entry", value: 21 }).refusals,
+            ).toEqual([]);
+            expect(recordOf(ecs, id)!.row.entry).toBe(21);
+            if (lane === Lane.Velocity)
+                expect(stripsForStep(ecs, 0, resolveStep(70, 0.5))).toHaveLength(1);
+            undo(h, ecs);
+            expect(saveDocument(ecs)).toBe(before);
+            expect(applyOp(ecs, h, { type: "record-handle", id, which: "exit" }).applied).toBe(
+                false,
+            );
+            expect(saveDocument(ecs)).toBe(before);
+            expect(h.undo).toHaveLength(count);
+        }
+        const before = saveDocument(ecs);
+        const added = applyOp(ecs, h, {
+            type: "record-add",
+            lane: "velocity",
+            start: 20,
+            end: 25,
+            exit: 30,
+        });
+        expect(added.refusals).toEqual([]);
+        const row = recordOf(ecs, added.id!)!.row;
+        expect(row.entry).toBeUndefined();
+        expect(row.ease).toBe(Easing.Linear);
+        expect(entryValue(Lane.Velocity, laneRows(ecs, Lane.Velocity), row)).toBe(26);
+        expect(stripsForStep(ecs, 0, resolveStep(70, 0.5))).toHaveLength(2);
+        undo(h, ecs);
+        expect(saveDocument(ecs)).toBe(before);
+    });
+});
 
 const GEO = 0;
 const FORCE = 1;

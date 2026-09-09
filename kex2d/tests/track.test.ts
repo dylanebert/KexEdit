@@ -12,7 +12,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { State } from "@dylanebert/shallot";
-import { loadDocument } from "../src/doc";
+import { loadDocument, saveDocument } from "../src/doc";
+import { beginBody, commit, createHistory } from "../src/history";
 import { Lane, RECORD_FLOOR, trackEnd } from "../src/lanes";
 import { Easing } from "../src/profile";
 import { DEFAULT_ORDER } from "../src/projection";
@@ -105,6 +106,70 @@ describe("the lane readers", () => {
         expect(lanesOf(state).force[0]!.end).toBe(hostile);
         expect(recordAt(state, id)).not.toBeNull();
     });
+});
+
+describe("direct writer bounds", () => {
+    for (const lane of [Lane.Force, Lane.Geo, Lane.Velocity]) {
+        for (const pin of [0, 20]) {
+            test(`lane ${lane}, pin ${pin}: create/span refuse before any authored write`, () => {
+                const { state } = track();
+                const h = createHistory();
+                const id = author(state, lane, { start: 0, end: 10, ease: 0, entry: 1, exit: 1 });
+                expect(setEnd(state, pin)).toEqual([]);
+                const before = {
+                    doc: saveDocument(state),
+                    hash: authoredHash(state),
+                    snap: snapshotAll(state),
+                    history: structuredClone(h),
+                };
+                const bad = [
+                    [-1, 5],
+                    [10, 10],
+                    [10, 10.5],
+                    [NaN, 15],
+                    [10, Infinity],
+                    [-Infinity, 15],
+                    [10, NaN],
+                ];
+                if (pin) bad.push([21, 24]);
+                for (const [start, end] of bad) {
+                    expect(
+                        createRecord(state, lane, { start: start!, end: end!, ease: 0, exit: 1 })
+                            .id,
+                    ).toBeNull();
+                    beginBody(state, id);
+                    expect(setRecordSpan(state, id, start!, end!).id).toBeNull();
+                    commit(h);
+                    expect({
+                        doc: saveDocument(state),
+                        hash: authoredHash(state),
+                        snap: snapshotAll(state),
+                        history: h,
+                    }).toEqual(before);
+                }
+                if (pin) {
+                    beginBody(state, id);
+                    expect(setRecordSpan(state, id, 0, 25).id).toBeNull();
+                    commit(h);
+                    expect({
+                        doc: saveDocument(state),
+                        hash: authoredHash(state),
+                        snap: snapshotAll(state),
+                        history: h,
+                    }).toEqual(before);
+                }
+                expect(setRecordSpan(state, id, 0, pin || 25).refusals).toEqual([]);
+                expect(setRecordSpan(state, id, 0, 10).refusals).toEqual([]);
+                author(state, lane, { start: 10, end: pin || 30, ease: 0, exit: 1 });
+                const abutting = saveDocument(state);
+                expect(setRecordSpan(state, id, 0, 11).id).toBeNull();
+                expect(
+                    createRecord(state, lane, { start: 9, end: 12, ease: 0, exit: 1 }).id,
+                ).toBeNull();
+                expect(saveDocument(state)).toBe(abutting);
+            });
+        }
+    }
 });
 
 describe("the setters refuse structurally", () => {

@@ -40,6 +40,7 @@ import {
     ordered,
     RECORD_FLOOR,
     trackEnd,
+    spanWithinEnd,
 } from "./lanes";
 import {
     type Easing,
@@ -334,6 +335,11 @@ export function createRecord(
             { guard: "duplicateId", message: `a lane record already holds id ${id}` },
         ]);
     const refusals = refuse(lane, candidateOf(laneRows(ecs, lane), id, next), id);
+    if (!spanWithinEnd(next.start, next.end, endColumn(ecs)))
+        refusals.push({
+            guard: "spanWithinEnd",
+            message: "record stations must be finite and not exceed the track pin",
+        });
     if (refusals.length > 0) return declined(refusals);
     const eid = ecs.create();
     ecs.add(eid, LaneRecord);
@@ -349,6 +355,11 @@ export function setRecordSpan(ecs: State, id: number, start: number, end: number
     const lane = LaneRecord.lane.get(eid) as Lane;
     const next = { ...rowOf(eid), start, end };
     const refusals = refuse(lane, candidateOf(laneRows(ecs, lane), id, next), id);
+    if (!spanWithinEnd(next.start, next.end, endColumn(ecs)))
+        refusals.push({
+            guard: "spanWithinEnd",
+            message: "record stations must be finite and not exceed the track pin",
+        });
     if (refusals.length > 0) return declined(refusals);
     writeRow(eid, lane, next);
     return landed(id);

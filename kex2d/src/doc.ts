@@ -27,6 +27,7 @@ import type { Refusal } from "./commands";
 import { history } from "./history";
 import {
     emptyLanes,
+    entryValue,
     Lane,
     type LaneSegment,
     type Lanes,
@@ -1227,7 +1228,7 @@ function buildScratchEcs(doc: Kex2dDocument): State {
     return ecs;
 }
 
-/** the one guard that needs a real ECS: a velocity record must cover at least one EDGE of the
+/** the one guard that needs a real ECS: a resolved velocity record must cover at least one EDGE of the
  *  partition it lands in, resolved at each derived run's own step.
  *
  *  A record narrower than an edge prescribes nothing — `edgeStrips` maps its two boundaries onto
@@ -1240,6 +1241,15 @@ function checkGeometryInvariants(ecs: State): Refusal[] {
     if (rows.length === 0) return [];
     const ds = trackDs(ecs);
     const covered = new Set<number>();
+    // Resolve against the original lane: an unresolved predecessor still owns its exit.
+    // Copies are validation-only; inferred entries must never become authored ownership.
+    const active: LaneSegment[] = [];
+    for (const r of rows) {
+        const entry = entryValue(Lane.Velocity, rows, r);
+        if (entry === undefined)
+            covered.add(r.id); // no prescription, no point-override hazard
+        else active.push({ ...r, entry });
+    }
     let offset = 0;
     for (const run of derivedRunsOf(ecs)) {
         const step = resolveStep(run.length, ds);
@@ -1247,7 +1257,7 @@ function checkGeometryInvariants(ecs: State): Refusal[] {
         // one record at a time: the framing DROPS a row that falls wholly outside the run, so a
         // surviving spec's array index is not the record's own and coverage cannot be read off a
         // whole-lane framing.
-        for (const r of rows) {
+        for (const r of active) {
             const framed = edgeStrips(grid, step.edges, velocityRows([r], offset));
             if (framed && framed.length > 0 && framed[0]!.end > framed[0]!.start) covered.add(r.id);
         }
