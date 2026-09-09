@@ -103,6 +103,39 @@ export function boolEnv(env: Record<string, string | undefined>, name: string): 
     return raw === "1";
 }
 
+/** Refuse alternate debug and browser launch routes before loading Playwright. */
+export function assertQuietEnv(env: Record<string, string | undefined>): void {
+    for (const name of Object.keys(env))
+        if (
+            env[name] !== undefined &&
+            /^(PWDEBUG$|SELENIUM_|npm_(?:config|package_config)_pwdebug$)/.test(name)
+        )
+            throw new UsageError(`KEX_QUIET refuses ${name}`);
+}
+
+/** Quiet mode permits selection, not launch/config/reporter/timeout overrides. */
+export function quietMode(env: Record<string, string | undefined>, args: string[]): boolean {
+    const quiet = boolEnv(env, "KEX_QUIET");
+    if (!quiet) return false;
+    // Ambient overrides are refused here; Playwright later adds its own worker markers.
+    for (const name of Object.keys(env))
+        if (env[name] !== undefined && /^(PW_|PLAYWRIGHT_)/.test(name))
+            throw new UsageError(`KEX_QUIET refuses ${name}`);
+    assertQuietEnv(env);
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--list") continue;
+        if (["-g", "--grep", "--grep-invert"].includes(arg)) {
+            const value = args[++i];
+            if (!value || value.startsWith("-")) throw new UsageError(`${arg} needs a selection`);
+            continue;
+        }
+        if (/^--grep(?:-invert)?=.+/.test(arg)) continue;
+        throw new UsageError(`KEX_QUIET refuses override ${arg}`);
+    }
+    return true;
+}
+
 /**
  * The suite-count oracle's LEFT-hand side: what a `--list` pre-pass says the config COLLECTS,
  * off its `Total: 23 tests in 1 file` line. Null when no such line parsed — a config that collects
@@ -202,6 +235,7 @@ export function failedTitles(stdout: string): string[] {
 
 /** what a finished run leaves to judge: its exit, what it collected, what its summary said */
 export interface RunFacts {
+    quiet?: boolean;
     /** a filtered run — it merges its shots over the set and claims no coverage */
     selective: boolean;
     /** Playwright's exit code; null when the spawn ceiling fired and it never exited */
@@ -261,7 +295,12 @@ export function verdict(facts: RunFacts, declared: ReadonlySet<string> = DECLARE
     // not fully green, so this check is separate from `failure === null`.
     const fullyGreen = facts.exitCode === 0 && facts.failedTitles.length === 0;
     return {
-        reference: !facts.selective && facts.defaultKnobs && failure === null && fullyGreen,
+        reference:
+            !facts.quiet &&
+            !facts.selective &&
+            facts.defaultKnobs &&
+            failure === null &&
+            fullyGreen,
         failure,
     };
 }
@@ -271,10 +310,18 @@ export function verdict(facts: RunFacts, declared: ReadonlySet<string> = DECLARE
 // outstanding (its goal state), and a positive control that can only run while a real defect is
 // tolerated would make the tolerance path untestable exactly when the corpus is healthy.
 function failureOf(
-    { selective, exitCode, collected, counts, failedTitles }: RunFacts,
+    { quiet, selective, exitCode, collected, counts, failedTitles }: RunFacts,
     declared: ReadonlySet<string>,
 ): string | null {
     if (exitCode === null) return "the spawn ceiling fired — Playwright never exited";
+    if (quiet) {
+        if (exitCode !== 0) return `Playwright exited ${exitCode}`;
+        if (!collected || !counts || counts.total !== collected)
+            return "nonempty selected collection/execution mismatch";
+        if (counts.passed !== collected || failedTitles.length > 0)
+            return "selected tests failed, skipped, flaky, interrupted or did not run";
+        return null;
+    }
     if (exitCode !== 0) {
         // A selective run's red is an iteration signal, not a gate decision — the declared set
         // applies only to full runs. Deciding field: `selective` — a selective run never reaches

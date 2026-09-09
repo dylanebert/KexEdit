@@ -35,6 +35,25 @@ function intEnv(
     return n;
 }
 
+function boolEnv(env: Record<string, string | undefined>, name: string): boolean {
+    const raw = env[name];
+    if (raw === undefined) return false;
+    if (raw !== "0" && raw !== "1")
+        throw new UsageError(`${name} must be 0 or 1 (got ${JSON.stringify(raw)})`);
+    return raw === "1";
+}
+
+function assertQuietEnv(env: Record<string, string | undefined>): void {
+    for (const name of Object.keys(env))
+        if (
+            env[name] !== undefined &&
+            /^(PWDEBUG$|SELENIUM_|npm_(?:config|package_config)_pwdebug$)/.test(name)
+        )
+            throw new UsageError(`KEX_QUIET refuses ${name}`);
+}
+
+const quiet = boolEnv(process.env, "KEX_QUIET");
+if (quiet) assertQuietEnv(process.env);
 const workers = intEnv(process.env, "KEX_WORKERS", 4, 1, 64);
 
 export default defineConfig({
@@ -62,13 +81,8 @@ export default defineConfig({
     use: {
         trace: "off",
         video: "off",
-        // Headed always. Measured on this seat (Omarchy/Hyprland, RTX 4090, 2026-09-08): headed
-        // system Chrome over http://localhost reports `nvidia / lovelace`, while headless reports
-        // `google / swiftshader` under every flag set tried — the channel does NOT avoid the
-        // software fallback headless. A window appears on the session's display during a run;
-        // `capture.ts`'s display guard refuses to start without one, and `flow.ts`'s boot fails the
-        // run on a software adapter, so this can never silently degrade.
-        headless: false,
+        // Quiet observations are controlled browser evidence, never native appearance.
+        headless: quiet,
         viewport: { width: 1440, height: 900 },
         deviceScaleFactor: 2, // crisp text/lines for UI review
         actionTimeout: 15_000,
