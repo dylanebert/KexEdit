@@ -8,13 +8,13 @@ paths:
 
 ## Layered expressiveness
 
-Direct, live, undoable authoring; summon depth, never cap expressiveness. Infer tangents; translate mechanisms into wants. `kex2d/AGENTS.md` owns segment model/unfinished gesture migration. Display geometry-recovered forces, never demanded/smoothed substitutes; readouts name authored quantities.
+Live/undoable; disclose depth, never cap it. Infer tangents; translate mechanisms into wants. `kex2d/AGENTS.md` owns segments. Name authored quantities; never substitute demand/smoothing for recovered forces.
 
 ## The kexedit bend: the force curve earns persistence
 
-Only force timeline docks: opaque, fixed, quiet. On-object controls; scaffolding outside content. No standing viewport chrome. Global rail: toggles/key twins only. Timeline adds local Select (V)/Add (A), outside its reorder column. Own palette, not Shallot's.
+Opaque fixed timeline; on-object controls, scaffolding outside content. No standing viewport chrome. Global rail: toggles/key twins only; local Select (V)/Add (A) outside reorder column. Own palette, not Shallot's.
 
-One clock, global transport/local authoring, no play/edit split. Read playhead, never move it; scrub never edits. Another render requires another camera.
+One clock: global transport/local authoring, no play/edit split. Authoring holds playhead; scrub never edits. Another render needs another camera.
 
 ## Document axis vs value axis
 
@@ -26,15 +26,15 @@ Content never pans/zooms, append included. Navigation fits lead-out (50 m floor)
 
 `manipulator.ts`: content-frame 1D, never world-axis/free-2D. 3D adds pitch/turn/roll, perpendicular offsets; view-plane body drag only in tangent edit.
 
-User increments at snap-toggle right-click, fixed timeline grids. Resolved fields; invoker-only dismissal exemption. Readouts follow ring geometry, match authored snap/write, never bake values/cursor chips.
+User increments at snap-toggle right-click, fixed timeline grids. Resolved fields; invoker-only dismissal exemption. Targets use authored units; aligned recovery reads bake `ds` at hover, else playhead. Missing coverage/unresolved entry: unavailable, never exit.
 
-4 px dead-zone: timeline edge click opens station field, drag resizes; no double-click act. Cancel/blur/deletion/teardown revert/release; pointerup commits. Live-drag guides only. Fields own keys: Enter once, Escape/blur revert.
+4 px: edge click opens station field, drag resizes; no double-click act. Cancel/blur/deletion/teardown revert/release; up commits. Guides only while dragging. Fields own keys: Enter once, Escape/blur revert.
 
 ## Multiselect
 
-`editor.ts`: one stable-id set/active; Shift toggles, empty clears, Ctrl/Cmd isn't selection. Multi highlights only, no fields/bulk edit. Plain drag edits its subject.
+`editor.ts`: one stable-id set/active. Shift toggles, empty clears, not Ctrl/Cmd. Multi highlights only, no fields/bulk edit; plain drag edits its subject.
 
-Select gaps clear; Add previews/creates one lane/undo, then Select. Refusal keeps Add; Escape cancels. V/A: local focus/hover, not typing/menu/gesture. Escape peels field/gesture, menu, Add, editor, selection.
+Select gaps clear; Add previews/creates one lane/undo then Select; refusal stays Add, Escape cancels. V/A: local focus/hover, never typing/menu/gesture. Escape peels field/gesture, menu, Add, editor, selection.
 
 Nudges: station left/right, target Shift+up/down; no Alt entry binding.
 
@@ -58,7 +58,7 @@ Reset: top-level, normal color, no confirm, creation state; keyframes pick easin
 
 ## Kind color
 
-`colors.ts`/tests own palette and priority: red > brightened own-color selection > hover > kind. Hover lifts ink/fill, never size; selected bodies suppress, resize handles don't. Timeline: ew-resize, independent handle states above hatch; same shared-edge hit for hover/press. Foreign gestures suppress, own-surface retains; no cross-surface sync.
+`colors.ts`/tests: red > brightened kind selection > hover > kind. Hover lifts ink/fill, not size; selected bodies suppress, handles don't. Timeline: ew-resize, handles above hatch, same shared-edge hover/press hit. Foreign gestures suppress; own-surface retains; no cross-surface sync.
 
 ## Mode vocabulary
 
@@ -66,13 +66,15 @@ One meaning/channel, no decorative mode chrome. Pin goal, lock DOF. Hatch subjec
 
 ## Keyframe / curve-editor conventions
 
-Insert profile value, not cursor y; easing may reshape. Leading key owns easing menu, not curve hits; terminal has none. Named easing, not scalar. On-point fields, inert during drag; dismissal peels field then selection.
+Insert profile value, not cursor y; easing may reshape. Leading key owns easing menu, not curve hits; terminal has none. Compact Target/unit and named shared easing disclose entry/range/residual. Override explicitly; inherited starts are summary-only. End-only ripple has no shortcut; disable its checkbox during edits.
 
-Press-relative value offset survives scale growth; never rebase press/reuse pixel gap. `timeline.ts`/`track.ts` tests own collisions: refuse, not overwrite/order-clamp; value moves, crossing resumes. Restore never repairs history.
+Measure overlays; clear dock/handles. Hold screen x/y through edits; invalidating layout cancels before refit. Bake stays live.
+
+Hold press-relative offsets through scale growth; never rebase/reuse pixel gap. Timeline/store tests pin collision refusal, not overwrite/order-clamp; crossing resumes. Restore never repairs history.
 
 ## Constraint-solver UX
 
-Invariant arclength; time is frozen-per-gesture projection. Targets use persistent driving/driven flags, not selection; driven measures only. Show demand/achieved residual. Solve reaches fixpoint in one press; shortfall is stable infeasibility.
+Invariant arclength; freeze time projection per gesture. Lane order/overlap derives driving, never selection/stored flags; disclose demand/achieved residual. Invoked solve reaches fixpoint; shortfall is stable infeasibility.
 
 ## Sandbox-mode UX
 

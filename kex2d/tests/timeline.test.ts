@@ -38,6 +38,8 @@ import {
     nudgeQuantum,
     popoverFit,
     recoveredPolyline,
+    recoveredAt,
+    fitEditor,
     reorderDrop,
     reordered,
     rowChart,
@@ -1463,6 +1465,48 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
         // and the horizontal clamp keeps the whole panel on both walls.
         expect(popoverFit({ ...mid, x0: 0, x1: 20 }, size, dock).x).toBe(6);
         expect(popoverFit({ ...mid, x0: 580, x1: 600 }, size, dock).x).toBe(600 - 6 - 180);
+    });
+
+    test("context reading uses accumulated ds, unwrapped samples and edge holds without extrapolation", () => {
+        const station = bakeStations([2, 3, 5], 4);
+        const read = { station, value: [6, 8, 11, 16], n: 4 };
+        expect(recoveredAt(read, 3)).toBe(9);
+        expect(recoveredAt(read, 10)).toBe(16);
+        expect(recoveredAt({ ...read, n: 3 }, 3, true)).toBe(8);
+        expect(recoveredAt({ ...read, n: 3 }, 10, true)).toBe(11);
+        for (const s of [-1, 10.001, NaN, Infinity]) expect(recoveredAt(read, s)).toBeUndefined();
+        expect(recoveredAt({ ...read, value: [6, NaN, 11, 16] }, 3)).toBeUndefined();
+        expect(recoveredAt({ ...read, value: [] }, 0)).toBeUndefined();
+        expect(recoveredAt({ ...read, station: bakeStations([2], 4) }, 3)).toBeUndefined();
+        expect(recoveredAt({ station: [], value: [], n: 0 }, 0)).toBeUndefined();
+        // Chord lengths [1,1,1] and wrapping heading would both return a different value.
+        expect(recoveredAt({ ...read, station: bakeStations([1, 1, 1], 4) }, 3)).not.toBe(9);
+    });
+
+    test("measured editor clears dock and invoking handle, flips and clamps at viewport edges", () => {
+        for (const viewport of [
+            { w: 1280, h: 720 },
+            { w: 800, h: 600 },
+        ])
+            for (const h of [160, 320])
+                for (const x of [0, viewport.w / 2, viewport.w]) {
+                    const size = { w: 270, h };
+                    const dock = { x: 16, y: viewport.h - 200, w: viewport.w - 32, h: 180 };
+                    const invoker = { x, y: dock.y + 32, w: 2, h: 32 };
+                    const fit = fitEditor(size, viewport, dock, invoker);
+                    expect(fit.x).toBeGreaterThanOrEqual(8);
+                    expect(fit.x + size.w).toBeLessThanOrEqual(viewport.w - 8);
+                    expect(fit.y).toBeGreaterThanOrEqual(8);
+                    expect(fit.y + size.h).toBeLessThanOrEqual(dock.y - 8);
+                }
+        expect(
+            fitEditor(
+                { w: 270, h: 160 },
+                { w: 800, h: 600 },
+                { x: 0, y: 8, w: 800, h: 100 },
+                { x: 400, y: 20, w: 2, h: 32 },
+            ).y,
+        ).toBe(116);
     });
 
     // RED: resolve the drop off the pointer's own row only (return `from`) and a drag can never

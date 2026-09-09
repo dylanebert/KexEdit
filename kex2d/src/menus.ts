@@ -1,5 +1,26 @@
 import { BINDINGS, type MenuItem } from "./menu";
-import { Easing } from "./profile";
+import { Easing, sampleForce } from "./profile";
+
+export const EASINGS: readonly (readonly [string, Easing])[] = [
+    ["Linear", Easing.Linear],
+    ["Cubic", Easing.Cubic],
+    ["Quintic", Easing.Quintic],
+];
+
+/** Named shared families, sampled by the same profile as authored records. */
+function presetGlyph(ease: Easing): string {
+    const points = [
+        { s: 0, g: 0, ease },
+        { s: 1, g: 1, ease },
+    ];
+    return Array.from(
+        { length: 17 },
+        (_, i) => `${i ? "L" : "M"}${3 + i} ${12 - 10 * sampleForce(points, i / 16)}`,
+    ).join(" ");
+}
+export const EASING_GLYPHS = Object.fromEntries(
+    EASINGS.map(([, ease]) => [ease, presetGlyph(ease)]),
+) as Record<Easing, string>;
 import { Domain } from "./section";
 
 /**
@@ -93,11 +114,7 @@ export function spanMenu(s: SpanMenuState, a: SpanMenuActions): MenuItem[] {
         {
             label: "Easing",
             group: "modify",
-            children: [
-                easeRow("Linear", Easing.Linear),
-                easeRow("Cubic", Easing.Cubic),
-                easeRow("Quintic", Easing.Quintic),
-            ],
+            children: [...EASINGS.map(([name, ease]) => easeRow(name, ease))],
         },
         {
             label: "Delete",

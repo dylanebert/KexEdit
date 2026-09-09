@@ -1,23 +1,13 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import { Easing } from "./profile";
-import type { FieldSpec } from "./timeline";
+import type { Easing } from "./profile";
+import { EASINGS, EASING_GLYPHS, spanMenu } from "./menus";
+import Menu from "./Menu.svelte";
+import { fitMenu } from "./menu";
+import type { FieldSpec, ScreenBox } from "./timeline";
 
-/** The contextual value editor for one selected span (spec `kex2d-segment-gestures` S3c, the
- *  person's check-in two point 13: "a pop-up contextual UI could perhaps be most modern and
- *  inline with the philosophy"). It is the value editor — there is no docked property panel —
- *  and it is summoned by the SELECTION rather than by a second click, so picking a span is
- *  already asking to read its numbers.
- *
- *  Presentational only: every field is a `FieldSpec` the caller built over `history.ts` gestures
- *  (`beginHandle`/`beginEdge` + the setter + `commit`), so this component holds no ECS, no
- *  history and no lane knowledge — it draws the field law and reports presses. The caller owns
- *  placement too (`timeline.popoverFit`), which is what makes the flip and the clamp a headless
- *  arm rather than something only a screenshot can see.
- *
- *  The field law is root `ui.md`'s: key / value / unit, an `ew-resize` label that scrubs at a
- *  fixed rate, select-all on focus, Enter commits, Escape reverts, and ONE undo entry per commit
- *  (the gesture the caller opened coalesces the scrub's live writes). No spinner. */
+/** Presentational field lifecycle: hold the press value/rate and measured screen box while
+ * authored writes and the bake remain live. The caller supplies shared history gestures. */
 
 const {
     x,
@@ -29,9 +19,15 @@ const {
     residual,
     onpeel,
     focusKey = null,
+    focusRequest = 0,
     ripple = false,
     onripple,
     busy = false,
+    onmeasure,
+    usable,
+    entrySummary,
+    owned,
+    onentry,
 }: {
     x: number;
     y: number;
@@ -43,22 +39,30 @@ const {
     residual: string | null;
     onpeel: () => void;
     focusKey?: string | null;
+    focusRequest?: number;
     ripple?: boolean;
     onripple?: (value: boolean) => void;
     busy?: boolean;
+    onmeasure: (w: number, h: number) => void;
+    usable: (box: ScreenBox) => boolean;
+    entrySummary: string;
+    owned: boolean;
+    onentry: () => string;
 } = $props();
 
-const EASINGS: [string, Easing][] = [
-    ["Linear", Easing.Linear],
-    ["Cubic", Easing.Cubic],
-    ["Quintic", Easing.Quintic],
-];
+let disclosed = $state(false);
+let overriding = $state(false);
+let pendingFocus: string | null = $state(null);
+let easingMenu: { x: number; y: number } | null = $state(null);
+const currentEase = $derived(EASINGS.find(([, value]) => value === ease)?.[0] ?? "Unknown");
+const visibleFields = $derived(fields.filter((f) => f.name === "exit" || (f.name === "entry" ? disclosed && (owned || overriding) : disclosed || focusKey === f.name)));
 
-const print = (f: FieldSpec): string => f.value.toFixed(f.precision);
+
+const print = (f: FieldSpec): string => Number.isFinite(f.value) ? f.value.toFixed(f.precision) : "";
 
 // Hold the opening FieldSpec and screen position, not the tick-rebuilt closures.
 let panel: HTMLDivElement;
-let held: { x: number; y: number } | null = $state(null);
+let held: { x: number; y: number; w: number; h: number } | null = $state(null);
 let edit: { field: FieldSpec; input?: HTMLInputElement; x0?: number; pointer?: number; label?: HTMLElement } | null = null;
 let error = $state("");
 function finish(land = false): void {
@@ -71,13 +75,15 @@ function finish(land = false): void {
     if (g.label && g.pointer !== undefined && g.label.hasPointerCapture(g.pointer))
         g.label.releasePointerCapture(g.pointer);
     held = null;
+    if (g.field.name === "entry") overriding = false;
     error = "";
 }
 function open(f: FieldSpec): boolean {
     if (f.readonly) return false;
     finish();
     if (f.begin() === false) return false;
-    held = { x, y };
+    const rect = panel.getBoundingClientRect();
+    held = { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
     return true;
 }
 function write(value: number): void {
@@ -117,14 +123,45 @@ function fieldKey(e: KeyboardEvent): void {
 }
 function fieldBlur(): void { finish(); }
 $effect(() => {
-    if (focusKey && panel) panel.querySelector<HTMLInputElement>(`#pf-${focusKey}`)?.focus();
+    void x; void y;
+    if (held && !usable(held)) finish();
+});
+$effect(() => { void focusRequest; pendingFocus = focusKey; });
+$effect(() => {
+    void x; void y;
+    if (!panel || !pendingFocus) return;
+    const rect = panel.getBoundingClientRect();
+    if (!usable({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })) return;
+    const input = panel.querySelector<HTMLInputElement>(`#pf-${pendingFocus}`);
+    if (input) { pendingFocus = null; input.focus(); }
 });
 onMount(() => {
+    const measure = (): void => {
+        const rect = panel.getBoundingClientRect();
+        if (held && !usable({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })) finish();
+        onmeasure(rect.width, rect.height);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    measure();
+    const dismiss = (e: PointerEvent): void => {
+        if (!(e.target as HTMLElement).closest(".ease-menu, .ease-control")) easingMenu = null;
+    };
+    window.addEventListener("pointerdown", dismiss);
     const up = (e: PointerEvent): void => {
         if (edit?.pointer === e.pointerId) finish(true);
     };
     const abort = (): void => finish();
     const key = (e: KeyboardEvent): void => {
+        if (e.key === "Escape" && !edit && (easingMenu || overriding || disclosed)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (easingMenu) easingMenu = null;
+            else if (overriding) overriding = false;
+            else disclosed = false;
+            return;
+        }
+        if (easingMenu) { e.stopImmediatePropagation(); return; }
         if (edit?.x0 !== undefined && e.key === "Escape") {
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -138,6 +175,8 @@ onMount(() => {
     window.addEventListener("resize", abort);
     window.addEventListener("keydown", key, true);
     return () => {
+        observer.disconnect();
+        window.removeEventListener("pointerdown", dismiss);
         finish();
         window.removeEventListener("pointermove", scrubMove);
         window.removeEventListener("pointerup", up);
@@ -156,13 +195,13 @@ onMount(() => {
         <span class="quantity">{title}</span>
         <button class="peel" type="button" onclick={onpeel} aria-label="Dismiss">×</button>
     </div>
-    {#each fields as f (f.key)}
+    {#each visibleFields as f (f.name)}
         <div class="field" class:ro={f.readonly}>
             <!-- Keyboard editing uses the associated input; prevent a scrub's synthetic click from opening a second edit. -->
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
-            <label for="pf-{f.key}" onpointerdown={(e) => scrubDown(e, f)} onclick={(e) => e.preventDefault()}>{f.key}</label>
+            <label for="pf-{f.name}" onpointerdown={(e) => scrubDown(e, f)} onclick={(e) => e.preventDefault()}>{f.name === "exit" ? "Target" : f.name}</label>
             <input
-                id="pf-{f.key}"
+                id="pf-{f.name}"
                 type="text"
                 inputmode="decimal"
                 readonly={f.readonly}
@@ -175,31 +214,33 @@ onMount(() => {
             <span class="unit">{f.unit}</span>
         </div>
     {/each}
-    {#if onripple}
+    <button class="ease-control" type="button" disabled={busy} title="Change easing" onclick={(e) => { const r = e.currentTarget.getBoundingClientRect(); easingMenu = easingMenu ? null : { x: r.left, y: r.bottom + 8 }; }} aria-expanded={easingMenu !== null}>
+        <svg viewBox="0 0 22 16" aria-hidden="true"><path d={EASING_GLYPHS[ease]} /></svg>Easing · {currentEase} ▾
+    </button>
+    <div class="scope">{entrySummary}</div>
+    <button class="disclosure" type="button" disabled={busy} aria-expanded={disclosed} onclick={() => disclosed = !disclosed}>{disclosed ? "▾" : "▸"} Entry, range & diagnostics</button>
+    {#if disclosed}
+        <div class="entry-actions">
+            {#if owned}<button type="button" disabled={busy} onclick={() => error = onentry()}>Inherit entry</button>
+            {:else}<button type="button" disabled={busy} onclick={() => { overriding = !overriding; pendingFocus = overriding ? "entry" : null; }}>Override entry</button>{/if}
+        </div>
+    {/if}
+    {#if onripple && (disclosed || focusKey === "end")} 
         <label class="ripple"><input type="checkbox" checked={ripple} disabled={busy} onchange={(e) => onripple(e.currentTarget.checked)} />Ripple later segments in this lane</label>
         <div class="scope">End resize only; other lanes stay at their stations</div>
     {/if}
-    {#if error}<div role="status" class="error">{error}</div>{/if}
-    <div class="field ease">
-        <span class="key">easing</span>
-        <div class="picks">
-            {#each EASINGS as [label, value] (value)}
-                <button
-                    type="button"
-                    class:on={ease === value}
-                    disabled={busy}
-                    onclick={() => onease(value)}
-                    aria-pressed={ease === value}>{label}</button
-                >
-            {/each}
-        </div>
-    </div>
-    {#if residual !== null}
+    <div role={error ? "status" : undefined} class="error">{error}</div>
+    {#if disclosed && residual !== null}
         <!-- the driven readout (`editor-ui.md`: show demand/achieved residual; a driven record
              measures only), so the hatch on the row has a number behind it. -->
         <div class="residual">driven · {residual}</div>
     {/if}
 </div>
+{#if easingMenu}
+    <div class="ease-menu menu" role="menu" use:fitMenu={easingMenu}>
+        <Menu items={spanMenu({ ease, presetGlyph: (value) => EASING_GLYPHS[value], canDelete: false }, { setEase: onease, remove: () => {} })[0]!.children!} onclose={() => easingMenu = null} />
+    </div>
+{/if}
 
 <style>
     .popover {
@@ -219,7 +260,7 @@ onMount(() => {
     }
     .ripple { display: flex; align-items: center; font-size: 10px; gap: 4px; }
     .scope, .error { font-size: 10px; padding: 4px; color: var(--muted); }
-    .error { color: var(--danger, #f08080); }
+    .error { color: var(--danger, #f08080); min-height: 12px; }
     .head {
         display: flex;
         align-items: center;
@@ -254,8 +295,7 @@ onMount(() => {
         padding: 1px 4px;
         height: 22px;
     }
-    .field label,
-    .field .key {
+    .field label {
         flex: none;
         width: 42px;
         font-size: 11px;
@@ -294,29 +334,11 @@ onMount(() => {
         color: var(--muted);
     }
 
-    .ease .picks {
-        flex: 1;
-        display: flex;
-        gap: 2px;
-    }
-    .ease button {
-        all: unset;
-        flex: 1;
-        padding: 2px 0;
-        text-align: center;
-        border-radius: 3px;
-        font-size: 10px;
-        color: var(--muted);
-        background: rgba(255, 255, 255, 0.05);
-        cursor: pointer;
-    }
-    .ease button:hover {
-        color: var(--fg);
-    }
-    .ease button.on {
-        background: var(--accent-soft);
-        color: var(--fg);
-    }
+    .ease-control { display: flex; align-items: center; gap: 6px; width: 100%; }
+    .ease-control svg { width: 22px; height: 16px; fill: none; stroke: currentColor; }
+    .ease-menu { position: fixed; z-index: 9; }
+    .disclosure, .ease-control, .entry-actions button { font: 11px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); border: 1px solid var(--border); border-radius: 3px; padding: 4px; cursor: pointer; }
+    .entry-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
 
     .residual {
         padding: 4px 4px 1px;
