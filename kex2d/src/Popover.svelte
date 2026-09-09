@@ -159,7 +159,7 @@ onMount(() => {
     {#each fields as f (f.key)}
         <div class="field" class:ro={f.readonly}>
             <!-- Keyboard editing uses the associated input; prevent a scrub's synthetic click from opening a second edit. -->
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
             <label for="pf-{f.key}" onpointerdown={(e) => scrubDown(e, f)} onclick={(e) => e.preventDefault()}>{f.key}</label>
             <input
                 id="pf-{f.key}"

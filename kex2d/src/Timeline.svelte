@@ -483,7 +483,7 @@ const feedback = $derived.by(() => {
 <div class="dock" bind:this={dock} bind:clientWidth={dockW} style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px" tabindex="-1" role="group" aria-label="Timeline"
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => { editor.hover = "viewport"; hover = null; onEnd = false; }}>
-    <canvas class="chart" bind:this={canvas} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
+    <canvas class="chart" bind:this={canvas} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height, records: r.records.map(({ id, start, end }) => ({ id, start, end })) })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
     {#if feedback}<div class="feedback" role="status">{feedback}</div>{/if}
 </div>
 {#if subject && pop}

@@ -403,13 +403,38 @@ test("S3f renderer — lane × selection × driving × edge handle ink above hat
                     velocity: [{ id: 2, start: 0, end: 10, ease: 0, entry: 16, exit: 16 }],
                 };
                 await kexCall(page, "load", JSON.stringify(doc));
+                // Loading publishes ECS immediately; the renderer consumes it on its next tick.
+                // Bind the complete row population, not only order (the first order can match
+                // the old fixture while its affine still frames the old extent).
                 await expect
-                    .poll(
-                        async () =>
-                            JSON.parse((await page.locator(".chart").getAttribute("data-rows"))!)[0]
-                                .lane,
-                    )
-                    .toBe(doc.track.order[0] === 1 ? "force" : "geo");
+                    .poll(async () => {
+                        const rows = JSON.parse(
+                            (await page.locator(".chart").getAttribute("data-rows"))!,
+                        ) as {
+                            lane: string;
+                            records: { id: number; start: number; end: number }[];
+                        }[];
+                        return rows.map(({ lane, records }) => ({ lane, records }));
+                    })
+                    .toEqual(
+                        doc.track.order.map((kind: number) => {
+                            const lane = ["velocity", "force", "geo"][kind]!;
+                            return {
+                                lane,
+                                records: doc.lanes[lane].map(
+                                    ({
+                                        id,
+                                        start,
+                                        end,
+                                    }: {
+                                        id: number;
+                                        start: number;
+                                        end: number;
+                                    }) => ({ id, start, end }),
+                                ),
+                            };
+                        }),
+                    );
                 const gap = await point(page, lane, 20);
                 await page.mouse.click(gap.x, gap.y);
                 if (selected) {
