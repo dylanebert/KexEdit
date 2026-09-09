@@ -284,11 +284,13 @@ export function addRecord(
  *  paths — including the one where the record was found and the store still declined the destroy,
  *  a refusal that has nothing to do with the id (reviewer note 2, Validation 3). */
 export function removeRecord(h: History, ecs: State, id: number): LaneWrite {
-    const found = recordOf(ecs, id);
-    if (!found)
+    if (!recordOf(ecs, id))
         return { id: null, refusals: [{ guard: "recordNotFound", message: `no record ${id}` }] };
+    // Cancel before changing membership: a live end transaction can only restore its
+    // complete opening record set. Delete must record that opening value, not a preview.
+    cancel();
     const pre = selHook?.snapshot(ecs);
-    const { lane, row } = found;
+    const { lane, row } = recordOf(ecs, id)!;
     if (!deleteRecord(ecs, id))
         return {
             id: null,

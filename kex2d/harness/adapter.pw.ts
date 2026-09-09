@@ -21,6 +21,288 @@ test("adapter witness — the app boots on a real GPU", async ({ page, boot }) =
     await expect(page.locator("canvas").first()).toBeVisible();
 });
 
+// Native resource observations, installed before application listeners attach. Calls are
+// forwarded unchanged; no application handler or state transition is replaced.
+type LifeReading = {
+    listeners: Record<string, number>;
+    sets: number;
+    releases: number;
+    active: boolean;
+    heldWrites: boolean[];
+};
+async function observeLifetimes(page: Page): Promise<void> {
+    await page.addInitScript(() => {
+        const types = new Set([
+            "pointermove",
+            "pointerup",
+            "pointercancel",
+            "pointerdown",
+            "keydown",
+            "blur",
+            "resize",
+        ]);
+        const listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+        const capture = (o?: boolean | AddEventListenerOptions): boolean =>
+            typeof o === "boolean" ? o : !!o?.capture;
+        const add = window.addEventListener.bind(window),
+            remove = window.removeEventListener.bind(window);
+        window.addEventListener = ((
+            type: string,
+            fn: EventListenerOrEventListenerObject,
+            options?: boolean | AddEventListenerOptions,
+        ) => {
+            if (types.has(type)) {
+                const key = `${type}/${capture(options)}`;
+                const set = listeners.get(key) ?? new Set();
+                set.add(fn);
+                listeners.set(key, set);
+            }
+            add(type, fn, options);
+        }) as typeof window.addEventListener;
+        window.removeEventListener = ((
+            type: string,
+            fn: EventListenerOrEventListenerObject,
+            options?: boolean | EventListenerOptions,
+        ) => {
+            listeners.get(`${type}/${capture(options)}`)?.delete(fn);
+            remove(type, fn, options);
+        }) as typeof window.removeEventListener;
+        const set = Element.prototype.setPointerCapture,
+            release = Element.prototype.releasePointerCapture;
+        let last: Element | null = null,
+            pointer = 0,
+            sets = 0,
+            releases = 0;
+        const heldWrites: boolean[] = [];
+        Element.prototype.setPointerCapture = function (id) {
+            set.call(this, id);
+            last = this;
+            pointer = id;
+            sets++;
+        };
+        Element.prototype.releasePointerCapture = function (id) {
+            release.call(this, id);
+            releases++;
+        };
+        const probe = {
+            heldWrites,
+            reset: () => {
+                sets = 0;
+                releases = 0;
+                last = null;
+                heldWrites.length = 0;
+            },
+            read: () => ({
+                listeners: Object.fromEntries(
+                    [...listeners]
+                        .filter(([, set]) => set.size)
+                        .map(([key, set]) => [key, set.size])
+                        .sort(),
+                ),
+                sets,
+                releases,
+                active: !!last?.hasPointerCapture(pointer),
+                heldWrites: [...heldWrites],
+            }),
+        };
+        (window as unknown as { __life: typeof probe }).__life = probe;
+    });
+}
+async function life(page: Page): Promise<LifeReading> {
+    return page.evaluate(() =>
+        (window as unknown as { __life: { read(): LifeReading } }).__life.read(),
+    );
+}
+async function resetLife(page: Page): Promise<void> {
+    await page.evaluate(async () => {
+        const w = window as unknown as {
+            __kex: { track: number };
+            __life: { reset(): void; heldWrites: boolean[] };
+        };
+        const path = "/src/cart.ts";
+        const { cartState } = (await import(path)) as { cartState: Map<number, { held: boolean }> };
+        const state = cartState.get(w.__kex.track)!;
+        let held = state.held;
+        Object.defineProperty(state, "held", {
+            configurable: true,
+            get: () => held,
+            set: (value: boolean) => {
+                w.__life.heldWrites.push(value);
+                held = value;
+            },
+        });
+        w.__life.reset();
+    });
+}
+async function showTimeline(page: Page, value: boolean): Promise<void> {
+    await page.evaluate(
+        (value) =>
+            (
+                window as unknown as { __kex: { showTimeline(value: boolean): void } }
+            ).__kex.showTimeline(value),
+        value,
+    );
+    await expect(page.locator(".dock")).toHaveCount(value ? 1 : 0);
+}
+
+for (const mode of ["span", "scrub", "typed"] as const)
+    for (const reason of ["unmount", "resize", "delete"] as const)
+        for (const playing of [false, true])
+            test(`S3f lifecycle ${mode}/${reason}/${playing ? "playing" : "held"}`, async ({
+                page,
+                boot,
+            }) => {
+                await observeLifetimes(page);
+                await page.setViewportSize({ width: 1280, height: 720 });
+                await boot();
+                await pause(page);
+                // Two actual mount lifetimes on one page expose leaked static listeners.
+                await showTimeline(page, false);
+                const hidden = (await life(page)).listeners;
+                await showTimeline(page, true);
+                const idle = (await life(page)).listeners;
+                const body = await point(page, "velocity", 9);
+                await page.mouse.click(body.x, body.y);
+                await expect(page.locator(".popover")).toBeVisible();
+                const mounted = (await life(page)).listeners;
+                const opening = await snapshot(page);
+                if (playing) await page.getByRole("button", { name: "Play", exact: true }).click();
+                await resetLife(page);
+                if (mode === "span") {
+                    const a = await point(page, "velocity", 14),
+                        b = await point(page, "velocity", 16);
+                    await page.mouse.move(a.x - 1, a.y);
+                    await page.mouse.down();
+                    await page.mouse.move(b.x, b.y, { steps: 4 });
+                } else if (mode === "scrub") {
+                    const box = (await page.locator('label[for="pf-end"]').boundingBox())!;
+                    await page.mouse.move(box.x + 10, box.y + 10);
+                    await page.mouse.down();
+                    await page.mouse.move(box.x + 18, box.y + 10, { steps: 4 });
+                } else {
+                    await page.locator("#pf-end").focus();
+                    await page.locator("#pf-end").fill("16");
+                }
+                await expect
+                    .poll(async () => (await kexCall(page, "lanes")).velocity[0]!.end)
+                    .toBe(16);
+                expect(await kexCall(page, "save")).not.toBe(opening.save);
+                expect(await kexCall(page, "undoDepth")).toBe(opening.undo);
+                await expect(page.locator("#app")).toHaveAttribute("data-dragging", "");
+                await expect.poll(() => kexCall(page, "parked")).toBe(true);
+                const live = await life(page);
+                expect(live.sets).toBe(mode === "typed" ? 0 : 1);
+                expect(live.active).toBe(mode !== "typed");
+                if (reason === "unmount") await showTimeline(page, false);
+                else if (reason === "delete") {
+                    await page.evaluate(() =>
+                        (
+                            window as unknown as { __kex: { removeRecord(id: number): unknown } }
+                        ).__kex.removeRecord(2),
+                    );
+                    await expect
+                        .poll(async () => (await kexCall(page, "lanes")).velocity.length)
+                        .toBe(0);
+                } else {
+                    await page.evaluate(() => {
+                        const w = window as unknown as {
+                            __kex: { save(): string };
+                            __reflow: string[];
+                        };
+                        w.__reflow = [];
+                        const observer = new MutationObserver(() =>
+                            w.__reflow.push(w.__kex.save()),
+                        );
+                        observer.observe(document.querySelector(".popover")!, {
+                            attributes: true,
+                            attributeFilter: ["style"],
+                        });
+                    });
+                    await page.setViewportSize({ width: 800, height: 600 });
+                }
+                await expect(page.locator("#app")).not.toHaveAttribute("data-dragging");
+                await expect.poll(() => kexCall(page, "parked")).toBe(!playing);
+                await expect.poll(async () => (await life(page)).active).toBe(false);
+                const after = await life(page);
+                expect(after.heldWrites).toEqual(playing ? [true, false] : []);
+                expect(after.releases).toBeLessThanOrEqual(1);
+                if (reason === "resize" && mode !== "typed") expect(after.releases).toBe(1);
+                expect(after.listeners).toEqual(
+                    reason === "unmount" ? hidden : reason === "delete" ? idle : mounted,
+                );
+                if (reason === "delete") {
+                    const expected = JSON.parse(opening.save);
+                    expected.lanes.velocity = [];
+                    expect(JSON.parse(await kexCall(page, "save"))).toEqual(expected);
+                    expect(await kexCall(page, "undoDepth")).toBe(opening.undo + 1);
+                } else expect(await snapshot(page)).toEqual(opening);
+                if (reason === "resize") {
+                    const observed = await page.evaluate(
+                        () => (window as unknown as { __reflow: string[] }).__reflow,
+                    );
+                    expect(observed.length).toBeGreaterThan(0);
+                    expect(observed.every((text) => text === opening.save)).toBe(true);
+                    const box = (await page.locator(".popover").boundingBox())!;
+                    expect(box.x).toBeGreaterThanOrEqual(0);
+                    expect(box.x + box.width).toBeLessThanOrEqual(800);
+                    expect(box.y).toBeGreaterThanOrEqual(0);
+                    expect(box.y + box.height).toBeLessThanOrEqual(600);
+                }
+                // Late events cannot commit, reopen the gesture, or restore playback twice.
+                const settled = await snapshot(page);
+                await page.mouse.move(600, 200);
+                await page.mouse.up();
+                await page.evaluate(() => {
+                    window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 1 }));
+                    window.dispatchEvent(new Event("blur"));
+                });
+                expect(await snapshot(page)).toEqual(settled);
+                expect((await life(page)).heldWrites).toEqual(after.heldWrites);
+                expect((await life(page)).releases).toBe(after.releases);
+                if (reason === "delete") {
+                    await page.locator(".dock").focus();
+                    await page.keyboard.press("ControlOrMeta+z");
+                    await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+                }
+                if (reason === "unmount") {
+                    await showTimeline(page, true);
+                    await expect(page.locator(".popover")).toBeVisible();
+                    expect((await life(page)).listeners).toEqual(mounted);
+                }
+            });
+
+test("S3f menu exclusion — live gesture refuses context menu, idle positive writes once", async ({
+    page,
+    boot,
+}) => {
+    await boot();
+    await pause(page);
+    const opening = await snapshot(page);
+    const a = await point(page, "geo", 20),
+        b = await point(page, "geo", 23);
+    await page.mouse.move(a.x - 1, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await expect.poll(async () => (await kexCall(page, "lanes")).geo[0]!.end).toBe(23);
+    const preview = await snapshot(page);
+    await page.mouse.click(b.x, b.y, { button: "right" });
+    await expect(page.locator(".menu-anchor")).toHaveCount(0);
+    expect(await snapshot(page)).toEqual(preview);
+    await expect(page.locator("#app")).toHaveAttribute("data-dragging", "");
+    await page.mouse.up();
+    expect(await kexCall(page, "undoDepth")).toBe(opening.undo + 1);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+    const body = await point(page, "geo", 10);
+    await page.mouse.click(body.x, body.y, { button: "right" });
+    await expect(page.locator(".menu-anchor")).toBeVisible();
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    await expect.poll(async () => (await kexCall(page, "lanes")).geo.length).toBe(0);
+    expect(await kexCall(page, "undoDepth")).toBe(opening.undo + 1);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+});
+
 // Production geometry, not a second framing algorithm. The canvas publishes the affine
 // and row boxes that its renderer consumes; authored effects are read through the live hook.
 async function point(page: Page, lane: string, s: number) {
@@ -358,7 +640,7 @@ test("S3f field composition — screen hold, live bake, playhead hold and releas
     await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
 });
 
-async function ink(page: Page, p: { x: number; y: number }) {
+async function ink(page: Page, p: { x: number; y: number; body?: boolean }) {
     return page.locator(".chart").evaluate((node, p) => {
         const c = node as HTMLCanvasElement,
             r = c.getBoundingClientRect();
@@ -369,9 +651,9 @@ async function ink(page: Page, p: { x: number; y: number }) {
                 .getContext("2d")!
                 .getImageData(
                     Math.floor((p.x - r.left) * sx),
-                    Math.floor((p.y - r.top - 16) * sy),
+                    Math.floor((p.y - r.top - (p.body ? 0 : 16)) * sy),
                     1,
-                    Math.floor(22 * sy),
+                    p.body ? 1 : Math.floor(22 * sy),
                 ).data,
         );
     }, p);
@@ -445,6 +727,9 @@ test("S3f renderer — lane × selection × driving × edge handle ink above hat
                     const p = await point(page, lane, edge === "start" ? 0 : 10);
                     const sample = { x: p.x + (edge === "start" ? 1 : -1), y: p.y + 5 };
                     await page.mouse.move(gap.x, gap.y);
+                    const bodyPoint = { ...(await point(page, lane, 7)), body: true };
+                    bodyPoint.y += 5; // off the flat curve and the bound 5m playhead
+                    const bodyBefore = await ink(page, bodyPoint);
                     const before = await ink(page, sample);
                     await page.locator(".chart").screenshot({
                         path: join(OUT, `S3f-${lane}-${selected}-${driven}-${edge}-default.png`),
@@ -453,12 +738,20 @@ test("S3f renderer — lane × selection × driving × edge handle ink above hat
                     await expect(page.locator(".chart")).toHaveCSS("cursor", "ew-resize");
                     await expect.poll(() => ink(page, sample)).not.toEqual(before);
                     const hot = await ink(page, sample);
+                    expect(
+                        await ink(page, bodyPoint),
+                        "handle hover must not recolor its body",
+                    ).toEqual(bodyBefore);
                     await page.locator(".chart").screenshot({
                         path: join(OUT, `S3f-${lane}-${selected}-${driven}-${edge}-hover.png`),
                     });
                     await page.mouse.down();
                     await expect.poll(() => ink(page, sample)).not.toEqual(hot);
                     const active = await ink(page, sample);
+                    expect(
+                        await ink(page, bodyPoint),
+                        "handle press must not recolor its body",
+                    ).toEqual(bodyBefore);
                     await page.locator(".chart").screenshot({
                         path: join(OUT, `S3f-${lane}-${selected}-${driven}-${edge}-active.png`),
                     });
