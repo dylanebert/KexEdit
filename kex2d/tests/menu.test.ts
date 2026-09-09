@@ -15,18 +15,28 @@ import {
     RESERVED,
     type Reserved,
 } from "../src/menu";
-import { nudgeAct, type NudgeKeyState, timelineKeyAct, type TimelineKeyState } from "../src/keys";
-import * as menus from "../src/menus";
 import {
-    rowMenu,
-    type RowMenuState,
-    rulerMenu,
-    type RulerMenuState,
-    spanMenu,
-    type SpanMenuState,
-} from "../src/menus";
+    inputOwnsKey,
+    nudgeAct,
+    type NudgeKeyState,
+    timelineKeyAct,
+    type TimelineKeyState,
+} from "../src/keys";
+import * as menus from "../src/menus";
+import { rulerMenu, type RulerMenuState, spanMenu, type SpanMenuState } from "../src/menus";
 import { Easing } from "../src/profile";
 import { Domain } from "../src/section";
+
+test("input ownership preserves native fields and the innermost Escape rung", () => {
+    for (const key of ["v", "a", "s", "ArrowLeft", "Delete", " ", "F3", "f"]) {
+        expect(inputOwnsKey(key, true, false)).toBe(true);
+        expect(inputOwnsKey(key, false, true)).toBe(true);
+        expect(inputOwnsKey(key, false, false)).toBe(false);
+    }
+    expect(inputOwnsKey("Enter", true, false)).toBe(false);
+    expect(inputOwnsKey("Escape", true, true)).toBe(false);
+    expect(inputOwnsKey("Enter", false, true)).toBe(true);
+});
 
 describe("menuFit — root context menu viewport fit (flip up/left, clamp)", () => {
     const Vp = { w: 1280, h: 800 };
@@ -191,49 +201,9 @@ describe("rulerMenu — the flat two-row unit picker", () => {
 
 // ── the lane timeline's own two menus (S3c). The pose era's five builders went with their
 // subjects (`retired/pose-ux`); these two replace them, and are characterized the same way.
-describe("rowMenu — the lane column's menu", () => {
-    const acts = () => recorder("add", "toggleExpand");
-
-    // RED: label the Add row with a bare "Add segment" and the row stops naming WHICH lane it
-    // authors into — the one thing a menu summoned on a row of three has to say.
-    test("Add names the row's own quantity, then the step-in toggle", () => {
-        const a = acts();
-        expect(shape(rowMenu({ name: "force", expanded: false, canAdd: true }, a))).toEqual([
-            { label: "Add force segment", group: "create", enabled: true },
-            { label: "Expand", group: "modify" },
-        ]);
-    });
-
-    // RED: read `expanded` for a `checked` field instead of the label and the open row's toggle
-    // says "Expand" while the row already is — a mixed-capable toggle names its ACTION
-    // (`editor-ui.md`).
-    test("the toggle names the act it will perform, never the state it is in", () => {
-        const a = acts();
-        expect(rowMenu({ name: "geo", expanded: true, canAdd: true }, a)[1].label).toBe("Collapse");
-        expect(rowMenu({ name: "geo", expanded: false, canAdd: true }, a)[1].label).toBe("Expand");
-        // and it carries no check either way: the row is an act, not a state row.
-        for (const open of [true, false])
-            expect(rowMenu({ name: "geo", expanded: open, canAdd: true }, a)[1].checked).toBe(
-                undefined,
-            );
-    });
-
-    // RED: stub `canAdd` to a constant true and a station inside a record offers an Add that
-    // cannot land — grayed, never hidden, is the law the refusal has to reach.
-    test("Add grays where the station has no room, and never hides", () => {
-        const a = acts();
-        const rows = rowMenu({ name: "velocity", expanded: false, canAdd: false }, a);
-        expect(rows[0].label).toBe("Add velocity segment");
-        expect(rows[0].enabled).toBe(false);
-        expect(rows).toHaveLength(2);
-    });
-
-    test("each row fires its own act", () => {
-        const a = acts();
-        for (const r of rowMenu({ name: "force", expanded: false, canAdd: true }, a)) r.action?.();
-        expect(a.log).toEqual(["add()", "toggleExpand()"]);
-    });
-});
+// Row Add/Expand labels, toggle state and factory dispatch retired with those product routes.
+// Add availability/dispatch is exercised through the actual tool in adapter.pw.ts.
+// Shared disabled/action/menu grammar below still covers the surviving span and ruler menus.
 
 describe("spanMenu — the selected record's menu", () => {
     const acts = () => recorder("setEase", "remove");
@@ -332,11 +302,6 @@ describe("the menu grammar — every builder, every state", () => {
         metersEnabled: bool,
         secondsEnabled: bool,
     });
-    const rowStates = states<RowMenuState>({
-        name: ["geo", "force", "velocity"],
-        expanded: bool,
-        canAdd: bool,
-    });
     const spanStates = states<SpanMenuState>({
         ease: easings,
         presetGlyph: [(e: Easing) => `preset:${e}`],
@@ -352,14 +317,10 @@ describe("the menu grammar — every builder, every state", () => {
     type Menu = { name: string; rows: MenuItem[]; state: object; acts: { log: string[] } };
     function corpus(): Menu[] {
         const all: Menu[] = [];
-        const acts = () => recorder("pick", "add", "toggleExpand", "setEase", "remove");
+        const acts = () => recorder("pick", "setEase", "remove");
         for (const s of rulerStates) {
             const a = acts();
             all.push({ name: "rulerMenu", rows: rulerMenu(s, a), state: s, acts: a });
-        }
-        for (const s of rowStates) {
-            const a = acts();
-            all.push({ name: "rowMenu", rows: rowMenu(s, a), state: s, acts: a });
         }
         for (const s of spanStates) {
             const a = acts();
@@ -571,33 +532,7 @@ describe("the menu grammar — every builder, every state", () => {
         ).toEqual([]);
     });
 
-    test("the act-naming toggle flips its label to the act and never carries a check", () => {
-        // the lane row's step-in — `Expand`/`Collapse`, one row wearing two names. Both labels
-        // must be reachable (a toggle that never flips owes a checkmark instead), neither may ever
-        // light up, and the label must name what the PRESS does, not the state the row is in
-        // (`editor-ui.md`: a mixed-capable toggle names the action without a check).
-        const seen = new Set<string>();
-        expect(
-            violations(({ name, rows, state }) => {
-                if (name !== "rowMenu") return [];
-                const s = state as RowMenuState;
-                const bad: string[] = [];
-                const pair = rows.filter((r) => r.label === "Expand" || r.label === "Collapse");
-                if (pair.length > 1)
-                    bad.push(`${label(name, rows)} — Expand and Collapse co-occur`);
-                for (const row of pair) {
-                    seen.add(row.label as string);
-                    const where = `${label(name, rows)} — "${row.label}"`;
-                    if (row.checked !== undefined)
-                        bad.push(`${where} carries a check while naming an act`);
-                    if (row.label !== (s.expanded ? "Collapse" : "Expand"))
-                        bad.push(`${where} does not name the act its state demands`);
-                }
-                return bad;
-            }),
-        ).toEqual([]);
-        expect([...seen].sort()).toEqual(["Collapse", "Expand"]);
-    });
+    // The only act-naming row toggle retired. Checked easing/domain semantics above survive.
 
     // ── `shortcut` appears iff a keyboard binding invokes the SAME action (stage 3, tightened in
     // kex2d-burndown 1a). The table itself lives in `src/menu.ts` and both halves read it — the
@@ -647,8 +582,8 @@ describe("the menu grammar — every builder, every state", () => {
     // apart by name, one bound and one not.
     const Acts: Record<string, keyof typeof BINDINGS | null> = {
         pick: null,
-        add: null,
-        toggleExpand: null,
+        selectTool: "selectTool",
+        addTool: "addTool",
         setEase: null,
         remove: "remove",
     };
@@ -656,7 +591,8 @@ describe("the menu grammar — every builder, every state", () => {
     test("`Acts` censuses every act name the corpus recorder declares", () => {
         // the completeness pin, the `RawKeys` shape: a new act reaching the recorder with no entry
         // here fails rather than falling through to a silent `undefined` binding.
-        const declared = new Set<string>();
+        // Two local tool controls (not menu rows) have production pointer twins in Timeline.
+        const declared = new Set<string>(["selectTool", "addTool"]);
         for (const { acts } of corpus())
             for (const k of Object.keys(acts)) if (k !== "log") declared.add(k);
         expect(Object.keys(Acts).sort()).toEqual([...declared].sort());
@@ -741,6 +677,8 @@ describe("the menu grammar — every builder, every state", () => {
         ctrl: bool,
         shift: bool,
         selected: bool,
+        local: bool,
+        inputOwned: bool,
     });
 
     function keyActPairs(): { binding: keyof typeof BINDINGS; act: string }[] {
@@ -753,7 +691,11 @@ describe("the menu grammar — every builder, every state", () => {
         const pairs = keyActPairs();
         expect(pairs.length, "the deciders emitted no pairs at all").toBeGreaterThan(0);
         const seen = new Set(pairs.map((p) => `${p.binding}:${p.act}`));
-        expect([...seen].sort()).toEqual(["remove:remove"]);
+        expect([...seen].sort()).toEqual([
+            "addTool:addTool",
+            "remove:remove",
+            "selectTool:selectTool",
+        ]);
     });
 
     test("every emitted (binding, act) pair agrees with `Acts`", () => {
@@ -819,13 +761,17 @@ describe("the menu grammar — every builder, every state", () => {
     // permanent-listener check and Delete swallow — went with the gestures they guarded
     // (`retired/pose-ux`), so `keys.ts` is every binding's only live home until S3 re-wires them.
     const Handlers: Record<keyof typeof BINDINGS, string[]> = {
+        selectTool: ["keys.ts", "Timeline.svelte"],
+        addTool: ["keys.ts", "Timeline.svelte"],
         remove: ["keys.ts"],
-        exitMode: ["Timeline.svelte"],
+        exitMode: ["Timeline.svelte", "keys.ts"],
     };
     // a bound key also drives presses that are NOBODY's menu row — dismissal rungs, a field's
     // commit-and-blur. Those stay raw literals, and this is exactly which files may hold one; any
     // other file comparing a bound key raw is a handler that slipped out of the table.
     const RawKeys: Record<string, { files: string[]; why: string }> = {
+        v: { files: [], why: "local Select reads its binding" },
+        a: { files: [], why: "local Add reads its binding" },
         Delete: { files: [], why: "every Del press is the remove binding" },
         Backspace: { files: [], why: "Del's twin, same binding" },
         Escape: {
@@ -1029,13 +975,9 @@ describe("nudgeAct — the in-place tweak's two channels", () => {
 
     // RED: drop the `ownsEntry` guard and Alt+Shift+↑ over an INFERRED entry mints an owned
     // handle as a side effect of an arrow press — authoring ownership nobody asked for.
-    test("Alt narrows a value nudge to the entry, and only where the record owns one", () => {
+    test("Alt entry nudge is retired for owned and inferred entries", () => {
         const alt = { ...live, shift: true, alt: true };
-        expect(nudgeAct({ key: "ArrowUp" }, alt)).toEqual({
-            kind: "value",
-            which: "entry",
-            sign: 1,
-        });
+        expect(nudgeAct({ key: "ArrowUp" }, alt)).toBeNull();
         expect(nudgeAct({ key: "ArrowUp" }, { ...alt, ownsEntry: false })).toBeNull();
         // without Alt an inferred entry is irrelevant: the exit is always owned.
         expect(nudgeAct({ key: "ArrowUp" }, { ...live, shift: true, ownsEntry: false })).toEqual({

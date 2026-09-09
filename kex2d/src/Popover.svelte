@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onMount } from "svelte";
 import { Easing } from "./profile";
 import type { FieldSpec } from "./timeline";
 
@@ -27,6 +28,10 @@ const {
     onease,
     residual,
     onpeel,
+    focusKey = null,
+    ripple = false,
+    onripple,
+    busy = false,
 }: {
     x: number;
     y: number;
@@ -37,6 +42,10 @@ const {
     /** the driven residual, already formatted, or null where the record drives its own stretch. */
     residual: string | null;
     onpeel: () => void;
+    focusKey?: string | null;
+    ripple?: boolean;
+    onripple?: (value: boolean) => void;
+    busy?: boolean;
 } = $props();
 
 const EASINGS: [string, Easing][] = [
@@ -47,74 +56,111 @@ const EASINGS: [string, Easing][] = [
 
 const print = (f: FieldSpec): string => f.value.toFixed(f.precision);
 
-// ── the label scrub: press the key, drag horizontally, release. One gesture, one undo entry.
-let scrub: { field: FieldSpec; x0: number; v0: number } | null = null;
-function scrubMove(e: PointerEvent): void {
-    const s = scrub;
-    if (!s) return;
-    s.field.write(s.v0 + (e.clientX - s.x0) * s.field.rate);
+// Hold the opening FieldSpec and screen position, not the tick-rebuilt closures.
+let panel: HTMLDivElement;
+let held: { x: number; y: number } | null = $state(null);
+let edit: { field: FieldSpec; input?: HTMLInputElement; x0?: number; pointer?: number; label?: HTMLElement } | null = null;
+let error = $state("");
+function finish(land = false): void {
+    const g = edit;
+    if (!g) return;
+    edit = null; // blur/release cannot finish twice
+    if (land && !error) g.field.commit();
+    else g.field.cancel();
+    if (g.input && !land) g.input.value = print(g.field);
+    if (g.label && g.pointer !== undefined && g.label.hasPointerCapture(g.pointer))
+        g.label.releasePointerCapture(g.pointer);
+    held = null;
+    error = "";
 }
-function scrubUp(): void {
-    if (!scrub) return;
-    scrub.field.commit();
-    scrub = null;
-    window.removeEventListener("pointermove", scrubMove);
-    window.removeEventListener("pointerup", scrubUp);
-    window.removeEventListener("pointercancel", scrubUp);
+function open(f: FieldSpec): boolean {
+    if (f.readonly) return false;
+    finish();
+    if (f.begin() === false) return false;
+    held = { x, y };
+    return true;
+}
+function write(value: number): void {
+    if (!edit) return;
+    error = Number.isFinite(value) ? (edit.field.write(value) ?? "") : "Enter a finite number";
+}
+function scrubMove(e: PointerEvent): void {
+    if (!edit || edit.x0 === undefined || edit.pointer !== e.pointerId) return;
+    write(edit.field.value + (e.clientX - edit.x0) * edit.field.rate);
 }
 function scrubDown(e: PointerEvent, f: FieldSpec): void {
-    if (f.readonly) return;
+    if (e.button !== 0) return;
     e.preventDefault();
-    f.begin();
-    scrub = { field: f, x0: e.clientX, v0: f.value };
-    window.addEventListener("pointermove", scrubMove);
-    window.addEventListener("pointerup", scrubUp);
-    window.addEventListener("pointercancel", scrubUp);
+    if (!open(f)) return;
+    const label = e.currentTarget as HTMLElement;
+    edit = { field: f, x0: e.clientX, pointer: e.pointerId, label };
+    label.setPointerCapture(e.pointerId);
 }
-
-// ── the typed edit: focus opens the gesture and selects all, Enter commits, Escape reverts.
-// Escape stops here rather than reaching the timeline's own ladder — dismissal peels ONE layer
-// (`ui.md`), and the innermost layer under a focused field is the field's own edit.
 function fieldFocus(e: FocusEvent, f: FieldSpec): void {
-    if (f.readonly) return;
-    f.begin();
-    (e.currentTarget as HTMLInputElement).select();
+    if (!open(f)) return;
+    const input = e.currentTarget as HTMLInputElement;
+    edit = { field: f, input };
+    input.select();
 }
-function fieldInput(e: Event, f: FieldSpec): void {
-    const v = Number((e.currentTarget as HTMLInputElement).value);
-    if (Number.isFinite(v)) f.write(v);
+function fieldInput(e: Event): void {
+    const text = (e.currentTarget as HTMLInputElement).value.trim();
+    write(text === "" ? NaN : Number(text));
 }
-function fieldKey(e: KeyboardEvent, f: FieldSpec): void {
-    if (e.key === "Enter") {
+function fieldKey(e: KeyboardEvent): void {
+    if (e.key === "Enter" || e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        f.commit();
-        (e.currentTarget as HTMLInputElement).blur();
-        return;
-    }
-    if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        f.cancel();
-        (e.currentTarget as HTMLInputElement).blur();
+        const input = e.currentTarget as HTMLInputElement;
+        finish(e.key === "Enter");
+        input.blur();
     }
 }
-function fieldBlur(f: FieldSpec): void {
-    if (!f.readonly) f.commit();
-}
+function fieldBlur(): void { finish(); }
+$effect(() => {
+    if (focusKey && panel) panel.querySelector<HTMLInputElement>(`#pf-${focusKey}`)?.focus();
+});
+onMount(() => {
+    const up = (e: PointerEvent): void => {
+        if (edit?.pointer === e.pointerId) finish(true);
+    };
+    const abort = (): void => finish();
+    const key = (e: KeyboardEvent): void => {
+        if (edit?.x0 !== undefined && e.key === "Escape") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            finish();
+        }
+    };
+    window.addEventListener("pointermove", scrubMove);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", abort);
+    window.addEventListener("blur", abort);
+    window.addEventListener("resize", abort);
+    window.addEventListener("keydown", key, true);
+    return () => {
+        finish();
+        window.removeEventListener("pointermove", scrubMove);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", abort);
+        window.removeEventListener("blur", abort);
+        window.removeEventListener("resize", abort);
+        window.removeEventListener("keydown", key, true);
+    };
+});
 </script>
 
 <!-- opaque, flipped and clamped by the caller; it never covers its own span's handles because the
      fit opens it a gap BELOW the band (or above, flipped). -->
-<div class="popover" style="left: {x}px; top: {y}px;" role="group" aria-label="{title} segment">
+<div bind:this={panel} class="popover" style="left: {held?.x ?? x}px; top: {held?.y ?? y}px;" role="group" aria-label="{title} segment">
     <div class="head">
         <span class="quantity">{title}</span>
         <button class="peel" type="button" onclick={onpeel} aria-label="Dismiss">×</button>
     </div>
     {#each fields as f (f.key)}
         <div class="field" class:ro={f.readonly}>
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <label for="pf-{f.key}" onpointerdown={(e) => scrubDown(e, f)}>{f.key}</label>
+            <!-- Keyboard editing uses the associated input; prevent a scrub's synthetic click from opening a second edit. -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+            <label for="pf-{f.key}" onpointerdown={(e) => scrubDown(e, f)} onclick={(e) => e.preventDefault()}>{f.key}</label>
             <input
                 id="pf-{f.key}"
                 type="text"
@@ -122,13 +168,18 @@ function fieldBlur(f: FieldSpec): void {
                 readonly={f.readonly}
                 value={print(f)}
                 onfocus={(e) => fieldFocus(e, f)}
-                oninput={(e) => fieldInput(e, f)}
-                onkeydown={(e) => fieldKey(e, f)}
-                onblur={() => fieldBlur(f)}
+                oninput={fieldInput}
+                onkeydown={fieldKey}
+                onblur={fieldBlur}
             />
             <span class="unit">{f.unit}</span>
         </div>
     {/each}
+    {#if onripple}
+        <label class="ripple"><input type="checkbox" checked={ripple} disabled={busy} onchange={(e) => onripple(e.currentTarget.checked)} />Ripple later segments in this lane</label>
+        <div class="scope">End resize only; other lanes stay at their stations</div>
+    {/if}
+    {#if error}<div role="status" class="error">{error}</div>{/if}
     <div class="field ease">
         <span class="key">easing</span>
         <div class="picks">
@@ -136,6 +187,7 @@ function fieldBlur(f: FieldSpec): void {
                 <button
                     type="button"
                     class:on={ease === value}
+                    disabled={busy}
                     onclick={() => onease(value)}
                     aria-pressed={ease === value}>{label}</button
                 >
@@ -151,7 +203,7 @@ function fieldBlur(f: FieldSpec): void {
 
 <style>
     .popover {
-        position: absolute;
+        position: fixed;
         z-index: 6;
         min-width: 168px;
         padding: 6px;
@@ -159,10 +211,15 @@ function fieldBlur(f: FieldSpec): void {
         border: 1px solid var(--border);
         border-radius: 6px;
         box-shadow: var(--shadow);
-        font-family: "Outfit", system-ui, sans-serif;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        width: 270px;
+        box-sizing: border-box;
         user-select: none;
         -webkit-user-select: none;
     }
+    .ripple { display: flex; align-items: center; font-size: 10px; gap: 4px; }
+    .scope, .error { font-size: 10px; padding: 4px; color: var(--muted); }
+    .error { color: var(--danger, #f08080); }
     .head {
         display: flex;
         align-items: center;

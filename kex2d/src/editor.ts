@@ -2,7 +2,7 @@
  *  doesn't persist (no save/load, no replay). plain mutable singleton; Svelte reads
  *  it via the per-RAF tick pattern in App.
  *
- *  There are no tools or modes, and over the lane substrate there is exactly ONE selection kind:
+ *  Timeline owns its two local tools. Over the lane substrate there is ONE selection kind:
  *  a lane record, addressed by the stable id its lane row and every authoring verb already use
  *  (`record`, below). The six pose-era kinds (node, force, segment, section, strip, strip
  *  keyframe, plus the two singletons) went with the subjects they addressed; the unified

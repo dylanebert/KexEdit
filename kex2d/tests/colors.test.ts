@@ -334,7 +334,8 @@ interface CursorSite {
 // every trim/scrub affordance that carries `cursor: ew-resize` (the two field-row key scrubs, the
 // nav-window pan edge, the force-section extent trim, and the velocity-strip span-edge trim, S5).
 const CURSOR_ALLOWLIST: CursorSite[] = [
-    { file: "Timeline.svelte", selector: ".play", value: "pointer" },
+    { file: "Timeline.svelte", selector: "button", value: "pointer" },
+    { file: "Menu.svelte", selector: ".menu-item", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
     // the contextual popover (S3c): its dismissal button and its three easing picks are plain

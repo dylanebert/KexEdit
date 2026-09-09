@@ -12,7 +12,7 @@ The authored track is three independent **lanes** — velocity, force, geo — o
 
 The store, the v4 wire, the derived partition, the VERBS and the lane timeline have landed.
 
-The pose UX is retired to the kexedit tag `retired/pose-ux`: pin mode, canvas control wiring, the conversion UI and capture flows; read the tag, never a copy. `Timeline.svelte` is the lane timeline — lane rows, in-place spans, a popover editor, a step-in curve view — with `menus.ts`/`keys.ts` wired in. The canvas draws the bake read-only, `controls.ts` is pan/zoom, `optimize.ts` unwired.
+The pose UX is retired to the kexedit tag `retired/pose-ux`: pin mode, canvas control wiring, the conversion UI and capture flows; read the tag, never a copy. `Timeline.svelte`: Select (V) / Add (A), spans, station fields, Easing/Delete menus; no expansion/row Add. `menus.ts`/`keys.ts` share actions. The canvas draws the bake read-only, `controls.ts` is pan/zoom, `optimize.ts` unwired.
 
 Geo authors PITCH — an absolute unwrapped world heading in radians — over an authored span, the same scalar record shape force uses; both allow arbitrary density, and rates are derived or invoked-fit views, never geometry storage.
 
