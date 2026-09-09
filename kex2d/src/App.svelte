@@ -4,6 +4,7 @@ import { onMount } from "svelte";
 import { attachControls } from "./controls";
 import { editor } from "./editor";
 import { inputOwnsKey } from "./keys";
+import { history, removeRecord } from "./history";
 import Timeline from "./Timeline.svelte";
 import { bakeOut, Track } from "./track";
 import { attachCanvas2D } from "./view";
@@ -22,6 +23,7 @@ let canvas: HTMLCanvasElement;
 
 let trackEid = $state<number | null>(null);
 let tick = $state(0);
+let timelineVisible = $state(true);
 
 let controls: ReturnType<typeof attachControls> | undefined;
 
@@ -44,7 +46,16 @@ onMount(() => {
         raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
+    // DEV composition witnesses use the same mounted component and ECS, never a test State.
+    const hook = import.meta.env.DEV
+        ? (window as unknown as { __kex: Record<string, unknown> }).__kex
+        : undefined;
+    if (hook) {
+        hook.showTimeline = (visible: boolean): void => { timelineVisible = visible; };
+        hook.removeRecord = (id: number) => removeRecord(history, ecs, id);
+    }
     return () => {
+        if (hook) { delete hook.showTimeline; delete hook.removeRecord; }
         window.removeEventListener("keydown", inputKey, true);
         controls?.detach();
         cancelAnimationFrame(raf);
@@ -97,7 +108,7 @@ $effect(() => {
     </div>
 {/if}
 
-<Timeline {ecs} eid={trackEid} {tick} />
+{#if timelineVisible}<Timeline {ecs} eid={trackEid} {tick} />{/if}
 
 <style>
     :root,

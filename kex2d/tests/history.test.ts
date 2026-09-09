@@ -78,6 +78,51 @@ function row(ecs: State, id: number): LaneSegment {
     return found.row;
 }
 
+describe("deletion interrupts the open gesture before recording its subject", () => {
+    for (const lane of [Lane.Geo, Lane.Force, Lane.Velocity])
+        for (const kind of ["end", "body", "handle"] as const)
+            test(`${lane}/${kind}: opening state, one delete undo, missing-subject refusal`, () => {
+                const { ecs, h } = fixture();
+                setSelectionHook(null);
+                for (const [id, start, end] of [
+                    [101, 0, 10],
+                    [102, 10, 20],
+                    [103, 23, 28],
+                ])
+                    expect(
+                        createRecord(ecs, lane, { id, start, end, ease: 0, entry: 1, exit: 2 })
+                            .refusals,
+                    ).toEqual([]);
+                const opening = saveDocument(ecs);
+                if (kind === "end") expect(beginRecordEnd(ecs, 101, true)(12).refusals).toEqual([]);
+                else if (kind === "body") {
+                    beginBody(ecs, 101);
+                    expect(setRecordSpan(ecs, 101, 40, 50).refusals).toEqual([]);
+                } else {
+                    beginHandle(ecs, 101, "exit");
+                    expect(setRecordHandle(ecs, 101, "exit", 3).refusals).toEqual([]);
+                }
+                const preview = saveDocument(ecs);
+                expect(preview).not.toBe(opening);
+                expect(removeRecord(h, ecs, 999).id).toBeNull();
+                expect(saveDocument(ecs)).toBe(preview);
+                expect(h.undo).toHaveLength(0);
+                expect(removeRecord(h, ecs, 101).refusals).toEqual([]);
+                expect(recordOf(ecs, 101)).toBeUndefined();
+                expect(row(ecs, 102)).toMatchObject({ start: 10, end: 20 });
+                expect(row(ecs, 103)).toMatchObject({ start: 23, end: 28 });
+                const deleted = saveDocument(ecs);
+                cancel();
+                commit(h);
+                expect(saveDocument(ecs)).toBe(deleted);
+                expect(h.undo).toHaveLength(1);
+                undo(h, ecs);
+                expect(saveDocument(ecs)).toBe(opening);
+                redo(h, ecs);
+                expect(saveDocument(ecs)).toBe(deleted);
+            });
+});
+
 describe("record-end frozen gesture", () => {
     for (const lane of [Lane.Velocity, Lane.Force, Lane.Geo]) {
         test(`${lane}: one versus N, reversal, refusal, cancel, replay and selection`, () => {
@@ -504,16 +549,16 @@ describe("begin — a failed open closes the standing gesture", () => {
     test("a begin on a gone record clears the open gesture, so the next commit records nothing", () => {
         const { ecs, h } = fixture();
         const a = addForce(ecs, h, 0, 10);
-        const b = addForce(ecs, h, 20, 30);
         const depth = h.undo.length;
 
         beginEdge(ecs, a); // a drag opens on record a
         setRecordSpan(ecs, a, 0, 12); // and writes a frame of it
-        removeRecord(h, ecs, b); // meanwhile the OTHER record goes away
-        beginEdge(ecs, b); // the drag re-opens on the record that is now gone
+        // Deletion now cancels before removing membership. Use an already absent subject
+        // so this still discriminates begin's own failed-open guard, not deletion's guard.
+        beginEdge(ecs, 999);
         commit(h); // the release must land nothing
 
-        expect(h.undo).toHaveLength(depth + 1); // the delete alone, not a second entry
+        expect(h.undo).toHaveLength(depth);
         expect(row(ecs, a).end).toBe(12); // the live write stands; only the entry is refused
     });
 });
