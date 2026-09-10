@@ -2,6 +2,20 @@
 
 Shallot + Svelte + canvas2D prototype. Read the parent entry and rules: `kex2d-map.md` for physics/state/tests, `editor-ui.md` for interaction, `kex2d-harness.md` for capture.
 
+## Run and build
+
+Run `bunx shallot dev` or `bunx shallot build` here.
+
+Link the existing checkout by name:
+
+```sh
+KEX_ROOT=/path/to/kex
+cd "$KEX_ROOT/shallot/packages/shallot" && bun link
+cd "$KEX_ROOT/kexedit/kex2d" && bun link @dylanebert/shallot --save
+```
+
+Check TypeGPU realpaths first.
+
 ## Model and landed boundary
 
 Three independent **lanes** (velocity, force, geo) hold two-handle segments under one track end. Each changes one parameter over `[start, end)` arclength with named easing, owned exit and optional owned entry. Spans abut, never overlap; gaps infer.
@@ -10,13 +24,13 @@ Three independent **lanes** (velocity, force, geo) hold two-handle segments unde
 
 `ADAPTERS.md` is the test-read adapter inventory; it is empty.
 
-Pose UX stays at `retired/pose-ux`: pin mode, canvas authoring, conversion. Timeline: left Select (V)/Add (A) icons, precise handles, Target/unit/easing, disclosed entry/range/diagnostics; no expansion/row Add. `menus.ts`/`keys.ts` share actions. Canvas is read-only; optimize unwired.
+Pose UX stays at `retired/pose-ux`: pin mode, canvas authoring, conversion. Timeline: left Select (V)/Add (A) icons, precise handles, one on-object Target/unit field and summoned Segment actions for precision, easing, entry and result; no persistent inspector, expansion or row Add. `menus.ts`/`keys.ts` share actions. Canvas is read-only; optimize unwired.
 
 Override uses field history; Inherit disowns. Ripple is end-only/same-lane, off per subject. Fields hold measured screen boxes/playhead, not bake; invalidating reflow cancels before refit.
 
 Geo authors PITCH — an absolute unwrapped world heading in radians — over an authored span, the same scalar record shape force uses; both allow arbitrary density, and rates are derived or invoked-fit views, never geometry storage.
 
-The bake is derived, never authored. Cart and timeline share published `ds` stations and unwrapped heading; one recovered reading per lane follows hover, else playhead. Missing coverage/unresolved entries read unavailable; targets stay absolute. Direct authoring is deterministic; optimization is invoked.
+The bake is derived, never authored. Cart and timeline share published `ds` stations and unwrapped heading; a summoned result reads one lane at its invocation station or the playhead. Missing coverage/unresolved entries read unavailable; targets stay absolute. Direct authoring is deterministic; optimization is invoked.
 
 The start position is fixed at the origin. Initial speed is the authored `Track.v0` column, falling back to `V0` when absent. Every lane record's stations are track-global arclength and f64; the derived runs carry the run-local frames. `Track.domain` is an undoable display lens: it changes no positions, extents or bake hash.
 
@@ -36,7 +50,7 @@ One selection set plus active member lives in `editor.ts`; per-kind accessors ar
 
 ## Verify
 
-From `kex2d/`, serially:
+From this directory, serially:
 
 ```sh
 bun run test
@@ -44,8 +58,13 @@ bun run check
 bun run surface-budget
 ```
 
-Install app dependencies with `bun install --frozen-lockfile` when missing; inspect any locally wired Shallot package before replacing it. `check` provisions only harness dependencies, then runs `tsc`, `svelte-check` and one read-only `biome check`. `bun run format` is the separate writer.
+Missing harness dependencies: `bun install --cwd harness --frozen-lockfile`. `check` runs `tsc`, `svelte-check` and read-only Biome; `format` is the separate writer. Run affected `./tests/*.oracle.ts` by path.
 
-Local `node_modules/.bin/tsc` resolves to `@typescript/native`; `svelte-check` resolves JavaScript `typescript` for compiler APIs including `ts.sys`. Keep both; inspect installed resolution/lockfile, not assumed matching patch versions.
+Quiet composition:
 
-Unit tests are device-free; run affected `./tests/*.oracle.ts` by path. Quiet composition: `KEX_QUIET=1 bun run capture -- --list -g '<selection>'`, then omit `--list` with a fresh `--out DIR`. This is headless, not native/taste evidence. Automate quietly; native stays human. Follow the capture rule.
+```sh
+KEX_QUIET=1 bun run capture -- --list -g '<selection>'
+KEX_QUIET=1 bun run capture --out <fresh-dir> -- -g '<selection>'
+```
+
+Quiet capture is headless, not native or taste evidence; native stays human.
