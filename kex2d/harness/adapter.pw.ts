@@ -200,14 +200,27 @@ test("S3i hierarchy — layout", async ({ browser }) => {
                     await expect(field).toBeFocused();
                     await field.fill("-123456789");
                     await expect(page.getByRole("status")).not.toBeEmpty();
-                    const r = (await page.locator(".popover").boundingBox())!;
+                    const r = (await page.locator(".popover").boundingBox())!,
+                        s = (await page.locator('[role="status"]').boundingBox())!;
                     expect(r.x).toBeGreaterThanOrEqual(8);
                     expect(r.y).toBeGreaterThanOrEqual(8);
                     expect(r.x + r.width).toBeLessThanOrEqual(width - 8);
                     expect(r.y + r.height).toBeLessThanOrEqual((width === 1280 ? 720 : 600) - 8);
+                    expect(s.x).toBeGreaterThanOrEqual(8);
+                    expect(s.y).toBeGreaterThanOrEqual(8);
+                    expect(s.x + s.width).toBeLessThanOrEqual(width - 8);
+                    expect(s.y + s.height).toBeLessThanOrEqual((width === 1280 ? 720 : 600) - 8);
+                    const clear = (a: typeof r, b: typeof r) =>
+                        a.x + a.width <= b.x - 8 ||
+                        a.x >= b.x + b.width + 8 ||
+                        a.y + a.height <= b.y - 8 ||
+                        a.y >= b.y + b.height + 8;
+                    expect(clear(s, r)).toBe(true);
+                    for (const selector of [".player", ".tool-strip"])
+                        expect(clear(s, (await page.locator(selector).boundingBox())!)).toBe(true);
                     expect(
                         await page
-                            .getByRole("status")
+                            .locator('[role="status"]')
                             .evaluate((el) => el.scrollHeight <= el.clientHeight),
                     ).toBe(true);
                     await field.press("Escape");
@@ -270,8 +283,14 @@ test("S3i hierarchy — target lifecycle", async ({ page, boot }) => {
         await page.mouse.up();
         await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
         await field.focus();
+        await field.fill(
+            lane === "geo" ? "12.123456789" : lane === "force" ? "1.23456789" : "26.123456789",
+        );
+        const live = await kexCall(page, "save");
         await field.fill("");
         await expect(page.getByRole("status")).toHaveText("Enter a finite number");
+        expect(await kexCall(page, "save")).toBe(live);
+        await expect(field).toBeFocused();
         for (const key of ["a", "v", "s", "Space", "ArrowLeft", "Delete"]) await field.press(key);
         await field.press("Escape");
         expect(await snapshot(page)).toEqual(opening);
@@ -309,7 +328,7 @@ test("S3i hierarchy — target lifecycle", async ({ page, boot }) => {
         await page.mouse.down();
         await page.mouse.move(label.x + 18, label.y + 10, { steps: 4 });
         await expect.poll(() => kexCall(page, "save")).not.toBe(opening.save);
-        await expect(page.locator("#app")).toHaveAttribute("data-dragging", "");
+        await expect(page.locator(".kex-overlay")).toHaveAttribute("data-dragging", "");
         expect((await life(page)).active).toBe(true);
         if (reason === "unmount") await showTimeline(page, false);
         else if (reason === "delete") {
@@ -340,7 +359,7 @@ test("S3i hierarchy — target lifecycle", async ({ page, boot }) => {
                     ),
                 reason,
             );
-        await expect(page.locator("#app")).not.toHaveAttribute("data-dragging");
+        await expect(page.locator(".kex-overlay")).not.toHaveAttribute("data-dragging");
         await expect.poll(() => kexCall(page, "parked")).toBe(!playing);
         await expect.poll(async () => (await life(page)).active).toBe(false);
         const after = await life(page);
@@ -422,11 +441,84 @@ test("S3i hierarchy — station lifecycle", async ({ page, boot }) => {
         [12, 22],
         [25, 30],
     ]);
+    const heldOpening = (await page.locator(".popover").boundingBox())!;
+    const separated = (
+        a: { x: number; y: number; width: number; height: number },
+        b: { x: number; y: number; width: number; height: number },
+    ) =>
+        a.x + a.width <= b.x - 8 ||
+        a.x >= b.x + b.width + 8 ||
+        a.y + a.height <= b.y - 8 ||
+        a.y >= b.y + b.height + 8;
+    const assertHeldGeometry = async (
+        hasStatus: boolean,
+        expected = heldOpening,
+    ): Promise<void> => {
+        const panel = (await page.locator(".popover").boundingBox())!;
+        expect(panel.x).toBe(expected.x);
+        expect(panel.y).toBe(expected.y);
+        expect(panel.width).toBe(expected.width);
+        expect(panel.height).toBe(expected.height);
+        if (!hasStatus) return;
+        const status = (await page.locator('[role="status"]').boundingBox())!;
+        expect(status.x).toBeGreaterThanOrEqual(8);
+        expect(status.y).toBeGreaterThanOrEqual(8);
+        expect(status.x + status.width).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
+        expect(status.y + status.height).toBeLessThanOrEqual(page.viewportSize()!.height - 8);
+        expect(separated(status, panel)).toBe(true);
+        for (const selector of [".player", ".tool-strip"])
+            expect(separated(status, (await page.locator(selector).boundingBox())!)).toBe(true);
+        expect(
+            await page
+                .locator('[role="status"]')
+                .evaluate((el) => el.scrollHeight <= el.clientHeight),
+        ).toBe(true);
+    };
     const lastValid = await kexCall(page, "save");
+    const liveUndo = await kexCall(page, "undoDepth");
+    expect(liveUndo).toBe(opening.undo);
+    await assertHeldGeometry(false);
     await field.fill("13");
     await expect(page.getByRole("status")).toContainText(/pin/i);
+    await expect(page.locator('[role="status"]')).toBeVisible();
     expect(await kexCall(page, "save")).toBe(lastValid);
-    await field.press("Escape");
+    expect(await kexCall(page, "undoDepth")).toBe(liveUndo);
+    await expect(field).toBeFocused();
+    await expect(ripple).toBeDisabled();
+    await assertHeldGeometry(true);
+    // A second valid value must replace the refusal in the same held edit; the controls do not
+    // remeasure/reflow and the live write still does not open history.
+    await field.fill("11");
+    await expect(page.locator('[role="status"]')).toHaveCount(0);
+    await expect(field).toBeFocused();
+    expect(await kexCall(page, "save")).not.toBe(lastValid);
+    expect(await kexCall(page, "undoDepth")).toBe(liveUndo);
+    await assertHeldGeometry(false);
+    await field.press("Enter");
+    expect(await kexCall(page, "undoDepth")).toBe(opening.undo + 1);
+    expect(JSON.parse(await kexCall(page, "save")).lanes.force[0].end).toBe(11);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+    // Coalesce a refused edit with an external document invalidation. The opening rectangle still
+    // fits, so either a safely placed status survives or the edit cancels before any refit; it may
+    // never leave a refusal over the held controls or a stale authored write behind.
+    await openAction(page, "End…");
+    const externalOpening = (await page.locator(".popover").boundingBox())!;
+    await field.fill("13");
+    await expect(page.locator('[role="status"]')).toBeVisible();
+    await kexCall(page, "load", opening.save);
+    await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+    if (await field.evaluate((el) => document.activeElement === el)) {
+        await assertHeldGeometry(true, externalOpening);
+    } else if (await page.locator('[role="status"]').isVisible()) {
+        const status = (await page.locator('[role="status"]').boundingBox())!;
+        const panel = (await page.locator(".popover").boundingBox())!;
+        expect(separated(status, panel)).toBe(true);
+        expect(separated(status, (await page.locator(".player").boundingBox())!)).toBe(true);
+        expect(separated(status, (await page.locator(".tool-strip").boundingBox())!)).toBe(true);
+    }
+    await page.locator(".dock").focus();
+    await page.keyboard.press("Escape");
     expect(await snapshot(page)).toEqual(opening);
     await openAction(page, "End…");
     await field.fill("12");
@@ -843,14 +935,33 @@ async function drag(page: Page, lane: string, from: number, to: number) {
     await page.mouse.up();
 }
 async function pause(page: Page) {
-    const button = page.getByRole("button", { name: "Pause", exact: true });
-    if (await button.count()) await button.click();
+    await expect
+        .poll(async () => {
+            const arc = await kexCall(page, "cartArc");
+            const view = await page.locator(".chart").getAttribute("data-view");
+            return arc !== null && view !== null && JSON.parse(view).pxPerU > 0;
+        })
+        .toBe(true);
+    const alreadyParked = await kexCall(page, "parked");
+    if (!alreadyParked) {
+        const button = page.getByRole("button", { name: "Pause", exact: true });
+        await expect(button).toBeVisible();
+        await button.click();
+    }
+    await expect.poll(() => kexCall(page, "parked")).toBe(true);
     await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
     // Bind a nonzero station through the real ruler; a timing-dependent parked landmark
     // otherwise legitimately wins snapping over the expected station grid.
     const p = await point(page, "geo", 5),
-        box = (await page.locator(".chart").boundingBox())!;
-    await page.mouse.click(p.x, box.y + 12);
+        box = (await page.locator(".chart").boundingBox())!,
+        click = { x: p.x, y: box.y + 12 };
+    const chart = page.locator(".chart");
+    // Let Playwright prove the live chart is the actionable hit target, then preserve the
+    // production point's fractional coordinate for the real pointer event. Locator.click()
+    // rounds its position through the action channel; that rounding is larger than the
+    // existing station assertion's precision.
+    await chart.hover({ position: { x: click.x - box.x, y: click.y - box.y } });
+    await page.mouse.click(click.x, click.y);
     await expect.poll(() => kexCall(page, "cartArc")).toBeCloseTo(5, 4);
 }
 async function snapshot(page: Page) {

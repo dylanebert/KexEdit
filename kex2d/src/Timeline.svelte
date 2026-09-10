@@ -13,7 +13,7 @@ import { EASING_GLYPHS, spanMenu } from "./menus";
 import Popover from "./Popover.svelte";
 import { nudgeAct, timelineKeyAct } from "./keys";
 import type { Easing } from "./profile";
-import { editorFits, type ScreenBox, fitEditor, recoveredAt, bakeStations, clampSpanDrag, COLUMN_W, clampView, drivenSpans, endHandle, type FieldSpec, frameAll, hitEndHandle, hitRows, laneRows, laneMembers, marginArc, nudgeQuantum, recordEntry, reorderDrop, reordered, type RowHit, ROW_H, S_GRID, snapAxis, spanBoxes, spanCurve, spanResidualDetail, spanTargets, ticks, uToPx, pxToU, type View, zoomAt } from "./timeline";
+import { editorFits, type ScreenBox, fitAttachedStatus, fitEditor, recoveredAt, bakeStations, clampSpanDrag, COLUMN_W, clampView, drivenSpans, endHandle, type FieldSpec, frameAll, hitEndHandle, hitRows, laneRows, laneMembers, marginArc, nudgeQuantum, recordEntry, reorderDrop, reordered, type RowHit, ROW_H, S_GRID, snapAxis, spanBoxes, spanCurve, spanResidualDetail, spanTargets, ticks, uToPx, pxToU, type View, zoomAt } from "./timeline";
 import { bakeOut, endColumn, lanesOf, laneOrderOf, recordOf, samples, setEnd, setRecordHandle, setRecordSpan, Track, trackEndOf, type LaneWrite } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, ROWS_TOP, TOOL_STRIP_W, TOOL_GAP, resize } from "./view";
 
@@ -545,7 +545,15 @@ $effect(() => {
     const ctx = canvas.getContext("2d");
     if (ctx) { resize(canvas, ctx, dockW, chartH); render(ctx); }
 });
-$effect(() => { if (!framed && chartW > 0 && total > 0) { framed = true; view = frameAll(chartW, total, marginArc(total, 50)); } });
+$effect(() => {
+    // An empty production boot still owns a live Track and must offer an addressable timeline
+    // before the first segment exists. Frame the lead-out-only extent once; authored content then
+    // follows the ordinary no-rescale clamp as it grows.
+    if (!framed && chartW > 0 && eid !== null) {
+        framed = true;
+        view = frameAll(chartW, total, marginArc(total, 50));
+    }
+});
 const feedback = $derived.by(() => {
     void revision;
     const g = gesture;
@@ -571,6 +579,13 @@ const feedbackPop = $derived.by(() => feedbackAnchor && feedback && !subject ? f
             <Popover x={pop.x} y={pop.y} record={subject.id} field={fields.find((f) => f.name === (focusKey ?? "exit"))!} focus={focusKey !== null} {focusRequest} {ripple} {busy} result={liveResult} notice={liveResult === feedback ? "" : status}
                 onmeasure={(w, h) => { if (panelSize.w !== w || panelSize.h !== h) panelSize = { w, h }; }}
                 usable={(box) => editorFits(box, { w: window.innerWidth, h: window.innerHeight }, anchor ? [anchor, ...obstacles] : obstacles)}
+                statusFit={(size, panel) => {
+                    if (!anchor) return null;
+                    const position = fitAttachedStatus(size, { w: window.innerWidth, h: window.innerHeight }, obstacles, panel, anchor);
+                    if (!position) return null;
+                    const box = { ...position, ...size };
+                    return editorFits(box, { w: window.innerWidth, h: window.innerHeight }, [anchor, ...obstacles]) ? position : null;
+                }}
                 onactions={(button) => actions(screenBox(button), playhead)}
                 onripple={(v) => { if (!editor.dragging) ripple = v; }} onpeel={peel} />
     {/key}

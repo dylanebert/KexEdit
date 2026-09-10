@@ -1,0 +1,13 @@
+{
+    "plugins": {
+        "Slab": false,
+        "Transforms": false,
+        "Input": false,
+        "Render": false,
+        "Part": false,
+        "Sear": false,
+        "Glaze": false,
+        "Profile": true,
+        "Kex": "./src/app.ts"
+    }
+}

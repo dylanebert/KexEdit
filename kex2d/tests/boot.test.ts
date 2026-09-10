@@ -5,7 +5,7 @@
 // transport and `__kex.track === -1`. Removing `ensureTrack`'s `createTrack` call reds every
 // arm below.
 //
-// `main.ts` itself imports Svelte and cannot be imported here, so the composition arm reads its
+// `app.ts` itself imports Svelte and cannot be imported here, so the composition arm reads its
 // boot line: that the DEV branch binds `bootTrack(ecs, history)`, the non-DEV branch
 // `ensureTrack(ecs)`, and that no query-only boot survives.
 
@@ -16,7 +16,7 @@ import { BOOT_OPS, bootTrack, ensureTrack } from "../src/boot";
 import { createHistory } from "../src/history";
 import { BakeSystem, bakeOut, lanesOf, Track, trackEntity } from "../src/track";
 
-/** a fresh world with the bake system registered — what `run(…)` hands `main.ts`, minus the
+/** a fresh world with the bake system registered — what `run(…)` hands `app.ts`, minus the
  *  render/cart plugins nothing here reads. One live `State` at a time: component storage is
  *  module-scoped (`kex2d/AGENTS.md`), so each arm builds and drops its own. */
 function world(): State {
@@ -95,19 +95,17 @@ describe("boot document", () => {
     });
 });
 
-describe("main.ts boot composition", () => {
-    const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+describe("app.ts boot composition", () => {
+    const app = readFileSync(new URL("../src/app.ts", import.meta.url), "utf8");
 
     test("the boot binds boot.ts on both branches", () => {
-        expect(main).toContain(
-            "const track = import.meta.env.DEV ? bootTrack(ecs, history) : ensureTrack(ecs);",
-        );
-        expect(main).toContain('import { bootTrack, ensureTrack } from "./boot";');
+        expect(app).toContain("const track = isDev ? bootTrack(ecs, history) : ensureTrack(ecs);");
+        expect(app).toContain('import { bootTrack, ensureTrack } from "./boot";');
     });
 
     test("no query-only boot survives, and the ops live in boot.ts alone", () => {
-        expect(main).not.toContain("ecs.query([Track])");
-        expect(main).not.toContain("applyOp");
-        expect(main).not.toContain("BOOT_OPS");
+        expect(app).not.toContain("ecs.query([Track])");
+        expect(app).not.toContain("applyOp");
+        expect(app).not.toContain("BOOT_OPS");
     });
 });

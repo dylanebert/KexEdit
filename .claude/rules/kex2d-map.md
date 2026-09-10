@@ -40,7 +40,7 @@ Velocity is track-global: preserve values across structural edits, allow abuttin
 
 ## Hard gotchas
 
-`controls.ts` owns mount/teardown listeners; `editor.ts` owns selection. Swallowing listeners read live state despite tick lag; reactive reads return primitives, not mutated singletons. `menus.ts`/`keys.ts` describe, `Menu.svelte` renders. `Popover.svelte` measures/holds screen boxes and shares field history; `timeline.ts` reads published bake stations, never exit fallbacks.
+`controls.ts` owns lifecycle; `editor.ts` owns selection. `menus.ts`/`keys.ts` describe; `Menu.svelte` renders. `Popover.svelte` owns one stable-id field/history; `timeline.ts` reads published bake stations. Fit actual invoker/handle/player/tool boxes; flip menus above/below. Preserve full canvas and a non-transforming overlay root; only backing/transform scales by DPR.
 
 Keep substrate/selection, purity/writer and module tests. Physics authority: analytics, `tests/oracles/rk4.ts`, `tests/helpers/forward64.ts`, not self-consistency. Exactness reads whole pre-op state, not counts/boundaries.
 

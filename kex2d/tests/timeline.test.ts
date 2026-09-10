@@ -39,7 +39,9 @@ import {
     popoverFit,
     recoveredPolyline,
     recoveredAt,
+    fitAttachedStatus,
     fitEditor,
+    editorFits,
     reorderDrop,
     reordered,
     rowChart,
@@ -1502,6 +1504,105 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
         expect(
             fitEditor({ w: 270, h: 160 }, { w: 800, h: 600 }, [], { x: 400, y: 20, w: 2, h: 32 }).y,
         ).toBe(60);
+    });
+
+    test("attached status stays outside held controls across invoker, handle, player, tool and viewport edges", () => {
+        const basic = fitAttachedStatus(
+            { w: 220, h: 28 },
+            { w: 800, h: 600 },
+            [],
+            { x: 300, y: 300, w: 180, h: 40 },
+            { x: 380, y: 240, w: 2, h: 26 },
+        );
+        expect(basic).toEqual({ x: 280, y: 348 });
+        const viewports = [
+            { w: 800, h: 600 },
+            { w: 1280, h: 720 },
+        ];
+        const panels = [
+            { x: 8, y: 8, w: 180, h: 40 },
+            { x: 612, y: 8, w: 180, h: 40 },
+            { x: 8, y: 552, w: 180, h: 40 },
+            { x: 612, y: 552, w: 180, h: 40 },
+            { x: 300, y: 300, w: 180, h: 40 },
+        ];
+        const invokers = [
+            { x: 10, y: 80, w: 2, h: 26 }, // left handle
+            { x: 788, y: 80, w: 2, h: 26 }, // right handle
+            { x: 380, y: 240, w: 2, h: 26 }, // above/invoker
+            { x: 380, y: 574, w: 2, h: 18 }, // below/invoker
+        ];
+        for (const viewport of viewports) {
+            for (const panel of panels) {
+                if (panel.x + panel.w > viewport.w || panel.y + panel.h > viewport.h) continue;
+                for (const invoker of invokers) {
+                    if (invoker.x > viewport.w || invoker.y > viewport.h) continue;
+                    const size = { w: 220, h: 28 };
+                    const obstacles = [
+                        { x: viewport.w / 2 - 80, y: viewport.h - 188, w: 160, h: 36 }, // player
+                        { x: 16, y: viewport.h - 156, w: 36, h: 140 }, // tool strip
+                    ];
+                    const fit = fitAttachedStatus(size, viewport, obstacles, panel, invoker);
+                    if (fit) {
+                        expect(
+                            editorFits({ ...fit, ...size }, viewport, [
+                                panel,
+                                invoker,
+                                ...obstacles,
+                            ]),
+                        ).toBe(true);
+                    }
+                }
+            }
+        }
+    });
+
+    test("attached status growth re-solves independently and refuses when every measured side is blocked", () => {
+        const viewport = { w: 800, h: 600 };
+        const panel = { x: 300, y: 300, w: 180, h: 40 };
+        const invoker = { x: 380, y: 240, w: 2, h: 26 };
+        const player = { x: 260, y: 420, w: 280, h: 36 };
+        const tool = { x: 16, y: 444, w: 36, h: 140 };
+        const opening = fitAttachedStatus(
+            { w: 120, h: 14 },
+            viewport,
+            [player, tool],
+            panel,
+            invoker,
+        );
+        expect(opening).not.toBeNull();
+        expect(
+            editorFits({ ...opening!, w: 120, h: 14 }, viewport, [panel, invoker, player, tool]),
+        ).toBe(true);
+        // The refusal grew in the same observation window as an external obstacle moved into its
+        // first side. The panel's held rectangle is unchanged; only the complete measured status
+        // box is re-solved, never folded into the controls' sizing flow.
+        const expanded = fitAttachedStatus(
+            { w: 280, h: 40 },
+            viewport,
+            [player, tool, { x: 280, y: 348, w: 240, h: 56 }],
+            panel,
+            invoker,
+        );
+        expect(expanded).not.toBeNull();
+        expect(
+            editorFits({ ...expanded!, w: 280, h: 40 }, viewport, [
+                panel,
+                invoker,
+                player,
+                tool,
+                { x: 280, y: 348, w: 240, h: 56 },
+            ]),
+        ).toBe(true);
+        expect(
+            fitAttachedStatus(
+                { w: 220, h: 28 },
+                viewport,
+                [{ x: 0, y: 0, w: 800, h: 600 }],
+                panel,
+                invoker,
+            ),
+        ).toBeNull();
     });
 
     // RED: resolve the drop off the pointer's own row only (return `from`) and a drag can never
