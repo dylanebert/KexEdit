@@ -66,7 +66,7 @@ One meaning/channel, no decorative mode chrome. Pin goal, lock DOF. Hatch subjec
 
 ## Keyframe / curve-editor conventions
 
-Insert profile value, not cursor y; easing may reshape. Leading key owns easing menu, not curve hits; terminal has none. On-object Target/unit: label scrub/value type. Segment actions: precision/easing/entry/result, no inspector/telemetry. End-only ripple: no shortcut, disabled live; armed indicator persists.
+Insert profile value, not cursor y; easing may reshape. Leading key owns easing menu, not curve hits; terminal has none. On-object Target/unit: one field; no actions/inspector/result/telemetry. End-only ripple: no shortcut, disabled live; armed indicator persists.
 
 Measure invoker/controls, not dock union; playback centers on measured canvas. Hold edit screen x/y; cancel before invalid refit. Bake stays live.
 

@@ -18,15 +18,19 @@ import {
     drivenSpans,
     dToU,
     dToUExtend,
+    dragAxis,
     endDragTarget,
     endHandle,
     fmt,
     frameAll,
     G_GRID,
+    fitLaneValue,
     hitEndHandle,
     hitRows,
+    KNOT_PX,
     laneMembers,
     laneRows,
+    laneValueAxis,
     type Mapping,
     marginArc,
     marginFloor,
@@ -35,6 +39,7 @@ import {
     navWindow,
     niceStep,
     nodeArc,
+    knotPoints,
     nudgeQuantum,
     popoverFit,
     recoveredPolyline,
@@ -71,6 +76,7 @@ import {
     yFit,
     type YFit,
     yGrow,
+    valueChart,
     zoomAt,
 } from "../src/timeline";
 import { V0 } from "../src/track";
@@ -1627,5 +1633,115 @@ describe("S3c — the driven residual, the step-in curve view, the popover ancho
         expect(reordered(order, 1, 1)).toBe(order); // identity: the caller skips
         expect(reordered(order, 0, 5)).toBe(order); // out of range is no move, never a throw
         expect(reordered(order, -1, 0)).toBe(order);
+    });
+});
+
+describe("S3j lane value axis and knot arbitration", () => {
+    const record = (over: Partial<LaneSegment> = {}): LaneSegment => ({
+        id: 7,
+        start: 0,
+        end: 10,
+        ease: Easing.Linear,
+        entry: 1,
+        exit: 2,
+        ...over,
+    });
+
+    test("resting bases and frames are independent of authored boot values", () => {
+        expect(laneValueAxis(Lane.Force)).toEqual({ base: 1, frame: [-2, 6], cap: [-20, 20] });
+        expect(laneValueAxis(Lane.Geo).base).toBe(0);
+        expect(laneValueAxis(Lane.Geo).frame).toEqual([-Math.PI, Math.PI]);
+        const velocity = laneValueAxis(Lane.Velocity, 37);
+        expect(velocity.base).toBe(37);
+        expect(velocity.frame).toEqual([29, 45]);
+        expect(velocity.frame).not.toContain(18);
+    });
+
+    test("the lane fit includes authored handles and selected recovery, then grows only past its frame", () => {
+        const rows = laneRows({ velocity: [], force: [record()], geo: [] }, [Lane.Force], 10);
+        const entries = [1];
+        const resting = fitLaneValue(Lane.Force, rows[0].records, entries);
+        expect(resting).toEqual({ lo: -2, hi: 6, step: 2 });
+        const recovered = fitLaneValue(Lane.Force, rows[0].records, entries, [9]);
+        expect(recovered.lo).toBe(-2);
+        expect(recovered.hi).toBeGreaterThanOrEqual(9);
+        const chart = valueChart(rows[0], resting);
+        expect(chart.top).toBe(rows[0].top + 3);
+        expect(chart.bottom).toBe(rows[0].top + ROW_H - 3);
+    });
+
+    test("spanCurve uses the shared value axis, so equal station geometry can show a value change", () => {
+        const rows = laneRows({ velocity: [], force: [record()], geo: [] }, [Lane.Force], 10);
+        const view = { pan: 0, pxPerU: 10 };
+        const chart = valueChart(rows[0], { lo: 0, hi: 4, step: 1 });
+        const low = spanCurve(record({ exit: 2 }), 1, spanBoxes(rows[0], view, 0)[0]!, chart);
+        const high = spanCurve(record({ exit: 4 }), 1, spanBoxes(rows[0], view, 0)[0]!, chart);
+        expect(low.map((p) => p.y)).not.toEqual(high.map((p) => p.y));
+        expect(high.at(-1)!.y).toBeLessThan(low.at(-1)!.y);
+    });
+
+    test("exit knot wins over the body while the neighbouring edge keeps horizontal ownership", () => {
+        const lanes: Lanes = { velocity: [], force: [record()], geo: [] };
+        const rows = laneRows(lanes, [Lane.Force], 10);
+        const view = { pan: 0, pxPerU: 10 };
+        const chart = valueChart(rows[0], { lo: 0, hi: 4, step: 1 });
+        const points = knotPoints(rows[0], [1], chart, view);
+        const exit = points.find((p) => p.which === "exit")!;
+        expect(hitRows(rows, view, exit.x, exit.y, 0, points)).toEqual({
+            kind: "knot",
+            lane: Lane.Force,
+            id: 7,
+            which: "exit",
+        });
+        expect(
+            hitRows(rows, view, exit.x - KNOT_PX - 1, rows[0].top + ROW_H / 2, 0, points),
+        ).toMatchObject({
+            kind: "edge",
+            which: "end",
+        });
+        expect(hitRows(rows, view, 50, rows[0].top + ROW_H / 2, 0, points)).toEqual({
+            kind: "body",
+            lane: Lane.Force,
+            id: 7,
+        });
+    });
+
+    test("the dead-zone crossing chooses an axis once and value snapping honors the lane quantum", () => {
+        expect(dragAxis(1, 1)).toBeNull();
+        expect(dragAxis(2, 5)).toBe("value");
+        expect(dragAxis(5, 2)).toBe("station");
+        expect(dragAxis(20, 1)).toBe("station");
+        expect(dragAxis(1, 20)).toBe("value");
+    });
+
+    test("recoveredPolyline is unavailable for missing coverage or unresolved entry, never zero", () => {
+        const chart = { top: 0, bottom: 20, lo: 0, hi: 2 };
+        const view = { pan: 0, pxPerU: 10 };
+        const read = { station: [0, 5, 10], value: [1, 1.5, 2], n: 3 };
+        expect(
+            recoveredPolyline(read, chart, view, 0, { start: 0, end: 10, available: true }),
+        ).toHaveLength(3);
+        expect(
+            recoveredPolyline(read, chart, view, 0, { start: 0, end: 10, available: false }),
+        ).toEqual([]);
+        expect(
+            recoveredPolyline({ ...read, value: [1, NaN, 2] }, chart, view, 0, {
+                start: 0,
+                end: 10,
+                available: true,
+            }),
+        ).toEqual([]);
+    });
+
+    test("retired standing surfaces have no live Timeline or Popover referents", () => {
+        const timeline = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        const popover = readFileSync(new URL("../src/Popover.svelte", import.meta.url), "utf8");
+        const corpus = `${timeline}\n${popover}`;
+        expect(corpus).not.toContain(".feedback");
+        expect(corpus).not.toContain("Segment actions");
+        expect(corpus).not.toContain(".read-station");
+        expect(corpus).not.toContain('class="result"');
+        expect(corpus).toContain("drag-value-label");
+        expect(corpus).toContain("data-value-windows");
     });
 });

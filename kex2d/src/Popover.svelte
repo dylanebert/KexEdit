@@ -3,13 +3,12 @@ import { onMount } from "svelte";
 import type { FieldSpec, ScreenBox } from "./timeline";
 
 /** One screen-held field; shared history and live bake belong to the caller. */
-const { x, y, record, field, focusRequest, focus = false, ripple, onripple, busy, onmeasure, usable, statusFit, onpeel, onactions, result = null, notice = "" }: {
+const { x, y, record, field, focusRequest, focus = false, ripple, onripple, busy, onmeasure, usable, statusFit, onpeel, notice = "" }: {
     x: number; y: number; record: number; field: FieldSpec; focusRequest: number; focus?: boolean;
     ripple: boolean; onripple: (value: boolean) => void; busy: boolean;
     onmeasure: (w: number, h: number) => void; usable: (box: ScreenBox) => boolean;
     statusFit: (size: { w: number; h: number }, panel: ScreenBox) => { x: number; y: number } | null;
-    onpeel: () => void; onactions: (button: HTMLButtonElement) => void;
-    result?: string | null; notice?: string;
+    onpeel: () => void; notice?: string;
 } = $props();
 let panel: HTMLDivElement;
 let statusEl: HTMLDivElement | undefined = $state(undefined);
@@ -150,18 +149,14 @@ onMount(() => {
 <div class="popover-layer">
     <div bind:this={panel} data-record={record} class="popover" style="left: {held?.x ?? x}px; top: {held?.y ?? y}px;" role="group" aria-label="Selected segment">
         <div class="line">
-            {#if result !== null}<span class="result" role="status">{result}</span>
-            {:else}
-                <div class="field">
-                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
-                    <label for="pf-{field.name}" title="Scrub {label.toLowerCase()} horizontally; click value to type" onpointerdown={scrubDown} onclick={(e) => e.preventDefault()}>{label}</label>
-                    <input id="pf-{field.name}" type="text" inputmode="decimal" value={print(field)} onfocus={fieldFocus} oninput={fieldInput} onkeydown={fieldKey} onblur={() => finish()} />
-                    <span class="unit">{field.unit}</span>
-                </div>
-            {/if}
-            <button class="actions" type="button" aria-label="Segment actions" title="Segment actions" disabled={busy} onclick={(e) => onactions(e.currentTarget)}>⋯</button>
+            <div class="field">
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
+                <label for="pf-{field.name}" title="Scrub {label.toLowerCase()} horizontally; click value to type" onpointerdown={scrubDown} onclick={(e) => e.preventDefault()}>{label}</label>
+                <input id="pf-{field.name}" type="text" inputmode="decimal" value={print(field)} onfocus={fieldFocus} oninput={fieldInput} onkeydown={fieldKey} onblur={() => finish()} />
+                <span class="unit">{field.unit}</span>
+            </div>
         </div>
-        {#if field.name === "end" && result === null}
+        {#if field.name === "end"}
             <label class="ripple"><input type="checkbox" checked={ripple} disabled={busy} onchange={(e) => onripple(e.currentTarget.checked)} />Ripple later segments in this lane</label>
             <div class="scope">End resize only; other lanes stay at their stations</div>
         {/if}
@@ -180,12 +175,7 @@ onMount(() => {
     .field input { width: 70px; min-width: 0; padding: 2px 3px; font: inherit; font-variant-numeric: tabular-nums; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: 3px; }
     .field input:focus { outline: 1px solid var(--muted); background: var(--neutral-soft); }
     .unit, .scope { color: var(--muted); }
-    .actions { width: 24px; height: 24px; padding: 0; font: inherit; color: var(--fg); background: transparent; border: 0; cursor: pointer; }
-    .actions:hover { background: var(--neutral-soft); }
-    .actions:focus-visible { outline: 1px solid var(--muted); }
-    .actions:disabled { opacity: .5; cursor: default; }
     .ripple { display: flex; align-items: center; gap: 4px; font-size: 10px; }
     .scope { font-size: 10px; padding: 3px 0; max-width: 310px; overflow-wrap: anywhere; }
     .status { position: fixed; max-width: min(310px, calc(100vw - 16px)); box-sizing: border-box; padding: 3px 5px; font: 10px/14px "JetBrains Mono", ui-monospace, monospace; color: var(--danger, #f08080); background: var(--bg-solid); overflow-wrap: anywhere; pointer-events: none; }
-    .result { max-width: 310px; }
 </style>
