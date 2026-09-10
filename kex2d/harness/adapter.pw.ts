@@ -942,8 +942,13 @@ async function pause(page: Page) {
             return arc !== null && view !== null && JSON.parse(view).pxPerU > 0;
         })
         .toBe(true);
-    const button = page.getByRole("button", { name: "Pause", exact: true });
-    if (await button.count()) await button.click();
+    const alreadyParked = await kexCall(page, "parked");
+    if (!alreadyParked) {
+        const button = page.getByRole("button", { name: "Pause", exact: true });
+        await expect(button).toBeVisible();
+        await button.click();
+    }
+    await expect.poll(() => kexCall(page, "parked")).toBe(true);
     await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
     // Bind a nonzero station through the real ruler; a timing-dependent parked landmark
     // otherwise legitimately wins snapping over the expected station grid.
