@@ -10,7 +10,7 @@
             "maxParagraphChars": 301
         },
         ".claude/rules/editor-ui.md": {
-            "bytes": 5830,
+            "bytes": 5803,
             "maxParagraphChars": 398
         },
         ".claude/rules/fidelity.md": {
@@ -42,7 +42,7 @@
             "maxParagraphChars": 157
         }
     },
-    "totalBytes": 26092,
+    "totalBytes": 26065,
     "processChecks": [
         "kex2d/tests/harness.test.ts"
     ]

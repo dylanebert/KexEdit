@@ -26,7 +26,7 @@ export type TimelineAct =
     | "selectTool"
     | "addTool";
 
-/** The shared global edit keys and two explicitly local authoring mnemonics. */
+/** The shared edit keys and the three explicitly local authoring mnemonics. */
 export function timelineKeyAct(key: string, s: TimelineKeyState): TimelineAct | null {
     if (s.dragging || s.inputOwned) return null;
     const k = key.toLowerCase();
@@ -38,7 +38,7 @@ export function timelineKeyAct(key: string, s: TimelineKeyState): TimelineAct | 
     if (s.local && bound(BINDINGS.selectTool, k)) return "selectTool";
     if (s.local && bound(BINDINGS.addTool, k)) return "addTool";
     if (bound(BINDINGS.remove, key)) return s.selected ? "remove" : null;
-    if (k === "s") return "toggleSnap";
+    if (s.local && k === "s") return "toggleSnap";
     return null;
 }
 

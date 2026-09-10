@@ -38,6 +38,21 @@ test("input ownership preserves native fields and the innermost Escape rung", ()
     expect(inputOwnsKey("Enter", false, true)).toBe(true);
 });
 
+test("timeline snap keeps its S twin local and Ctrl/Cmd transient", () => {
+    const base: TimelineKeyState = {
+        dragging: false,
+        inputOwned: false,
+        selected: false,
+        ctrl: false,
+        shift: false,
+        local: false,
+    };
+    expect(timelineKeyAct("s", base)).toBeNull();
+    expect(timelineKeyAct("s", { ...base, local: true })).toBe("toggleSnap");
+    expect(timelineKeyAct("S", { ...base, local: true })).toBe("toggleSnap");
+    expect(timelineKeyAct("s", { ...base, local: true, ctrl: true })).toBeNull();
+});
+
 describe("menuFit — root context menu viewport fit (flip up/left, clamp)", () => {
     const Vp = { w: 1280, h: 800 };
     const size = { w: 132, h: 160 };
@@ -206,48 +221,33 @@ describe("rulerMenu — the flat two-row unit picker", () => {
 // Shared disabled/action/menu grammar below still covers the surviving span and ruler menus.
 
 describe("spanMenu — the selected record's menu", () => {
-    const acts = () => recorder("setEase", "remove");
+    const acts = () => recorder("setEase", "remove", "field", "inherit");
     const glyph = (e: Easing): string => `preset:${e}`;
+    const state = (ease: Easing, canDelete = true, owned = false) => ({
+        ease,
+        presetGlyph: glyph,
+        canDelete,
+        entry: { owned },
+    });
 
-    test("shared precision, entry ownership and inspection descriptors dispatch only explicit actions", () => {
+    test("the exact rare-access set is Easing ▸, Entry ▸, Delete", () => {
         for (const owned of [false, true]) {
-            const a = recorder("setEase", "remove", "field", "inherit", "inspect");
-            const rows = spanMenu(
-                {
-                    ease: Easing.Cubic,
-                    presetGlyph: glyph,
-                    canDelete: true,
-                    entry: { owned, summary: owned ? "Owned start" : "Unresolved entry" },
-                },
-                a,
-            );
-            expect(rows.map((r) => r.label)).toEqual([
-                "Target…",
-                "Start…",
-                "End…",
-                "Easing",
-                "Entry",
-                "Inspect result",
-                "Delete",
-            ]);
+            const a = acts();
+            const rows = spanMenu(state(Easing.Cubic, true, owned), a);
+            expect(rows.map((r) => r.label)).toEqual(["Easing", "Entry", "Delete"]);
+            expect(
+                rows.some((r) =>
+                    ["Target…", "Start…", "End…", "Inspect result"].includes(r.label ?? ""),
+                ),
+            ).toBe(false);
             expect(a.log).toEqual([]);
-            for (const r of rows.slice(0, 3)) r.action!();
             const entry = rows.find((r) => r.label === "Entry")!.children!;
-            expect(entry[0]!.enabled).toBe(false);
-            expect(entry[0]!.action).toBeUndefined();
-            expect(entry[1]!.label).toBe(owned ? "Edit entry…" : "Override entry…");
-            entry[1]!.action!();
-            expect(entry.length).toBe(owned ? 3 : 2);
-            if (owned) entry[2]!.action!();
-            rows.find((r) => r.label === "Inspect result")!.action!();
-            expect(a.log).toEqual([
-                "field(exit)",
-                "field(start)",
-                "field(end)",
-                "field(entry)",
-                ...(owned ? ["inherit()"] : []),
-                "inspect()",
-            ]);
+            expect(entry.map((r) => r.label)).toEqual(
+                owned ? ["Edit entry…", "Inherit entry"] : ["Override entry…"],
+            );
+            entry[0]!.action!();
+            if (owned) entry[1]!.action!();
+            expect(a.log).toEqual(["field(entry)", ...(owned ? ["inherit()"] : [])]);
         }
     });
 
@@ -256,7 +256,13 @@ describe("spanMenu — the selected record's menu", () => {
     test("Easing ▸ then Delete, the danger row terminal", () => {
         const a = acts();
         expect(
-            shape(spanMenu({ ease: Easing.Cubic, presetGlyph: glyph, canDelete: true }, a)),
+            shape(
+                spanMenu(state(Easing.Cubic), {
+                    ...a,
+                    field: () => a.log.push("field(entry)"),
+                    inherit: () => a.log.push("inherit()"),
+                }),
+            ),
         ).toEqual([
             {
                 label: "Easing",
@@ -266,6 +272,11 @@ describe("spanMenu — the selected record's menu", () => {
                     { label: "Cubic", group: "modify", glyph: "preset:1", checked: true },
                     { label: "Quintic", group: "modify", glyph: "preset:2", checked: false },
                 ],
+            },
+            {
+                label: "Entry",
+                group: "modify",
+                children: [{ label: "Override entry…", group: "modify" }],
             },
             {
                 label: "Delete",
@@ -282,7 +293,11 @@ describe("spanMenu — the selected record's menu", () => {
     test("the checked easing row is the RECORD's own tag", () => {
         const a = acts();
         for (const ease of [Easing.Linear, Easing.Cubic, Easing.Quintic]) {
-            const rows = spanMenu({ ease, presetGlyph: glyph, canDelete: true }, a);
+            const rows = spanMenu(state(ease), {
+                ...a,
+                field: () => a.log.push("field(entry)"),
+                inherit: () => a.log.push("inherit()"),
+            });
             const checked = rows[0].children?.filter((r) => r.checked).map((r) => r.label);
             expect(checked).toEqual([["Linear", "Cubic", "Quintic"][ease]]);
         }
@@ -290,9 +305,13 @@ describe("spanMenu — the selected record's menu", () => {
 
     test("each easing row applies its OWN preset, and Delete removes", () => {
         const a = acts();
-        const rows = spanMenu({ ease: Easing.Linear, presetGlyph: glyph, canDelete: true }, a);
+        const rows = spanMenu(state(Easing.Linear), {
+            ...a,
+            field: () => a.log.push("field(entry)"),
+            inherit: () => a.log.push("inherit()"),
+        });
         for (const r of rows[0].children ?? []) r.action?.();
-        rows[1].action?.();
+        rows[2].action?.();
         expect(a.log).toEqual([
             `setEase(${Easing.Linear})`,
             `setEase(${Easing.Cubic})`,
@@ -304,7 +323,11 @@ describe("spanMenu — the selected record's menu", () => {
     test("Delete grays where the record cannot be removed", () => {
         const a = acts();
         expect(
-            spanMenu({ ease: Easing.Linear, presetGlyph: glyph, canDelete: false }, a)[1].enabled,
+            spanMenu(state(Easing.Linear, false), {
+                ...a,
+                field: () => a.log.push("field(entry)"),
+                inherit: () => a.log.push("inherit()"),
+            })[2].enabled,
         ).toBe(false);
     });
 });
@@ -348,11 +371,7 @@ describe("the menu grammar — every builder, every state", () => {
         ease: easings,
         presetGlyph: [(e: Easing) => `preset:${e}`],
         canDelete: bool,
-        entry: [
-            { owned: true, summary: "Owned start" },
-            { owned: false, summary: "Inherited start" },
-            { owned: false, summary: "Unresolved entry" },
-        ],
+        entry: [{ owned: false }, { owned: true }],
     });
 
     // every menu the app can summon, as `(name, rows, state)` triples — the oracle's whole input.
@@ -364,13 +383,13 @@ describe("the menu grammar — every builder, every state", () => {
     type Menu = { name: string; rows: MenuItem[]; state: object; acts: { log: string[] } };
     function corpus(): Menu[] {
         const all: Menu[] = [];
-        const acts = () => recorder("pick", "setEase", "remove", "field", "inherit", "inspect");
+        const acts = () => recorder("pick", "setEase", "remove", "field", "inherit");
         for (const s of rulerStates) {
             const a = acts();
             all.push({ name: "rulerMenu", rows: rulerMenu(s, a), state: s, acts: a });
         }
         for (const s of spanStates) {
-            const a = acts();
+            const a = recorder("pick", "setEase", "remove", "field", "inherit");
             all.push({ name: "spanMenu", rows: spanMenu(s, a), state: s, acts: a });
         }
         return all;
@@ -631,7 +650,6 @@ describe("the menu grammar — every builder, every state", () => {
         pick: null,
         field: null,
         inherit: null,
-        inspect: null,
         selectTool: "selectTool",
         addTool: "addTool",
         setEase: null,
