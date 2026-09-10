@@ -133,7 +133,7 @@ async function assertRetiredSurfaces(page: Page): Promise<void> {
     await expect(page.getByRole("button", { name: "Segment actions", exact: true })).toHaveCount(0);
 }
 
-test("S3j lane value axis — layout", async ({ page, boot }) => {
+test("S3k layout — lane priority and value-axis geometry", async ({ page, boot }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await boot();
     await pause(page);
@@ -162,6 +162,18 @@ test("S3j lane value axis — layout", async ({ page, boot }) => {
     expect(metric.gpu).not.toMatch(/swiftshader|llvmpipe|lavapipe|warp|basic render/i);
     expect(metric.dock).toBe(140);
     expect(metric.rows).toBe(3);
+    const priority = await page.locator(".lane-label").evaluateAll((els) =>
+        els.map((el) => ({
+            lane: el.getAttribute("data-lane"),
+            rank: el.getAttribute("data-priority"),
+            title: el.getAttribute("title"),
+            text: el.textContent?.trim(),
+        })),
+    );
+    expect(priority.map((item) => item.rank)).toEqual(["1", "2", "3"]);
+    expect(priority.map((item) => item.text)).toEqual(["geo P1", "force P2", "velocity P3"]);
+    expect(priority.every((item) => item.title?.includes("Drag to reorder"))).toBe(true);
+    await expect(page.locator(".tool-group")).toHaveCount(2);
     expect(metric.chart.backing).toEqual([
         Math.round(metric.chart.w * metric.dpr),
         Math.round(metric.chart.h * metric.dpr),
@@ -170,7 +182,7 @@ test("S3j lane value axis — layout", async ({ page, boot }) => {
     expect(metric.fits.find((item) => item.lane === "geo")?.base).toBe(0);
     expect(metric.fits.find((item) => item.lane === "velocity")?.base).toBe(10);
     await assertRetiredSurfaces(page);
-    await page.screenshot({ path: join(OUT, "S3j-layout.png") });
+    await page.screenshot({ path: join(OUT, "S3k-layout.png") });
     await page.waitForTimeout(SHOT_MS);
 });
 
@@ -268,17 +280,16 @@ test("S3j lane value axis — station lifecycle", async ({ page, boot }) => {
     await expect(page.locator("#pf-end")).toBeFocused();
     await expect(page.locator("#pf-end")).toHaveValue("10.00");
     await page.locator(".dock").focus();
-    await page.getByRole("checkbox", { name: "Ripple later segments in this lane" }).check();
+    await expect(page.getByRole("checkbox", { name: /Ripple/ })).toHaveCount(0);
     await page.locator("#pf-end").fill("12");
     await page.locator("#pf-end").press("Enter");
-    await expect.poll(() => kexCall(page, "undoDepth")).toBe(opening.undo + 1);
+    await expect.poll(() => kexCall(page, "undoDepth")).toBe(opening.undo);
     expect((await kexCall(page, "lanes")).force.map((item) => [item.start, item.end])).toEqual([
-        [0, 12],
-        [12, 22],
-        [25, 30],
+        [0, 10],
+        [10, 20],
+        [23, 28],
     ]);
-    await page.keyboard.press("ControlOrMeta+z");
-    await expect.poll(() => kexCall(page, "save")).toBe(opening.save);
+    await expect(page.locator('[role="status"]')).toContainText("overlap");
     await loadDocument(page, JSON.parse(opening.save));
     const resetShared = await point(page, "force", 10);
     await page.mouse.click(resetShared.x, resetShared.y + 7);
@@ -287,6 +298,34 @@ test("S3j lane value axis — station lifecycle", async ({ page, boot }) => {
     expect(await snapshot(page)).toEqual(opening);
     await assertRetiredSurfaces(page);
     await page.screenshot({ path: join(OUT, "S3j-station-lifecycle.png") });
+    await page.waitForTimeout(SHOT_MS);
+});
+
+test("S3k contextual actions — reduced span menu and retired chrome", async ({ page, boot }) => {
+    await boot();
+    await pause(page);
+    const selected = await selectAt(page, "force", 30);
+    await page.mouse.click(selected.x, selected.y, { button: "right" });
+    const root = page.locator(".menu-anchor > .menu-rows");
+    await expect(root.locator("button")).toHaveCount(3);
+    const labels = (await root.locator("button").allTextContents()).map((text) =>
+        text.replace(/\s+/g, ""),
+    );
+    expect(labels).toEqual(["Easing▸", "Entry▸", "DeleteDel"]);
+    await expect(page.getByText("Target…", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Inspect result", { exact: true })).toHaveCount(0);
+    await root.locator("button").nth(0).hover();
+    await expect(page.getByRole("menuitem", { name: "Linear", exact: true })).toBeVisible();
+    await root.locator("button").nth(1).hover();
+    const entryLabels = (await page.locator(".menu-anchor .submenu button").allTextContents()).map(
+        (text) => text.trim(),
+    );
+    expect(entryLabels).toEqual(
+        expect.arrayContaining([expect.stringMatching(/(?:Edit|Override) entry…/)]),
+    );
+    expect(entryLabels).not.toContain("Owned start");
+    await assertRetiredSurfaces(page);
+    await page.screenshot({ path: join(OUT, "S3k-contextual-actions.png") });
     await page.waitForTimeout(SHOT_MS);
 });
 
@@ -317,13 +356,40 @@ test("S3j recovered lane twin — selected curve, knot field, and retirement", a
     await page.waitForTimeout(SHOT_MS);
 });
 
-test("S3f tools — Select gap versus Add, local keys, collision and cancellation", async ({
+test("S3k tools — Select/Add chrome, snapping state, local keys and cancellation", async ({
     page,
     boot,
 }) => {
     await boot();
     await pause(page);
+    const snap = page.getByRole("button", { name: "Snapping (S)", exact: true });
+    await expect(snap).toHaveAttribute("aria-pressed", "true");
+    await snap.click();
+    await expect(snap).toHaveAttribute("aria-pressed", "false");
+    await page.keyboard.press("s");
+    await expect(snap).toHaveAttribute("aria-pressed", "true");
+    await snap.click();
+    await expect(snap).toHaveAttribute("aria-pressed", "false");
+    const resting = await snap.evaluate((el) => {
+        const style = getComputedStyle(el);
+        return { color: style.color, border: style.borderStyle, background: style.backgroundColor };
+    });
+    expect(resting.border).toBe("none");
+    expect(resting.background).toBe("rgba(0, 0, 0, 0)");
     const opening = await snapshot(page);
+    const ctrlBefore = await snapshot(page);
+    const ctrlDrag = await point(page, "force", 30);
+    await page.mouse.move(ctrlDrag.x, ctrlDrag.y);
+    await page.mouse.down();
+    await page.keyboard.down("ControlOrMeta");
+    await page.mouse.move(ctrlDrag.x + 9, ctrlDrag.y, { steps: 5 });
+    await page.keyboard.up("ControlOrMeta");
+    await page.mouse.up();
+    await expect(snap).toHaveAttribute("aria-pressed", "false");
+    if ((await kexCall(page, "undoDepth")) > ctrlBefore.undo) {
+        await page.keyboard.press("ControlOrMeta+z");
+        await expect.poll(() => kexCall(page, "save")).toBe(ctrlBefore.save);
+    }
     const gap = await point(page, "geo", 30);
     await page.mouse.click(gap.x, gap.y);
     await page.keyboard.press("a");
@@ -352,7 +418,8 @@ test("S3f tools — Select gap versus Add, local keys, collision and cancellatio
         "aria-pressed",
         "true",
     );
-    await page.screenshot({ path: join(OUT, "S3f-tools.png") });
+    await expect(snap).toHaveAttribute("aria-pressed", "false");
+    await page.screenshot({ path: join(OUT, "S3k-tools.png") });
 });
 
 test("S3f renderer — lane × selection × driving × edge handle ink above hatch", async ({

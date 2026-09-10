@@ -12,7 +12,7 @@ Live/undoable; disclose depth, never cap it. Infer tangents; translate mechanism
 
 ## Timeline
 
-140px dock, 26px rows. Left Select (V)/Add (A): neutral 36px strip/8px gap, 28px buttons/14px glyphs, hover names. Logical CSS; only canvas backing/transform scales by DPR. Global rail: toggles/key twins.
+140px dock, 26px rows. Left Select (V)/Add (A): neutral 36px strip/8px gap, 28px buttons/14px glyphs, hover names. Logical CSS; only canvas backing/transform scales by DPR. Snap (S) is the second group; Ctrl/Cmd inverts it for one drag.
 
 One clock: global transport/local authoring, no play/edit split. Authoring holds playhead; scrub never edits. Another render needs another camera.
 
@@ -26,7 +26,7 @@ Content never pans/zooms, append included. Navigation fits lead-out (50 m floor)
 
 `manipulator.ts`: content-frame 1D, never world-axis/free-2D. 3D adds pitch/turn/roll, perpendicular offsets; view-plane body drag only in tangent edit.
 
-User increments at snap-toggle right-click, fixed timeline grids. Resolved fields; invoker-only dismissal exemption. Targets: authored units. Inspect result: bake `ds` at invocation/playhead; missing coverage/unresolved entry unavailable, never exit.
+User increments at snap-toggle right-click, fixed timeline grids. Resolved fields; invoker-only dismissal exemption. Targets: authored units. Selected-lane recovery; missing coverage/entries unavailable.
 
 4px: edge click types, drag resizes; double-click inert. Cancel/blur/deletion/teardown revert/release; up commits. Drag-only guides. Fields own keys: Enter once, Escape/blur revert.
 
@@ -66,7 +66,7 @@ One meaning/channel, no decorative mode chrome. Pin goal, lock DOF. Hatch subjec
 
 ## Keyframe / curve-editor conventions
 
-Insert profile value, not cursor y; easing may reshape. Leading key owns easing menu, not curve hits; terminal has none. On-object Target/unit: one field; no actions/inspector/result/telemetry. End-only ripple: no shortcut, disabled live; armed indicator persists.
+Insert profile value, not cursor y; easing may reshape. Leading key owns easing menu, not curve hits; terminal has none. On-object fields are precision route; menu: Easing ▸, Entry ▸, Delete. Ripple is headless: no shortcut, UI toggle or indicator.
 
 Measure invoker/controls, not dock union; playback centers on measured canvas. Hold edit screen x/y; cancel before invalid refit. Bake stays live.
 

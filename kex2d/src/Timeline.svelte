@@ -3,7 +3,7 @@ import type { State } from "@dylanebert/shallot";
 import { onMount } from "svelte";
 import { applyOp, flatRecordArgs, type LaneName } from "./commands";
 import { cartArc, cartState, holdForGesture, parkAtArc, parkFromTime, releaseGesture } from "./cart";
-import { COLOR_GUIDE_RAY, COLOR_HATCH, HATCH_GAP, laneTone } from "./colors";
+import { COLOR_GUIDE_RAY, COLOR_HATCH, HATCH_GAP, laneColor, laneTone } from "./colors";
 import { editor, beginDrag, clearSelection, endDrag, selectRecord, toggleRecord } from "./editor";
 import { beginBody, beginEdge, beginEnd, beginHandle, beginRecordEnd, cancel, commit, history, redo, removeRecord, setEase, setOrder, undo } from "./history";
 import { Lane, RECORD_FLOOR } from "./lanes";
@@ -41,8 +41,6 @@ let snapping = $state(true);
 let peeled = $state(false);
 let focusKey = $state<string | null>(null);
 let focusRequest = $state(0);
-let ripple = $state(false);
-let rippleSubject: number | null = null;
 let menu = $state<{ x: number; y: number; above: number; items: ReturnType<typeof spanMenu> } | null>(null);
 let status = $state("");
 let guide = $state<number | null>(null);
@@ -138,7 +136,6 @@ function unit(lane: Lane) {
 }
 function pick(id: number, box?: ScreenBox): void {
     selectRecord(id);
-    if (rippleSubject !== id) { rippleSubject = id; ripple = false; }
     peeled = false;
     focusKey = null;
     invocation = box ? { id, box, frame: screenBox(canvas) } : null;
@@ -151,11 +148,15 @@ function switchTool(next: "select" | "add"): void {
     status = "";
     dock.focus();
 }
+function toggleSnapping(): void {
+    if (editor.dragging || gesture) return;
+    snapping = !snapping;
+}
 function hold(): void { if (eid !== null) holdForGesture(eid); }
 function release(): void { if (eid !== null) releaseGesture(eid); }
 
-// One lifecycle owns every timeline pointer. The opening projection, snap targets and
-// ripple updater remain fixed even when writes change the bake or follow-end extent.
+// One lifecycle owns every timeline pointer. The opening projection and snap targets remain fixed
+// even when writes change the bake or follow-end extent.
 type Gesture = {
     kind: "span" | "knot" | "value" | "add" | "end" | "reorder" | "pan" | "scrub" | "slider";
     pointer: number; x: number; y: number; left: number; top: number;
@@ -247,7 +248,7 @@ function pointerMove(e: PointerEvent): void {
                 g.moved = true;
                 if (g.id !== undefined) {
                     pick(g.id, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
-                    if (g.which === "end") g.update = beginRecordEnd(ecs, g.id, ripple);
+                    if (g.which === "end") g.update = beginRecordEnd(ecs, g.id, false);
                     else if (g.which === "body") beginBody(ecs, g.id);
                     else beginEdge(ecs, g.id);
                     g.opened = true;
@@ -258,7 +259,7 @@ function pointerMove(e: PointerEvent): void {
             g.moved = true;
             if (g.kind === "span") {
                 pick(g.id!, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
-                if (g.which === "end") g.update = beginRecordEnd(ecs, g.id!, ripple);
+                if (g.which === "end") g.update = beginRecordEnd(ecs, g.id!, false);
                 else if (g.which === "body") beginBody(ecs, g.id!);
                 else beginEdge(ecs, g.id!);
                 g.opened = true;
@@ -288,8 +289,7 @@ function pointerMove(e: PointerEvent): void {
             report(setRecordSpan(ecs, g.id!, span.start, span.end));
         } else {
             const s = snap(g, raw, e);
-            // Ripple is an exact whole-candidate request, never a clamped substitute.
-            const span = clampSpanDrag(which, which === "start" ? s : g.start, which === "end" ? s : g.end, g.update && ripple ? 0 : g.pin);
+            const span = clampSpanDrag(which, which === "start" ? s : g.start, which === "end" ? s : g.end, g.pin);
             report(g.update ? g.update(span.end) : setRecordSpan(ecs, g.id!, span.start, span.end));
         }
     } else if (g.kind === "add") {
@@ -377,7 +377,6 @@ const subject = $derived.by(() => {
 });
 $effect(() => {
     void tick;
-    if (rippleSubject !== editor.record) { rippleSubject = editor.record; ripple = false; focusKey = null; }
     if (gesture?.id !== undefined && !recordOf(ecs, gesture.id)) finishPointer();
     if (gesture && gesture.kind !== "slider" && canvas) {
         const rect = canvas.getBoundingClientRect();
@@ -432,7 +431,7 @@ const fields = $derived.by((): FieldSpec[] => {
     const stationField = (key: "start" | "end"): FieldSpec => {
         let updater: ((end: number) => LaneWrite) | undefined;
         return wrap({ name: key, unit: "m", value: p.row[key], precision: 2, rate: S_GRID / 4,
-            begin: () => { if (key === "end") updater = beginRecordEnd(ecs, p.id, ripple); else beginEdge(ecs, p.id); },
+            begin: () => { if (key === "end") updater = beginRecordEnd(ecs, p.id, false); else beginEdge(ecs, p.id); },
             write: (v) => message(updater ? updater(v) : setRecordSpan(ecs, p.id, v, p.row.end)),
             commit: () => commit(history), cancel,
         });
@@ -441,11 +440,6 @@ const fields = $derived.by((): FieldSpec[] => {
     const entry = recordEntry(doc!.lanes, p.lane, p.row);
     out.push(handle("exit", p.row.exit), handle("entry", entry ?? NaN), stationField("start"), stationField("end"));
     return out;
-});
-const entrySummary = $derived.by(() => {
-    if (!subject || !doc) return "";
-    const entry = recordEntry(doc.lanes, subject.lane, subject.row), u = unit(subject.lane);
-    return entry === undefined ? "Unresolved entry · prescription unavailable" : `${subject.row.entry === undefined ? "Inherited" : "Owned"} start · ${(entry * u.scale).toFixed(u.precision)} ${u.name}`;
 });
 function changeEntry(): string {
     if (!subject || editor.dragging) return "An edit is already active";
@@ -457,7 +451,7 @@ function changeEntry(): string {
 function actions(invoker: ScreenBox): void {
     if (!subject || editor.dragging || gesture || !anchor) return;
     const id = subject.id;
-    menu = { x: invoker.x, y: invoker.y + invoker.h + 8, above: invoker.y - 8, items: spanMenu({ ease: subject.row.ease as Easing, presetGlyph: (ease) => EASING_GLYPHS[ease], canDelete: true, entry: { owned: subject.row.entry !== undefined, summary: entrySummary } }, {
+    menu = { x: invoker.x, y: invoker.y + invoker.h + 8, above: invoker.y - 8, items: spanMenu({ ease: subject.row.ease as Easing, presetGlyph: (ease) => EASING_GLYPHS[ease], canDelete: true, entry: { owned: subject.row.entry !== undefined } }, {
         field: (key) => summon(key, invoker),
         inherit: () => { menu = null; changeEntry(); },
         setEase: (ease) => { menu = null; report(setEase(history, ecs, id, ease)); },
@@ -550,7 +544,7 @@ onMount(() => {
             if (act === "selectTool" || act === "addTool") switchTool(act === "selectTool" ? "select" : "add");
             else if (act === "undo") undo(history, ecs);
             else if (act === "redo") redo(history, ecs);
-            else if (act === "toggleSnap") snapping = !snapping;
+            else if (act === "toggleSnap") toggleSnapping();
             else if (editor.record !== null) report(removeRecord(history, ecs, editor.record));
             return;
         }
@@ -597,7 +591,6 @@ function render(ctx: CanvasRenderingContext2D): void {
     for (const row of rows) {
         const value = valueRow(row.lane);
         ctx.fillStyle = "rgba(0,0,0,.24)"; ctx.fillRect(COLUMN_W, row.top, chartW, ROW_H);
-        ctx.fillStyle = laneTone(row.lane, "base"); ctx.textAlign = "left"; ctx.fillText(row.name, 10, row.top + ROW_H / 2);
         ctx.save(); ctx.beginPath(); ctx.rect(COLUMN_W, row.top, chartW, ROW_H); ctx.clip();
         const boxes = spanBoxes(row, clamped, COLUMN_W);
         if (value) for (const box of boxes) {
@@ -640,7 +633,6 @@ function render(ctx: CanvasRenderingContext2D): void {
             ctx.fillStyle = laneTone(row.lane, active ? "selected" : hot ? "hover" : "base");
             ctx.fillRect(x, box.y0, 2, ROW_H);
             if (active || hot) { ctx.strokeStyle = active ? "#fff" : "#d8d4ce"; ctx.lineWidth = 1; ctx.strokeRect(x + .5, box.y0 + .5, 1, ROW_H - 1); }
-            if (which === "end" && ripple && rippleSubject === box.id) { ctx.fillStyle = laneTone(row.lane, "selected"); ctx.textAlign = "right"; ctx.fillText("Ripple end", box.x1 - 5, box.y0 + 9); }
         }
         if (value) for (const point of knotPoints(row, value.entries, value.chart, clamped, COLUMN_W)) {
             const rec = row.records.find((item) => item.id === point.id)!;
@@ -669,7 +661,7 @@ function render(ctx: CanvasRenderingContext2D): void {
     }
 }
 $effect(() => {
-    void tick; void revision; void clamped; void rows; void valueRows; void knots; void valueWindows; void hover; void onEnd; void selected; void driven; void playhead; void ripple; void guide;
+    void tick; void revision; void clamped; void rows; void valueRows; void knots; void valueWindows; void hover; void onEnd; void selected; void driven; void playhead; void guide;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (ctx) { resize(canvas, ctx, dockW, chartH); render(ctx); }
@@ -687,7 +679,7 @@ const gestureMessage = $derived.by(() => {
     void revision;
     const g = gesture;
     if (g?.kind === "add") return `${g.start.toFixed(2)}–${g.end.toFixed(2)} m · ${(g.end - g.start).toFixed(2)} m · ${status || "Valid"}`;
-    if (g?.kind === "span" && g.moved && g.id !== undefined) { const r = recordOf(ecs, g.id)?.row; if (r) return `${r.start.toFixed(2)}–${r.end.toFixed(2)} m · ${(r.end - r.start).toFixed(2)} m${ripple && g.which !== "end" ? " · Independent" : ""}${status ? ` · ${status}` : ""}`; }
+    if (g?.kind === "span" && g.moved && g.id !== undefined) { const r = recordOf(ecs, g.id)?.row; if (r) return `${r.start.toFixed(2)}–${r.end.toFixed(2)} m · ${(r.end - r.start).toFixed(2)} m${status ? ` · ${status}` : ""}`; }
     return status;
 });
 const statusPop = $derived.by(() => gestureAnchor && gestureMessage ? fitEditor(statusSize, { w: window.innerWidth, h: window.innerHeight }, player && tools ? [screenBox(player), screenBox(tools)] : [], gestureAnchor) : null);
@@ -705,17 +697,31 @@ const dragValueLabel = $derived.by(() => {
 </script>
 
 <div class="tool-strip" bind:this={tools} role="group" aria-label="Timeline tools" style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px; width: {TOOL_STRIP_W}px">
-    <button type="button" aria-label="Select ({BINDINGS.selectTool.hint})" aria-pressed={tool === "select"} disabled={busy} title="Select ({BINDINGS.selectTool.hint})" onclick={() => switchTool("select")}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 1.5v12l3.3-3.3 2.4 4.3 2-1.1-2.4-4.2H13Z" /></svg></button>
-    <button type="button" aria-label="Add Segment ({BINDINGS.addTool.hint})" aria-pressed={tool === "add"} disabled={busy} title="Add Segment ({BINDINGS.addTool.hint})" onclick={() => switchTool("add")}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2 4v8m0-4h7m0-4v8m3-10v6m-3-3h6" /></svg></button>
+    <div class="tool-group" role="group" aria-label="Authoring tools">
+        <button type="button" aria-label="Select ({BINDINGS.selectTool.hint})" aria-pressed={tool === "select"} disabled={busy} title="Select ({BINDINGS.selectTool.hint})" onclick={() => switchTool("select")}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 1.5v12l3.3-3.3 2.4 4.3 2-1.1-2.4-4.2H13Z" /></svg></button>
+        <button type="button" aria-label="Add Segment ({BINDINGS.addTool.hint})" aria-pressed={tool === "add"} disabled={busy} title="Add Segment ({BINDINGS.addTool.hint})" onclick={() => switchTool("add")}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2 4v8m0-4h7m0-4v8m3-10v6m-3-3h6" /></svg></button>
+    </div>
+    <div class="tool-group" role="group" aria-label="Snapping controls">
+        <button type="button" aria-label="Snapping (S)" aria-pressed={snapping} disabled={busy} title="Snapping (S) · Ctrl/Cmd temporarily inverts" onclick={toggleSnapping}><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M6.5 2v6a1.5 1.5 0 0 0 3 0V2M2.5 2h11M2.5 14h11" /></svg></button>
+    </div>
 </div>
 <div class="dock" bind:this={dock} style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px; left: {DOCK_INSET + TOOL_STRIP_W + TOOL_GAP}px" tabindex="-1" role="group" aria-label="Timeline"
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => { editor.hover = "viewport"; hover = null; onEnd = false; }}>
     <canvas class="chart" bind:this={canvas} bind:clientWidth={dockW} bind:clientHeight={chartH} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height, records: r.records.map(({ id, start, end }) => ({ id, start, end })) })))} data-value-windows={JSON.stringify(valueRows.map((item) => ({ lane: laneKey(item.row.lane), lo: item.chart.lo, hi: item.chart.hi, base: laneValueAxis(item.row.lane, velocityBase).base })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
+    <div class="lane-column" aria-label="Lane priority and reorder">
+        {#each rows as row (row.lane)}
+            <div class="lane-label" role="img" data-lane={laneKey(row.lane)} data-priority={row.index + 1} aria-label="Priority {row.index + 1}: {row.name}; drag to reorder" title="Priority {row.index + 1}: {row.name} · Drag to reorder" style="top: {row.top}px; height: {row.height}px; color: {laneColor(row.lane)}">
+                <span class="lane-name">{row.name}</span>
+                <span class="lane-rank">P{row.index + 1}</span>
+                <svg class="lane-grip" viewBox="0 0 12 16" aria-hidden="true"><circle cx="3" cy="4" r="1" /><circle cx="9" cy="4" r="1" /><circle cx="3" cy="8" r="1" /><circle cx="9" cy="8" r="1" /><circle cx="3" cy="12" r="1" /><circle cx="9" cy="12" r="1" /></svg>
+            </div>
+        {/each}
+    </div>
 </div>
 {#if subject && focusKey !== null && pop}
     {#key `${subject.id}/${focusKey}`}
-            <Popover x={pop.x} y={pop.y} record={subject.id} field={fields.find((f) => f.name === focusKey)!} focus={focusKey !== null} {focusRequest} {ripple} {busy} notice={status}
+            <Popover x={pop.x} y={pop.y} record={subject.id} field={fields.find((f) => f.name === focusKey)!} focus={focusKey !== null} {focusRequest} notice={status}
                 onmeasure={(w, h) => { if (panelSize.w !== w || panelSize.h !== h) panelSize = { w, h }; }}
                 usable={(box) => editorFits(box, { w: window.innerWidth, h: window.innerHeight }, anchor ? [anchor, ...obstacles] : obstacles)}
                 statusFit={(size, panel) => {
@@ -725,7 +731,7 @@ const dragValueLabel = $derived.by(() => {
                     const box = { ...position, ...size };
                     return editorFits(box, { w: window.innerWidth, h: window.innerHeight }, [anchor, ...obstacles]) ? position : null;
                 }}
-                onripple={(v) => { if (!editor.dragging) ripple = v; }} onpeel={peel} />
+                onpeel={peel} />
     {/key}
 {/if}
 {#if statusPop}<div class="gesture-status" role="status" bind:clientWidth={statusSize.w} bind:clientHeight={statusSize.h} style="left: {statusPop.x}px; top: {statusPop.y}px">{gestureMessage}</div>{/if}
@@ -742,17 +748,27 @@ const dragValueLabel = $derived.by(() => {
     .dock { position: absolute; right: 16px; background: var(--bg-solid); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; outline: none; }
     .chart { display: block; width: 100%; height: 100%; touch-action: none; }
     .tool-strip, .player { position: absolute; display: flex; align-items: center; gap: 6px; font: 11px "JetBrains Mono", monospace; color: var(--fg); }
-    .tool-strip { left: 16px; z-index: 3; flex-direction: column; padding-top: 4px; background: var(--bg-solid); border-radius: 6px; }
-    .tool-strip button { width: 28px; height: 28px; padding: 6px; display: grid; place-items: center; }
+    .tool-strip { left: 16px; z-index: 3; flex-direction: column; gap: 0; padding-top: 4px; background: var(--bg-solid); border-radius: 6px; }
+    .tool-group { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .tool-group + .tool-group { margin-top: 8px; }
+    .tool-strip button { width: 28px; height: 28px; padding: 6px; display: grid; place-items: center; color: var(--muted); background: transparent; border: 0; border-radius: 3px; }
+    .tool-strip button:hover:not(:disabled) { color: var(--fg); background: transparent; }
+    .tool-strip button[aria-pressed="true"] { color: var(--fg); background: var(--neutral-soft); border: 0; }
+    .tool-strip button:focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
     .tool-strip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
-    button:hover:not(:disabled) { color: var(--fg); background: var(--neutral-soft); }
-    button:focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
     .player { transform: translateX(-50%); }
     button { font: inherit; color: inherit; background: var(--bg-solid); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; cursor: pointer; }
+    button:hover:not(:disabled) { color: var(--fg); background: var(--neutral-soft); }
+    button:focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
     button[aria-pressed="true"] { color: var(--fg); background: var(--neutral-soft); border-color: var(--muted); }
     button:disabled { opacity: .5; cursor: default; }
     .scrub { width: 160px; height: 6px; background: var(--border); cursor: pointer; touch-action: none; }
     .fill { height: 100%; background: var(--fg); pointer-events: none; }
+    .lane-column { position: absolute; inset: 0 auto 0 0; width: 76px; z-index: 2; pointer-events: none; }
+    .lane-label { position: absolute; left: 0; width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 4px; padding: 0 5px 0 10px; font: 10px "JetBrains Mono", monospace; }
+    .lane-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lane-rank { color: var(--muted); font-size: 9px; }
+    .lane-grip { width: 9px; height: 14px; flex: none; fill: var(--muted); }
     .gesture-status { position: fixed; z-index: 6; max-width: 310px; padding: 3px 5px; overflow-wrap: anywhere; font: 10px/14px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); pointer-events: none; }
     .drag-value-label { position: fixed; z-index: 7; transform: translate(-50%, -100%); padding: 2px 4px; font: 10px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); white-space: nowrap; pointer-events: none; }
     .menu-anchor { position: fixed; z-index: 8; }

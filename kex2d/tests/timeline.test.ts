@@ -1744,4 +1744,29 @@ describe("S3j lane value axis and knot arbitration", () => {
         expect(corpus).toContain("drag-value-label");
         expect(corpus).toContain("data-value-windows");
     });
+
+    test("every UI record-end opener explicitly requests ripple false", () => {
+        const timeline = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        const calls = [...timeline.matchAll(/beginRecordEnd\(([^)]*)\)/g)].map((match) => match[0]);
+        expect(calls).toHaveLength(3);
+        expect(calls.every((call) => /,\s*false\s*\)$/.test(call))).toBe(true);
+        expect(timeline).not.toContain("ripple");
+    });
+
+    test("the solid tool strip uses muted resting ink and no button border", () => {
+        const timeline = readFileSync(new URL("../src/Timeline.svelte", import.meta.url), "utf8");
+        const rule = (selector: string): string =>
+            timeline.match(new RegExp(`${selector} \\{([^}]*)\\}`))?.[1] ?? "";
+        const resting = rule("\\.tool-strip button");
+        const hover = rule("\\.tool-strip button:hover:not\\(:disabled\\)");
+        const pressed = rule('\\.tool-strip button\\[aria-pressed=\\"true\\"\\]');
+        expect(resting).toContain("color: var(--muted)");
+        expect(resting).toContain("background: transparent");
+        expect(resting).toContain("border: 0");
+        expect(hover).toContain("color: var(--fg)");
+        expect(hover).toContain("background: transparent");
+        expect(pressed).toContain("color: var(--fg)");
+        expect(pressed).toContain("background: var(--neutral-soft)");
+        expect(pressed).toContain("border: 0");
+    });
 });
