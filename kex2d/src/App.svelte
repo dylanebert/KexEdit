@@ -19,6 +19,7 @@ import { attachCanvas2D } from "./view";
  *  (`retired/pose-ux`); `commands.ts`/`cli.ts` remain the headless authoring surface. */
 
 const { ecs, canvas, root }: { ecs: State; canvas: HTMLCanvasElement; root: HTMLElement } = $props();
+const isDev = import.meta.env?.DEV === true;
 
 let trackEid = $state<number | null>(null);
 let tick = $state(0);
@@ -46,7 +47,7 @@ onMount(() => {
     };
     raf = requestAnimationFrame(loop);
     // DEV composition witnesses use the same mounted component and ECS, never a test State.
-    const hook = import.meta.env.DEV
+    const hook = isDev
         ? (window as unknown as { __kex: Record<string, unknown> }).__kex
         : undefined;
     if (hook) {

@@ -15,20 +15,13 @@
  *  all. Refusals are
  *  STRUCTURAL — an overlapping edit is declined, never clamped into legality (Locked decision).
  *
- *  **Stations are f64.** A lane record's `start`/`end`/`entry`/`exit` are authored numbers on a
- *  metre ruler, not display samples, so they are stored through {@link f64} rather than the
- *  `f32` the bake's SoA publishes. A save must round-trip its own text byte-identically, and an
- *  f32 column cannot promise that for a hand-authored station. */
+ *  **Authored track numbers are f64.** A lane record's `start`/`end`/`entry`/`exit`, the target
+ *  spacing `ds`, and the loss coefficients are authored numbers, not display samples, so they
+ *  are stored through {@link f64} rather than the `f32` the bake's SoA publishes. A save must
+ *  round-trip its own text byte-identically, and an f32 column cannot promise that for a
+ *  hand-authored value. */
 
-import {
-    f32,
-    type Plugin,
-    sparse,
-    type State,
-    type System,
-    type Type,
-    u32,
-} from "@dylanebert/shallot";
+import { type Plugin, sparse, type State, type System, type Type, u32 } from "@dylanebert/shallot";
 import { V_FLOOR, V_WARN } from "./bake";
 import {
     candidateRefusals,
@@ -97,10 +90,10 @@ const f64 = {
  *     falls back to {@link V0}. */
 export const Track = {
     count: sparse(u32),
-    ds: sparse(f32),
+    ds: sparse(f64),
     domain: sparse(u32),
-    friction: sparse(f32),
-    resistance: sparse(f32),
+    friction: sparse(f64),
+    resistance: sparse(f64),
     end: sparse(f64),
     order: sparse(u32),
     v0: sparse(f64),

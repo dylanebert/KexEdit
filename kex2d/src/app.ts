@@ -24,6 +24,7 @@ import {
 import { camera, Canvas2D, snapGuides, viewTransform } from "./view";
 
 const mounts = new WeakMap<State, () => Promise<void>>();
+const isDev = import.meta.env?.DEV === true;
 
 function initialize(ecs: State): void {
     // wire the editor's selection snapshot into the history stack (the injected hook — history stores the
@@ -39,13 +40,13 @@ function initialize(ecs: State): void {
     // non-DEV boot must show an empty timeline over a live end handle, never a dead panel. In DEV,
     // `bootTrack` authors the S4 mixed fixture on top through the command layer. Both live in
     // `boot.ts` so `tests/boot.test.ts` drives this same path against a fresh `State`.
-    const track = import.meta.env.DEV ? bootTrack(ecs, history) : ensureTrack(ecs);
+    const track = isDev ? bootTrack(ecs, history) : ensureTrack(ecs);
 
     // DEV-only harness inspection hook: the capture flow's geo-authoring assertions read
     // node/undo/track state through this and drive the real UI (extend, drag, undo).
     // Removed from production output by the DEV branch.
     // See harness/flow.ts (the `Kex` mirror of this hook) and the `*.pw.ts` flows beside it.
-    if (import.meta.env.DEV) {
+    if (isDev) {
         (window as unknown as { __kex: unknown }).__kex = {
             track,
             undoDepth: (): number => history.undo.length,
@@ -153,7 +154,7 @@ const Kex: Plugin = {
         ecs.onDispose(() => {
             void mounts.get(ecs)?.();
             mounts.delete(ecs);
-            if (import.meta.env.DEV) delete (window as unknown as { __kex?: unknown }).__kex;
+            if (isDev) delete (window as unknown as { __kex?: unknown }).__kex;
         });
     },
     async warm(ecs) {

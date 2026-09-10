@@ -15,9 +15,9 @@
         "format": "biome check --write"
     },
     "dependencies": {
-        "@dylanebert/shallot": "0.9.5",
+        "@dylanebert/shallot": "link:@dylanebert/shallot",
         "svelte": "^5.56.10",
-        "typegpu": "~0.12.4"
+        "typegpu": "link:typegpu"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.5.10",

@@ -113,7 +113,18 @@ export const test = base.extend<{ boot: Boot }>({
                     })}\n`,
                 );
             }
-            if (path === "/") await expect(page.locator(".dock")).toBeVisible();
+            if (path === "/") {
+                await expect(page.locator(".dock")).toBeVisible();
+                // A visible Svelte shell can precede the first host tick. The ruler action below
+                // needs the same live bake/cart projection that chartDown reads, not just its DOM.
+                await expect
+                    .poll(async () => {
+                        const arc = await kexCall(page, "cartArc");
+                        const view = await page.locator(".chart").getAttribute("data-view");
+                        return arc !== null && view !== null && JSON.parse(view).pxPerU > 0;
+                    })
+                    .toBe(true);
+            }
         });
         expect(thrown, `the page threw an uncaught exception:\n${thrown.join("\n")}`).toEqual([]);
     },

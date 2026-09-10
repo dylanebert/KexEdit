@@ -984,6 +984,52 @@ export function fitEditor(
     );
 }
 
+/** Place noninteractive status outside the held controls, preferring the side away from the invoker.
+ *  A null result is a real refusal: the complete measured message cannot fit without covering a
+ *  control, the invoker, another obstacle, or the viewport edge. */
+export function fitAttachedStatus(
+    size: { w: number; h: number },
+    viewport: { w: number; h: number },
+    obstacles: readonly ScreenBox[],
+    panel: ScreenBox,
+    invoker: ScreenBox,
+): { x: number; y: number } | null {
+    const gap = 8;
+    const clampX = (x: number): number => Math.max(gap, Math.min(x, viewport.w - size.w - gap));
+    const clampY = (y: number): number => Math.max(gap, Math.min(y, viewport.h - size.h - gap));
+    const panelX = panel.x + panel.w / 2 - size.w / 2;
+    const panelY = panel.y + panel.h / 2 - size.h / 2;
+    const xAlign = [
+        ...new Set([clampX(panelX), clampX(panel.x), clampX(panel.x + panel.w - size.w)]),
+    ];
+    const yAlign = [
+        ...new Set([clampY(panelY), clampY(panel.y), clampY(panel.y + panel.h - size.h)]),
+    ];
+    const panelCenterX = panel.x + panel.w / 2;
+    const panelCenterY = panel.y + panel.h / 2;
+    const invokerCenterX = invoker.x + invoker.w / 2;
+    const invokerCenterY = invoker.y + invoker.h / 2;
+    const vertical =
+        Math.abs(invokerCenterY - panelCenterY) >= Math.abs(invokerCenterX - panelCenterX);
+    const verticalSides = invokerCenterY <= panelCenterY ? ["below", "above"] : ["above", "below"];
+    const horizontalSides = invokerCenterX <= panelCenterX ? ["right", "left"] : ["left", "right"];
+    const sides = vertical
+        ? [...verticalSides, ...horizontalSides]
+        : [...horizontalSides, ...verticalSides];
+    const candidates: { x: number; y: number }[] = [];
+    for (const side of sides) {
+        if (side === "below" || side === "above") {
+            const y = side === "below" ? panel.y + panel.h + gap : panel.y - size.h - gap;
+            for (const x of xAlign) candidates.push({ x, y });
+        } else {
+            const x = side === "right" ? panel.x + panel.w + gap : panel.x - size.w - gap;
+            for (const y of yAlign) candidates.push({ x, y });
+        }
+    }
+    const exclusions = [panel, invoker, ...obstacles];
+    return candidates.find((p) => editorFits({ ...p, ...size }, viewport, exclusions)) ?? null;
+}
+
 /** The held box must remain usable before any refit is allowed. */
 export function editorFits(
     box: ScreenBox,

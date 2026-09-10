@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { State } from "@dylanebert/shallot";
-import { loadDocument, saveDocument } from "../src/doc";
+import { loadDocument, parseDocument, saveDocument, serializeDocument } from "../src/doc";
 import {
     beginBody,
     beginRecordEnd,
@@ -183,6 +183,36 @@ describe("the lane readers", () => {
         restoreAll(state, snap);
         expect(lanesOf(state).force[0]!.end).toBe(hostile);
         expect(recordAt(state, id)).not.toBeNull();
+    });
+
+    test("authored ds and loss coefficients retain exact values through the real store and wire", () => {
+        const authored = {
+            ds: 0.500123456789,
+            friction: 0.02123456789,
+            resistance: 0.00023456789,
+        };
+        for (const value of Object.values(authored)) expect(Math.fround(value)).not.toBe(value);
+        const text = serializeDocument(
+            parseDocument(
+                JSON.stringify({
+                    version: 4,
+                    track: { domain: 0, ...authored },
+                    lanes: {
+                        velocity: [],
+                        force: [{ id: 1, start: 0, end: 10, ease: 0, entry: 1, exit: 1 }],
+                        geo: [],
+                    },
+                }),
+            ),
+        );
+        const { state } = track();
+        loadDocument(state, text);
+        const eid = [...state.query([Track])][0];
+        if (eid === undefined) throw new Error("track missing after load");
+        expect(Track.ds.get(eid)).toBe(authored.ds);
+        expect(Track.friction.get(eid)).toBe(authored.friction);
+        expect(Track.resistance.get(eid)).toBe(authored.resistance);
+        expect(saveDocument(state)).toBe(text);
     });
 });
 
