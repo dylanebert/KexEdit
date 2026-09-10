@@ -13,8 +13,8 @@ import { EASING_GLYPHS, spanMenu } from "./menus";
 import Popover from "./Popover.svelte";
 import { nudgeAct, timelineKeyAct } from "./keys";
 import type { Easing } from "./profile";
-import { editorFits, type ScreenBox, fitAttachedStatus, fitEditor, recoveredAt, bakeStations, clampSpanDrag, COLUMN_W, clampView, drivenSpans, endHandle, type FieldSpec, frameAll, hitEndHandle, hitRows, laneRows, laneMembers, marginArc, nudgeQuantum, recordEntry, reorderDrop, reordered, type RowHit, ROW_H, S_GRID, snapAxis, spanBoxes, spanCurve, spanResidualDetail, spanTargets, ticks, uToPx, pxToU, type View, zoomAt } from "./timeline";
-import { bakeOut, endColumn, lanesOf, laneOrderOf, recordOf, samples, setEnd, setRecordHandle, setRecordSpan, Track, trackEndOf, type LaneWrite } from "./track";
+import { editorFits, type ScreenBox, fitAttachedStatus, fitEditor, recoveredAt, bakeStations, clampSpanDrag, COLUMN_W, clampView, drivenSpans, endHandle, dragAxis, type FieldSpec, fitLaneValue, frameAll, hitEndHandle, hitRows, knotPoints, laneRows, laneMembers, laneValueAxis, marginArc, nudgeQuantum, recordEntry, recoveredPolyline, reorderDrop, reordered, type BakeRead, type RowHit, ROW_H, S_GRID, snapAxis, spanBoxes, spanCurve, spanTargets, ticks, uToPx, pxToU, type View, valueChart, type YFit, yEase, yGrow, zoomAt } from "./timeline";
+import { bakeOut, endColumn, lanesOf, laneOrderOf, recordOf, samples, setEnd, setRecordHandle, setRecordSpan, Track, trackEndOf, type LaneWrite, V0 } from "./track";
 import { DOCK_HEIGHT, DOCK_INSET, PLAYER_GAP, PLAYER_H, ROWS_TOP, TOOL_STRIP_W, TOOL_GAP, resize } from "./view";
 
 const { ecs, eid, tick }: { ecs: State; eid: number | null; tick: number } = $props();
@@ -26,9 +26,8 @@ let dockW = $state(0);
 let chartH = $state(0);
 let panelSize = $state({ w: 0, h: 0 });
 let invocation: { id: number; box: ScreenBox; frame: ScreenBox } | null = $state(null);
-let feedbackAnchor: ScreenBox | null = $state(null);
-let feedbackSize = $state({ w: 0, h: 0 });
-let resultStation: number | null | undefined = $state(undefined);
+let gestureAnchor: ScreenBox | null = $state(null);
+let statusSize = $state({ w: 0, h: 0 });
 let player: HTMLDivElement;
 let tools: HTMLDivElement;
 let playerCenter = $state(0);
@@ -48,6 +47,7 @@ let menu = $state<{ x: number; y: number; above: number; items: ReturnType<typeo
 let status = $state("");
 let guide = $state<number | null>(null);
 let revision = $state(0);
+let valueWindows = $state<Record<LaneName, YFit | null>>({ geo: null, force: null, velocity: null });
 const chartW = $derived(Math.max(0, dockW - COLUMN_W));
 const doc = $derived.by(() => {
     void tick;
@@ -65,6 +65,70 @@ const seconds = $derived.by(() => { void tick; return eid === null ? 0 : (cartSt
 const duration = $derived.by(() => { void tick; return eid === null ? 0 : (bakeOut.get(eid)?.tTotal ?? 0); });
 const driven = $derived(doc ? drivenSpans(doc.lanes, doc.end, doc.order) : []);
 const laneKey = (lane: Lane): LaneName => lane === Lane.Geo ? "geo" : lane === Lane.Force ? "force" : "velocity";
+const velocityBase = $derived(V0);
+const VALUE_GROW_RATE = 0.2;
+const VALUE_RETURN_GROW = 0.3;
+const VALUE_RETURN_SHRINK = 0.25;
+
+type ValueRow = {
+    row: ReturnType<typeof laneRows>[number];
+    entries: (number | undefined)[];
+    target: YFit;
+    chart: ReturnType<typeof valueChart>;
+    read: BakeRead | null;
+};
+
+function valueRead(lane: Lane): BakeRead | null {
+    if (eid === null) return null;
+    const out = bakeOut.get(eid), count = Track.count.get(eid), sm = samples.get(eid);
+    if (!out || !sm || count < 1) return null;
+    const station = bakeStations(out.ds, count);
+    if (lane === Lane.Force)
+        return { station, value: out.fN, n: Math.max(0, count - 1), edge: true };
+    if (lane === Lane.Geo) return { station, value: sm.theta, n: count };
+    return { station, value: out.v, n: count };
+}
+
+function valuesForRecord(read: BakeRead | null, record: { start: number; end: number }, entry: number | undefined): number[] {
+    if (!read || entry === undefined) return [];
+    const edge = read.edge === true;
+    if (recoveredAt(read, record.start, edge) === undefined || recoveredAt(read, record.end, edge) === undefined) return [];
+    const out: number[] = [];
+    for (let i = 0; i < read.n; i++) {
+        const station = read.station[i], value = read.value[i];
+        if (station !== undefined && value !== undefined && station >= record.start && station <= record.end && Number.isFinite(value)) out.push(value);
+    }
+    const start = recoveredAt(read, record.start, edge), end = recoveredAt(read, record.end, edge);
+    if (start !== undefined) out.push(start);
+    if (end !== undefined) out.push(end);
+    return out;
+}
+
+const valueRows = $derived.by((): ValueRow[] => {
+    void tick; void selected; void revision;
+    if (!doc) return [];
+    return rows.map((row) => {
+        const entries = row.records.map((record) => recordEntry(doc.lanes, row.lane, record));
+        const read = valueRead(row.lane);
+        const recovered = row.records.flatMap((record, i) => selected.has(record.id) ? valuesForRecord(read, record, entries[i]) : []);
+        const target = fitLaneValue(row.lane, row.records, entries, recovered, velocityBase);
+        const current = valueWindows[laneKey(row.lane)];
+        return { row, entries, target, chart: valueChart(row, current ?? target), read };
+    });
+});
+function valueRow(lane: Lane): ValueRow | undefined { return valueRows.find((item) => item.row.lane === lane); }
+const knots = $derived.by(() => valueRows.flatMap((item) => knotPoints(item.row, item.entries, item.chart, clamped, COLUMN_W)));
+$effect(() => {
+    void valueRows;
+    for (const item of valueRows) {
+        const key = laneKey(item.row.lane), current = valueWindows[key];
+        if (current === null) valueWindows[key] = item.target;
+        else if (!(gesture?.kind === "value" && gesture.lane === item.row.lane)) {
+            const next = yEase(current, item.target, VALUE_RETURN_GROW, VALUE_RETURN_SHRINK);
+            if (next !== current) valueWindows[key] = next;
+        }
+    }
+});
 const xOf = (s: number): number => COLUMN_W + uToPx(clamped, s);
 const message = (w: LaneWrite): string => w.refusals.map((r) => r.message).join("; ");
 const report = (w: LaneWrite): void => { status = message(w); };
@@ -77,7 +141,6 @@ function pick(id: number, box?: ScreenBox): void {
     if (rippleSubject !== id) { rippleSubject = id; ripple = false; }
     peeled = false;
     focusKey = null;
-    resultStation = undefined;
     invocation = box ? { id, box, frame: screenBox(canvas) } : null;
     status = "";
 }
@@ -94,10 +157,11 @@ function release(): void { if (eid !== null) releaseGesture(eid); }
 // One lifecycle owns every timeline pointer. The opening projection, snap targets and
 // ripple updater remain fixed even when writes change the bake or follow-end extent.
 type Gesture = {
-    kind: "span" | "add" | "end" | "reorder" | "pan" | "scrub" | "slider";
+    kind: "span" | "knot" | "value" | "add" | "end" | "reorder" | "pan" | "scrub" | "slider";
     pointer: number; x: number; y: number; left: number; top: number;
-    frame: View; targets: number[]; pin: number; moved: boolean; opened: boolean;
-    id?: number; which?: "start" | "end" | "body"; start: number; end: number;
+    frame: View; targets: number[]; pin: number; moved: boolean; opened: boolean; axis?: "value" | "station";
+    id?: number; which?: "start" | "end" | "body" | "entry" | "exit"; start: number; end: number;
+    value?: number; rate?: number;
     lane?: Lane; from?: number; to?: number;
     update?: (end: number) => LaneWrite;
 };
@@ -109,6 +173,12 @@ function snap(g: Gesture, value: number, e: PointerEvent): number {
         (px) => pxToU(g.frame, px - COLUMN_W), null);
     guide = result.guide;
     return result.value;
+}
+function valueSnap(value: number, lane: Lane, e: PointerEvent): number {
+    const active = (e.ctrlKey || e.metaKey) ? !snapping : snapping;
+    if (!active) return value;
+    const quantum = nudgeQuantum(lane);
+    return Math.round(value / quantum) * quantum;
 }
 function previewError(g: Gesture): string {
     if (!doc || g.lane === undefined) return "No lane";
@@ -138,9 +208,13 @@ function finishPointer(land = false): void {
         pick(g.id, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
         focusKey = g.which === "body" ? null : g.which!;
         focusRequest++;
+    } else if (land && g.kind === "knot" && !g.moved && g.id !== undefined) {
+        pick(g.id, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
+        if (g.which === "exit") { focusKey = "exit"; focusRequest++; }
     } else if (land && g.kind === "reorder" && doc && g.moved) {
         setOrder(history, ecs, reordered(doc.order, g.from!, g.to!));
     }
+    if (!status) gestureAnchor = null;
     revision++;
 }
 function pointerMove(e: PointerEvent): void {
@@ -150,20 +224,64 @@ function pointerMove(e: PointerEvent): void {
     const dy = e.clientY - g.y;
     if (!g.moved && Math.hypot(dx, dy) < DEAD_ZONE) return;
     if (!g.moved) {
-        g.moved = true;
-        if (g.kind === "span") {
-            pick(g.id!, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
-            if (g.which === "end") g.update = beginRecordEnd(ecs, g.id!, ripple);
-            else if (g.which === "body") beginBody(ecs, g.id!);
-            else beginEdge(ecs, g.id!);
-            g.opened = true;
-            hold();
+        if (g.kind === "knot") {
+            // The dead-zone crossing chooses the axis once. A later diagonal change cannot turn a
+            // value edit into a station edit or vice versa.
+            g.axis = dragAxis(dx, dy, DEAD_ZONE)!;
+            if (g.axis === "value") {
+                g.kind = "value";
+                g.moved = true;
+                if (g.which === "exit" && g.lane !== undefined) {
+                    const info = valueRow(g.lane), found = g.id === undefined ? undefined : recordOf(ecs, g.id);
+                    if (info && found) {
+                        g.value = found.row.exit;
+                        g.rate = (info.chart.hi - info.chart.lo) / Math.max(1, info.chart.bottom - info.chart.top);
+                        beginHandle(ecs, g.id!, "exit");
+                        g.opened = true;
+                        hold();
+                        pick(g.id!, { x: g.x, y: g.top + info.row.top, w: 0, h: ROW_H });
+                    }
+                }
+            } else {
+                g.kind = "span";
+                g.moved = true;
+                if (g.id !== undefined) {
+                    pick(g.id, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
+                    if (g.which === "end") g.update = beginRecordEnd(ecs, g.id, ripple);
+                    else if (g.which === "body") beginBody(ecs, g.id);
+                    else beginEdge(ecs, g.id);
+                    g.opened = true;
+                    hold();
+                }
+            }
+        } else {
+            g.moved = true;
+            if (g.kind === "span") {
+                pick(g.id!, { x: g.x, y: g.top + rows.find((r) => r.lane === g.lane)!.top, w: 0, h: ROW_H });
+                if (g.which === "end") g.update = beginRecordEnd(ecs, g.id!, ripple);
+                else if (g.which === "body") beginBody(ecs, g.id!);
+                else beginEdge(ecs, g.id!);
+                g.opened = true;
+                hold();
+            }
         }
     }
     const raw = station(g, e.clientX);
-    if (g.kind === "span") {
+    if (g.kind === "value") {
+        guide = null;
+        if (g.which === "exit" && g.id !== undefined && g.lane !== undefined && g.rate !== undefined && g.value !== undefined) {
+            const info = valueRow(g.lane);
+            if (info) {
+                const current = valueWindows[laneKey(g.lane)] ?? info.target;
+                const axis = laneValueAxis(g.lane, velocityBase);
+                const next = yGrow(current, e.clientY - g.top, info.chart.top, info.chart.bottom, VALUE_GROW_RATE, axis.cap);
+                if (next !== current) valueWindows[laneKey(g.lane)] = next;
+                report(setRecordHandle(ecs, g.id, "exit", valueSnap(g.value - (e.clientY - g.y) * g.rate, g.lane, e)));
+            }
+        }
+    } else if (g.kind === "span") {
         if (!recordOf(ecs, g.id!)) { finishPointer(); return; }
-        const which = g.which!;
+        const which = g.which as "start" | "end" | "body";
         if (which === "body") {
             const shift = snap(g, g.start + raw - station(g, g.x), e) - g.start;
             const span = clampSpanDrag(which, g.start + shift, g.end + shift, g.pin);
@@ -200,7 +318,7 @@ function chartDown(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     if (px > COLUMN_W + chartW) return;
-    const hit = hitRows(rows, clamped, px, py, COLUMN_W);
+    const hit = hitRows(rows, clamped, px, py, COLUMN_W, knots);
     const g: Gesture = { kind: "span", pointer: e.pointerId, x: e.clientX, y: e.clientY,
         left: rect.left, top: rect.top, frame: { ...clamped }, targets: [], pin: doc.end,
         moved: false, opened: false, start: 0, end: 0 };
@@ -215,15 +333,16 @@ function chartDown(e: PointerEvent): void {
         focusKey = null;
         if (tool !== "add") return;
         g.kind = "add"; g.lane = hit.lane; g.start = g.end = Math.max(0, hit.d); hold();
-    } else if (hit?.kind === "body" || hit?.kind === "edge") {
+    } else if (hit?.kind === "body" || hit?.kind === "edge" || hit?.kind === "knot") {
         if (tool === "add") return;
         if (e.shiftKey) { toggleRecord(hit.id); focusKey = null; peeled = true; return; }
         const found = recordOf(ecs, hit.id);
         if (!found) return;
-        g.id = hit.id; g.lane = hit.lane; g.which = hit.kind === "edge" ? hit.which : "body";
+        g.kind = hit.kind === "knot" ? "knot" : "span";
+        g.id = hit.id; g.lane = hit.lane; g.which = hit.kind === "body" ? "body" : hit.which;
         g.start = found.row.start; g.end = found.row.end;
     } else { clearSelection(); focusKey = null; return; }
-    feedbackAnchor = { x: e.clientX, y: rect.top + (g.lane === undefined ? py : rows.find((r) => r.lane === g.lane)!.top), w: 0, h: g.lane === undefined ? 0 : ROW_H };
+    gestureAnchor = { x: e.clientX, y: rect.top + (g.lane === undefined ? py : rows.find((r) => r.lane === g.lane)!.top), w: 0, h: g.lane === undefined ? 0 : ROW_H };
     g.targets = spanTargets(doc.lanes, playhead, doc.end, g.id).map((s) => COLUMN_W + uToPx(g.frame, s));
     if (g.kind === "add") g.start = g.end = g.from = Math.max(0, snap(g, g.start, e));
     gesture = g;
@@ -236,14 +355,17 @@ function chartMove(e: PointerEvent): void {
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     onEnd = endH !== null && py < RULER_H && hitEndHandle(endH, px);
-    hover = onEnd || px > COLUMN_W + chartW ? null : hitRows(rows, clamped, px, py, COLUMN_W);
+    hover = onEnd || px > COLUMN_W + chartW ? null : hitRows(rows, clamped, px, py, COLUMN_W, knots);
 }
 const cursor = $derived.by(() => {
     void revision;
+    if (gesture?.kind === "value") return "ns-resize";
+    if (gesture?.kind === "knot") return "ns-resize";
     if (gesture?.kind === "span") return gesture.which === "body" ? "grabbing" : "ew-resize";
     if (gesture?.kind === "pan") return "grabbing";
     if (tool === "add") return "crosshair";
     if (onEnd || hover?.kind === "edge") return "ew-resize";
+    if (hover?.kind === "knot") return "ns-resize";
     return hover?.kind === "body" || hover?.kind === "column" ? "grab" : "default";
 });
 
@@ -282,13 +404,12 @@ const obstacles = $derived.by((): ScreenBox[] => {
     return [screenBox(player), screenBox(tools), ...[subject.row.start, subject.row.end].map((s) => ({ x: c.x + xOf(s) - 2, y: c.y + row.top, w: 4, h: ROW_H }))];
 });
 const pop = $derived(anchor ? fitEditor(panelSize, { w: window.innerWidth, h: window.innerHeight }, obstacles, anchor) : null);
-function peel(): void { focusKey = null; resultStation = undefined; }
+function peel(): void { focusKey = null; invocation = null; gestureAnchor = null; }
 function summon(key: "exit" | "entry" | "start" | "end", invoker: ScreenBox): void {
     menu = null;
     if (!subject) return;
     status = "";
     invocation = { id: subject.id, box: invoker, frame: screenBox(canvas) };
-    resultStation = undefined;
     focusKey = key;
     focusRequest++;
 }
@@ -321,28 +442,10 @@ const fields = $derived.by((): FieldSpec[] => {
     out.push(handle("exit", p.row.exit), handle("entry", entry ?? NaN), stationField("start"), stationField("end"));
     return out;
 });
-const residual = $derived.by(() => {
-    const p = subject;
-    if (!p || eid === null || !driven.some((d) => d.id === p.id)) return null;
-    const out = bakeOut.get(eid), sm = samples.get(eid), n = Track.count.get(eid);
-    if (!out || !sm) return "Residual unavailable";
-    const value = spanResidualDetail({ station: bakeStations(out.ds, n), value: p.lane === Lane.Force ? out.fN : sm.theta, n: p.lane === Lane.Force ? n - 1 : n }, p.row, recordEntry(doc!.lanes, p.lane, p.row));
-    return value === undefined ? "Residual unavailable" : `≈ ${(value.value * unit(p.lane).scale).toFixed(unit(p.lane).precision)} ${unit(p.lane).name} recovered − demanded · worst sampled @ ${value.station.toFixed(2)} m`;
-});
 const entrySummary = $derived.by(() => {
     if (!subject || !doc) return "";
     const entry = recordEntry(doc.lanes, subject.lane, subject.row), u = unit(subject.lane);
     return entry === undefined ? "Unresolved entry · prescription unavailable" : `${subject.row.entry === undefined ? "Inherited" : "Owned"} start · ${(entry * u.scale).toFixed(u.precision)} ${u.name}`;
-});
-const result = $derived.by(() => {
-    void tick;
-    if (resultStation === undefined || !subject || !doc) return null;
-    const p = subject, at = resultStation, u = unit(p.lane);
-    const out = eid === null ? undefined : bakeOut.get(eid), sm = eid === null ? undefined : samples.get(eid);
-    const count = eid === null ? 0 : Track.count.get(eid);
-    const unavailable = at === null || at < p.row.start || at >= p.row.end || recordEntry(doc.lanes, p.lane, p.row) === undefined;
-    const value = unavailable || !out || !sm ? undefined : recoveredAt({ station: bakeStations(out.ds, count), value: p.lane === Lane.Force ? out.fN : p.lane === Lane.Geo ? sm.theta : out.v, n: p.lane === Lane.Force ? count - 1 : count }, at!, p.lane === Lane.Force);
-    return `Recovered ${value === undefined ? `unavailable ${u.name}` : `≈ ${(value * u.scale).toFixed(u.precision)} ${u.name}`} @ ${at === null ? "unavailable" : `${at.toFixed(2)} m`}${residual ? ` · ${residual}` : ""}`;
 });
 function changeEntry(): string {
     if (!subject || editor.dragging) return "An edit is already active";
@@ -351,13 +454,12 @@ function changeEntry(): string {
     if (!status && subject.lane === Lane.Velocity && recordEntry(lanesOf(ecs), subject.lane, recordOf(ecs, subject.id)!.row) === undefined) status = "Unresolved entry · prescription unavailable";
     return status;
 }
-function actions(invoker: ScreenBox, at: number | null): void {
+function actions(invoker: ScreenBox): void {
     if (!subject || editor.dragging || gesture || !anchor) return;
     const id = subject.id;
     menu = { x: invoker.x, y: invoker.y + invoker.h + 8, above: invoker.y - 8, items: spanMenu({ ease: subject.row.ease as Easing, presetGlyph: (ease) => EASING_GLYPHS[ease], canDelete: true, entry: { owned: subject.row.entry !== undefined, summary: entrySummary } }, {
         field: (key) => summon(key, invoker),
         inherit: () => { menu = null; changeEntry(); },
-        inspect: () => { menu = null; focusKey = null; resultStation = at; invocation = { id, box: invoker, frame: screenBox(canvas) }; },
         setEase: (ease) => { menu = null; report(setEase(history, ecs, id, ease)); },
         remove: () => { menu = null; report(removeRecord(history, ecs, id)); },
     }) };
@@ -367,14 +469,14 @@ function chartMenu(e: MouseEvent): void {
     if (editor.dragging || gesture) return;
     const r = canvas.getBoundingClientRect();
     if (e.clientX - r.left > COLUMN_W + chartW) return;
-    const hit = hitRows(rows, clamped, e.clientX - r.left, e.clientY - r.top, COLUMN_W);
+    const hit = hitRows(rows, clamped, e.clientX - r.left, e.clientY - r.top, COLUMN_W, knots);
     menu = null;
-    if (hit?.kind !== "body" && hit?.kind !== "edge") return;
+    if (hit?.kind !== "body" && hit?.kind !== "edge" && hit?.kind !== "knot") return;
     const found = recordOf(ecs, hit.id);
     if (!found) return;
     const invoker = { x: e.clientX, y: r.top + rows.find((row) => row.lane === hit.lane)!.top, w: 0, h: ROW_H };
     pick(hit.id, invoker);
-    actions(invoker, pxToU(clamped, e.clientX - r.left - COLUMN_W));
+    actions(invoker);
 }
 function togglePlay(): void {
     if (eid === null || editor.dragging) return;
@@ -434,7 +536,7 @@ onMount(() => {
             else if (editor.dragging) return;
             else if (menu) menu = null;
             else if (tool === "add") tool = "select";
-            else if (focusKey !== null || resultStation !== undefined) peel();
+            else if (focusKey !== null) peel();
             else if (selected.size) clearSelection();
             else return;
             e.preventDefault(); return;
@@ -493,22 +595,37 @@ function render(ctx: CanvasRenderingContext2D): void {
     for (const t of ticks(clamped, chartW)) ctx.fillText(t.label, t.s === 0 ? Math.max(COLUMN_W + ctx.measureText(t.label).width / 2 + 2, COLUMN_W + t.px) : COLUMN_W + t.px, 12);
     ctx.restore();
     for (const row of rows) {
+        const value = valueRow(row.lane);
         ctx.fillStyle = "rgba(0,0,0,.24)"; ctx.fillRect(COLUMN_W, row.top, chartW, ROW_H);
         ctx.fillStyle = laneTone(row.lane, "base"); ctx.textAlign = "left"; ctx.fillText(row.name, 10, row.top + ROW_H / 2);
         ctx.save(); ctx.beginPath(); ctx.rect(COLUMN_W, row.top, chartW, ROW_H); ctx.clip();
         const boxes = spanBoxes(row, clamped, COLUMN_W);
+        if (value) for (const box of boxes) {
+            const rec = row.records.find((r) => r.id === box.id)!;
+            if (!selected.has(box.id) || !value.read) continue;
+            const entry = value.entries[row.records.indexOf(rec)];
+            const edge = value.read.edge === true;
+            const available = entry !== undefined && recoveredAt(value.read, rec.start, edge) !== undefined && recoveredAt(value.read, rec.end, edge) !== undefined;
+            const pts = recoveredPolyline(value.read, value.chart, clamped, COLUMN_W, { start: rec.start, end: rec.end, available });
+            if (pts.length > 1) {
+                ctx.save(); ctx.globalAlpha = .42; ctx.strokeStyle = laneTone(row.lane, "selected"); ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath();
+                for (let i = 0; i < pts.length; i++) { const p = pts[i]!; if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); }
+                ctx.stroke(); ctx.restore();
+            }
+        }
         for (const box of boxes) {
             const rec = row.records.find((r) => r.id === box.id)!;
-            const tone = selected.has(box.id) ? "selected" : hover?.kind === "body" && hover.id === box.id ? "hover" : "base";
+            const tone = selected.has(box.id) ? "selected" : (hover?.kind === "body" || hover?.kind === "knot") && hover.id === box.id ? "hover" : "base";
             const color = laneTone(row.lane, tone);
             ctx.fillStyle = color; ctx.globalAlpha = tone === "base" ? .34 : .5;
             ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, ROW_H); ctx.globalAlpha = 1;
             ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
-            const pts = spanCurve(rec, recordEntry(doc!.lanes, row.lane, rec), box, 4);
+            const entry = value?.entries[row.records.indexOf(rec)] ?? recordEntry(doc!.lanes, row.lane, rec);
+            const pts = spanCurve(rec, entry, box, value?.chart ?? 4);
             for (let i = 0; i < pts.length; i++) { const p = pts[i]!; if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); }
             ctx.stroke();
         }
-        // Hatch qualifies the body; handles are painted in the final pass above it.
+        // Hatch qualifies the body; handles and value knots are painted in the final pass above it.
         for (const d of driven) {
             if (d.lane !== row.lane) continue;
             ctx.save(); ctx.beginPath(); ctx.rect(xOf(d.start), row.top, xOf(d.end) - xOf(d.start), ROW_H); ctx.clip();
@@ -525,6 +642,18 @@ function render(ctx: CanvasRenderingContext2D): void {
             if (active || hot) { ctx.strokeStyle = active ? "#fff" : "#d8d4ce"; ctx.lineWidth = 1; ctx.strokeRect(x + .5, box.y0 + .5, 1, ROW_H - 1); }
             if (which === "end" && ripple && rippleSubject === box.id) { ctx.fillStyle = laneTone(row.lane, "selected"); ctx.textAlign = "right"; ctx.fillText("Ripple end", box.x1 - 5, box.y0 + 9); }
         }
+        if (value) for (const point of knotPoints(row, value.entries, value.chart, clamped, COLUMN_W)) {
+            const rec = row.records.find((item) => item.id === point.id)!;
+            const active = gesture?.kind === "value" && gesture.id === point.id && point.which === "exit";
+            const hot = hover?.kind === "knot" && hover.id === point.id && hover.which === point.which;
+            const tone = active || selected.has(point.id) ? "selected" : hot ? "hover" : "base";
+            const owned = point.which === "exit" || rec.entry !== undefined;
+            ctx.beginPath(); ctx.arc(point.x, point.y, active || hot ? 4 : 3, 0, Math.PI * 2);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = laneTone(row.lane, tone);
+            if (owned) { ctx.fillStyle = laneTone(row.lane, tone); ctx.fill(); }
+            ctx.stroke();
+        }
         if (gesture?.kind === "add" && gesture.lane === row.lane) {
             ctx.fillStyle = previewError(gesture) ? "#e87878" : laneTone(row.lane, "selected"); ctx.globalAlpha = .3;
             ctx.fillRect(xOf(gesture.start), row.top, xOf(gesture.end) - xOf(gesture.start), ROW_H); ctx.globalAlpha = 1;
@@ -540,7 +669,7 @@ function render(ctx: CanvasRenderingContext2D): void {
     }
 }
 $effect(() => {
-    void tick; void revision; void clamped; void rows; void hover; void onEnd; void selected; void driven; void playhead; void ripple; void guide;
+    void tick; void revision; void clamped; void rows; void valueRows; void knots; void valueWindows; void hover; void onEnd; void selected; void driven; void playhead; void ripple; void guide;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (ctx) { resize(canvas, ctx, dockW, chartH); render(ctx); }
@@ -554,15 +683,25 @@ $effect(() => {
         view = frameAll(chartW, total, marginArc(total, 50));
     }
 });
-const feedback = $derived.by(() => {
+const gestureMessage = $derived.by(() => {
     void revision;
     const g = gesture;
     if (g?.kind === "add") return `${g.start.toFixed(2)}–${g.end.toFixed(2)} m · ${(g.end - g.start).toFixed(2)} m · ${status || "Valid"}`;
     if (g?.kind === "span" && g.moved && g.id !== undefined) { const r = recordOf(ecs, g.id)?.row; if (r) return `${r.start.toFixed(2)}–${r.end.toFixed(2)} m · ${(r.end - r.start).toFixed(2)} m${ripple && g.which !== "end" ? " · Independent" : ""}${status ? ` · ${status}` : ""}`; }
     return status;
 });
-const liveResult = $derived.by(() => { void revision; return gesture?.kind === "span" && gesture.moved ? feedback : result; });
-const feedbackPop = $derived.by(() => feedbackAnchor && feedback && !subject ? fitEditor(feedbackSize, { w: window.innerWidth, h: window.innerHeight }, player && tools ? [screenBox(player), screenBox(tools)] : [], feedbackAnchor) : null);
+const statusPop = $derived.by(() => gestureAnchor && gestureMessage ? fitEditor(statusSize, { w: window.innerWidth, h: window.innerHeight }, player && tools ? [screenBox(player), screenBox(tools)] : [], gestureAnchor) : null);
+const dragValueLabel = $derived.by(() => {
+    void revision;
+    const g = gesture;
+    if (g?.kind !== "value" || !g.moved || g.id === undefined || g.lane === undefined || !canvas) return null;
+    const info = valueRow(g.lane), found = recordOf(ecs, g.id);
+    if (!info || !found) return null;
+    const point = knotPoints(info.row, info.entries, info.chart, clamped, COLUMN_W).find((item) => item.id === g.id && item.which === "exit");
+    if (!point) return null;
+    const u = unit(g.lane), r = canvas.getBoundingClientRect();
+    return { x: r.left + point.x, y: r.top + point.y, text: `${(found.row.exit * u.scale).toFixed(u.precision)} ${u.name}` };
+});
 </script>
 
 <div class="tool-strip" bind:this={tools} role="group" aria-label="Timeline tools" style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px; width: {TOOL_STRIP_W}px">
@@ -572,11 +711,11 @@ const feedbackPop = $derived.by(() => feedbackAnchor && feedback && !subject ? f
 <div class="dock" bind:this={dock} style="bottom: {DOCK_INSET}px; height: {DOCK_HEIGHT}px; left: {DOCK_INSET + TOOL_STRIP_W + TOOL_GAP}px" tabindex="-1" role="group" aria-label="Timeline"
     onpointerenter={() => (editor.hover = "timeline")}
     onpointerleave={() => { editor.hover = "viewport"; hover = null; onEnd = false; }}>
-    <canvas class="chart" bind:this={canvas} bind:clientWidth={dockW} bind:clientHeight={chartH} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height, records: r.records.map(({ id, start, end }) => ({ id, start, end })) })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
+    <canvas class="chart" bind:this={canvas} bind:clientWidth={dockW} bind:clientHeight={chartH} data-view={JSON.stringify(clamped)} data-rows={JSON.stringify(rows.map((r) => ({ lane: laneKey(r.lane), top: r.top, height: r.height, records: r.records.map(({ id, start, end }) => ({ id, start, end })) })))} data-value-windows={JSON.stringify(valueRows.map((item) => ({ lane: laneKey(item.row.lane), lo: item.chart.lo, hi: item.chart.hi, base: laneValueAxis(item.row.lane, velocityBase).base })))} style:cursor onpointerdown={chartDown} onpointermove={chartMove} oncontextmenu={chartMenu}></canvas>
 </div>
-{#if subject && pop}
-    {#key `${subject.id}/${focusKey ?? "exit"}/${resultStation === undefined ? "field" : "result"}`}
-            <Popover x={pop.x} y={pop.y} record={subject.id} field={fields.find((f) => f.name === (focusKey ?? "exit"))!} focus={focusKey !== null} {focusRequest} {ripple} {busy} result={liveResult} notice={liveResult === feedback ? "" : status}
+{#if subject && focusKey !== null && pop}
+    {#key `${subject.id}/${focusKey}`}
+            <Popover x={pop.x} y={pop.y} record={subject.id} field={fields.find((f) => f.name === focusKey)!} focus={focusKey !== null} {focusRequest} {ripple} {busy} notice={status}
                 onmeasure={(w, h) => { if (panelSize.w !== w || panelSize.h !== h) panelSize = { w, h }; }}
                 usable={(box) => editorFits(box, { w: window.innerWidth, h: window.innerHeight }, anchor ? [anchor, ...obstacles] : obstacles)}
                 statusFit={(size, panel) => {
@@ -586,11 +725,11 @@ const feedbackPop = $derived.by(() => feedbackAnchor && feedback && !subject ? f
                     const box = { ...position, ...size };
                     return editorFits(box, { w: window.innerWidth, h: window.innerHeight }, [anchor, ...obstacles]) ? position : null;
                 }}
-                onactions={(button) => actions(screenBox(button), playhead)}
                 onripple={(v) => { if (!editor.dragging) ripple = v; }} onpeel={peel} />
     {/key}
 {/if}
-{#if feedbackPop}<div class="feedback" role="status" bind:clientWidth={feedbackSize.w} bind:clientHeight={feedbackSize.h} style="left: {feedbackPop.x}px; top: {feedbackPop.y}px">{feedback}</div>{/if}
+{#if statusPop}<div class="gesture-status" role="status" bind:clientWidth={statusSize.w} bind:clientHeight={statusSize.h} style="left: {statusPop.x}px; top: {statusPop.y}px">{gestureMessage}</div>{/if}
+{#if dragValueLabel}<div class="drag-value-label" aria-hidden="true" style="left: {dragValueLabel.x}px; top: {dragValueLabel.y}px">{dragValueLabel.text}</div>{/if}
 {#if menu}<div class="menu-anchor menu" role="menu" use:fitMenu={{ x: menu.x, y: menu.y, above: menu.above }}><Menu items={menu.items} onclose={() => (menu = null)} /></div>{/if}
 <div class="player" bind:this={player} role="group" aria-label="Playback" style="left: {playerCenter}px; bottom: {DOCK_INSET + DOCK_HEIGHT + PLAYER_GAP}px; height: {PLAYER_H}px">
     <button type="button" onclick={togglePlay} disabled={busy} aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause (Space)" : "Play (Space)"}>{playing ? "Ⅱ" : "▶"}</button>
@@ -614,6 +753,7 @@ const feedbackPop = $derived.by(() => feedbackAnchor && feedback && !subject ? f
     button:disabled { opacity: .5; cursor: default; }
     .scrub { width: 160px; height: 6px; background: var(--border); cursor: pointer; touch-action: none; }
     .fill { height: 100%; background: var(--fg); pointer-events: none; }
-    .feedback { position: fixed; z-index: 6; max-width: 310px; padding: 3px 5px; overflow-wrap: anywhere; font: 10px/14px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); pointer-events: none; }
+    .gesture-status { position: fixed; z-index: 6; max-width: 310px; padding: 3px 5px; overflow-wrap: anywhere; font: 10px/14px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); pointer-events: none; }
+    .drag-value-label { position: fixed; z-index: 7; transform: translate(-50%, -100%); padding: 2px 4px; font: 10px "JetBrains Mono", monospace; color: var(--fg); background: var(--bg-solid); white-space: nowrap; pointer-events: none; }
     .menu-anchor { position: fixed; z-index: 8; }
 </style>

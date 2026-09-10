@@ -286,6 +286,78 @@ export function yGrow(
     return { lo, hi, step: niceStep((hi - lo) / 5) };
 }
 
+/** The independently authored resting axis for one lane. These frames are product units, not
+ * boot-fixture measurements: force gets a calm 1 g neighbourhood, pitch gets an unwrapped
+ * half-turn, and velocity gets a fixed-speed band around the authored-independent default speed.
+ * The base
+ * is always inside the frame, so an empty lane still has a meaningful value axis. */
+export interface LaneValueAxis {
+    base: number;
+    frame: [number, number];
+    cap: [number, number];
+}
+
+const FORCE_FRAME: [number, number] = [-2, 6];
+const FORCE_CAP: [number, number] = [-20, 20];
+const GEO_FRAME: [number, number] = [-Math.PI, Math.PI];
+const GEO_CAP: [number, number] = [-8 * Math.PI, 8 * Math.PI];
+const VELOCITY_FRAME_SPAN = 8;
+const VELOCITY_CAP_SPAN = 80;
+
+/** Resolve the base and resting/capped value windows without reading authored handles. */
+export function laneValueAxis(lane: Lane, velocityBase = V0): LaneValueAxis {
+    if (lane === Lane.Force) return { base: 1, frame: [...FORCE_FRAME], cap: [...FORCE_CAP] };
+    if (lane === Lane.Geo) return { base: 0, frame: [...GEO_FRAME], cap: [...GEO_CAP] };
+    const base = Number.isFinite(velocityBase) && velocityBase > 0 ? velocityBase : V0;
+    return {
+        base,
+        frame: [base - VELOCITY_FRAME_SPAN, base + VELOCITY_FRAME_SPAN],
+        cap: [Math.max(0, base - VELOCITY_CAP_SPAN), base + VELOCITY_CAP_SPAN],
+    };
+}
+
+/** Fit one lane's authored handles plus the recovered values supplied by its selected record. */
+export function fitLaneValue(
+    lane: Lane,
+    records: readonly LaneSegment[],
+    entries: readonly (number | undefined)[],
+    recovered: readonly number[] = [],
+    velocityBase = V0,
+): YFit {
+    const axis = laneValueAxis(lane, velocityBase);
+    let min = axis.base;
+    let max = axis.base;
+    for (const [i, record] of records.entries()) {
+        const entry = entries[i];
+        if (entry !== undefined && Number.isFinite(entry)) {
+            min = Math.min(min, entry);
+            max = Math.max(max, entry);
+        }
+        if (Number.isFinite(record.exit)) {
+            min = Math.min(min, record.exit);
+            max = Math.max(max, record.exit);
+        }
+    }
+    for (const value of recovered) {
+        if (Number.isFinite(value)) {
+            min = Math.min(min, value);
+            max = Math.max(max, value);
+        }
+    }
+    return yFit(min, max, axis.base, axis.frame);
+}
+
+/** A fixed-height lane chart: value space lives inside the existing 26px row band. */
+export function valueChart(row: LaneRow, fit: YFit, pad = 3): RowChart {
+    const inset = Math.min(pad, row.height / 2 - 1);
+    return {
+        top: row.top + inset,
+        bottom: row.top + row.height - inset,
+        lo: fit.lo,
+        hi: fit.hi,
+    };
+}
+
 /** edge-scroll pan-to-follow for a horizontal drag (the x-analogue of `yGrow`): pan
  *  the view to follow a cursor dragged PAST the chart — left of `left` or right of
  *  `right` — by an amount proportional to the overshoot (× `rate`). `pxPerU` is
@@ -586,6 +658,15 @@ export function ticks(v: View, width: number, domain: Domain = Domain.Distance):
  *  its edges: {@link hitRows} splits a thin span down the middle rather than letting the two
  *  grips overlap into an unreachable body. */
 export const EDGE_PX = 5;
+/** the value knot's circular hit radius. It stays inside the row's existing 26px band. */
+export const KNOT_PX = 4;
+
+/** Choose the one gesture axis at the existing dead-zone crossing. Callers retain the answer for
+ * the rest of the press; this function never re-arbitrates a live gesture. */
+export function dragAxis(dx: number, dy: number, deadZone = 4): "value" | "station" | null {
+    if (Math.hypot(dx, dy) < deadZone) return null;
+    return Math.abs(dy) > Math.abs(dx) ? "value" : "station";
+}
 
 /** the lane column's width in px — the left inset every chart read is projected past
  *  (`spanBoxes`/`hitRows`/`endHandle`'s own `left`). Animate's layer column: it names each row by
@@ -667,6 +748,7 @@ export function spanBoxes(row: LaneRow, v: View, left = 0): SpanBox[] {
 export type RowHit =
     | { kind: "column"; lane: Lane; index: number }
     | { kind: "edge"; lane: Lane; id: number; which: "start" | "end" }
+    | { kind: "knot"; lane: Lane; id: number; which: "entry" | "exit" }
     | { kind: "body"; lane: Lane; id: number }
     | { kind: "gap"; lane: Lane; d: number }
     | null;
@@ -683,6 +765,7 @@ export function hitRows(
     px: number,
     py: number,
     left = 0,
+    knots: readonly KnotPoint[] = [],
 ): RowHit {
     for (const row of rows) {
         if (py < row.top || py >= row.top + row.height) continue;
@@ -692,7 +775,24 @@ export function hitRows(
         for (let i = 0; i < boxes.length; i++) {
             const box = boxes[i]!;
             const rec = row.records[i]!;
-            if (px < box.x0 || px > box.x1) continue;
+            const knot = knots.find(
+                (point) =>
+                    point.id === rec.id &&
+                    point.which === "exit" &&
+                    Math.hypot(point.x - px, point.y - py) <= KNOT_PX,
+            );
+            // CSS layout and canvas projection can disagree by a few fractional pixels at an
+            // endpoint. Let an actual knot bridge that subpixel seam, but never widen a span's
+            // edge region into its abutting neighbour when there is no knot to own the pixel.
+            if (px < box.x0 || px > box.x1) {
+                if (knot && Math.abs(knot.x - px) <= 0.5)
+                    return { kind: "knot", lane: row.lane, id: rec.id, which: knot.which };
+                continue;
+            }
+            // The exit knot owns the centre of the shared endpoint. A horizontal movement can
+            // still choose the edge after the dead zone, but the initial region is never lost to
+            // the body or an overlapping edge grip.
+            if (knot) return { kind: "knot", lane: row.lane, id: rec.id, which: knot.which };
             // a span narrower than two grips splits down the middle: both edges stay reachable
             // and no press falls into a body that isn't there.
             const grip = Math.min(EDGE_PX, (box.x1 - box.x0) / 2);
@@ -779,26 +879,29 @@ const CURVE_SAMPLES = 25;
 /** the miniature curve inside one span: the record's OWN easing from entry to exit, sampled
  *  through `profile.ts`'s one sampler (the same `sampleForce` over the record's two handles that
  *  `projection.curveAt` reads, so the drawn shape is the curve the bake threads, never a second
- *  easing dialect) and normalized into the box.
+ *  easing dialect) and projected into the lane's shared value chart.
  *
- *  Normalized to the record's own two handles, not to the lane's range: this is a SHAPE, not a
- *  reading — a span conveys how its value moves without a label, which is what the person asked
- *  for when the chips came off. Equal resolved handles draw a level line. An unresolved
- *  entry draws no curve; its authored span and target remain selectable. */
+ *  Production callers pass a `RowChart`, so equal values in different records share one y axis and
+ *  a value change moves the line. The no-chart overload keeps the old pure sampler useful to its
+ *  substrate tests. An unresolved entry draws no curve; its authored span and exit remain
+ *  selectable. */
 export function spanCurve(
     record: LaneSegment,
     entry: number | undefined,
     box: SpanBox,
-    pad = 3,
+    padOrChart: number | RowChart = 3,
+    suppliedChart?: RowChart,
 ): CurvePoint[] {
     if (entry === undefined) return [];
+    const chart = typeof padOrChart === "number" ? suppliedChart : padOrChart;
+    const pad = typeof padOrChart === "number" ? padOrChart : 3;
     const from = entry;
     const span = record.end - record.start;
-    const top = box.y0 + pad;
-    const bot = box.y1 - pad;
+    const top = chart?.top ?? box.y0 + pad;
+    const bot = chart?.bottom ?? box.y1 - pad;
     const lo = Math.min(from, record.exit);
     const hi = Math.max(from, record.exit);
-    const mid = (top + bot) / 2;
+    const mid = chart ? chartY(chart, (from + record.exit) / 2) : (top + bot) / 2;
     if (!(span > 0) || hi - lo <= 0)
         return [
             { x: box.x0, y: mid },
@@ -812,10 +915,11 @@ export function spanCurve(
     for (let i = 0; i < CURVE_SAMPLES; i++) {
         const f = i / (CURVE_SAMPLES - 1);
         const g = sampleForce(points, record.start + f * span);
-        // value UP is pixel-y DOWN, so a rising handle draws a rising line.
+        // A live lane chart supplies the shared value axis. The no-chart branch is retained for
+        // the pure legacy sampler tests; production Timeline calls the chart overload.
         out.push({
             x: box.x0 + f * (box.x1 - box.x0),
-            y: bot - ((g - lo) / (hi - lo)) * (bot - top),
+            y: chart ? chartY(chart, g) : bot - ((g - lo) / (hi - lo)) * (bot - top),
         });
     }
     return out;
@@ -883,6 +987,46 @@ export function recordEntry(lanes: Lanes, lane: Lane, record: LaneSegment): numb
 // every arm below is a headless read (Validation 4) and `Timeline.svelte` keeps owning only
 // pixels and pointers.
 
+/** A plotted handle in a lane's shared value frame. Entry may be hollow in the renderer when the
+ * record does not own it; an unresolved entry has no honest y position and is omitted. */
+export interface KnotPoint {
+    id: number;
+    which: "entry" | "exit";
+    x: number;
+    y: number;
+    value: number;
+}
+
+export function knotPoints(
+    row: LaneRow,
+    entries: readonly (number | undefined)[],
+    chart: RowChart,
+    v: View,
+    left = 0,
+): KnotPoint[] {
+    const out: KnotPoint[] = [];
+    for (const [i, record] of row.records.entries()) {
+        const entry = entries[i];
+        if (entry !== undefined && Number.isFinite(entry))
+            out.push({
+                id: record.id,
+                which: "entry",
+                x: left + uToPx(v, record.start),
+                y: chartY(chart, entry),
+                value: entry,
+            });
+        if (Number.isFinite(record.exit))
+            out.push({
+                id: record.id,
+                which: "exit",
+                x: left + uToPx(v, record.end),
+                y: chartY(chart, record.exit),
+                value: record.exit,
+            });
+    }
+    return out;
+}
+
 /** one reading of the bake against the ruler: `station[i]` is sample `i`'s absolute arclength and
  *  `value[i]` the recovered quantity there. A per-EDGE column (`bakeOut.fN`) is read
  *  piecewise-constant at its own opening sample — the same `edgeAt` convention the pitch fit's
@@ -892,6 +1036,8 @@ export interface BakeRead {
     station: ArrayLike<number>;
     value: ArrayLike<number>;
     n: number;
+    /** Per-edge columns cover through station[n], while sample columns end at station[n - 1]. */
+    edge?: boolean;
 }
 
 /** cumulative absolute arclength per SAMPLE off the bake's per-edge `ds` — `station[0] = 0`, each
@@ -1174,21 +1320,50 @@ export function authoredPolylines(
     });
 }
 
-/** The recovered curve of one lane: the bake's own reading across the whole ruler,
- *  projected the same way. Drawn dashed (`editor-ui.md`: recovered dashed/faded, authored
- *  solid/bright) for callers comparing demand and achievement. */
+/** The recovered curve of one lane: the bake's own reading projected through the shared value
+ *  chart. Missing values are unavailable, never zero-filled. A window is supplied for selected
+ *  records so a gap or an unresolved entry cannot turn into a line across unknown space. */
 export function recoveredPolyline(
     read: BakeRead,
     chart: RowChart,
     v: View,
     left = 0,
+    window?: { start: number; end: number; available?: boolean },
 ): CurvePoint[] {
+    if (window?.available === false || read.n < 1) return [];
+    const first = window?.start ?? -Infinity;
+    const last = window?.end ?? Infinity;
+    const endStation = read.edge ? read.station[read.n] : read.station[read.n - 1];
+    if (
+        (window &&
+            (!Number.isFinite(first) ||
+                !Number.isFinite(last) ||
+                first > last ||
+                first < 0 ||
+                last > (endStation ?? Infinity))) ||
+        endStation === undefined ||
+        !Number.isFinite(endStation)
+    )
+        return [];
     const out: CurvePoint[] = [];
-    for (let i = 0; i < read.n; i++)
-        out.push({
-            x: left + uToPx(v, read.station[i]!),
-            y: chartY(chart, read.value[i] ?? 0),
-        });
+    for (let i = 0; i < read.n; i++) {
+        const station = read.station[i],
+            value = read.value[i];
+        if (
+            station === undefined ||
+            value === undefined ||
+            !Number.isFinite(station) ||
+            !Number.isFinite(value)
+        )
+            return [];
+        if (station >= first && station <= last)
+            out.push({ x: left + uToPx(v, station), y: chartY(chart, value) });
+    }
+    if (read.edge && last >= endStation && out.length > 0) {
+        const value = read.value[read.n - 1];
+        if (value === undefined || !Number.isFinite(value)) return [];
+        out.push({ x: left + uToPx(v, endStation), y: chartY(chart, value) });
+    }
     return out;
 }
 

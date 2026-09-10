@@ -338,8 +338,7 @@ const CURSOR_ALLOWLIST: CursorSite[] = [
     { file: "Menu.svelte", selector: ".menu-item", value: "pointer" },
     { file: "Timeline.svelte", selector: ".scrub", value: "pointer" },
     { file: "controls.ts", selector: "canvas.style.cursor", value: "grabbing" },
-    // One actions control and the field law's horizontal label scrub.
-    { file: "Popover.svelte", selector: ".actions", value: "pointer" },
+    // The field law's horizontal label scrub.
     { file: "Popover.svelte", selector: ".field label", value: "ew-resize" },
 ];
 
