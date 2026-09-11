@@ -40,6 +40,7 @@ check(
         subject: [
             "src/App.svelte",
             "src/View.svelte",
+            "src/capability.ts",
             "src/app.css",
             "src/grid.ts",
             "public/scenes/scaffold.scene",
@@ -55,6 +56,8 @@ check(
         );
         let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
         let page: Page | undefined;
+        let reducedPage: Page | undefined;
+        let blockedPage: Page | undefined;
         const errors: string[] = [];
         try {
             await waitForServer(url, server);
@@ -90,30 +93,148 @@ check(
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
                 timeout: 15_000,
             });
-            const shellEvidence = await page.evaluate(() => {
+            const shellEvidence = await page.evaluate(async () => {
                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
                 const context = document.querySelector<HTMLElement>("[data-region=context]");
+                const viewPane = document.querySelector<HTMLElement>("[data-region=view]");
                 const view = document.querySelector<HTMLElement>("[data-region=view-surface]");
                 const timeline = document.querySelector<HTMLElement>("[data-region=timeline-track]");
                 const timelinePane = document.querySelector<HTMLElement>("[data-region=timeline]");
                 const status = document.querySelector<HTMLElement>("[data-region=status]");
-                if (!shell || !context || !view || !timeline || !timelinePane || !status) {
-                    return { ready: false, flat: false, borders: false };
+                const canvas = document.querySelector<HTMLCanvasElement>("canvas");
+                if (!shell || !context || !viewPane || !view || !timeline || !timelinePane || !status || !canvas) {
+                    return { ready: false, flat: false, borders: false, gutter: false, clearMatch: false };
                 }
                 const style = (element: HTMLElement) => getComputedStyle(element);
                 const grounds = [context, view, timeline, status].map((element) => style(element).backgroundColor);
                 const border = "rgb(60, 56, 54)";
+                const fullBorder = (element: HTMLElement) =>
+                    ["borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"].every(
+                        (side) => style(element)[side as "borderTopWidth"] === "1px",
+                    ) &&
+                    ["borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"].every(
+                        (side) => style(element)[side as "borderTopColor"] === border,
+                    );
+                const contextRect = context.getBoundingClientRect();
+                const viewRect = viewPane.getBoundingClientRect();
+                const timelineRect = timelinePane.getBoundingClientRect();
+                const statusRect = status.getBoundingClientRect();
+                const gutterValues = [
+                    viewRect.left - contextRect.right,
+                    timelineRect.top - contextRect.bottom,
+                    statusRect.top - timelineRect.bottom,
+                ];
+                const paneColor = style(context).backgroundColor;
+                const rgb = paneColor.match(/\d+/g)?.map(Number) ?? [];
+                const dataUrl = canvas.toDataURL("image/png");
+                const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+                const sampleSurface = new OffscreenCanvas(bitmap.width, bitmap.height);
+                const sampleContext = sampleSurface.getContext("2d");
+                if (!sampleContext || rgb.length !== 3) {
+                    bitmap.close();
+                    return { ready: false, flat: false, borders: false, gutter: false, clearMatch: false };
+                }
+                sampleContext.drawImage(bitmap, 0, 0);
+                const image = sampleContext.getImageData(0, 0, bitmap.width, bitmap.height);
+                const samplePoints = [0.08, 0.32, 0.68, 0.92].map((fraction) => [
+                    Math.min(bitmap.width - 1, Math.floor(bitmap.width * fraction)),
+                    1,
+                ]);
+                const samples = samplePoints.map(([x, y]) => {
+                    const index = (y * bitmap.width + x) * 4;
+                    return [image.data[index], image.data[index + 1], image.data[index + 2]];
+                });
+                bitmap.close();
+                const distance = (sample: number[]) =>
+                    Math.max(...sample.map((channel, index) => Math.abs(channel - (rgb[index] ?? 0))));
+                const clearMatches = samples.filter((sample) => distance(sample) <= 2).length;
+                const animation = style(context);
                 return {
                     ready: shell.dataset.shellReady === "true" && shell.getAttribute("aria-hidden") === "false",
                     flat: grounds.every((ground) => ground === "rgb(29, 32, 33)"),
-                    borders:
-                        style(context).borderRightColor === border &&
-                        style(timelinePane).borderTopColor === border &&
-                        style(status).borderTopColor === border,
+                    borders: [context, viewPane, timelinePane, status].every(fullBorder),
+                    gutter: gutterValues.every((value) => Math.abs(value - 6) < 0.1),
+                    gutterValues,
+                    clearMatch: clearMatches >= 3,
+                    paneColor,
+                    clearSamples: samples,
+                    clearMatches,
+                    animation: animation.animationName === "pane-enter" && animation.animationDuration === "0.18s",
                 };
             });
-            if (!shellEvidence.ready || !shellEvidence.flat || !shellEvidence.borders) {
-                throw new Error(`flat Gruvbox shell handoff failed: ${JSON.stringify(shellEvidence)}`);
+            if (
+                !shellEvidence.ready ||
+                !shellEvidence.flat ||
+                !shellEvidence.borders ||
+                !shellEvidence.gutter ||
+                !shellEvidence.clearMatch ||
+                !shellEvidence.animation
+            ) {
+                throw new Error(`shell handoff/gutter/clear-color/entrance failed: ${JSON.stringify(shellEvidence)}`);
+            }
+            await page.waitForTimeout(260);
+            const entranceEvidence = await page.evaluate(() => {
+                const elements = [
+                    ...document.querySelectorAll<HTMLElement>("[data-region=context], [data-region=view], [data-region=timeline], [data-region=status]"),
+                ];
+                const identity = (transform: string) =>
+                    transform === "none" || transform.replaceAll(" ", "") === "matrix(1,0,0,1,0,0)";
+                return {
+                    count: elements.length,
+                    complete: elements.length === 4 && elements.every((element) => {
+                        const computed = getComputedStyle(element);
+                        return computed.opacity === "1" && identity(computed.transform);
+                    }),
+                };
+            });
+            if (!entranceEvidence.complete) {
+                throw new Error(`pane entrance did not settle: ${JSON.stringify(entranceEvidence)}`);
+            }
+            reducedPage = await browser.newPage();
+            await reducedPage.emulateMedia({ reducedMotion: "reduce" });
+            await reducedPage.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+            await reducedPage.waitForFunction(() => window.__harness?.ready === true, undefined, { timeout: 15_000 });
+            const reducedMotionEvidence = await reducedPage.evaluate(() => {
+                const shell = document.querySelector<HTMLElement>("[data-region=shell]");
+                const pane = document.querySelector<HTMLElement>("[data-region=context]");
+                const status = document.querySelector<HTMLElement>("[data-region=status]");
+                if (!shell || !pane || !status) return { reduced: false };
+                const paneStyle = getComputedStyle(pane);
+                const statusStyle = getComputedStyle(status);
+                return {
+                    reduced: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+                    ready: shell.dataset.shellReady === "true",
+                    animation: paneStyle.animationName,
+                    paneStable: paneStyle.opacity === "1" && paneStyle.transform === "none",
+                    statusStable: statusStyle.opacity === "1" && statusStyle.transform === "none",
+                };
+            });
+            if (
+                !reducedMotionEvidence.reduced ||
+                !reducedMotionEvidence.ready ||
+                reducedMotionEvidence.animation !== "none" ||
+                !reducedMotionEvidence.paneStable ||
+                !reducedMotionEvidence.statusStable
+            ) {
+                throw new Error(`reduced-motion entrance failed: ${JSON.stringify(reducedMotionEvidence)}`);
+            }
+            blockedPage = await browser.newPage();
+            await blockedPage.addInitScript(() => {
+                Object.defineProperty(Navigator.prototype, "gpu", { configurable: true, value: undefined });
+            });
+            await blockedPage.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+            await blockedPage.waitForSelector("[data-region=capability-block]", { timeout: 5_000 });
+            const blockedEvidence = await blockedPage.evaluate(() => {
+                const shell = document.querySelector<HTMLElement>("[data-region=shell]");
+                const block = document.querySelector<HTMLElement>("[data-region=capability-block]");
+                return {
+                    blocked: shell?.dataset.capability === "block",
+                    shellHidden: getComputedStyle(shell ?? document.body).visibility === "hidden",
+                    clearMessage: block?.textContent?.includes("WebGPU is required") === true,
+                };
+            });
+            if (!blockedEvidence.blocked || !blockedEvidence.shellHidden || !blockedEvidence.clearMessage) {
+                throw new Error(`no-WebGPU capability gate failed: ${JSON.stringify(blockedEvidence)}`);
             }
             const verdict = await page.evaluate(async () => {
                 const harness = window.__harness;
@@ -180,13 +301,15 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; full-page-splash/flat-gruvbox-borders/grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gutter=${JSON.stringify(shellEvidence.gutterValues)}px; splash/gutter-borders/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
             }
             return { ok: true, checks: [{ name: "GPU canvas rendered", ok: true, data: evidence }] };
         } finally {
+            await blockedPage?.close();
+            await reducedPage?.close();
             await page?.close();
             await browser?.close();
             if (server.exitCode === null) server.kill();

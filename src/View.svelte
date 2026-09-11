@@ -4,9 +4,16 @@
     import { Orbit } from "@dylanebert/shallot/extras";
     import { onMount } from "svelte";
     import project from "virtual:project";
+    import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
     import { GridPlugin, readGridMaterialContract, readGridProbe } from "./grid";
 
-    let { onReady }: { onReady: () => void } = $props();
+    let {
+        onCapability,
+        onReady,
+    }: {
+        onCapability: (outcome: CapabilityOutcome) => void;
+        onReady: () => void;
+    } = $props();
     let canvas: HTMLCanvasElement;
 
     onMount(() => {
@@ -14,15 +21,20 @@
         let revealFrame = 0;
         let app: Awaited<ReturnType<typeof run>> | undefined;
 
-        void run({
-            capacity: project.capacity ?? undefined,
-            pixelRatio: project.pixelRatio ?? undefined,
-            plugins: [...project.plugins, GridPlugin],
-            scene: project.scene ?? undefined,
-            // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
-            loading: shallotDark(document.body),
-        }).then(
-            (next) => {
+        void assessWebGpu().then((capability) => {
+            if (disposed) return;
+            onCapability(capability);
+            if (capability.status === "block") return;
+
+            return run({
+                capacity: project.capacity ?? undefined,
+                pixelRatio: project.pixelRatio ?? undefined,
+                plugins: [...project.plugins, GridPlugin],
+                scene: project.scene ?? undefined,
+                // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
+                loading: shallotDark(document.body),
+            }).then(
+                (next) => {
                 if (disposed) {
                     next.dispose();
                     return;
@@ -80,11 +92,13 @@
                     revealFrame = requestAnimationFrame(revealWhenReady);
                 };
                 revealFrame = requestAnimationFrame(revealWhenReady);
-            },
-            (error: unknown) => {
-                console.error("KexEdit failed to boot Shallot", error);
-            },
-        );
+                },
+                (error: unknown) => {
+                    onCapability(blockCapability("Shallot failed to initialize. WebGPU may be unavailable."));
+                    console.error("KexEdit failed to boot Shallot", error);
+                },
+            );
+        });
 
         return () => {
             disposed = true;

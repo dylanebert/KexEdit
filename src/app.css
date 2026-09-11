@@ -1,7 +1,14 @@
 :root {
     /* Measured from the active custom Omarchy Gruvbox hard theme: background #1d2021, dark1 #3c3836. */
+    --pane-ground: #1d2021;
+    --shell-ground: #3c3836;
+    --pane-border: #3c3836;
+    --pane-gutter: 6px;
+    --shell-context-width: clamp(16rem, 18vw, 24rem);
+    --shell-timeline-height: clamp(12rem, 18vh, 18rem);
+    --shell-status-height: 2rem;
     color: #ebdbb2;
-    background: #1d2021;
+    background: var(--pane-ground);
     font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
@@ -23,16 +30,17 @@ body,
 body {
     min-width: 760px;
     min-height: 520px;
-    background: #1d2021;
+    background: var(--pane-ground);
 }
 
 .shell {
     display: grid;
     width: 100%;
     height: 100%;
-    grid-template-columns: clamp(16rem, 18vw, 24rem) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) clamp(12rem, 18vh, 18rem) 2rem;
-    background: #3c3836;
+    grid-template-columns: var(--shell-context-width) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) var(--shell-timeline-height) var(--shell-status-height);
+    gap: var(--pane-gutter);
+    background: var(--shell-ground);
 }
 
 .shell-booting {
@@ -40,22 +48,79 @@ body {
     pointer-events: none;
 }
 
+.startup-capability {
+    position: fixed;
+    inset: 0;
+    z-index: 10001;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--pane-ground);
+}
+
+.startup-capability-card {
+    width: min(28rem, 100%);
+    border: 1px solid var(--pane-border);
+    padding: 20px;
+    color: #ebdbb2;
+    background: var(--pane-ground);
+}
+
+.startup-capability-kicker {
+    margin: 0 0 8px;
+    color: #bdae93;
+    font: 10px/1 "JetBrains Mono", ui-monospace, monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.startup-capability h1 {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 500;
+}
+
+.startup-capability p:last-child {
+    margin: 0;
+    color: #bdae93;
+    font: 12px/1.5 "JetBrains Mono", ui-monospace, monospace;
+}
+
 .panel,
 .status-line {
     min-width: 0;
     min-height: 0;
-    background: #1d2021;
+    border: 1px solid var(--pane-border);
+    background: var(--pane-ground);
 }
 
 .panel {
     display: flex;
     flex-direction: column;
+    transform-origin: center;
+    will-change: transform, opacity;
+}
+
+.shell:not(.shell-booting) .panel,
+.shell:not(.shell-booting) .status-line {
+    animation: pane-enter 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes pane-enter {
+    from {
+        opacity: 0;
+        transform: scale(0.985);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
 }
 
 .panel-context {
     grid-column: 1;
     grid-row: 1;
-    border-right: 1px solid #3c3836;
 }
 
 .panel-view {
@@ -66,7 +131,15 @@ body {
 .panel-timeline {
     grid-column: 1 / -1;
     grid-row: 2;
-    border-top: 1px solid #3c3836;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .shell:not(.shell-booting) .panel,
+    .shell:not(.shell-booting) .status-line {
+        animation: none;
+        opacity: 1;
+        transform: none;
+    }
 }
 
 .panel-content {
@@ -79,24 +152,24 @@ body {
     position: relative;
     width: 100%;
     height: 100%;
-    background: #1d2021;
+    background: var(--pane-ground);
 }
 
 canvas {
     display: block;
     width: 100%;
     height: 100%;
+    background: var(--pane-ground);
 }
 
 .timeline-track {
     position: relative;
     width: 100%;
     height: 100%;
-    background: #1d2021;
+    background: var(--pane-ground);
 }
 
 .status-line {
-    border-top: 1px solid #3c3836;
     grid-column: 1 / -1;
     grid-row: 3;
     display: flex;

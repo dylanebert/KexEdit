@@ -111,16 +111,23 @@ check(
             throw new Error("panel headers must not consume persistent shell space");
         }
         for (const token of [
-            "grid-template-columns: clamp(16rem, 18vw, 24rem) minmax(0, 1fr)",
-            "grid-template-rows: minmax(0, 1fr) clamp(12rem, 18vh, 18rem) 2rem",
-            "background: #1d2021",
-            "background: #3c3836",
-            "border-right: 1px solid #3c3836",
-            "border-top: 1px solid #3c3836",
+            "grid-template-columns: var(--shell-context-width) minmax(0, 1fr)",
+            "grid-template-rows: minmax(0, 1fr) var(--shell-timeline-height) var(--shell-status-height)",
+            "gap: var(--pane-gutter)",
+            "--pane-gutter: 6px",
+            "border: 1px solid var(--pane-border)",
+            "background: var(--pane-ground)",
+            "background: var(--shell-ground)",
+            "animation: pane-enter 180ms",
+            "transform: scale(0.985)",
             ".shell-booting",
             "visibility: hidden",
+            "prefers-reduced-motion: reduce",
         ]) {
             if (!css.includes(token)) throw new Error(`shell look contract lost: ${token}`);
+        }
+        if (css.includes("border-right") || css.includes("border-top")) {
+            throw new Error("pane boundaries must be independent full borders, not shared edge lines");
         }
         for (const token of ["#0b0d10", "#0e151b", "#0d1116", "#202830"]) {
             if (css.includes(token)) throw new Error(`blue-black shell color remains: ${token}`);
@@ -128,8 +135,15 @@ check(
         if (!app.includes("data-shell-ready") || !app.includes("shellReady")) {
             throw new Error("shell does not expose its ready handoff");
         }
-        if (!view.includes("loading: shallotDark(document.body)") || !view.includes("requestAnimationFrame")) {
-            throw new Error("the existing Shallot loading screen is not handed off after the first frame");
+        if (!app.includes("capability-block") || !view.includes("onCapability") || !view.includes("assessWebGpu")) {
+            throw new Error("startup capability outcome is not consumed by App and View");
+        }
+        if (
+            !view.includes("loading: shallotDark(document.body)") ||
+            !view.includes("requestAnimationFrame") ||
+            view.indexOf("assessWebGpu().then") > view.indexOf("return run({")
+        ) {
+            throw new Error("the existing Shallot loading screen is not handed off after the capability gate");
         }
     },
 );
