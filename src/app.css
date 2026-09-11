@@ -1,7 +1,8 @@
 :root {
     /* Measured from the active custom Omarchy Gruvbox hard theme: background #1d2021, dark1 #3c3836. */
     --pane-ground: #1d2021;
-    --shell-ground: #3c3836;
+    /* The grid gap is page void, not a separator surface. Only pane borders carry dark1. */
+    --shell-ground: var(--pane-ground);
     --pane-border: #3c3836;
     --pane-gutter: 6px;
     --shell-context-width: clamp(16rem, 18vw, 24rem);

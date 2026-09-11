@@ -115,6 +115,7 @@ check(
             "grid-template-rows: minmax(0, 1fr) var(--shell-timeline-height) var(--shell-status-height)",
             "gap: var(--pane-gutter)",
             "--pane-gutter: 6px",
+            "--shell-ground: var(--pane-ground)",
             "border: 1px solid var(--pane-border)",
             "background: var(--pane-ground)",
             "background: var(--shell-ground)",

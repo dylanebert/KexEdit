@@ -193,6 +193,76 @@ check(
             if (!entranceEvidence.complete) {
                 throw new Error(`pane entrance did not settle: ${JSON.stringify(entranceEvidence)}`);
             }
+            const shellScreenshot = await page.screenshot({ type: "png" });
+            const seamEvidence = await page.evaluate(async (encodedScreenshot) => {
+                const image = new Image();
+                image.src = `data:image/png;base64,${encodedScreenshot}`;
+                await image.decode();
+                const surface = document.createElement("canvas");
+                surface.width = image.naturalWidth;
+                surface.height = image.naturalHeight;
+                const context = surface.getContext("2d");
+                const contextPane = document.querySelector<HTMLElement>("[data-region=context]");
+                const viewPane = document.querySelector<HTMLElement>("[data-region=view]");
+                const timelinePane = document.querySelector<HTMLElement>("[data-region=timeline]");
+                const status = document.querySelector<HTMLElement>("[data-region=status]");
+                if (!context || !contextPane || !viewPane || !timelinePane || !status) {
+                    return { pass: false, sequences: {} as Record<string, string[]> };
+                }
+                context.drawImage(image, 0, 0);
+                const pixels = context.getImageData(0, 0, surface.width, surface.height).data;
+                const scaleX = surface.width / window.innerWidth;
+                const scaleY = surface.height / window.innerHeight;
+                const colorAt = (x: number, y: number): string => {
+                    const pixelX = Math.max(0, Math.min(surface.width - 1, Math.round(x * scaleX)));
+                    const pixelY = Math.max(0, Math.min(surface.height - 1, Math.round(y * scaleY)));
+                    const index = (pixelY * surface.width + pixelX) * 4;
+                    return [pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]]
+                        .map((channel) => channel.toString(16).padStart(2, "0"))
+                        .join("");
+                };
+                const horizontal = (left: number, right: number, y: number): string[] => {
+                    const first = Math.round(left) - 1;
+                    const last = Math.round(right);
+                    return Array.from({ length: last - first + 1 }, (_, offset) => colorAt(first + offset, y));
+                };
+                const vertical = (top: number, bottom: number, x: number): string[] => {
+                    const first = Math.round(top) - 1;
+                    const last = Math.round(bottom);
+                    return Array.from({ length: last - first + 1 }, (_, offset) => colorAt(x, first + offset));
+                };
+                const contextRect = contextPane.getBoundingClientRect();
+                const viewRect = viewPane.getBoundingClientRect();
+                const timelineRect = timelinePane.getBoundingClientRect();
+                const statusRect = status.getBoundingClientRect();
+                const sequences = {
+                    "context-view": horizontal(
+                        contextRect.right,
+                        viewRect.left,
+                        contextRect.top + contextRect.height / 2,
+                    ),
+                    "view-timeline": vertical(
+                        viewRect.bottom,
+                        timelineRect.top,
+                        viewRect.left + viewRect.width * 0.75,
+                    ),
+                    "timeline-status": vertical(
+                        timelineRect.bottom,
+                        statusRect.top,
+                        statusRect.left + statusRect.width * 0.75,
+                    ),
+                };
+                const expected = ["3c3836ff", "1d2021ff", "1d2021ff", "1d2021ff", "1d2021ff", "1d2021ff", "1d2021ff", "3c3836ff"];
+                return {
+                    pass: Object.values(sequences).every(
+                        (sequence) => sequence.length === expected.length && sequence.every((color, index) => color === expected[index]),
+                    ),
+                    sequences,
+                };
+            }, shellScreenshot.toString("base64"));
+            if (!seamEvidence.pass) {
+                throw new Error(`pane seam pixel sequence failed: ${JSON.stringify(seamEvidence)}`);
+            }
             reducedPage = await browser.newPage();
             await reducedPage.emulateMedia({ reducedMotion: "reduce" });
             await reducedPage.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
