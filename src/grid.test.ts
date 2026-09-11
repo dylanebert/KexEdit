@@ -33,7 +33,12 @@ check(
         if (source.includes("axisYColor") || source.includes("axisY")) {
             throw new Error("XZ ground grid must not invent a visible Y axis");
         }
-        for (const token of ["axisX: [0.9, 0.12, 0.1, 1]", "axisZ: [0.12, 0.32, 0.95, 1]", "hasYAxis: false"]) {
+        for (const token of [
+            "neutral: [0.314, 0.286, 0.271, 1]",
+            "axisX: [0.8, 0.141, 0.114, 1]",
+            "axisZ: [0.271, 0.522, 0.533, 1]",
+            "hasYAxis: false",
+        ]) {
             if (!source.includes(token)) throw new Error(`grid axis contract lost: ${token}`);
         }
         const scene = readFileSync(resolve(ROOT, "public/scenes/scaffold.scene"), "utf8");

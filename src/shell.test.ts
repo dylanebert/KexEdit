@@ -113,8 +113,23 @@ check(
         for (const token of [
             "grid-template-columns: clamp(16rem, 18vw, 24rem) minmax(0, 1fr)",
             "grid-template-rows: minmax(0, 1fr) clamp(12rem, 18vh, 18rem) 2rem",
+            "background: #1d2021",
+            "background: #3c3836",
+            "border-right: 1px solid #3c3836",
+            "border-top: 1px solid #3c3836",
+            ".shell-booting",
+            "visibility: hidden",
         ]) {
-            if (!css.includes(token)) throw new Error(`responsive shell sizing lost: ${token}`);
+            if (!css.includes(token)) throw new Error(`shell look contract lost: ${token}`);
+        }
+        for (const token of ["#0b0d10", "#0e151b", "#0d1116", "#202830"]) {
+            if (css.includes(token)) throw new Error(`blue-black shell color remains: ${token}`);
+        }
+        if (!app.includes("data-shell-ready") || !app.includes("shellReady")) {
+            throw new Error("shell does not expose its ready handoff");
+        }
+        if (!view.includes("loading: shallotDark(document.body)") || !view.includes("requestAnimationFrame")) {
+            throw new Error("the existing Shallot loading screen is not handed off after the first frame");
         }
     },
 );

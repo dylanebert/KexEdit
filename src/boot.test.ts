@@ -40,6 +40,7 @@ check(
         subject: [
             "src/App.svelte",
             "src/View.svelte",
+            "src/app.css",
             "src/grid.ts",
             "public/scenes/scaffold.scene",
         ],
@@ -65,9 +66,55 @@ check(
                 if (message.type() === "error") errors.push(message.text());
             });
             await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+            const bootEvidence = await page.evaluate(() => {
+                const overlay = [...document.body.children].find(
+                    (candidate) => getComputedStyle(candidate).zIndex === "10000",
+                );
+                const shell = document.querySelector("[data-shell-ready]");
+                const rect = overlay?.getBoundingClientRect();
+                return {
+                    seen: Boolean(overlay),
+                    fullPage:
+                        rect !== undefined &&
+                        rect.left === 0 &&
+                        rect.top === 0 &&
+                        rect.width >= window.innerWidth &&
+                        rect.height >= window.innerHeight,
+                    hasSplash: overlay?.querySelector("svg") !== null,
+                    shellHidden: shell?.getAttribute("data-shell-ready") === "false",
+                };
+            });
+            if (!bootEvidence.seen || !bootEvidence.fullPage || !bootEvidence.hasSplash || !bootEvidence.shellHidden) {
+                throw new Error(`full-page Shallot splash handoff failed: ${JSON.stringify(bootEvidence)}`);
+            }
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
                 timeout: 15_000,
             });
+            const shellEvidence = await page.evaluate(() => {
+                const shell = document.querySelector<HTMLElement>("[data-region=shell]");
+                const context = document.querySelector<HTMLElement>("[data-region=context]");
+                const view = document.querySelector<HTMLElement>("[data-region=view-surface]");
+                const timeline = document.querySelector<HTMLElement>("[data-region=timeline-track]");
+                const timelinePane = document.querySelector<HTMLElement>("[data-region=timeline]");
+                const status = document.querySelector<HTMLElement>("[data-region=status]");
+                if (!shell || !context || !view || !timeline || !timelinePane || !status) {
+                    return { ready: false, flat: false, borders: false };
+                }
+                const style = (element: HTMLElement) => getComputedStyle(element);
+                const grounds = [context, view, timeline, status].map((element) => style(element).backgroundColor);
+                const border = "rgb(60, 56, 54)";
+                return {
+                    ready: shell.dataset.shellReady === "true" && shell.getAttribute("aria-hidden") === "false",
+                    flat: grounds.every((ground) => ground === "rgb(29, 32, 33)"),
+                    borders:
+                        style(context).borderRightColor === border &&
+                        style(timelinePane).borderTopColor === border &&
+                        style(status).borderTopColor === border,
+                };
+            });
+            if (!shellEvidence.ready || !shellEvidence.flat || !shellEvidence.borders) {
+                throw new Error(`flat Gruvbox shell handoff failed: ${JSON.stringify(shellEvidence)}`);
+            }
             const verdict = await page.evaluate(async () => {
                 const harness = window.__harness;
                 if (!harness?.run) throw new Error("page did not install window.__harness.run");
@@ -133,7 +180,7 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; full-page-splash/flat-gruvbox-borders/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);

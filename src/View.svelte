@@ -1,15 +1,17 @@
 <script lang="ts">
     import { installHarness } from "@dylanebert/shallot/harness";
-    import { AmbientLight, Camera, DirectionalLight, Part, run } from "@dylanebert/shallot";
+    import { AmbientLight, Camera, DirectionalLight, Part, run, shallotDark } from "@dylanebert/shallot";
     import { Orbit } from "@dylanebert/shallot/extras";
     import { onMount } from "svelte";
     import project from "virtual:project";
     import { GridPlugin, readGridMaterialContract, readGridProbe } from "./grid";
 
+    let { onReady }: { onReady: () => void } = $props();
     let canvas: HTMLCanvasElement;
 
     onMount(() => {
         let disposed = false;
+        let revealFrame = 0;
         let app: Awaited<ReturnType<typeof run>> | undefined;
 
         void run({
@@ -17,6 +19,8 @@
             pixelRatio: project.pixelRatio ?? undefined,
             plugins: [...project.plugins, GridPlugin],
             scene: project.scene ?? undefined,
+            // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
+            loading: shallotDark(document.body),
         }).then(
             (next) => {
                 if (disposed) {
@@ -66,6 +70,16 @@
                 (globalThis as unknown as Window & {
                     __kexeditGridProbe?: typeof readGridProbe;
                 }).__kexeditGridProbe = readGridProbe;
+
+                const revealWhenReady = () => {
+                    if (disposed) return;
+                    if (harness.ready) {
+                        onReady();
+                        return;
+                    }
+                    revealFrame = requestAnimationFrame(revealWhenReady);
+                };
+                revealFrame = requestAnimationFrame(revealWhenReady);
             },
             (error: unknown) => {
                 console.error("KexEdit failed to boot Shallot", error);
@@ -74,6 +88,7 @@
 
         return () => {
             disposed = true;
+            cancelAnimationFrame(revealFrame);
             delete (globalThis as unknown as Window & {
                 __kexeditGridProbe?: typeof readGridProbe;
             }).__kexeditGridProbe;

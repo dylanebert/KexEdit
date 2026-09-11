@@ -32,9 +32,10 @@ const GRID_PROBE_ZERO = new Uint32Array([0]);
 // Unity-like world axes on the XZ ground plane: X is red and Z is blue. There is no Y axis
 // material because this pass only represents the ground plane.
 export const GRID_MATERIAL_CONTRACT = {
-    neutral: [0.28, 0.34, 0.4, 1],
-    axisX: [0.9, 0.12, 0.1, 1],
-    axisZ: [0.12, 0.32, 0.95, 1],
+    // Gruvbox dark2 #504945, neutral red #cc241d, neutral blue #458588.
+    neutral: [0.314, 0.286, 0.271, 1],
+    axisX: [0.8, 0.141, 0.114, 1],
+    axisZ: [0.271, 0.522, 0.533, 1],
     hasYAxis: false,
 } as const;
 
@@ -104,7 +105,7 @@ fn fs(input: VSOut) -> FragOut {
 
     let minor = line(worldPos, 1.0);
     let major = line(worldPos, 10.0);
-    let l = max(minor * 0.12, major * 0.22);
+    let l = max(minor * 0.08, major * 0.14);
     if (l < 0.01) { discard; }
 
     var color = grid.gridColor.rgb;
@@ -114,11 +115,11 @@ fn fs(input: VSOut) -> FragOut {
     let zAxis = 1.0 - min(abs(worldPos.x) / aw.x, 1.0);
     if (xAxis > 0.01) {
         color = mix(color, grid.axisXColor.rgb, xAxis);
-        alpha = max(alpha, xAxis * 0.72 * fade);
+        alpha = max(alpha, xAxis * 0.42 * fade);
     }
     if (zAxis > 0.01) {
         color = mix(color, grid.axisZColor.rgb, zAxis);
-        alpha = max(alpha, zAxis * 0.72 * fade);
+        alpha = max(alpha, zAxis * 0.3 * fade);
     }
 
     atomicAdd(&gridProbe, 1u);
