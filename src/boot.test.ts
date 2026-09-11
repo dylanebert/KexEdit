@@ -374,7 +374,7 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gutter=${JSON.stringify(shellEvidence.gutterValues)}px; splash/gutter-borders/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gutter=${JSON.stringify(shellEvidence.gutterValues)}px; seamPixels=${JSON.stringify(seamEvidence.sequences)}; splash/gutter-borders/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
