@@ -1,0 +1,32 @@
+{
+    "name": "kexedit",
+    "private": true,
+    "type": "module",
+    "packageManager": "bun@1.4.2",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "postinstall": "bun node_modules/@dylanebert/shallot/scripts/tooling.ts",
+        "test": "shallot test",
+        "test:integration": "shallot test:integration",
+        "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
+    },
+    "dependencies": {
+        "@dylanebert/shallot": "github:dylanebert/shallot#1ad4d7a500c13b4a3c0422a3b09584834d5e626d",
+        "svelte": "^5.56.10",
+        "typegpu": "~0.12.5"
+    },
+    "devDependencies": {
+        "@sveltejs/vite-plugin-svelte": "^7.3.0",
+        "@tsconfig/svelte": "^5.0.8",
+        "@types/bun": "^1.4.2",
+        "@types/node": "^26.2.0",
+        "@typescript/native": "npm:typescript@7",
+        "@webgpu/types": "^0.1.72",
+        "playwright": "^1.63.0",
+        "svelte-check": "^4.7.6",
+        "typescript": "~6",
+        "unplugin-typegpu": "~0.12.3",
+        "vite": "^8.3.0"
+    }
+}

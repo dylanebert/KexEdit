@@ -1,0 +1,11 @@
+{
+    "$schema": "https://raw.githubusercontent.com/dylanebert/shallot/main/shallot.schema.json",
+    "scene": "scenes/scaffold.scene",
+    "plugins": {
+        "Orbit": true
+    },
+    "check": [
+        { "file": "src/shell.test.ts" },
+        { "file": "src/boot.test.ts" }
+    ]
+}
