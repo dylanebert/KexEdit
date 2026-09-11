@@ -1,4 +1,0 @@
-{
-    "$schema": "https://raw.githubusercontent.com/dylanebert/shallot/main/shallot.schema.json",
-    "check": [{ "file": "src/document/canonical.test.ts" }]
-}
