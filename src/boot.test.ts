@@ -63,6 +63,19 @@ check(
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
                 timeout: 15_000,
             });
+            const verdict = await page.evaluate(async () => {
+                const harness = window.__harness;
+                if (!harness?.run) throw new Error("page did not install window.__harness.run");
+                return harness.run({ size: "integration", requires: ["chromium"] });
+            });
+            if (
+                verdict.ok !== true ||
+                !Array.isArray(verdict.checks) ||
+                verdict.checks.length === 0 ||
+                verdict.checks.some((check) => check.ok !== true)
+            ) {
+                throw new Error(`harness protocol failed: ${JSON.stringify(verdict)}`);
+            }
             const evidence = await page.evaluate(async () => {
                 const adapter = await navigator.gpu?.requestAdapter();
                 const info = (adapter as (GPUAdapter & { info?: Record<string, string> }) | undefined)?.info;
