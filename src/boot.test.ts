@@ -83,7 +83,8 @@ check(
             }
             const requiredChecks = [
                 "GPU grid material drew",
-                "one cube is present",
+                "no placeholder cube remains",
+                "grid/axis material contract is present",
                 "standard Orbit controls camera",
                 "standard scene lighting is present",
             ];

@@ -29,6 +29,15 @@ const GRID_UNIFORM_BYTES = GRID_UNIFORM_FLOATS * 4;
 const GRID_PROBE_BYTES = 4;
 const GRID_PROBE_ZERO = new Uint32Array([0]);
 
+// Unity-like world axes on the XZ ground plane: X is red and Z is blue. There is no Y axis
+// material because this pass only represents the ground plane.
+export const GRID_MATERIAL_CONTRACT = {
+    neutral: [0.28, 0.34, 0.4, 1],
+    axisX: [0.9, 0.12, 0.1, 1],
+    axisZ: [0.12, 0.32, 0.95, 1],
+    hasYAxis: false,
+} as const;
+
 const GRID_SHADER = /* wgsl */ `
 struct Grid {
     viewProj: mat4x4<f32>,
@@ -95,7 +104,7 @@ fn fs(input: VSOut) -> FragOut {
 
     let minor = line(worldPos, 1.0);
     let major = line(worldPos, 10.0);
-    let l = max(minor * 0.08, major * 0.13);
+    let l = max(minor * 0.12, major * 0.22);
     if (l < 0.01) { discard; }
 
     var color = grid.gridColor.rgb;
@@ -105,11 +114,11 @@ fn fs(input: VSOut) -> FragOut {
     let zAxis = 1.0 - min(abs(worldPos.x) / aw.x, 1.0);
     if (xAxis > 0.01) {
         color = mix(color, grid.axisXColor.rgb, xAxis);
-        alpha = max(alpha, xAxis * 0.8 * fade);
+        alpha = max(alpha, xAxis * 0.72 * fade);
     }
     if (zAxis > 0.01) {
         color = mix(color, grid.axisZColor.rgb, zAxis);
-        alpha = max(alpha, zAxis * 0.8 * fade);
+        alpha = max(alpha, zAxis * 0.72 * fade);
     }
 
     atomicAdd(&gridProbe, 1u);
@@ -160,10 +169,10 @@ function drawGrid(eid: number, view: View): void {
     gridData[32] = Transform.pos.x.get(eid);
     gridData[33] = Transform.pos.y.get(eid);
     gridData[34] = Transform.pos.z.get(eid);
-    // Quiet neutral lines with the two standard editor axes as the only strong accents.
-    gridData.set([0.24, 0.29, 0.34, 1], 36);
-    gridData.set([0.72, 0.28, 0.25, 1], 40);
-    gridData.set([0.25, 0.58, 0.68, 1], 44);
+    // Neutral hierarchy stays restrained; the two ground-plane axes carry the only strong accents.
+    gridData.set(GRID_MATERIAL_CONTRACT.neutral, 36);
+    gridData.set(GRID_MATERIAL_CONTRACT.axisX, 40);
+    gridData.set(GRID_MATERIAL_CONTRACT.axisZ, 44);
     device.queue.writeBuffer(grid.uniform, 0, gridData);
     device.queue.writeBuffer(grid.probe, 0, GRID_PROBE_ZERO);
 
@@ -193,6 +202,24 @@ function drawGrid(eid: number, view: View): void {
 }
 
 export type GridProbe = { samples: number; drawn: boolean };
+
+export type GridMaterialContract = {
+    present: boolean;
+    neutral: number[];
+    axisX: number[];
+    axisZ: number[];
+    hasYAxis: false;
+};
+
+export function readGridMaterialContract(): GridMaterialContract {
+    return {
+        present: Boolean(grid.pipeline && grid.uniform && grid.probe && grid.layout),
+        neutral: [...GRID_MATERIAL_CONTRACT.neutral],
+        axisX: [...GRID_MATERIAL_CONTRACT.axisX],
+        axisZ: [...GRID_MATERIAL_CONTRACT.axisZ],
+        hasYAxis: false,
+    };
+}
 
 let probeRead: Promise<GridProbe> | null = null;
 

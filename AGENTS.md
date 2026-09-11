@@ -12,7 +12,7 @@ The first looked-at pass was too busy, so the requested refinement removes persi
 
 Sizing is responsive but bounded: the context pane is `clamp(16rem, 18vw, 24rem)`, the timeline is `clamp(12rem, 18vh, 18rem)`, and the view owns the remainder. At 2560×1440 those resolve to 24rem (384px) and 18vh (259.2px), with a 32px status line.
 
-The placeholder cube uses Shallot's established standard scene lighting: ambient `0xd0dcec` plus directional `-0.4 -1 -0.55`, `0xfff4e0`, intensity `1.1`. This refinement records the requested direction, not human acceptance.
+The viewport has no placeholder mesh. The GPU ground grid is the sole spatial referent: restrained neutral minor and major lines, a red X axis, and a blue Z axis. Unity-like axis semantics apply only on the XZ ground plane; there is no visible Y line. The scene retains Shallot's established standard lighting components, ambient `0xd0dcec` plus directional `-0.4 -1 -0.55`, `0xfff4e0`, intensity `1.1`, as structural scene defaults rather than visible acceptance evidence. Dark panels are accepted as the direction; grid visibility and axis distinction remain requested refinements, and overall S1 acceptance is still pending.
 
 <!-- kex-test-surface
 {"version":1,"status":"active","verdict":"executable population","authority":"shallot.json","native":{"test":"shallot test","check":"shallot check && svelte-check","changed":null}}
