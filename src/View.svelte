@@ -1,6 +1,6 @@
 <script lang="ts">
     import { installHarness } from "@dylanebert/shallot/harness";
-    import { Camera, Part, run } from "@dylanebert/shallot";
+    import { AmbientLight, Camera, DirectionalLight, Part, run } from "@dylanebert/shallot";
     import { Orbit } from "@dylanebert/shallot/extras";
     import { onMount } from "svelte";
     import project from "virtual:project";
@@ -31,14 +31,19 @@
                     const grid = await readGridProbe();
                     const cube = app ? [...app.state.query([Part])].length === 1 : false;
                     const orbit = app ? [...app.state.query([Camera, Orbit])].length === 1 : false;
+                    const standardLighting = app
+                        ? [...app.state.query([AmbientLight])].length === 1 &&
+                          [...app.state.query([DirectionalLight])].length === 1
+                        : false;
                     return {
                         ...(boot ?? { ok: true, checks: [] }),
-                        ok: (boot?.ok ?? true) && grid.drawn && cube && orbit,
+                        ok: (boot?.ok ?? true) && grid.drawn && cube && orbit && standardLighting,
                         checks: [
                             ...(boot?.checks ?? []),
                             { name: "GPU grid material drew", ok: grid.drawn, data: { samples: grid.samples } },
                             { name: "one cube is present", ok: cube },
                             { name: "standard Orbit controls camera", ok: orbit },
+                            { name: "standard scene lighting is present", ok: standardLighting },
                         ],
                     };
                 };

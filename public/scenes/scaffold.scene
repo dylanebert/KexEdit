@@ -1,4 +1,7 @@
 <scene>
+    <a ambient-light="color: 0xd0dcec" />
+    <a directional-light="direction: -0.4 -1 -0.55; color: 0xfff4e0; intensity: 1.1" />
+
     <a id="camera" camera="clear-color: 0x0b0d10" sear depth glaze transform orbit="distance: 6; yaw: 0.6; pitch: 0.35" />
     <a id="cube" part transform color="rgba: 0.18 0.66 0.82" />
 </scene>

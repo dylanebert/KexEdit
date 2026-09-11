@@ -13,7 +13,6 @@
 </script>
 
 <section class={`panel panel-${region}`} data-region={region} aria-label={title}>
-    <header class="panel-title">{title}</header>
     <div class="panel-content">
         {@render children()}
     </div>

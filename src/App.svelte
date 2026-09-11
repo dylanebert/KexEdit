@@ -11,7 +11,7 @@
 
 <main class="shell" data-region="shell">
     <Panel title="Context" region="context">
-        <div class="panel-placeholder">Select an object to edit its properties.</div>
+        <div></div>
     </Panel>
     <Panel title="View" region="view">
         <View />

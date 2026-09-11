@@ -8,7 +8,11 @@ The carrier is native to this project. `test` runs the hermetic Svelte-compiler 
 
 ## Provisional S1 Look
 
-The pane ground is near-black `#0b0d10`, taking the Omarchy screensaver's black field as the quiet base. Pane boundaries are a shallow `#202830` surface step, not a bright rule. The status line keeps that step as a hairline and uses restrained JetBrains Mono labels, echoing the Shallot splash's terminal clarity without adding a standing accent. The view pane is one blue-black lift, `#0e151b`; these are provisional until the look unit and have not received human acceptance.
+The first looked-at pass was too busy, so the requested refinement removes persistent panel headers and speculative empty-state chrome. The shell keeps only the three pane surfaces, their quiet `#202830` separation, one canvas in the view, and the status line. The pane ground remains near-black `#0b0d10`, with the view as one blue-black lift, `#0e151b`; these are provisional and have not received human acceptance.
+
+Sizing is responsive but bounded: the context pane is `clamp(16rem, 18vw, 24rem)`, the timeline is `clamp(12rem, 18vh, 18rem)`, and the view owns the remainder. At 2560×1440 those resolve to 24rem (384px) and 18vh (259.2px), with a 32px status line.
+
+The placeholder cube uses Shallot's established standard scene lighting: ambient `0xd0dcec` plus directional `-0.4 -1 -0.55`, `0xfff4e0`, intensity `1.1`. This refinement records the requested direction, not human acceptance.
 
 <!-- kex-test-surface
 {"version":1,"status":"active","verdict":"executable population","authority":"shallot.json","native":{"test":"shallot test","check":"shallot check && svelte-check","changed":null}}

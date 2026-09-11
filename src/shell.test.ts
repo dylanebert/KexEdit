@@ -71,12 +71,17 @@ function shellPanels(source: string): AstNode[] {
 }
 
 check(
-    "the compiled shell preserves four regions and one view canvas",
-    { claim: "the shell drops a region or gives the view more than one canvas", budget: 250 },
+    "the compiled shell preserves four regions, one view canvas, and a quiet layout",
+    {
+        claim: "the shell drops a region, gives the view more than one canvas, or regresses its quiet layout",
+        budget: 250,
+    },
     () => {
         const app = read("src/App.svelte");
         const view = read("src/View.svelte");
-        for (const source of [app, view, read("src/Panel.svelte"), read("src/Timeline.svelte"), read("src/Status.svelte")]) {
+        const panel = read("src/Panel.svelte");
+        const css = read("src/app.css");
+        for (const source of [app, view, panel, read("src/Timeline.svelte"), read("src/Status.svelte")]) {
             compile(source, { generate: "client" });
         }
 
@@ -101,5 +106,15 @@ check(
         if (viewUses.length !== 1) throw new Error("the view panel does not use exactly one View component");
         const canvases = viewNames.filter((name) => name === "canvas");
         if (canvases.length !== 1) throw new Error(`view owns ${canvases.length} canvases`);
+
+        if (/<header\b|panel-title/.test(panel) || /\.panel-title\b/.test(css)) {
+            throw new Error("panel headers must not consume persistent shell space");
+        }
+        for (const token of [
+            "grid-template-columns: clamp(16rem, 18vw, 24rem) minmax(0, 1fr)",
+            "grid-template-rows: minmax(0, 1fr) clamp(12rem, 18vh, 18rem) 2rem",
+        ]) {
+            if (!css.includes(token)) throw new Error(`responsive shell sizing lost: ${token}`);
+        }
     },
 );
