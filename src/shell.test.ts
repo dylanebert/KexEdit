@@ -113,10 +113,10 @@ check(
         for (const token of [
             "grid-template-columns: var(--shell-context-width) minmax(0, 1fr)",
             "grid-template-rows: minmax(0, 1fr) var(--shell-timeline-height) var(--shell-status-height)",
-            "gap: var(--pane-gutter)",
-            "--pane-gutter: 6px",
+            "gap: 0",
             "--shell-ground: var(--pane-ground)",
-            "border: 1px solid var(--pane-border)",
+            "border-left: 1px solid var(--pane-border)",
+            "border-top: 1px solid var(--pane-border)",
             "background: var(--pane-ground)",
             "background: var(--shell-ground)",
             "animation: pane-enter 180ms",
@@ -127,8 +127,15 @@ check(
         ]) {
             if (!css.includes(token)) throw new Error(`shell look contract lost: ${token}`);
         }
-        if (css.includes("border-right") || css.includes("border-top")) {
-            throw new Error("pane boundaries must be independent full borders, not shared edge lines");
+        if (css.includes("--pane-gutter")) {
+            throw new Error("shell panes must not retain a gutter variable");
+        }
+        const shellSurface = css.match(/\.panel,\s*\.status-line\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+        if (shellSurface.includes("border")) {
+            throw new Error("shell panes must have no outer borders");
+        }
+        for (const selector of [".panel-view", ".panel-timeline", ".status-line"]) {
+            if (!css.includes(selector)) throw new Error(`missing internal divider owner: ${selector}`);
         }
         for (const token of ["#0b0d10", "#0e151b", "#0d1116", "#202830"]) {
             if (css.includes(token)) throw new Error(`blue-black shell color remains: ${token}`);

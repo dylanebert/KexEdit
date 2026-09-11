@@ -1,10 +1,8 @@
 :root {
     /* Measured from the active custom Omarchy Gruvbox hard theme: background #1d2021, dark1 #3c3836. */
     --pane-ground: #1d2021;
-    /* The grid gap is page void, not a separator surface. Only pane borders carry dark1. */
     --shell-ground: var(--pane-ground);
     --pane-border: #3c3836;
-    --pane-gutter: 6px;
     --shell-context-width: clamp(16rem, 18vw, 24rem);
     --shell-timeline-height: clamp(12rem, 18vh, 18rem);
     --shell-status-height: 2rem;
@@ -40,7 +38,7 @@ body {
     height: 100%;
     grid-template-columns: var(--shell-context-width) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) var(--shell-timeline-height) var(--shell-status-height);
-    gap: var(--pane-gutter);
+    gap: 0;
     background: var(--shell-ground);
 }
 
@@ -91,7 +89,6 @@ body {
 .status-line {
     min-width: 0;
     min-height: 0;
-    border: 1px solid var(--pane-border);
     background: var(--pane-ground);
 }
 
@@ -127,11 +124,13 @@ body {
 .panel-view {
     grid-column: 2;
     grid-row: 1;
+    border-left: 1px solid var(--pane-border);
 }
 
 .panel-timeline {
     grid-column: 1 / -1;
     grid-row: 2;
+    border-top: 1px solid var(--pane-border);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -173,6 +172,7 @@ canvas {
 .status-line {
     grid-column: 1 / -1;
     grid-row: 3;
+    border-top: 1px solid var(--pane-border);
     display: flex;
     align-items: center;
     justify-content: space-between;

@@ -93,8 +93,8 @@ check(
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
                 timeout: 15_000,
             });
-            // Let the short compositor entrance settle before measuring layout rectangles; transforms would
-            // otherwise make a six-pixel CSS gutter look larger while the panes are scaling in.
+            // Let the short compositor entrance settle before measuring seam geometry; transforms would
+            // otherwise make a one-pixel divider appear displaced while the panes are scaling in.
             await page.waitForTimeout(260);
             const shellEvidence = await page.evaluate(async () => {
                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
@@ -106,23 +106,23 @@ check(
                 const status = document.querySelector<HTMLElement>("[data-region=status]");
                 const canvas = document.querySelector<HTMLCanvasElement>("canvas");
                 if (!shell || !context || !viewPane || !view || !timeline || !timelinePane || !status || !canvas) {
-                    return { ready: false, flat: false, borders: false, gutter: false, clearMatch: false };
+                    return { ready: false, flat: false, dividers: false, gap: false, clearMatch: false };
                 }
                 const style = (element: HTMLElement) => getComputedStyle(element);
                 const grounds = [context, view, timeline, status].map((element) => style(element).backgroundColor);
                 const border = "rgb(60, 56, 54)";
-                const fullBorder = (element: HTMLElement) =>
+                const noOuterBorder = (element: HTMLElement, allowed: "borderLeftWidth" | "borderTopWidth" | null) =>
                     ["borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"].every(
-                        (side) => style(element)[side as "borderTopWidth"] === "1px",
-                    ) &&
-                    ["borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"].every(
-                        (side) => style(element)[side as "borderTopColor"] === border,
+                        (side) => side === allowed || style(element)[side as "borderTopWidth"] === "0px",
                     );
+                const divider = (element: HTMLElement, side: "borderLeftWidth" | "borderTopWidth") =>
+                    style(element)[side] === "1px" &&
+                    style(element)[side === "borderLeftWidth" ? "borderLeftColor" : "borderTopColor"] === border;
                 const contextRect = context.getBoundingClientRect();
                 const viewRect = viewPane.getBoundingClientRect();
                 const timelineRect = timelinePane.getBoundingClientRect();
                 const statusRect = status.getBoundingClientRect();
-                const gutterValues = [
+                const gapValues = [
                     viewRect.left - contextRect.right,
                     timelineRect.top - contextRect.bottom,
                     statusRect.top - timelineRect.bottom,
@@ -135,7 +135,7 @@ check(
                 const sampleContext = sampleSurface.getContext("2d");
                 if (!sampleContext || rgb.length !== 3) {
                     bitmap.close();
-                    return { ready: false, flat: false, borders: false, gutter: false, clearMatch: false };
+                    return { ready: false, flat: false, dividers: false, gap: false, clearMatch: false };
                 }
                 sampleContext.drawImage(bitmap, 0, 0);
                 const image = sampleContext.getImageData(0, 0, bitmap.width, bitmap.height);
@@ -155,9 +155,16 @@ check(
                 return {
                     ready: shell.dataset.shellReady === "true" && shell.getAttribute("aria-hidden") === "false",
                     flat: grounds.every((ground) => ground === "rgb(29, 32, 33)"),
-                    borders: [context, viewPane, timelinePane, status].every(fullBorder),
-                    gutter: gutterValues.every((value) => Math.abs(value - 6) < 0.1),
-                    gutterValues,
+                    dividers:
+                        noOuterBorder(context, null) &&
+                        noOuterBorder(viewPane, "borderLeftWidth") &&
+                        noOuterBorder(timelinePane, "borderTopWidth") &&
+                        noOuterBorder(status, "borderTopWidth") &&
+                        divider(viewPane, "borderLeftWidth") &&
+                        divider(timelinePane, "borderTopWidth") &&
+                        divider(status, "borderTopWidth"),
+                    gap: gapValues.every((value) => Math.abs(value) < 0.1),
+                    gapValues,
                     clearMatch: clearMatches >= 3,
                     paneColor,
                     clearSamples: samples,
@@ -168,12 +175,12 @@ check(
             if (
                 !shellEvidence.ready ||
                 !shellEvidence.flat ||
-                !shellEvidence.borders ||
-                !shellEvidence.gutter ||
+                !shellEvidence.dividers ||
+                !shellEvidence.gap ||
                 !shellEvidence.clearMatch ||
                 !shellEvidence.animation
             ) {
-                throw new Error(`shell handoff/gutter/clear-color/entrance failed: ${JSON.stringify(shellEvidence)}`);
+                throw new Error(`shell handoff/divider/zero-gap/clear-color/entrance failed: ${JSON.stringify(shellEvidence)}`);
             }
             await page.waitForTimeout(260);
             const entranceEvidence = await page.evaluate(() => {
@@ -221,47 +228,36 @@ check(
                         .map((channel) => channel.toString(16).padStart(2, "0"))
                         .join("");
                 };
-                const horizontal = (left: number, right: number, y: number): string[] => {
-                    const first = Math.round(left) - 1;
-                    const last = Math.round(right);
-                    return Array.from({ length: last - first + 1 }, (_, offset) => colorAt(first + offset, y));
+                const horizontal = (left: number, y: number): string[] => {
+                    const seam = Math.round(left);
+                    return [colorAt(seam - 1, y), colorAt(seam, y), colorAt(seam + 1, y)];
                 };
-                const vertical = (top: number, bottom: number, x: number): string[] => {
-                    const first = Math.round(top) - 1;
-                    const last = Math.round(bottom);
-                    return Array.from({ length: last - first + 1 }, (_, offset) => colorAt(x, first + offset));
+                const vertical = (top: number, x: number): string[] => {
+                    const seam = Math.round(top);
+                    return [colorAt(x, seam - 1), colorAt(x, seam), colorAt(x, seam + 1)];
                 };
                 const contextRect = contextPane.getBoundingClientRect();
                 const viewRect = viewPane.getBoundingClientRect();
                 const timelineRect = timelinePane.getBoundingClientRect();
                 const statusRect = status.getBoundingClientRect();
                 const sequences = {
-                    "context-view": horizontal(
-                        contextRect.right,
-                        viewRect.left,
-                        contextRect.top + contextRect.height / 2,
-                    ),
-                    "view-timeline": vertical(
-                        viewRect.bottom,
-                        timelineRect.top,
-                        viewRect.left + viewRect.width * 0.75,
-                    ),
-                    "timeline-status": vertical(
-                        timelineRect.bottom,
-                        statusRect.top,
-                        statusRect.left + statusRect.width * 0.75,
-                    ),
+                    "context-view": horizontal(contextRect.right, contextRect.top + contextRect.height / 2),
+                    "view-timeline": vertical(viewRect.bottom, viewRect.left + viewRect.width * 0.75),
+                    "timeline-status": vertical(timelineRect.bottom, statusRect.left + statusRect.width * 0.75),
                 };
-                const expected = ["3c3836ff", "1d2021ff", "1d2021ff", "1d2021ff", "1d2021ff", "1d2021ff", "1d2021ff", "3c3836ff"];
+                const dividerColor = "3c3836ff";
                 return {
                     pass: Object.values(sequences).every(
-                        (sequence) => sequence.length === expected.length && sequence.every((color, index) => color === expected[index]),
+                        (sequence) =>
+                            sequence.length === 3 &&
+                            sequence[1] === dividerColor &&
+                            sequence.filter((color) => color === dividerColor).length === 1,
                     ),
                     sequences,
                 };
             }, shellScreenshot.toString("base64"));
             if (!seamEvidence.pass) {
-                throw new Error(`pane seam pixel sequence failed: ${JSON.stringify(seamEvidence)}`);
+                throw new Error(`pane divider pixel sequence failed: ${JSON.stringify(seamEvidence)}`);
             }
             reducedPage = await browser.newPage();
             await reducedPage.emulateMedia({ reducedMotion: "reduce" });
@@ -374,7 +370,7 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gutter=${JSON.stringify(shellEvidence.gutterValues)}px; seamPixels=${JSON.stringify(seamEvidence.sequences)}; splash/gutter-borders/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; dividerPixels=${JSON.stringify(seamEvidence.sequences)}; splash/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
