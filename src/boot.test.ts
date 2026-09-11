@@ -93,6 +93,9 @@ check(
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
                 timeout: 15_000,
             });
+            // Let the short compositor entrance settle before measuring layout rectangles; transforms would
+            // otherwise make a six-pixel CSS gutter look larger while the panes are scaling in.
+            await page.waitForTimeout(260);
             const shellEvidence = await page.evaluate(async () => {
                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
                 const context = document.querySelector<HTMLElement>("[data-region=context]");
