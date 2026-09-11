@@ -85,6 +85,7 @@ check(
                 "GPU grid material drew",
                 "one cube is present",
                 "standard Orbit controls camera",
+                "standard scene lighting is present",
             ];
             for (const name of requiredChecks) {
                 const check = verdict.checks.find((candidate) => candidate.name === name);
@@ -131,7 +132,7 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; orbit/cube checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; orbit/cube/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
