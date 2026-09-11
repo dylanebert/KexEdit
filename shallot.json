@@ -6,6 +6,7 @@
     },
     "check": [
         { "file": "src/shell.test.ts" },
-        { "file": "src/boot.test.ts" }
+        { "file": "src/boot.test.ts" },
+        { "file": "src/grid.test.ts" }
     ]
 }

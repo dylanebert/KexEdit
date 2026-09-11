@@ -31,14 +31,15 @@ body {
     grid-template-columns: 240px minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) 156px 28px;
     gap: 1px;
-    background: #2a3038;
+    /* A shallow surface step, rather than a bright rule, keeps the pane map quiet against the screensaver-black ground. */
+    background: #202830;
 }
 
 .panel,
 .status-line {
     min-width: 0;
     min-height: 0;
-    background: #11151a;
+    background: #0b0d10;
 }
 
 .panel {
@@ -91,7 +92,8 @@ body {
     position: relative;
     width: 100%;
     height: 100%;
-    background: #0d1720;
+    /* The view lifts one blue-black step from the black shell without becoming a second accent. */
+    background: #0e151b;
 }
 
 canvas {
@@ -104,7 +106,7 @@ canvas {
     position: relative;
     width: 100%;
     height: 100%;
-    background: #0e1217;
+    background: #0d1116;
 }
 
 .timeline-playhead {
@@ -126,6 +128,7 @@ canvas {
 }
 
 .status-line {
+    border-top: 1px solid #202830;
     grid-column: 1 / -1;
     grid-row: 3;
     display: flex;

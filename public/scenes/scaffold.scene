@@ -1,4 +1,4 @@
 <scene>
-    <a id="camera" camera sear glaze transform orbit="distance: 6; yaw: 0.6; pitch: 0.35" />
+    <a id="camera" camera="clear-color: 0x0b0d10" sear depth glaze transform orbit="distance: 6; yaw: 0.6; pitch: 0.35" />
     <a id="cube" part transform color="rgba: 0.18 0.66 0.82" />
 </scene>

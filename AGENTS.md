@@ -6,6 +6,10 @@ KexEdit is the MIT FVD coaster editor. The live S0 surface is an ejected Vite + 
 
 The carrier is native to this project. `test` runs the hermetic Svelte-compiler unit witness; `check` runs the manifest-authority surface check and `svelte-check`; `test:integration` selects the Chromium/GPU browser row by changed subject. Every check is listed once in the root `shallot.json` authority.
 
+## Provisional S1 Look
+
+The pane ground is near-black `#0b0d10`, taking the Omarchy screensaver's black field as the quiet base. Pane boundaries are a shallow `#202830` surface step, not a bright rule. The status line keeps that step as a hairline and uses restrained JetBrains Mono labels, echoing the Shallot splash's terminal clarity without adding a standing accent. The view pane is one blue-black lift, `#0e151b`; these are provisional until the look unit and have not received human acceptance.
+
 <!-- kex-test-surface
 {"version":1,"status":"active","verdict":"executable population","authority":"shallot.json","native":{"test":"shallot test","check":"shallot check && svelte-check","changed":null}}
 -->

@@ -37,7 +37,12 @@ check(
         claim: "the view fails to boot or leaves a blank canvas",
         size: "integration",
         requires: ["chromium"],
-        subject: ["src/App.svelte", "src/View.svelte", "public/scenes/scaffold.scene"],
+        subject: [
+            "src/App.svelte",
+            "src/View.svelte",
+            "src/grid.ts",
+            "public/scenes/scaffold.scene",
+        ],
         budget: 20_000,
     },
     async () => {
@@ -76,6 +81,24 @@ check(
             ) {
                 throw new Error(`harness protocol failed: ${JSON.stringify(verdict)}`);
             }
+            const requiredChecks = [
+                "GPU grid material drew",
+                "one cube is present",
+                "standard Orbit controls camera",
+            ];
+            for (const name of requiredChecks) {
+                const check = verdict.checks.find((candidate) => candidate.name === name);
+                if (!check?.ok) throw new Error(`missing passing scene evidence: ${name}`);
+            }
+            const grid = await page.evaluate(async () => {
+                const probe = (window as Window & {
+                    __kexeditGridProbe?: () => Promise<{ samples: number; drawn: boolean }>;
+                }).__kexeditGridProbe;
+                return (await probe?.()) ?? { samples: 0, drawn: false };
+            });
+            if (!grid.drawn || grid.samples <= 0) {
+                throw new Error(`GPU grid probe failed: ${JSON.stringify(grid)}`);
+            }
             const evidence = await page.evaluate(async () => {
                 const adapter = await navigator.gpu?.requestAdapter();
                 const info = (adapter as (GPUAdapter & { info?: Record<string, string> }) | undefined)?.info;
@@ -107,7 +130,9 @@ check(
             });
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
-            console.log(`browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}`);
+            console.log(
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; orbit/cube checks=pass`,
+            );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
             }
