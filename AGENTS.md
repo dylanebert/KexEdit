@@ -1,17 +1,11 @@
 # KexEdit
 
-KexEdit is the MIT FVD coaster editor. This pinned `1.0-beta` admission contains no executable or product population yet, so it must not claim a fake passing suite.
+KexEdit is the MIT FVD coaster editor. The live S0 surface is an ejected Vite + Svelte app: Vite owns `index.html` and `vite.config.ts`, `projectPlugin(".")` turns `shallot.json` into the plugin set, and `vite` serves the app. The view pane owns the one plain canvas; `View.svelte` starts Shallot in its mount effect and disposes the app in cleanup. `window.__harness` is the browser-check protocol, not a second UI surface. There is no iframe; any future overlay is reserved for in-view HUD content.
 
 ## Test Surface
 
-The native meanings are reserved for the first delivery that adds executable source:
-
-- `test`: fast behavioral default, hermetic and premise-free.
-- `check`: fast static and structural work, including whole-population authority integrity.
-- `test:changed`: only after a real non-default tier exists.
-
-The first executable delivery must add native `test` and `check` entry points, one machine-readable check authority, and a real red-first behavior check in the same delivery. The null commands below are intentional, so the root must not execute a fake command. Until then, the root admission witness reads the declaration below and reports `not-applicable: no executable population`; an executable appearing before that delivery is a red, not a passing empty suite.
+The carrier is native to this project. `test` runs the hermetic Svelte-compiler unit witness; `check` runs the manifest-authority surface check and `svelte-check`; `test:integration` selects the Chromium/GPU browser row by changed subject. Every check is listed once in the root `shallot.json` authority.
 
 <!-- kex-test-surface
-{"version":1,"status":"not-applicable","verdict":"no executable population","authority":null,"native":{"test":null,"check":null,"changed":null}}
+{"version":1,"status":"active","verdict":"executable population","authority":"shallot.json","native":{"test":"shallot test","check":"shallot check && svelte-check","changed":null}}
 -->
