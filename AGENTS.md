@@ -1,13 +1,17 @@
 # KexEdit
 
-KexEdit is the MIT FVD coaster editor. This `1.0-beta` line starts with the document layer (layer 1 of `strategy/kexedit.md`): named channels of animation curves over integer ticks, saved as canonical JSON. `src/document/` holds it.
+KexEdit is the MIT FVD coaster editor. This pinned `1.0-beta` admission contains no executable or product population yet, so it must not claim a fake passing suite.
 
 ## Test Surface
 
-Declarations live in `shallot.json`; an undeclared `*.test.ts` refuses at load. Commands, from this root:
+The native meanings are reserved for the first delivery that adds executable source:
 
-- `bun run test`: hermetic unit checks.
-- `bun run check`: `tsc`, `biome`, and `shallot check` (population and workflow drift).
-- `bun run list`: the declared population.
-- `bun run test:integration -- --base <base> --diff <head>`: declared integration rows selected by subject.
-- `bun run workflow`: regenerates `.github/workflows/test-surface.yml`; never edit it by hand.
+- `test`: fast behavioral default, hermetic and premise-free.
+- `check`: fast static and structural work, including whole-population authority integrity.
+- `test:changed`: only after a real non-default tier exists.
+
+The first executable delivery must add native `test` and `check` entry points, one machine-readable check authority, and a real red-first behavior check in the same delivery. The null commands below are intentional, so the root must not execute a fake command. Until then, the root admission witness reads the declaration below and reports `not-applicable: no executable population`; an executable appearing before that delivery is a red, not a passing empty suite.
+
+<!-- kex-test-surface
+{"version":1,"status":"not-applicable","verdict":"no executable population","authority":null,"native":{"test":null,"check":null,"changed":null}}
+-->
