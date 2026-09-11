@@ -69,6 +69,111 @@ check(
                 if (message.type() === "error") errors.push(message.text());
             });
             await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+            // Attach before the harness becomes ready. This records real compositor playback rather
+            // than trusting a settled animation declaration or a timeout.
+            const temporalEvidence = page.evaluate(
+                () =>
+                    new Promise((resolve, reject) => {
+                        const started = new Set<EventTarget>();
+                        const ended = new Set<EventTarget>();
+                        const samples: Array<{
+                            opacity: number;
+                            transform: string;
+                            splashPresent: boolean;
+                            entranceFrameReady: boolean;
+                            entranceFrameAt: number;
+                            entranceArmed: boolean;
+                        }> = [];
+                        let firstStart:
+                            | {
+                                  splashPresent: boolean;
+                                  shellReady: boolean;
+                                  entranceFrameReady: boolean;
+                                  entranceFrameAt: number;
+                                  entranceArmed: boolean;
+                                  visible: boolean;
+                                  animationStartAt: number;
+                              }
+                            | undefined;
+                        const identity = (transform: string) =>
+                            transform === "none" || transform.replaceAll(" ", "") === "matrix(1,0,0,1,0,0)";
+                        const splashPresent = () =>
+                            [...document.body.children].some((candidate) => {
+                                const style = getComputedStyle(candidate);
+                                return style.zIndex === "10000" && candidate.querySelector("svg") !== null;
+                            });
+                        const sample = () => {
+                            const pane = document.querySelector<HTMLElement>("[data-region=context]");
+                            const shell = document.querySelector<HTMLElement>("[data-region=shell]");
+                            if (pane && shell) {
+                                const style = getComputedStyle(pane);
+                                const opacity = Number(style.opacity);
+                                if (style.animationName === "pane-enter" && (opacity < 0.999 || !identity(style.transform))) {
+                                    samples.push({
+                                        opacity,
+                                        transform: style.transform,
+                                        splashPresent: splashPresent(),
+                                        entranceFrameReady: shell.dataset.entranceFrameReady === "true",
+                                        entranceFrameAt: Number(shell.dataset.entranceFrameAt),
+                                        entranceArmed: shell.dataset.entranceArmed === "true",
+                                    });
+                                }
+                            }
+                            if (ended.size < 4) requestAnimationFrame(sample);
+                        };
+                        const finish = () => {
+                            requestAnimationFrame(() => {
+                                const final = [
+                                    ...document.querySelectorAll<HTMLElement>(
+                                        "[data-region=context], [data-region=view], [data-region=timeline], [data-region=status]",
+                                    ),
+                                ].map((element) => {
+                                    const style = getComputedStyle(element);
+                                    return { opacity: Number(style.opacity), transform: style.transform };
+                                });
+                                clearTimeout(timeout);
+                                document.removeEventListener("animationstart", onStart);
+                                document.removeEventListener("animationend", onEnd);
+                                resolve({
+                                    startCount: started.size,
+                                    endCount: ended.size,
+                                    firstStart,
+                                    inProgress: samples[0] ?? null,
+                                    sampleCount: samples.length,
+                                    final,
+                                });
+                            });
+                        };
+                        const onStart = (event: AnimationEvent) => {
+                            if (event.animationName !== "pane-enter") return;
+                            started.add(event.target as EventTarget);
+                            if (!firstStart) {
+                                const shell = document.querySelector<HTMLElement>("[data-region=shell]");
+                                firstStart = {
+                                    splashPresent: splashPresent(),
+                                    shellReady: shell?.dataset.shellReady === "true",
+                                    entranceFrameReady: shell?.dataset.entranceFrameReady === "true",
+                                    entranceFrameAt: Number(shell?.dataset.entranceFrameAt),
+                                    entranceArmed: shell?.dataset.entranceArmed === "true",
+                                    visible: getComputedStyle(shell ?? document.body).visibility !== "hidden",
+                                    animationStartAt: performance.now(),
+                                };
+                            }
+                            sample();
+                        };
+                        const onEnd = (event: AnimationEvent) => {
+                            if (event.animationName !== "pane-enter") return;
+                            ended.add(event.target as EventTarget);
+                            if (ended.size === 4) finish();
+                        };
+                        const timeout = window.setTimeout(
+                            () => reject(new Error("timed out collecting pane animation events")),
+                            2_000,
+                        );
+                        document.addEventListener("animationstart", onStart);
+                        document.addEventListener("animationend", onEnd);
+                    }),
+            );
             const bootEvidence = await page.evaluate(() => {
                 const overlay = [...document.body.children].find(
                     (candidate) => getComputedStyle(candidate).zIndex === "10000",
@@ -93,6 +198,50 @@ check(
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
                 timeout: 15_000,
             });
+            const temporal = (await temporalEvidence) as {
+                startCount: number;
+                endCount: number;
+                firstStart?: {
+                    splashPresent: boolean;
+                    shellReady: boolean;
+                    entranceFrameReady: boolean;
+                    entranceFrameAt: number;
+                    entranceArmed: boolean;
+                    visible: boolean;
+                    animationStartAt: number;
+                };
+                inProgress: {
+                    opacity: number;
+                    transform: string;
+                    splashPresent: boolean;
+                    entranceArmed: boolean;
+                } | null;
+                sampleCount: number;
+                final: Array<{ opacity: number; transform: string }>;
+            };
+            const finalIdentity = (transform: string) =>
+                transform === "none" || transform.replaceAll(" ", "") === "matrix(1,0,0,1,0,0)";
+            if (
+                temporal.startCount !== 4 ||
+                temporal.endCount !== 4 ||
+                temporal.firstStart?.splashPresent !== false ||
+                temporal.firstStart?.shellReady !== true ||
+                temporal.firstStart?.entranceFrameReady !== true ||
+                !Number.isFinite(temporal.firstStart?.entranceFrameAt) ||
+                temporal.firstStart.animationStartAt <= temporal.firstStart.entranceFrameAt ||
+                temporal.firstStart?.entranceArmed !== true ||
+                temporal.firstStart?.visible !== true ||
+                temporal.inProgress === null ||
+                temporal.inProgress.opacity <= 0 ||
+                temporal.inProgress.opacity >= 1 ||
+                finalIdentity(temporal.inProgress.transform) ||
+                temporal.inProgress.splashPresent ||
+                !temporal.inProgress.entranceArmed ||
+                temporal.final.length !== 4 ||
+                temporal.final.some((pane) => pane.opacity !== 1 || !finalIdentity(pane.transform))
+            ) {
+                throw new Error(`temporal pane entrance handoff failed: ${JSON.stringify(temporal)}`);
+            }
             // Let the short compositor entrance settle before measuring seam geometry; transforms would
             // otherwise make a one-pixel divider appear displaced while the panes are scaling in.
             await page.waitForTimeout(260);
@@ -370,7 +519,7 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; dividerPixels=${JSON.stringify(seamEvidence.sequences)}; splash/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; dividerPixels=${JSON.stringify(seamEvidence.sequences)}; temporalEntrance=${JSON.stringify({ starts: temporal.startCount, ends: temporal.endCount, samples: temporal.sampleCount, first: temporal.firstStart, inProgress: temporal.inProgress, final: temporal.final })}; splash/painted-frame/painted-arm/temporal-scale/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);

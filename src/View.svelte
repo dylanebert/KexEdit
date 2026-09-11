@@ -19,6 +19,7 @@
     onMount(() => {
         let disposed = false;
         let revealFrame = 0;
+        let loadingComplete = false;
         let app: Awaited<ReturnType<typeof run>> | undefined;
 
         void assessWebGpu().then((capability) => {
@@ -40,6 +41,9 @@
                     return;
                 }
                 app = next;
+                // run() resolves only after Shallot's loading.complete() and its cleanup frame, so
+                // this marks the splash-free handoff separately from the first rendered frame.
+                loadingComplete = true;
                 const harness = installHarness(app.state);
                 const bootRun = harness.run;
                 harness.run = async (options) => {
@@ -85,7 +89,7 @@
 
                 const revealWhenReady = () => {
                     if (disposed) return;
-                    if (harness.ready) {
+                    if (loadingComplete && harness.ready) {
                         onReady();
                         return;
                     }

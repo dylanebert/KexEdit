@@ -120,7 +120,8 @@ check(
             "background: var(--pane-ground)",
             "background: var(--shell-ground)",
             "animation: pane-enter 180ms",
-            "transform: scale(0.985)",
+            "transform: scale(0.97)",
+            ".shell-entrance-armed",
             ".shell-booting",
             "visibility: hidden",
             "prefers-reduced-motion: reduce",
@@ -140,8 +141,21 @@ check(
         for (const token of ["#0b0d10", "#0e151b", "#0d1116", "#202830"]) {
             if (css.includes(token)) throw new Error(`blue-black shell color remains: ${token}`);
         }
-        if (!app.includes("data-shell-ready") || !app.includes("shellReady")) {
-            throw new Error("shell does not expose its ready handoff");
+        if (
+            !app.includes("data-shell-ready") ||
+            !app.includes("data-entrance-frame-ready") ||
+            !app.includes("data-entrance-frame-at") ||
+            !app.includes("data-entrance-armed") ||
+            !app.includes("shellReady") ||
+            !app.includes("entranceFrameReady") ||
+            !app.includes("entranceFrameAt") ||
+            !app.includes("entranceArmed") ||
+            !app.includes("requestAnimationFrame")
+        ) {
+            throw new Error("shell does not expose its painted entrance handoff");
+        }
+        if (css.includes(".shell:not(.shell-booting) .panel")) {
+            throw new Error("pane animation must not be coupled directly to shell visibility");
         }
         if (!app.includes("capability-block") || !view.includes("onCapability") || !view.includes("assessWebGpu")) {
             throw new Error("startup capability outcome is not consumed by App and View");
