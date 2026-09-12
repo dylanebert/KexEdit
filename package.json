@@ -8,11 +8,10 @@
         "build": "vite build",
         "postinstall": "bun node_modules/@dylanebert/shallot/scripts/tooling.ts",
         "test": "shallot test",
-        "test:integration": "shallot test:integration",
         "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#1ad4d7a500c13b4a3c0422a3b09584834d5e626d",
+        "@dylanebert/shallot": "github:dylanebert/shallot#83ee2a918d26a5868d0b703c94a1b7cbf5f28c30",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.5"
     },
