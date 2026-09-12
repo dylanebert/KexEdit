@@ -71,12 +71,17 @@ function shellPanels(source: string): AstNode[] {
 }
 
 check(
-    "the compiled shell preserves four regions and one view canvas",
-    { claim: "the shell drops a region or gives the view more than one canvas", budget: 250 },
+    "the compiled shell preserves four regions, one view canvas, and a quiet layout",
+    {
+        claim: "the shell drops a region, gives the view more than one canvas, or regresses its quiet layout",
+        budget: 250,
+    },
     () => {
         const app = read("src/App.svelte");
         const view = read("src/View.svelte");
-        for (const source of [app, view, read("src/Panel.svelte"), read("src/Timeline.svelte"), read("src/Status.svelte")]) {
+        const panel = read("src/Panel.svelte");
+        const css = read("src/app.css");
+        for (const source of [app, view, panel, read("src/Timeline.svelte"), read("src/Status.svelte")]) {
             compile(source, { generate: "client" });
         }
 
@@ -101,5 +106,66 @@ check(
         if (viewUses.length !== 1) throw new Error("the view panel does not use exactly one View component");
         const canvases = viewNames.filter((name) => name === "canvas");
         if (canvases.length !== 1) throw new Error(`view owns ${canvases.length} canvases`);
+
+        if (/<header\b|panel-title/.test(panel) || /\.panel-title\b/.test(css)) {
+            throw new Error("panel headers must not consume persistent shell space");
+        }
+        for (const token of [
+            "grid-template-columns: var(--shell-context-width) minmax(0, 1fr)",
+            "grid-template-rows: minmax(0, 1fr) var(--shell-timeline-height) var(--shell-status-height)",
+            "gap: 0",
+            "--shell-ground: var(--pane-ground)",
+            "border-left: 1px solid var(--pane-border)",
+            "border-top: 1px solid var(--pane-border)",
+            "background: var(--pane-ground)",
+            "background: var(--shell-ground)",
+            "animation: pane-enter 180ms",
+            "transform: scale(0.97)",
+            ".shell-entrance-armed",
+            ".shell-booting",
+            "visibility: hidden",
+            "prefers-reduced-motion: reduce",
+        ]) {
+            if (!css.includes(token)) throw new Error(`shell look contract lost: ${token}`);
+        }
+        if (css.includes("--pane-gutter")) {
+            throw new Error("shell panes must not retain a gutter variable");
+        }
+        const shellSurface = css.match(/\.panel,\s*\.status-line\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+        if (shellSurface.includes("border")) {
+            throw new Error("shell panes must have no outer borders");
+        }
+        for (const selector of [".panel-view", ".panel-timeline", ".status-line"]) {
+            if (!css.includes(selector)) throw new Error(`missing internal divider owner: ${selector}`);
+        }
+        for (const token of ["#0b0d10", "#0e151b", "#0d1116", "#202830"]) {
+            if (css.includes(token)) throw new Error(`blue-black shell color remains: ${token}`);
+        }
+        if (
+            !app.includes("data-shell-ready") ||
+            !app.includes("data-entrance-frame-ready") ||
+            !app.includes("data-entrance-frame-at") ||
+            !app.includes("data-entrance-armed") ||
+            !app.includes("shellReady") ||
+            !app.includes("entranceFrameReady") ||
+            !app.includes("entranceFrameAt") ||
+            !app.includes("entranceArmed") ||
+            !app.includes("requestAnimationFrame")
+        ) {
+            throw new Error("shell does not expose its painted entrance handoff");
+        }
+        if (css.includes(".shell:not(.shell-booting) .panel")) {
+            throw new Error("pane animation must not be coupled directly to shell visibility");
+        }
+        if (!app.includes("capability-block") || !view.includes("onCapability") || !view.includes("assessWebGpu")) {
+            throw new Error("startup capability outcome is not consumed by App and View");
+        }
+        if (
+            !view.includes("loading: shallotDark(document.body)") ||
+            !view.includes("requestAnimationFrame") ||
+            view.indexOf("assessWebGpu().then") > view.indexOf("return run({")
+        ) {
+            throw new Error("the existing Shallot loading screen is not handed off after the capability gate");
+        }
     },
 );
