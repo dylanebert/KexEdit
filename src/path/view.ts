@@ -1,8 +1,8 @@
-// The path view: white orientation gizmos drawn straight from the pose binding. Per pose interval one
-// chord from pose `i` to `i + 1`, per pose one tick along the local +Y, both screen-constant-width quads
-// in the shell foreground, flat, unlit and depth-tested. One instanced draw of `count` instances with
-// twelve vertices each: vertices 0-5 are the chord (collapsed on the last pose, which has no successor),
-// 6-11 the tick. The quad expansion is the lines extra's kernel (`shallot/src/extras/lines/surface.ts`):
+// The path view: orientation gizmos drawn straight from the pose binding. Per pose interval one chord
+// from pose `i` to `i + 1` in the shell foreground, per pose a lateral tick along local +X in neutral red
+// and a normal tick along local +Y in neutral green, all screen-constant-width quads, flat, unlit and
+// depth-tested. One instanced draw of `count` instances with eighteen vertices each: vertices 0-5 are
+// the chord (collapsed on the last pose, which has no successor), 6-11 the lateral tick, 12-17 the normal. The quad expansion is the lines extra's kernel (`shallot/src/extras/lines/surface.ts`):
 // project both endpoints, pull one behind the near plane onto it, offset perpendicular in pixels.
 //
 // The plugin takes the grid's shape (`src/grid.ts`): it owns its buffers and pipeline, runs in `draw`
@@ -32,10 +32,13 @@ import { pathUploads } from "./upload";
 export const PATH_POSES = "pathPoses";
 export const PATH_AUX = "pathAux";
 
-// Gruvbox foreground #ebdbb2, sRGB bytes as the shell authors them.
-const FOREGROUND = [0xeb / 255, 0xdb / 255, 0xb2 / 255, 1];
+// Gruvbox foreground #ebdbb2, neutral red #cc241d, neutral green #98971a, sRGB bytes as the grid authors them.
+const hex = (rgb: number) => [((rgb >> 16) & 0xff) / 255, ((rgb >> 8) & 0xff) / 255, (rgb & 0xff) / 255, 1];
+const CHORD = hex(0xebdbb2);
+const LATERAL = hex(0xcc241d);
+const NORMAL = hex(0x98971a);
 const WIDTH_PX = 2;
-const VERTICES = 12;
+const VERTICES = 18;
 
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 const UNIFORM_BYTES = UNIFORM_FLOATS * FLOAT_BYTES;
@@ -88,7 +91,9 @@ const U = {
     resolution: lane(d.memoryLayoutOf(PathUniform, (u) => u.resolution).offset),
     count: lane(d.memoryLayoutOf(PathUniform, (u) => u.count).offset),
     spacing: lane(d.memoryLayoutOf(PathUniform, (u) => u.spacing).offset),
-    color: lane(d.memoryLayoutOf(PathUniform, (u) => u.color).offset),
+    chord: lane(d.memoryLayoutOf(PathUniform, (u) => u.chord).offset),
+    lateral: lane(d.memoryLayoutOf(PathUniform, (u) => u.lateral).offset),
+    normal: lane(d.memoryLayoutOf(PathUniform, (u) => u.normal).offset),
     width: lane(d.memoryLayoutOf(PathUniform, (u) => u.width).offset),
 };
 const viewProj = new Float32Array(16);
@@ -167,7 +172,9 @@ function drawPath(eid: number, view: View): void {
         uniformData[U.resolution + 1] = view.height;
         uniformData[U.count] = count;
         uniformData[U.spacing] = live?.header.spacing ?? 0;
-        uniformData.set(FOREGROUND, U.color);
+        uniformData.set(CHORD, U.chord);
+        uniformData.set(LATERAL, U.lateral);
+        uniformData.set(NORMAL, U.normal);
         uniformData[U.width] = WIDTH_PX;
         device.queue.writeBuffer(gpu.uniform, 0, uniformData);
 
