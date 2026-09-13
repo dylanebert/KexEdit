@@ -1,7 +1,9 @@
 import { resolve } from "node:path";
+import { srgbToLinear } from "@dylanebert/shallot";
 import { check } from "@dylanebert/shallot/harness/check";
 import launch from "@dylanebert/shallot/harness/browser" with { type: "json" };
 import { chromium } from "playwright";
+import { PATH_BYTES, PATH_COLORS } from "./view";
 
 const ROOT = resolve(import.meta.dir, "../..");
 
@@ -28,6 +30,21 @@ function freePort(): number {
 }
 
 type Probe = { samples: number; drawn: boolean; count: number };
+
+check(
+    "the path view uploads its sRGB bytes decoded to linear",
+    { claim: "the path view hands sRGB byte fractions to the linear scene target", budget: 250 },
+    () => {
+        for (const name of ["chord", "lateral", "normal"] as const) {
+            const rgb = PATH_BYTES[name];
+            const want = [16, 8, 0].map((shift) => srgbToLinear(((rgb >> shift) & 0xff) / 255));
+            const got = PATH_COLORS[name];
+            if (got.length !== 4 || got[3] !== 1 || want.some((w, i) => got[i] !== w)) {
+                throw new Error(`path ${name}: ${JSON.stringify(got)} is not srgbToLinear of ${JSON.stringify(want)}`);
+            }
+        }
+    },
+);
 
 check(
     "the path view draws gizmo fragments from the pose binding and redraws on setPath",

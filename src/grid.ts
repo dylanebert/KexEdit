@@ -6,6 +6,7 @@ import {
     type Plugin,
     type State,
     type System,
+    unpackColor,
 } from "@dylanebert/shallot";
 import { GlazePlugin, GlazeSystem } from "@dylanebert/shallot/glaze";
 import {
@@ -31,11 +32,19 @@ const GRID_PROBE_ZERO = new Uint32Array([0]);
 
 // Unity-like world axes on the XZ ground plane: X is red and Z is blue. There is no Y axis
 // material because this pass only represents the ground plane.
+// Gruvbox dark2, neutral red and neutral blue as sRGB bytes.
+export const GRID_BYTES = { neutral: 0x504945, axisX: 0xcc241d, axisZ: 0x458588 } as const;
+
+// The scene target is linear and the composite encodes to sRGB, so bytes decode through Shallot's own curve.
+const linear = (rgb: number) => {
+    const { r, g, b } = unpackColor(rgb);
+    return [r, g, b, 1];
+};
+
 export const GRID_MATERIAL_CONTRACT = {
-    // Gruvbox dark2 #504945, neutral red #cc241d, neutral blue #458588.
-    neutral: [0.314, 0.286, 0.271, 1],
-    axisX: [0.8, 0.141, 0.114, 1],
-    axisZ: [0.271, 0.522, 0.533, 1],
+    neutral: linear(GRID_BYTES.neutral),
+    axisX: linear(GRID_BYTES.axisX),
+    axisZ: linear(GRID_BYTES.axisZ),
     hasYAxis: false,
 } as const;
 
