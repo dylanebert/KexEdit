@@ -5,7 +5,8 @@
 // the chord (collapsed on the last pose, which has no successor), 6-11 the lateral tick, 12-17 the normal. The quad expansion is the lines extra's kernel (`shallot/src/extras/lines/surface.ts`):
 // project both endpoints, pull one behind the near plane onto it, offset perpendicular in pixels.
 //
-// The path drawn is a ride's: the scene's fixture names a closed-form trajectory whose stored inputs are
+// The path drawn is a ride's: the scene's fixture names the integrated ride, whose intent table the
+// policies march into inputs, or a closed-form trajectory whose stored inputs are re-marched. Either is
 // marched on the calling thread, resampled, and uploaded whole from the ride's shared memory. A train
 // Part stands at the trajectory tick the scheduler clock names, set each frame before draw.
 //
@@ -35,9 +36,12 @@ import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import { straight } from "./straight.fixture";
 import { CHUNK, createRide, type Ride } from "../trajectory/execution";
 import * as rides from "../trajectory/fixtures.fixture";
+import type { Input, State as MarchState } from "../trajectory/integrator";
+import { run } from "../trajectory/policies";
 import { DEFAULT_SPACING } from "../trajectory/resample";
+import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_RATE, RIDE_START } from "../trajectory/ride.fixture";
 import { initialState, intentTable, placeTrain } from "../trajectory/train";
-import { TICK_FLOATS, TICK_LANES, type Trajectory } from "../trajectory/trajectory";
+import type { RideConstants, Trajectory } from "../trajectory/trajectory";
 import { PATH_SHADER, PathUniform, UNIFORM_FLOATS } from "./shader";
 import { pathUploads } from "./upload";
 
@@ -103,12 +107,37 @@ const UNIFORM_BYTES = UNIFORM_FLOATS * FLOAT_BYTES;
 const PROBE_BYTES = Uint32Array.BYTES_PER_ELEMENT;
 const PROBE_ZERO = new Uint32Array([0]);
 
-export const PathFixture = { Straight: 0, Hill: 1, Helix: 2 } as const;
-// the closed-form trajectory whose stored inputs are the ride's intent table
-const FIXTURES: Record<number, Trajectory> = {
-    [PathFixture.Straight]: rides.straight,
-    [PathFixture.Hill]: rides.hill,
-    [PathFixture.Helix]: rides.helix,
+export const PathFixture = { Straight: 0, Hill: 1, Ride: 2 } as const;
+
+/** What a ride marches: a start state and one input row per tick after it, at a rate under constants. */
+interface RideSource {
+    initial: MarchState;
+    inputs: readonly Input[];
+    rate: number;
+    constants: RideConstants;
+}
+
+// a closed-form trajectory's stored inputs, re-marched as they are
+const closedForm = (fixture: Trajectory): RideSource => ({
+    initial: initialState(fixture),
+    inputs: intentTable(fixture),
+    rate: fixture.header.rate,
+    constants: fixture.header.constants,
+});
+
+// the integrated ride: the policies march the intent table, and the ride marches the inputs they emit
+function integrated(): RideSource {
+    const { history, trajectory } = run(RIDE_START, RIDE_INTENTS, RIDE_RATE, RIDE_CONSTANTS);
+    if (trajectory.header.endReason !== "complete") {
+        throw new Error(`path-view ride: intent table ended ${trajectory.header.endReason} at ${trajectory.header.endTick}`);
+    }
+    return { initial: RIDE_START, inputs: history.inputs, rate: RIDE_RATE, constants: RIDE_CONSTANTS };
+}
+
+const FIXTURES: Record<number, () => RideSource> = {
+    [PathFixture.Straight]: () => closedForm(rides.straight),
+    [PathFixture.Hill]: () => closedForm(rides.hill),
+    [PathFixture.Ride]: integrated,
 };
 
 /** a scene handle naming the fixture whose intent the view's ride marches at boot */
@@ -120,18 +149,24 @@ const TRAIN_SCALE = [0.6, 0.4, 1.6] as const;
 type Train = { eid: number; ride: Ride; trajectory: Trajectory };
 let train: Train | null = null;
 
-/** March `fixture`'s intent table on the calling thread, resample, and publish one generation. */
-function marchRide(fixture: Trajectory): Ride {
-    const count = fixture.header.count;
-    const length = Math.abs(fixture.ticks[(count - 1) * TICK_FLOATS + TICK_LANES.distance]);
+/** March `source`'s inputs on the calling thread, resample, and publish one generation. */
+function marchRide(source: RideSource): Ride {
+    const count = source.inputs.length + 1;
+    // arclength is at most the travel at the fastest speed any row can reach from the start
+    let speed = Math.abs(source.initial.speed);
+    let length = 0;
+    for (const { a } of source.inputs) {
+        speed += Math.abs(a) / source.rate;
+        length += speed / source.rate;
+    }
     const ride = createRide({
         ticks: Math.ceil((count + 1) / CHUNK),
         poses: Math.ceil((length / DEFAULT_SPACING + 2) / CHUNK),
-        rate: fixture.header.rate,
-        constants: fixture.header.constants,
+        rate: source.rate,
+        constants: source.constants,
     });
-    ride.setInitial(initialState(fixture));
-    ride.setInputs(intentTable(fixture));
+    ride.setInitial(source.initial);
+    ride.setInputs(source.inputs);
     ride.pass();
     return ride;
 }
@@ -360,7 +395,7 @@ export const PathPlugin: Plugin = {
     name: "KexEditPath",
     systems: [TrainSystem, PathSystem],
     components: { PathView },
-    traits: { PathView: { defaults: () => ({ fixture: PathFixture.Helix }), enums: { fixture: PathFixture } } },
+    traits: { PathView: { defaults: () => ({ fixture: PathFixture.Ride }), enums: { fixture: PathFixture } } },
     dependencies: [RenderPlugin, SearPlugin, GlazePlugin],
     async warm(state: State) {
         const device = Compute.device;
@@ -404,7 +439,7 @@ export const PathPlugin: Plugin = {
         for (const eid of state.query([PathView])) {
             const fixture = FIXTURES[PathView.fixture.get(eid)];
             if (!fixture) throw new Error(`path-view fixture: no fixture ${PathView.fixture.get(eid)}`);
-            const ride = marchRide(fixture);
+            const ride = marchRide(fixture());
             // whole-buffer upload of the published generation, straight from the ride's shared memory
             setPath(ride.path().path);
             void train?.ride.terminate();
