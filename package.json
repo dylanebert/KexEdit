@@ -12,7 +12,7 @@
     },
     "dependencies": {
         "@dylanebert/shallot": "github:dylanebert/shallot#45a1e7bbcfd9bc032082019a573eddeda496d496",
-        "@dylanebert/shallot-grid": "^0.1.0",
+        "@dylanebert/shallot-grid": "^0.1.1",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.5"
     },
