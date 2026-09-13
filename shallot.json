@@ -16,6 +16,7 @@
         { "file": "src/trajectory/contract.test.ts" },
         { "file": "src/trajectory/convergence.oracle.ts" },
         { "file": "src/trajectory/integrator.test.ts" },
-        { "file": "src/trajectory/policies.test.ts" }
+        { "file": "src/trajectory/policies.test.ts" },
+        { "file": "src/trajectory/resample.test.ts" }
     ]
 }
