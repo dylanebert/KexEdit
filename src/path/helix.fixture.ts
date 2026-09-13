@@ -1,7 +1,7 @@
 // Helix: radius R about the vertical axis x = -R, climbing C per radian. With K = hypot(R, C) the
-// angle is `t = s / K`. Up is the principal normal, pointing at the axis, so the frame rolls about
-// world Y as it climbs; this is the fixture that sees a wrong quaternion sense. The length is not a
-// multiple of the spacing, so the last interval is short.
+// angle is `t = s / K`. Up is the rider-up, world +Y made orthogonal to forward, so the frame never
+// rolls: the lateral forward × up stays horizontal while the heading turns about world Y. The length
+// is not a multiple of the spacing, so the last interval is short.
 
 import { type Curve, sampleCurve } from "./path";
 
@@ -21,7 +21,7 @@ export const helixCurve: Curve = {
     },
     up: (s) => {
         const t = s / K;
-        return [-Math.cos(t), 0, Math.sin(t)];
+        return [(C * Math.sin(t)) / K, R / K, (C * Math.cos(t)) / K];
     },
 };
 
