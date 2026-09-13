@@ -6,6 +6,10 @@
     import project from "virtual:project";
     import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
     import { GridPlugin, readGridMaterialContract, readGridProbe } from "./grid";
+    import { PathPlugin, pathFixtures, readPathProbe, setPath } from "./path/view";
+
+    const pathHandle = { readPathProbe, setPath, fixtures: pathFixtures };
+    type PathWindow = Window & { __kexeditPath?: typeof pathHandle };
 
     let {
         onCapability,
@@ -30,7 +34,7 @@
             return run({
                 capacity: project.capacity ?? undefined,
                 pixelRatio: project.pixelRatio ?? undefined,
-                plugins: [...project.plugins, GridPlugin],
+                plugins: [...project.plugins, GridPlugin, PathPlugin],
                 scene: project.scene ?? undefined,
                 // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
                 loading: shallotDark(document.body),
@@ -49,6 +53,7 @@
                 harness.run = async (options) => {
                     const boot = await bootRun?.(options);
                     const grid = await readGridProbe();
+                    const path = await readPathProbe();
                     const noPlaceholderCube = app ? [...app.state.query([Part])].length === 0 : false;
                     const orbit = app ? [...app.state.query([Camera, Orbit])].length === 1 : false;
                     const standardLighting = app
@@ -69,6 +74,7 @@
                         ok:
                             (boot?.ok ?? true) &&
                             grid.drawn &&
+                            path.drawn &&
                             noPlaceholderCube &&
                             orbit &&
                             standardLighting &&
@@ -76,6 +82,11 @@
                         checks: [
                             ...(boot?.checks ?? []),
                             { name: "GPU grid material drew", ok: grid.drawn, data: { samples: grid.samples } },
+                            {
+                                name: "path gizmos drew",
+                                ok: path.drawn,
+                                data: { samples: path.samples, count: path.count },
+                            },
                             { name: "no placeholder cube remains", ok: noPlaceholderCube },
                             { name: "grid/axis material contract is present", ok: gridAxisMaterial },
                             { name: "standard Orbit controls camera", ok: orbit },
@@ -86,6 +97,7 @@
                 (globalThis as unknown as Window & {
                     __kexeditGridProbe?: typeof readGridProbe;
                 }).__kexeditGridProbe = readGridProbe;
+                (globalThis as unknown as PathWindow).__kexeditPath = pathHandle;
 
                 const revealWhenReady = () => {
                     if (disposed) return;
@@ -110,6 +122,7 @@
             delete (globalThis as unknown as Window & {
                 __kexeditGridProbe?: typeof readGridProbe;
             }).__kexeditGridProbe;
+            delete (globalThis as unknown as PathWindow).__kexeditPath;
             app?.dispose();
         };
     });

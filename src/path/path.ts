@@ -109,6 +109,10 @@ export function readPath(path: Path): Path {
         throw new Error(`path count: expected a non-negative integer, got ${header.count}`);
     }
     if (!(header.spacing > 0)) throw new Error(`path spacing: expected > 0, got ${header.spacing}`);
+    if (!(poses instanceof Float32Array)) throw new Error("path poses: expected a Float32Array");
+    if (aux !== undefined && !(aux instanceof Float32Array)) {
+        throw new Error("path aux: expected a Float32Array");
+    }
     if (poses.length !== header.count * POSE_FLOATS) {
         throw new Error(
             `path poses: expected ${header.count * POSE_FLOATS} floats for count ${header.count}, got ${poses.length}`,

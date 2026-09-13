@@ -10,6 +10,8 @@
         { "file": "src/boot.test.ts" },
         { "file": "src/grid.test.ts" },
         { "file": "src/path/contract.test.ts" },
-        { "file": "src/path/frame.test.ts" }
+        { "file": "src/path/frame.test.ts" },
+        { "file": "src/path/upload.test.ts" },
+        { "file": "src/path/view.test.ts" }
     ]
 }
