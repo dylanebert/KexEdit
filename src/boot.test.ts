@@ -42,7 +42,7 @@ check(
             "src/View.svelte",
             "src/capability.ts",
             "src/app.css",
-            "src/grid.ts",
+            "shallot.json",
             "public/scenes/scaffold.scene",
         ],
         budget: 20_000,
@@ -468,24 +468,17 @@ check(
                 throw new Error(`harness protocol failed: ${JSON.stringify(verdict)}`);
             }
             const requiredChecks = [
-                "GPU grid material drew",
+                "grid neutral lines drew",
+                "grid red X axis drew",
+                "grid blue Z axis drew",
+                "grid green Y axis drew through the origin",
                 "no placeholder cube remains",
-                "grid/axis material contract is present",
                 "standard Orbit controls camera",
                 "standard scene lighting is present",
             ];
             for (const name of requiredChecks) {
                 const check = verdict.checks.find((candidate) => candidate.name === name);
                 if (!check?.ok) throw new Error(`missing passing scene evidence: ${name}`);
-            }
-            const grid = await page.evaluate(async () => {
-                const probe = (window as Window & {
-                    __kexeditGridProbe?: () => Promise<{ samples: number; drawn: boolean }>;
-                }).__kexeditGridProbe;
-                return (await probe?.()) ?? { samples: 0, drawn: false };
-            });
-            if (!grid.drawn || grid.samples <= 0) {
-                throw new Error(`GPU grid probe failed: ${JSON.stringify(grid)}`);
             }
             const evidence = await page.evaluate(async () => {
                 const adapter = await navigator.gpu?.requestAdapter();
@@ -519,7 +512,7 @@ check(
             if (errors.length > 0) throw new Error(errors.join(" | "));
             if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridSamples=${grid.samples}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; dividerPixels=${JSON.stringify(seamEvidence.sequences)}; temporalEntrance=${JSON.stringify({ starts: temporal.startCount, ends: temporal.endCount, samples: temporal.sampleCount, first: temporal.firstStart, inProgress: temporal.inProgress, final: temporal.final })}; splash/painted-frame/painted-arm/temporal-scale/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridChecks=${JSON.stringify(verdict.checks.filter((check) => check.name.startsWith("grid")).map((check) => check.detail))}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; dividerPixels=${JSON.stringify(seamEvidence.sequences)}; temporalEntrance=${JSON.stringify({ starts: temporal.startCount, ends: temporal.endCount, samples: temporal.sampleCount, first: temporal.firstStart, inProgress: temporal.inProgress, final: temporal.final })}; splash/painted-frame/painted-arm/temporal-scale/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);

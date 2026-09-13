@@ -2,13 +2,13 @@
     "$schema": "https://raw.githubusercontent.com/dylanebert/shallot/main/shallot.schema.json",
     "scene": "scenes/scaffold.scene",
     "plugins": {
-        "Orbit": true
+        "Orbit": true,
+        "Grid": "@dylanebert/shallot-grid"
     },
     "check": [
         { "file": "src/shell.test.ts" },
         { "file": "src/capability.test.ts" },
         { "file": "src/boot.test.ts" },
-        { "file": "src/grid.test.ts" },
         { "file": "src/path/contract.test.ts" },
         { "file": "src/path/frame.test.ts" },
         { "file": "src/path/upload.test.ts" },

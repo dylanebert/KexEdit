@@ -10,7 +10,7 @@
 // marched on the calling thread, resampled, and uploaded whole from the ride's shared memory. A train
 // Part stands at the trajectory tick the scheduler clock names, set each frame before draw.
 //
-// The plugin takes the grid's shape (`src/grid.ts`): it owns its buffers and pipeline, runs in `draw`
+// The plugin takes the engine's draw-plugin shape: it owns its buffers and pipeline, runs in `draw`
 // after `ColorSystem` and before `GlazeSystem`, and counts fragments in an atomic probe.
 
 import {
