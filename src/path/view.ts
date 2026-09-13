@@ -55,11 +55,33 @@ export function oklch(l: number, c: number, h: number): number[] {
     if (rgb.some((v) => v < 0 || v > 1)) throw new Error(`oklch(${l}, ${c}, ${h}) is out of sRGB gamut`);
     return [...rgb, 1];
 }
-/** the linear colors the uniform carries; the normal is neutral green's OKLCH L and C at hue 142°, #5da555 */
+/** an sRGB byte to OKLCH `[l, c, h]` (hue in degrees), the inverse of `oklch` */
+export function byteOklch(rgb: number): number[] {
+    const [r, g, b] = linear(rgb);
+    const L = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const M = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const S = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const l = 0.2104542553 * L + 0.793617785 * M - 0.0040720468 * S;
+    const A = 1.9779984951 * L - 2.428592205 * M + 0.4505937099 * S;
+    const B = 0.0259040371 * L + 0.7827717662 * M - 0.808675766 * S;
+    const h = (Math.atan2(B, A) * 180) / Math.PI;
+    return [l, Math.hypot(A, B), h < 0 ? h + 360 : h];
+}
+// Gruvbox neutral green and neutral aqua, the swatches the axis green's hue falls between.
+export const SPECTRUM_BYTES = { green: 0x98971a, aqua: 0x689d6a } as const;
+const AXIS_HUE = 142;
+/** the Gruvbox spectrum's lightness and chroma, linear in hue between green and aqua, read at the axis hue */
+function spectrumGreen(): number[] {
+    const [l0, c0, h0] = byteOklch(SPECTRUM_BYTES.green);
+    const [l1, c1, h1] = byteOklch(SPECTRUM_BYTES.aqua);
+    const t = (AXIS_HUE - h0) / (h1 - h0);
+    return oklch(l0 + (l1 - l0) * t, c0 + (c1 - c0) * t, AXIS_HUE);
+}
+/** the linear colors the uniform carries; the normal is the spectrum green at hue 142°, #6b9d65 */
 export const PATH_COLORS = {
     chord: linear(PATH_BYTES.chord),
     lateral: linear(PATH_BYTES.lateral),
-    normal: oklch(0.656, 0.135, 142),
+    normal: spectrumGreen(),
 } as const;
 const WIDTH_PX = 2;
 const VERTICES = 18;
