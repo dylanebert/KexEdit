@@ -52,7 +52,14 @@ check(
             }
             const streams = frame.writes.map((w) => w.stream).join(",");
             if (streams !== (path.aux ? "poses,aux" : "poses")) throw new Error(`${name}: writes ${streams}`);
-            if (uploads.path !== path) throw new Error(`${name}: live path not the one set`);
+            const live = uploads.path;
+            if (
+                live?.header.count !== path.header.count ||
+                live.poses.length !== path.poses.length ||
+                live.poses.some((v, i) => v !== path.poses[i])
+            ) {
+                throw new Error(`${name}: live path not the one set`);
+            }
             const quiet = recorder();
             if (uploads.flush(quiet.sink) !== 0 || quiet.writes.length !== 0) {
                 throw new Error(`${name}: ${quiet.bytes()} bytes on a frame with no invalidation`);
@@ -67,5 +74,48 @@ check(
         }
         const after = recorder();
         if (!threw || uploads.flush(after.sink) !== 0) throw new Error("a malformed path reached the upload");
+    },
+);
+
+check(
+    "caller mutation after setPath reaches neither the upload nor the live header",
+    { claim: "a validated path is mutated by its caller after setPath and the view draws the mutation", budget: 250 },
+    () => {
+        const caller: Path = { header: { ...helix.header, aux: [] }, poses: helix.poses.slice() };
+        const original = helix.poses.slice();
+        const uploads = pathUploads();
+        uploads.set(caller);
+        caller.poses.fill(Number.NaN);
+        caller.header.count = 1e6;
+        caller.header.spacing = -1;
+        let flushed: Float32Array | undefined;
+        uploads.flush({ poses: (data) => (flushed = data.slice()), aux: () => {} });
+        if (!flushed || flushed.length !== original.length || flushed.some((v, i) => v !== original[i])) {
+            throw new Error("flushed pose bytes are not the ones validated at set");
+        }
+        const live = uploads.path;
+        if (live?.header.count !== helix.header.count || live.header.spacing !== helix.header.spacing) {
+            throw new Error(`live header drifted to count ${live?.header.count} spacing ${live?.header.spacing}`);
+        }
+        caller.poses.set(original);
+        caller.header.count = helix.header.count;
+        caller.header.spacing = helix.header.spacing;
+        uploads.set(caller);
+        caller.poses.fill(0);
+        if (uploads.path?.poses.some((v, i) => v !== original[i])) throw new Error("live poses alias the caller");
+    },
+);
+
+check(
+    "reset clears the live and pending path",
+    { claim: "the path view reports a disposed path's count", budget: 250 },
+    () => {
+        const uploads = pathUploads();
+        uploads.set(helix);
+        uploads.flush({ poses: () => {}, aux: () => {} });
+        uploads.set(straight);
+        uploads.reset();
+        if (uploads.path !== null) throw new Error("live path survived reset");
+        if (uploads.flush({ poses: () => {}, aux: () => {} }) !== 0) throw new Error("pending path survived reset");
     },
 );

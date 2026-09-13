@@ -22,8 +22,10 @@ import { computeViewProj, Render, RenderPlugin, type View, Views } from "@dylane
 import { ColorSystem, DEPTH_FORMAT, SearPlugin } from "@dylanebert/shallot/sear";
 import { helix } from "./helix.fixture";
 import { hill } from "./hill.fixture";
+import * as d from "typegpu/data";
 import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import { straight } from "./straight.fixture";
+import { PATH_SHADER, PathUniform, UNIFORM_FLOATS } from "./shader";
 import { pathUploads } from "./upload";
 
 /** the published names of the two streams */
@@ -36,8 +38,6 @@ const WIDTH_PX = 2;
 const VERTICES = 12;
 
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
-// viewProj (16), resolution.xy + count + spacing (4), color (4), width + pad (4)
-const UNIFORM_FLOATS = 28;
 const UNIFORM_BYTES = UNIFORM_FLOATS * FLOAT_BYTES;
 const PROBE_BYTES = Uint32Array.BYTES_PER_ELEMENT;
 const PROBE_ZERO = new Uint32Array([0]);
@@ -52,97 +52,6 @@ const FIXTURES: Record<number, Path> = {
 /** a scene handle naming the fixture the view shows at boot */
 export const PathView = { fixture: sparse(u8) };
 
-export const PATH_SHADER = /* wgsl */ `
-struct Pose {
-    position: vec3<f32>,
-    w: f32,
-    rotation: vec4<f32>,
-}
-
-struct PathView {
-    viewProj: mat4x4<f32>,
-    resolution: vec2<f32>,
-    count: f32,
-    spacing: f32,
-    color: vec4<f32>,
-    width: f32,
-}
-
-@group(0) @binding(0) var<uniform> path: PathView;
-@group(0) @binding(1) var<storage, read> poses: array<Pose>;
-@group(0) @binding(2) var<storage, read_write> pathProbe: atomic<u32>;
-
-struct VSOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) edge: vec2<f32>,
-}
-
-const NEAR_W = 1e-5;
-
-fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
-    let t = 2.0 * cross(q.xyz, v);
-    return v + q.w * t + cross(q.xyz, t);
-}
-
-// the lines extra's kernel: constant-pixel quad corner for one world segment
-fn quad(a: vec3<f32>, b: vec3<f32>, t: f32, edge: f32) -> VSOut {
-    var out: VSOut;
-    var sc = path.viewProj * vec4(a, 1.0);
-    var ec = path.viewProj * vec4(b, 1.0);
-    if (sc.w < NEAR_W && ec.w < NEAR_W) {
-        out.position = vec4(0.0, 0.0, -1.0, 1.0);
-        return out;
-    }
-    if (sc.w < NEAR_W) {
-        sc = mix(sc, ec, (NEAR_W - sc.w) / (ec.w - sc.w));
-    } else if (ec.w < NEAR_W) {
-        ec = mix(ec, sc, (NEAR_W - ec.w) / (sc.w - ec.w));
-    }
-    let sNdc = sc.xy / sc.w;
-    let eNdc = ec.xy / ec.w;
-    let dirPx = (eNdc - sNdc) * path.resolution;
-    let lenPx = length(dirPx);
-    let dir = select(vec2(1.0, 0.0), dirPx / lenPx, lenPx > 1e-4);
-    let perp = vec2(-dir.y, dir.x);
-    let halfW = max(path.width, 1.0) * 0.5;
-    let total = halfW + 1.0;
-    let useEnd = t > 0.5;
-    let baseNdc = select(sNdc, eNdc, useEnd);
-    let baseClip = select(sc, ec, useEnd);
-    let ndc = baseNdc + perp * edge * total * 2.0 / path.resolution;
-    out.position = vec4(ndc, baseClip.z / baseClip.w, 1.0);
-    out.edge = vec2(edge * total, halfW);
-    return out;
-}
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) iid: u32) -> VSOut {
-    let corners = array<vec2<f32>, 6>(
-        vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(0.0, 1.0),
-        vec2(0.0, 1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
-    );
-    let corner = corners[vi % 6u];
-    let pose = poses[iid];
-    if (vi < 6u) {
-        if (f32(iid + 1u) >= path.count) {
-            var out: VSOut;
-            out.position = vec4(0.0, 0.0, -1.0, 1.0);
-            return out;
-        }
-        return quad(pose.position, poses[iid + 1u].position, corner.x, corner.y);
-    }
-    let tip = pose.position + rotate(pose.rotation, vec3(0.0, 1.0, 0.0)) * path.spacing;
-    return quad(pose.position, tip, corner.x, corner.y);
-}
-
-@fragment
-fn fs(input: VSOut) -> @location(0) vec4<f32> {
-    let w = fwidth(input.edge.x);
-    let aa = 1.0 - smoothstep(input.edge.y - w, input.edge.y + w, abs(input.edge.x));
-    atomicAdd(&pathProbe, 1u);
-    return vec4(path.color.rgb, path.color.a * aa);
-}
-`;
 
 const ALPHA_BLEND: GPUBlendState = {
     color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
@@ -173,6 +82,15 @@ const gpu: PathGpu = {
 
 const uploads = pathUploads();
 const uniformData = new Float32Array(UNIFORM_FLOATS);
+const lane = (bytes: number) => bytes / FLOAT_BYTES;
+const U = {
+    viewProj: lane(d.memoryLayoutOf(PathUniform, (u) => u.viewProj).offset),
+    resolution: lane(d.memoryLayoutOf(PathUniform, (u) => u.resolution).offset),
+    count: lane(d.memoryLayoutOf(PathUniform, (u) => u.count).offset),
+    spacing: lane(d.memoryLayoutOf(PathUniform, (u) => u.spacing).offset),
+    color: lane(d.memoryLayoutOf(PathUniform, (u) => u.color).offset),
+    width: lane(d.memoryLayoutOf(PathUniform, (u) => u.width).offset),
+};
 const viewProj = new Float32Array(16);
 
 /** bytes the last frame's flush uploaded; zero on a frame with no invalidation */
@@ -244,13 +162,13 @@ function drawPath(eid: number, view: View): void {
     const count = live?.header.count ?? 0;
     if (gpu.poses && count > 0) {
         computeViewProj(eid, view.width / view.height, viewProj);
-        uniformData.set(viewProj, 0);
-        uniformData[16] = view.width;
-        uniformData[17] = view.height;
-        uniformData[18] = count;
-        uniformData[19] = live?.header.spacing ?? 0;
-        uniformData.set(FOREGROUND, 20);
-        uniformData[24] = WIDTH_PX;
+        uniformData.set(viewProj, U.viewProj);
+        uniformData[U.resolution] = view.width;
+        uniformData[U.resolution + 1] = view.height;
+        uniformData[U.count] = count;
+        uniformData[U.spacing] = live?.header.spacing ?? 0;
+        uniformData.set(FOREGROUND, U.color);
+        uniformData[U.width] = WIDTH_PX;
         device.queue.writeBuffer(gpu.uniform, 0, uniformData);
 
         if (!gpu.bindGroup) {
@@ -344,6 +262,8 @@ export const PathPlugin: Plugin = {
         if (!device) return;
         // warm re-runs on an in-place rebuild without dispose; release first so nothing is left behind
         release();
+        // the rebuild dropped the GPU streams; a path set before it uploads again unless a fixture replaces it
+        uploads.restage();
         const module = device.createShaderModule({ label: "kexedit-path", code: PATH_SHADER });
         gpu.layout = device.createBindGroupLayout({
             label: "kexedit-path",
@@ -384,6 +304,9 @@ export const PathPlugin: Plugin = {
     },
     dispose() {
         release();
+        uploads.reset();
+        PathUploadStats.lastFrameBytes = 0;
+        PathUploadStats.totalBytes = 0;
     },
 };
 

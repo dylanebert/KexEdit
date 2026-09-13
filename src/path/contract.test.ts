@@ -138,3 +138,46 @@ check(
         );
     },
 );
+
+check(
+    "a stream that is not a Float32Array is refused by name",
+    { claim: "a path whose streams are not Float32Array reaches a consumer sized by byteLength", budget: 250 },
+    () => {
+        const floats = Array.from(helix.poses);
+        refuses("Float64Array poses", "poses", () =>
+            readPath({ ...helix, poses: new Float64Array(floats) as unknown as Float32Array }),
+        );
+        refuses("array poses", "poses", () => readPath({ ...helix, poses: floats as unknown as Float32Array }));
+        const names = ["velocity"];
+        const rows = Array.from({ length: helix.header.count }, () => [1]);
+        const aux = Array.from(packAux(names, rows) ?? []);
+        refuses("array aux", "aux", () =>
+            readPath({ ...helix, header: header({ aux: names }), aux: aux as unknown as Float32Array }),
+        );
+    },
+);
+
+check(
+    "the shader's struct layouts come from the typegpu schemas",
+    { claim: "the path shader hand-authors a WGSL layout that can drift from its schema", budget: 250 },
+    async () => {
+        for (const file of readdirSync(DIR).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))) {
+            const text = readFileSync(resolve(DIR, file), "utf8");
+            const literal = /struct\s+(Pose|PathView)\s*\{/.exec(text);
+            if (literal) throw new Error(`${file} hand-authors WGSL struct ${literal[1]}`);
+        }
+        const { PATH_SHADER, PathUniform, UNIFORM_FLOATS } = await import("./shader");
+        const body = /struct\s+Pose\s*\{([^}]*)\}/.exec(PATH_SHADER)?.[1];
+        if (!body) throw new Error("resolved shader has no Pose struct");
+        const fields = body.split(",").map((f) => f.split(":")[0].trim()).filter(Boolean);
+        const byOffset = (["position", "w", "rotation"] as const)
+            .map((name) => ({ name, offset: d.memoryLayoutOf(Pose, (p) => p[name]).offset }))
+            .sort((a, b) => a.offset - b.offset)
+            .map((f) => f.name);
+        if (fields.join() !== byOffset.join()) throw new Error(`Pose fields ${fields} != schema ${byOffset}`);
+        if (UNIFORM_FLOATS * Float32Array.BYTES_PER_ELEMENT !== d.sizeOf(PathUniform)) {
+            throw new Error(`UNIFORM_FLOATS ${UNIFORM_FLOATS} != schema ${d.sizeOf(PathUniform)} bytes`);
+        }
+        if (!/struct\s+PathView\s*\{/.test(PATH_SHADER)) throw new Error("resolved shader has no PathView struct");
+    },
+);
