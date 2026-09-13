@@ -2,9 +2,10 @@
 // and a = 0: the path fixtures' curves, plus a flat turn and a rolling straight so every ω component
 // and the lateral read have a fixture that fixes its sign.
 //
-// Straight: no rotation. Hill: the nose drops over the crest, pitch -v / R. Helix: forward -Z = T,
-// up +Y = N, right +X = B, so the Darboux vector τT + κB is κ about +X and τ about -Z per metre, with
-// κ = R / K² and τ = C / K². Turn: level left circle, yaw +v / R. Corkscrew: straight along -Z with
+// Straight: no rotation. Hill: the nose drops over the crest, pitch -v / R. Helix: the rider-up frame
+// is a fixed pitch followed by heading t = s / K about world +Y, so ω is world +Y at v / K. Read in the
+// body, world +Y is (0, R / K, C / K) with the last term about -Z (it lies along forward), and right has
+// no Y component: no pitch, yaw vR / K², roll vC / K². Turn: level left circle, yaw +v / R. Corkscrew: straight along -Z with
 // the right side going down at ROLL_RATE per second.
 
 import { type Curve } from "../path/path";
@@ -61,7 +62,7 @@ export const helix = sampleMotion(
     {
         curve: helixCurve,
         speed: SPEED,
-        omega: () => [(SPEED * HELIX_R) / HELIX_K2, 0, (SPEED * HELIX_C) / HELIX_K2],
+        omega: () => [0, (SPEED * HELIX_R) / HELIX_K2, (SPEED * HELIX_C) / HELIX_K2],
     },
     RATE,
     constants,

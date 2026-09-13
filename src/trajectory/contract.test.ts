@@ -213,9 +213,12 @@ check(
         // lateral: a flat left turn's specific force points at the centre, -X
         near("turn lateral", feltForces(t0, constants).lateral, -(SPEED * SPEED) / (TURN_R * constants.g), 1e-5);
         near("turn normal", feltForces(t0, constants).normal, 1, 1e-5);
-        // helix: turning left banked left side down, so roll is negative and roll rate about -Z positive
+        // helix: the rider-up frame never banks, climbs nose up and turns left, so roll is zero, pitch
+        // rate zero, and yaw about +Y and roll rate about -Z (world +Y's share along forward) positive
         const x = tickAt(helix, 40);
-        near("helix roll", roll(x), -Math.PI / 2, 1e-5);
+        near("helix roll", roll(x), 0, 1e-5);
+        near("helix pitch rate", x.omega[0], 0, 1e-6);
+        if (!(x.omega[1] > 0)) throw new Error(`helix yaw ${x.omega[1]} is not positive for a left turn`);
         if (!(x.omega[2] > 0)) throw new Error(`helix roll rate ${x.omega[2]} is not positive`);
     },
 );
@@ -235,8 +238,9 @@ check(
         near("hill crest lateral", felt.lateral, 0, 1e-6);
         near("hill crest longitudinal", felt.longitudinal, 0, SPEED / (2 * hill.header.rate * HILL_R) + 1e-3);
         const spiral = feltForces(tickAt(helix, 40), constants);
-        near("helix lateral", spiral.lateral, HELIX_R / K, 1e-5);
-        near("helix normal", spiral.normal, (SPEED * SPEED * HELIX_R) / (K * K * g), 1e-5);
+        // unbanked: the centripetal v²R / K² is all lateral toward the axis, and gravity splits R / K up, C / K back
+        near("helix lateral", spiral.lateral, -(SPEED * SPEED * HELIX_R) / (K * K * g), 1e-5);
+        near("helix normal", spiral.normal, HELIX_R / K, 1e-5);
         near("helix longitudinal", spiral.longitudinal, HELIX_C / K, 1e-5);
         const braking = { ...tickAt(straight, 0), a: -g / 2 };
         near("braking longitudinal", feltForces(braking, constants).longitudinal, -0.5, 1e-6);
