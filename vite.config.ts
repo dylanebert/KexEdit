@@ -6,4 +6,5 @@ import { projectPlugin } from "@dylanebert/shallot/vite";
 export default defineConfig({
     plugins: [svelte(), typegpu(), projectPlugin(".")],
     optimizeDeps: { exclude: ["@dylanebert/shallot", "@dylanebert/shallot-grid", "typegpu"] },
+    resolve: { dedupe: ["@dylanebert/shallot", "typegpu"] },
 });
