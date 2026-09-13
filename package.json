@@ -8,7 +8,6 @@
         "build": "vite build",
         "postinstall": "bun node_modules/@dylanebert/shallot/scripts/tooling.ts",
         "test": "shallot test",
-        "test:integration": "shallot test:integration",
         "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
