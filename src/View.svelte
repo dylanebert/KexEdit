@@ -6,9 +6,16 @@
     import project from "virtual:project";
     import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
     import { GridPlugin, readGridMaterialContract, readGridProbe } from "./grid";
-    import { PathPlugin, pathFixtures, readPathProbe, setPath } from "./path/view";
+    import { PathPlugin, pathFixtures, readPathProbe, readTrain, setPath } from "./path/view";
+    import { Transform } from "@dylanebert/shallot";
 
-    const pathHandle = { readPathProbe, setPath, fixtures: pathFixtures };
+    // `train` reads the train's transform slab and the trajectory tick the scheduler clock names, for the placement row.
+    const pathHandle = {
+        readPathProbe,
+        setPath,
+        fixtures: pathFixtures,
+        train: undefined as (() => unknown) | undefined,
+    };
     type PathWindow = Window & { __kexeditPath?: typeof pathHandle };
 
     let {
@@ -54,7 +61,10 @@
                     const boot = await bootRun?.(options);
                     const grid = await readGridProbe();
                     const path = await readPathProbe();
-                    const noPlaceholderCube = app ? [...app.state.query([Part])].length === 0 : false;
+                    const trainEid = app ? readTrain(app.state)?.eid : undefined;
+                    const noPlaceholderCube = app
+                        ? [...app.state.query([Part])].every((eid) => eid === trainEid)
+                        : false;
                     const orbit = app ? [...app.state.query([Camera, Orbit])].length === 1 : false;
                     const standardLighting = app
                         ? [...app.state.query([AmbientLight])].length === 1 &&
@@ -97,6 +107,24 @@
                 (globalThis as unknown as Window & {
                     __kexeditGridProbe?: typeof readGridProbe;
                 }).__kexeditGridProbe = readGridProbe;
+                pathHandle.train = () => {
+                    const live = app ? readTrain(app.state) : null;
+                    if (!live) return null;
+                    const { eid, trajectory, elapsed } = live;
+                    return {
+                        elapsed,
+                        rate: trajectory.header.rate,
+                        count: trajectory.header.count,
+                        ticks: Array.from(trajectory.ticks),
+                        pos: [Transform.pos.x.get(eid), Transform.pos.y.get(eid), Transform.pos.z.get(eid)],
+                        rot: [
+                            Transform.rot.x.get(eid),
+                            Transform.rot.y.get(eid),
+                            Transform.rot.z.get(eid),
+                            Transform.rot.w.get(eid),
+                        ],
+                    };
+                };
                 (globalThis as unknown as PathWindow).__kexeditPath = pathHandle;
 
                 const revealWhenReady = () => {

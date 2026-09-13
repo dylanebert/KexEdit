@@ -5,16 +5,23 @@
 // the chord (collapsed on the last pose, which has no successor), 6-11 the lateral tick, 12-17 the normal. The quad expansion is the lines extra's kernel (`shallot/src/extras/lines/surface.ts`):
 // project both endpoints, pull one behind the near plane onto it, offset perpendicular in pixels.
 //
+// The path drawn is a ride's: the scene's fixture names a closed-form trajectory whose stored inputs are
+// marched on the calling thread, resampled, and uploaded whole from the ride's shared memory. A train
+// Part stands at the trajectory tick the scheduler clock names, set each frame before draw.
+//
 // The plugin takes the grid's shape (`src/grid.ts`): it owns its buffers and pipeline, runs in `draw`
 // after `ColorSystem` and before `GlazeSystem`, and counts fragments in an atomic probe.
 
 import {
     Camera,
+    Color,
     Compute,
+    Part,
     type Plugin,
     type State,
     type System,
     sparse,
+    Transform,
     u8,
     unpackColor,
 } from "@dylanebert/shallot";
@@ -26,6 +33,11 @@ import { hill } from "./hill.fixture";
 import * as d from "typegpu/data";
 import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import { straight } from "./straight.fixture";
+import { CHUNK, createRide, type Ride } from "../trajectory/execution";
+import * as rides from "../trajectory/fixtures.fixture";
+import { DEFAULT_SPACING } from "../trajectory/resample";
+import { initialState, intentTable, placeTrain } from "../trajectory/train";
+import { TICK_FLOATS, TICK_LANES, type Trajectory } from "../trajectory/trajectory";
 import { PATH_SHADER, PathUniform, UNIFORM_FLOATS } from "./shader";
 import { pathUploads } from "./upload";
 
@@ -92,14 +104,54 @@ const PROBE_BYTES = Uint32Array.BYTES_PER_ELEMENT;
 const PROBE_ZERO = new Uint32Array([0]);
 
 export const PathFixture = { Straight: 0, Hill: 1, Helix: 2 } as const;
-const FIXTURES: Record<number, Path> = {
-    [PathFixture.Straight]: straight,
-    [PathFixture.Hill]: hill,
-    [PathFixture.Helix]: helix,
+// the closed-form trajectory whose stored inputs are the ride's intent table
+const FIXTURES: Record<number, Trajectory> = {
+    [PathFixture.Straight]: rides.straight,
+    [PathFixture.Hill]: rides.hill,
+    [PathFixture.Helix]: rides.helix,
 };
 
-/** a scene handle naming the fixture the view shows at boot */
+/** a scene handle naming the fixture whose intent the view's ride marches at boot */
 export const PathView = { fixture: sparse(u8) };
+
+// Train scale along local X, Y and Z (forward is -Z); a stand-in with no look.
+const TRAIN_SCALE = [0.6, 0.4, 1.6] as const;
+
+type Train = { eid: number; ride: Ride; trajectory: Trajectory };
+let train: Train | null = null;
+
+/** March `fixture`'s intent table on the calling thread, resample, and publish one generation. */
+function marchRide(fixture: Trajectory): Ride {
+    const count = fixture.header.count;
+    const length = Math.abs(fixture.ticks[(count - 1) * TICK_FLOATS + TICK_LANES.distance]);
+    const ride = createRide({
+        ticks: Math.ceil((count + 1) / CHUNK),
+        poses: Math.ceil((length / DEFAULT_SPACING + 2) / CHUNK),
+        rate: fixture.header.rate,
+        constants: fixture.header.constants,
+    });
+    ride.setInitial(initialState(fixture));
+    ride.setInputs(intentTable(fixture));
+    ride.pass();
+    return ride;
+}
+
+/** The train entity, its trajectory and the scheduler time of the last placement; null before boot. */
+export function readTrain(state: State): { eid: number; trajectory: Trajectory; elapsed: number } | null {
+    return train ? { eid: train.eid, trajectory: train.trajectory, elapsed: state.time.elapsed } : null;
+}
+
+// Place the train at the tick the scheduler clock names; runs before draw so the frame shows it.
+const TrainSystem: System = {
+    name: "kexedit-train",
+    group: "simulation",
+    update(state: State) {
+        if (!train || !state.exists(train.eid)) return;
+        const { position, rotation } = placeTrain(train.trajectory, state.time.elapsed);
+        Transform.pos.set(train.eid, position[0], position[1], position[2], 0);
+        Transform.rot.set(train.eid, rotation[0], rotation[1], rotation[2], rotation[3]);
+    },
+};
 
 
 const ALPHA_BLEND: GPUBlendState = {
@@ -306,7 +358,7 @@ function release(): void {
 
 export const PathPlugin: Plugin = {
     name: "KexEditPath",
-    systems: [PathSystem],
+    systems: [TrainSystem, PathSystem],
     components: { PathView },
     traits: { PathView: { defaults: () => ({ fixture: PathFixture.Helix }), enums: { fixture: PathFixture } } },
     dependencies: [RenderPlugin, SearPlugin, GlazePlugin],
@@ -350,12 +402,27 @@ export const PathPlugin: Plugin = {
             primitive: { topology: "triangle-list" },
         });
         for (const eid of state.query([PathView])) {
-            const path = FIXTURES[PathView.fixture.get(eid)];
-            if (!path) throw new Error(`path-view fixture: no fixture ${PathView.fixture.get(eid)}`);
-            setPath(path);
+            const fixture = FIXTURES[PathView.fixture.get(eid)];
+            if (!fixture) throw new Error(`path-view fixture: no fixture ${PathView.fixture.get(eid)}`);
+            const ride = marchRide(fixture);
+            // whole-buffer upload of the published generation, straight from the ride's shared memory
+            setPath(ride.path().path);
+            void train?.ride.terminate();
+            const trainEid = train && state.exists(train.eid) ? train.eid : state.create();
+            if (!state.has(trainEid, Part)) {
+                state.add(trainEid, Transform);
+                state.add(trainEid, Part);
+                state.add(trainEid, Color);
+            }
+            Transform.scale.set(trainEid, TRAIN_SCALE[0], TRAIN_SCALE[1], TRAIN_SCALE[2], 0);
+            const [r, g, b] = PATH_COLORS.chord;
+            Color.rgba.set(trainEid, r, g, b, 1);
+            train = { eid: trainEid, ride, trajectory: ride.trajectory() };
         }
     },
     dispose() {
+        void train?.ride.terminate();
+        train = null;
         release();
         uploads.reset();
         PathUploadStats.lastFrameBytes = 0;

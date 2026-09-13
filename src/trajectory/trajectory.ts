@@ -14,6 +14,13 @@
 // `w` and `reserved` are zero. The stride is read from the schema; a second hand-authored stride is
 // layout drift. `omega` is a three-float array rather than a vec3f so it packs at the lane after
 // `distance` instead of the next vec3 alignment.
+//
+// Measured, not assumed (policies.test.ts). Mass: only drag reads it; at friction 0.03 and drag 2e-5, a
+// 10 s coast down 30° from 5 m/s ends at 51.4850 m/s at 500 kg and 51.4854 m/s at 50,000 kg, Δ 3.9e-4
+// m/s, and with drag 0 mass leaves the march byte-identical. Force floor: 5 m/s at 100 Hz. The force
+// closure holds the tick-start lift, so the realized normal departs from the authored one as 1/|v|; a
+// 0 g climb from 15 m/s swept over start pitches 30° to 89.95° departs by more than 0.01 g at up to
+// 4.93 m/s (from 76.5°), and the floor scales with dt.
 
 import * as d from "typegpu/data";
 import { type Curve, frameQuat, type Quat, rotate, UNIT_TOLERANCE, type Vec3 } from "../path/path";
