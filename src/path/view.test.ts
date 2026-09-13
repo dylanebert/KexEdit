@@ -35,7 +35,17 @@ check(
         claim: "the path view draws nothing or ignores a new path",
         size: "integration",
         requires: ["chromium"],
-        subject: ["src/path/**", "src/View.svelte", "public/scenes/scaffold.scene"],
+        subject: [
+            "src/path/path.ts",
+            "src/path/shader.ts",
+            "src/path/upload.ts",
+            "src/path/view.ts",
+            "src/path/straight.fixture.ts",
+            "src/path/hill.fixture.ts",
+            "src/path/helix.fixture.ts",
+            "src/View.svelte",
+            "public/scenes/scaffold.scene",
+        ],
         budget: 20_000,
     },
     async () => {
