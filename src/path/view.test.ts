@@ -43,12 +43,12 @@ check(
                 throw new Error(`path ${name}: ${JSON.stringify(got)} is not srgbToLinear of ${JSON.stringify(want)}`);
             }
         }
-        // The normal is derived, not a byte: neutral green's OKLCH L and C at hue 142°, closed form #5da555.
+        // The normal is derived, not a byte: the Gruvbox spectrum between neutral green and aqua read at 142°, #6b9d65.
         const normal = PATH_COLORS.normal;
-        const want = [0x5d, 0xa5, 0x55];
+        const want = [0x6b, 0x9d, 0x65];
         const bytes = normal.slice(0, 3).map((c) => linearToSrgb(c) * 255);
         if (normal.length !== 4 || normal[3] !== 1 || bytes.some((b, i) => Math.abs(b - want[i]) > 1)) {
-            throw new Error(`path normal: ${JSON.stringify(bytes)} is not within one byte of #5da555`);
+            throw new Error(`path normal: ${JSON.stringify(bytes)} is not within one byte of #6b9d65`);
         }
     },
 );
@@ -141,7 +141,7 @@ check(
                     };
                     const a = await pixelsOf(before);
                     const b = await pixelsOf(after);
-                    // #cc241d: red well above green and blue; #5da555: green well above red and blue.
+                    // #cc241d: red well above green and blue; #6b9d65: green well above red and blue.
                     const red = (p: Uint8ClampedArray, i: number) =>
                         p[i] >= 150 && p[i] - p[i + 1] >= 90 && p[i] - p[i + 2] >= 90;
                     const green = (p: Uint8ClampedArray, i: number) =>
