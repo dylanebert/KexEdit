@@ -1,8 +1,8 @@
 import { check } from "@dylanebert/shallot/harness/check";
 import { helix, helixCurve } from "./helix.fixture";
-import { hill } from "./hill.fixture";
-import { type Path, poseAt, rotate, type Vec3 } from "./path";
-import { straight } from "./straight.fixture";
+import { hill, hillCurve } from "./hill.fixture";
+import { type Curve, type Path, poseAt, rotate, type Vec3 } from "./path";
+import { straight, straightCurve } from "./straight.fixture";
 
 const FIXTURES: Record<string, Path> = { straight, hill, helix };
 const EPS = 1e-4;
@@ -10,6 +10,12 @@ const EPS = 1e-4;
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const len = (a: Vec3) => Math.hypot(a[0], a[1], a[2]);
+const norm = (a: Vec3): Vec3 => [a[0] / len(a), a[1] / len(a), a[2] / len(a)];
+const cross = (a: Vec3, b: Vec3): Vec3 => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+];
 
 check(
     "fixture poses are arclength-spaced and face their chords",
@@ -43,28 +49,31 @@ check(
 );
 
 check(
-    "helix up agrees with the analytic principal normal",
-    { claim: "the helix pose up vector loses the analytic normal", budget: 250 },
+    "fixture up is the orthonormal rider-up and the frame is right-handed",
+    { claim: "a path fixture rolls, flips its up, or builds a left-handed frame", budget: 250 },
     () => {
-        const h = 1e-3;
-        let checked = 0;
-        for (let i = 0; i < helix.header.count; i++) {
-            const s = Math.min(i * helix.header.spacing, helix.header.length);
-            const p0 = helixCurve.position(s - h);
-            const p1 = helixCurve.position(s);
-            const p2 = helixCurve.position(s + h);
-            const curl: Vec3 = [
-                p0[0] - 2 * p1[0] + p2[0],
-                p0[1] - 2 * p1[1] + p2[1],
-                p0[2] - 2 * p1[2] + p2[2],
-            ];
-            const k = len(curl);
-            const normal: Vec3 = [curl[0] / k, curl[1] / k, curl[2] / k];
-            const up = rotate(poseAt(helix, i).rotation, [0, 1, 0]);
-            const agree = dot(up, normal);
-            if (agree < 0.999) throw new Error(`helix pose ${i} up vs normal agreement ${agree}`);
-            checked += 1;
+        const curves: Record<string, Curve> = { straight: straightCurve, hill: hillCurve, helix: helixCurve };
+        for (const [name, curve] of Object.entries(curves)) {
+            for (let s = 0; s <= curve.length; s += curve.length / 64) {
+                const f = curve.forward(s);
+                const u = curve.up(s);
+                if (Math.abs(dot(f, u)) > 1e-12 || Math.abs(len(u) - 1) > 1e-12) {
+                    throw new Error(`${name} up at s=${s} is not orthonormal to forward`);
+                }
+            }
         }
-        if (checked !== helix.header.count) throw new Error("helix poses not all checked");
+        for (const [name, path] of Object.entries(FIXTURES)) {
+            for (let i = 0; i < path.header.count; i++) {
+                const q = poseAt(path, i).rotation;
+                const forward = rotate(q, [0, 0, -1]);
+                const k = forward[1];
+                const riderUp = norm([-k * forward[0], 1 - k * k, -k * forward[2]]);
+                const lateral = cross(forward, riderUp);
+                const right = rotate(q, [1, 0, 0]);
+                if (Math.abs(right[1]) > EPS || len(sub(right, lateral)) > EPS) {
+                    throw new Error(`${name} pose ${i} +X ${right} is not forward × up ${lateral}`);
+                }
+            }
+        }
     },
 );
