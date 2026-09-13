@@ -13,6 +13,8 @@
         { "file": "src/path/frame.test.ts" },
         { "file": "src/path/upload.test.ts" },
         { "file": "src/path/view.test.ts" },
-        { "file": "src/trajectory/contract.test.ts" }
+        { "file": "src/trajectory/contract.test.ts" },
+        { "file": "src/trajectory/convergence.oracle.ts" },
+        { "file": "src/trajectory/integrator.test.ts" }
     ]
 }
