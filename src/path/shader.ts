@@ -10,7 +10,9 @@ export const PathUniform = d.struct({
     resolution: d.vec2f,
     count: d.f32,
     spacing: d.f32,
-    color: d.vec4f,
+    chord: d.vec4f,
+    lateral: d.vec4f,
+    normal: d.vec4f,
     width: d.f32,
 });
 
@@ -24,6 +26,7 @@ const BODY = /* wgsl */ `
 struct VSOut {
     @builtin(position) position: vec4<f32>,
     @location(0) edge: vec2<f32>,
+    @location(1) color: vec4<f32>,
 }
 
 const NEAR_W = 1e-5;
@@ -34,8 +37,9 @@ fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
 }
 
 // the lines extra's kernel: constant-pixel quad corner for one world segment
-fn quad(a: vec3<f32>, b: vec3<f32>, t: f32, edge: f32) -> VSOut {
+fn quad(a: vec3<f32>, b: vec3<f32>, t: f32, edge: f32, color: vec4<f32>) -> VSOut {
     var out: VSOut;
+    out.color = color;
     var sc = path.viewProj * vec4(a, 1.0);
     var ec = path.viewProj * vec4(b, 1.0);
     if (sc.w < NEAR_W && ec.w < NEAR_W) {
@@ -78,10 +82,14 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) iid: u32) -> VSOu
             out.position = vec4(0.0, 0.0, -1.0, 1.0);
             return out;
         }
-        return quad(pose.position, poses[iid + 1u].position, corner.x, corner.y);
+        return quad(pose.position, poses[iid + 1u].position, corner.x, corner.y, path.chord);
+    }
+    if (vi < 12u) {
+        let side = pose.position + rotate(pose.rotation, vec3(1.0, 0.0, 0.0)) * path.spacing;
+        return quad(pose.position, side, corner.x, corner.y, path.lateral);
     }
     let tip = pose.position + rotate(pose.rotation, vec3(0.0, 1.0, 0.0)) * path.spacing;
-    return quad(pose.position, tip, corner.x, corner.y);
+    return quad(pose.position, tip, corner.x, corner.y, path.normal);
 }
 
 @fragment
@@ -89,7 +97,7 @@ fn fs(input: VSOut) -> @location(0) vec4<f32> {
     let w = fwidth(input.edge.x);
     let aa = 1.0 - smoothstep(input.edge.y - w, input.edge.y + w, abs(input.edge.x));
     atomicAdd(&pathProbe, 1u);
-    return vec4(path.color.rgb, path.color.a * aa);
+    return vec4(input.color.rgb, input.color.a * aa);
 }
 `;
 
