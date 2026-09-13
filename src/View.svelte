@@ -30,12 +30,13 @@
 
     // The grid comes from the manifest's `@dylanebert/shallot-grid` plugin and the scene's `<a grid />`. The
     // boot row's grid evidence is the composited frame itself: bands over sRGB bytes on the `#1d2021` clear,
-    // with each axis band excluding the other two axes and the path's foreground and olive ticks.
+    // with each axis band excluding the other two axes and the path's foreground and olive ticks. Axes are 1 px
+    // from 0.1.2, so the Y axis reads about (107,157,101) at its centre column.
     const GRID_PROBES = (width: number, height: number): Record<string, PixelProbe> => ({
         neutral: { name: "neutral", minPixels: 8000, minSpan: Math.floor(width / 2) + 1, r: [40, 96], g: [30, 88], b: [22, 80] },
         axisX: { name: "axisX", minPixels: 100, minSpan: Math.floor(width / 4), r: [120, 255], g: [0, 64], b: [0, 64] },
         axisZ: { name: "axisZ", minPixels: 100, minSpan: Math.floor(width / 4), r: [16, 96], g: [96, 176], b: [100, 176] },
-        axisY: { name: "axisY", minPixels: 40, minSpan: Math.floor(height / 8), r: [56, 128], g: [112, 192], b: [40, 96] },
+        axisY: { name: "axisY", minPixels: 120, minSpan: Math.floor(height / 4), r: [56, 128], g: [112, 192], b: [40, 112] },
     });
     const GRID_CHECKS = {
         neutral: "grid neutral lines drew",
