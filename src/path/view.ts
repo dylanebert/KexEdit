@@ -16,6 +16,7 @@ import {
     type System,
     sparse,
     u8,
+    unpackColor,
 } from "@dylanebert/shallot";
 import { GlazePlugin, GlazeSystem } from "@dylanebert/shallot/glaze";
 import { computeViewProj, Render, RenderPlugin, type View, Views } from "@dylanebert/shallot/render";
@@ -32,11 +33,19 @@ import { pathUploads } from "./upload";
 export const PATH_POSES = "pathPoses";
 export const PATH_AUX = "pathAux";
 
-// Gruvbox foreground #ebdbb2, neutral red #cc241d, neutral green #98971a, sRGB bytes as the grid authors them.
-const hex = (rgb: number) => [((rgb >> 16) & 0xff) / 255, ((rgb >> 8) & 0xff) / 255, (rgb & 0xff) / 255, 1];
-const CHORD = hex(0xebdbb2);
-const LATERAL = hex(0xcc241d);
-const NORMAL = hex(0x98971a);
+// Gruvbox foreground, neutral red and neutral green as sRGB bytes.
+export const PATH_BYTES = { chord: 0xebdbb2, lateral: 0xcc241d, normal: 0x98971a } as const;
+// The scene target is linear and the composite encodes to sRGB, so bytes decode through Shallot's own curve.
+const linear = (rgb: number) => {
+    const { r, g, b } = unpackColor(rgb);
+    return [r, g, b, 1];
+};
+/** the linear colors the uniform carries */
+export const PATH_COLORS = {
+    chord: linear(PATH_BYTES.chord),
+    lateral: linear(PATH_BYTES.lateral),
+    normal: linear(PATH_BYTES.normal),
+} as const;
 const WIDTH_PX = 2;
 const VERTICES = 18;
 
@@ -172,9 +181,9 @@ function drawPath(eid: number, view: View): void {
         uniformData[U.resolution + 1] = view.height;
         uniformData[U.count] = count;
         uniformData[U.spacing] = live?.header.spacing ?? 0;
-        uniformData.set(CHORD, U.chord);
-        uniformData.set(LATERAL, U.lateral);
-        uniformData.set(NORMAL, U.normal);
+        uniformData.set(PATH_COLORS.chord, U.chord);
+        uniformData.set(PATH_COLORS.lateral, U.lateral);
+        uniformData.set(PATH_COLORS.normal, U.normal);
         uniformData[U.width] = WIDTH_PX;
         device.queue.writeBuffer(gpu.uniform, 0, uniformData);
 

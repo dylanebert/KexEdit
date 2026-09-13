@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { srgbToLinear } from "@dylanebert/shallot";
 import { check } from "@dylanebert/shallot/harness/check";
+import { GRID_BYTES, GRID_MATERIAL_CONTRACT } from "./grid";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -33,17 +35,25 @@ check(
         if (source.includes("axisYColor") || source.includes("axisY")) {
             throw new Error("XZ ground grid must not invent a visible Y axis");
         }
-        for (const token of [
-            "neutral: [0.314, 0.286, 0.271, 1]",
-            "axisX: [0.8, 0.141, 0.114, 1]",
-            "axisZ: [0.271, 0.522, 0.533, 1]",
-            "hasYAxis: false",
-        ]) {
-            if (!source.includes(token)) throw new Error(`grid axis contract lost: ${token}`);
-        }
+        if (!source.includes("hasYAxis: false")) throw new Error("grid axis contract lost: hasYAxis: false");
         const scene = readFileSync(resolve(ROOT, "public/scenes/scaffold.scene"), "utf8");
         if (/<a[^>]*part\b|id=\"cube\"/.test(scene)) {
             throw new Error("the scaffold scene must not retain a placeholder cube");
+        }
+    },
+);
+
+check(
+    "the grid material contract carries its sRGB bytes decoded to linear",
+    { claim: "the grid hands sRGB byte fractions to the linear scene target", budget: 250 },
+    () => {
+        for (const name of ["neutral", "axisX", "axisZ"] as const) {
+            const rgb = GRID_BYTES[name];
+            const want = [16, 8, 0].map((shift) => srgbToLinear(((rgb >> shift) & 0xff) / 255));
+            const got = GRID_MATERIAL_CONTRACT[name];
+            if (got.length !== 4 || got[3] !== 1 || want.some((w, i) => got[i] !== w)) {
+                throw new Error(`grid ${name}: ${JSON.stringify(got)} is not srgbToLinear of ${JSON.stringify(want)}`);
+            }
         }
     },
 );
