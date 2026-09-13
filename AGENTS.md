@@ -4,7 +4,7 @@ KexEdit is the MIT FVD coaster editor. The live S0 surface is an ejected Vite + 
 
 ## Test Surface
 
-The carrier is native to this project. `test` runs the hermetic Svelte-compiler unit witness; `check` runs the manifest-authority surface check and `svelte-check`; `test:integration` selects the Chromium/GPU browser row by changed subject. Every check is listed once in the root `shallot.json` authority. Integration subjects are literal file paths: the pinned carrier reads each subject with `git show <ref>:<subject>`, so a glob subject reads as empty on both sides and the row is never selected.
+The carrier is native to this project. `test` runs the hermetic Svelte-compiler unit witness; `check` runs the manifest-authority surface check and `svelte-check`; `test -- --integration --base <ref> --diff <ref>` selects the Chromium/GPU browser rows by changed subject, `--subject <path>` by name. Every check is listed once in the root `shallot.json` authority. Integration subjects are literal file paths: the pinned carrier reads each subject with `git show <ref>:<subject>`, so a glob subject reads as empty on both sides and the row is never selected.
 
 ## Accepted S1 Look
 
