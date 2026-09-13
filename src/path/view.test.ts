@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { srgbToLinear } from "@dylanebert/shallot";
+import { linearToSrgb, srgbToLinear } from "@dylanebert/shallot";
 import { check } from "@dylanebert/shallot/harness/check";
 import launch from "@dylanebert/shallot/harness/browser" with { type: "json" };
 import { chromium } from "playwright";
@@ -35,13 +35,20 @@ check(
     "the path view uploads its sRGB bytes decoded to linear",
     { claim: "the path view hands sRGB byte fractions to the linear scene target", budget: 250 },
     () => {
-        for (const name of ["chord", "lateral", "normal"] as const) {
+        for (const name of ["chord", "lateral"] as const) {
             const rgb = PATH_BYTES[name];
             const want = [16, 8, 0].map((shift) => srgbToLinear(((rgb >> shift) & 0xff) / 255));
             const got = PATH_COLORS[name];
             if (got.length !== 4 || got[3] !== 1 || want.some((w, i) => got[i] !== w)) {
                 throw new Error(`path ${name}: ${JSON.stringify(got)} is not srgbToLinear of ${JSON.stringify(want)}`);
             }
+        }
+        // The normal is derived, not a byte: neutral green's OKLCH L and C at hue 142°, closed form #5da555.
+        const normal = PATH_COLORS.normal;
+        const want = [0x5d, 0xa5, 0x55];
+        const bytes = normal.slice(0, 3).map((c) => linearToSrgb(c) * 255);
+        if (normal.length !== 4 || normal[3] !== 1 || bytes.some((b, i) => Math.abs(b - want[i]) > 1)) {
+            throw new Error(`path normal: ${JSON.stringify(bytes)} is not within one byte of #5da555`);
         }
     },
 );
@@ -134,11 +141,11 @@ check(
                     };
                     const a = await pixelsOf(before);
                     const b = await pixelsOf(after);
-                    // #cc241d: red well above green and blue; #98971a: red and green level, both well above blue.
+                    // #cc241d: red well above green and blue; #5da555: green well above red and blue.
                     const red = (p: Uint8ClampedArray, i: number) =>
                         p[i] >= 150 && p[i] - p[i + 1] >= 90 && p[i] - p[i + 2] >= 90;
                     const green = (p: Uint8ClampedArray, i: number) =>
-                        p[i + 1] >= 110 && p[i + 1] - p[i + 2] >= 60 && Math.abs(p[i] - p[i + 1]) <= 30;
+                        p[i + 1] >= 120 && p[i + 1] - p[i] >= 40 && p[i + 1] - p[i + 2] >= 40;
                     let reds = 0;
                     let greens = 0;
                     for (let i = 0; i < b.length; i += 4) {
