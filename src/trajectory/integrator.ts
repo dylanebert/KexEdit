@@ -88,7 +88,7 @@ export function step(state: State, input: Input, dt: number): State {
     };
 }
 
-function writeTick(ticks: Float32Array, i: number, state: State, input: Input): void {
+export function writeTick(ticks: Float32Array, i: number, state: State, input: Input): void {
     const o = i * TICK_FLOATS;
     ticks.set(state.position, o + TICK_LANES.position);
     ticks.set(state.rotation, o + TICK_LANES.rotation);
