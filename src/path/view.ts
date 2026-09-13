@@ -1,6 +1,6 @@
 // The path view: orientation gizmos drawn straight from the pose binding. Per pose interval one chord
 // from pose `i` to `i + 1` in the shell foreground, per pose a lateral tick along local +X in neutral red
-// and a normal tick along local +Y in neutral green, all screen-constant-width quads, flat, unlit and
+// and a normal tick along local +Y in the derived axis green, all screen-constant-width quads, flat, unlit and
 // depth-tested. One instanced draw of `count` instances with eighteen vertices each: vertices 0-5 are
 // the chord (collapsed on the last pose, which has no successor), 6-11 the lateral tick, 12-17 the normal. The quad expansion is the lines extra's kernel (`shallot/src/extras/lines/surface.ts`):
 // project both endpoints, pull one behind the near plane onto it, offset perpendicular in pixels.
@@ -33,18 +33,33 @@ import { pathUploads } from "./upload";
 export const PATH_POSES = "pathPoses";
 export const PATH_AUX = "pathAux";
 
-// Gruvbox foreground, neutral red and neutral green as sRGB bytes.
-export const PATH_BYTES = { chord: 0xebdbb2, lateral: 0xcc241d, normal: 0x98971a } as const;
+// Gruvbox foreground and neutral red as sRGB bytes.
+export const PATH_BYTES = { chord: 0xebdbb2, lateral: 0xcc241d } as const;
 // The scene target is linear and the composite encodes to sRGB, so bytes decode through Shallot's own curve.
 const linear = (rgb: number) => {
     const { r, g, b } = unpackColor(rgb);
     return [r, g, b, 1];
 };
-/** the linear colors the uniform carries */
+/** OKLCH (hue in degrees) to linear sRGB with alpha, through Ottosson's OKLab matrices; throws out of gamut */
+export function oklch(l: number, c: number, h: number): number[] {
+    const a = c * Math.cos((h * Math.PI) / 180);
+    const b = c * Math.sin((h * Math.PI) / 180);
+    const L = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const M = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const S = (l - 0.0894841775 * a - 1.291485548 * b) ** 3;
+    const rgb = [
+        4.0767416621 * L - 3.3077115913 * M + 0.2309699292 * S,
+        -1.2684380046 * L + 2.6097574011 * M - 0.3413193965 * S,
+        -0.0041960863 * L - 0.7034186147 * M + 1.707614701 * S,
+    ];
+    if (rgb.some((v) => v < 0 || v > 1)) throw new Error(`oklch(${l}, ${c}, ${h}) is out of sRGB gamut`);
+    return [...rgb, 1];
+}
+/** the linear colors the uniform carries; the normal is neutral green's OKLCH L and C at hue 142°, #5da555 */
 export const PATH_COLORS = {
     chord: linear(PATH_BYTES.chord),
     lateral: linear(PATH_BYTES.lateral),
-    normal: linear(PATH_BYTES.normal),
+    normal: oklch(0.656, 0.135, 142),
 } as const;
 const WIDTH_PX = 2;
 const VERTICES = 18;
