@@ -8,6 +8,8 @@
         { "file": "src/shell.test.ts" },
         { "file": "src/capability.test.ts" },
         { "file": "src/boot.test.ts" },
-        { "file": "src/grid.test.ts" }
+        { "file": "src/grid.test.ts" },
+        { "file": "src/path/contract.test.ts" },
+        { "file": "src/path/frame.test.ts" }
     ]
 }
