@@ -260,10 +260,16 @@ check(
                 const status = document.querySelector<HTMLElement>("[data-region=status]");
                 const canvas = document.querySelector<HTMLCanvasElement>("canvas");
                 if (!shell || !context || !viewPane || !view || !timeline || !timelinePane || !status || !canvas) {
-                    return { ready: false, flat: false, dividers: false, gap: false, clearMatch: false };
+                    return { ready: false, surfaceRoles: false, dividers: false, gap: false, clearMatch: false };
                 }
                 const style = (element: HTMLElement) => getComputedStyle(element);
-                const grounds = [context, view, timeline, status].map((element) => style(element).backgroundColor);
+                const grounds = {
+                    context: style(context).backgroundColor,
+                    view: style(view).backgroundColor,
+                    canvas: style(canvas).backgroundColor,
+                    timeline: style(timeline).backgroundColor,
+                    status: style(status).backgroundColor,
+                };
                 const border = "rgb(60, 56, 54)";
                 const noOuterBorder = (element: HTMLElement, allowed: "borderLeftWidth" | "borderTopWidth" | null) =>
                     ["borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"].every(
@@ -281,12 +287,13 @@ check(
                     timelineRect.top - contextRect.bottom,
                     statusRect.top - timelineRect.bottom,
                 ];
-                const paneColor = style(context).backgroundColor;
-                const rgb = paneColor.match(/\d+/g)?.map(Number) ?? [];
+                const paneColor = grounds.context;
+                const canvasColor = grounds.canvas;
+                const rgb = canvasColor.match(/\d+/g)?.map(Number) ?? [];
                 const handle = (globalThis as unknown as { __kexeditPath?: { captureFrame(): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> } }).__kexeditPath;
                 const shot = await handle?.captureFrame();
                 if (!shot || rgb.length !== 3) {
-                    return { ready: false, flat: false, dividers: false, gap: false, clearMatch: false };
+                    return { ready: false, surfaceRoles: false, dividers: false, gap: false, clearMatch: false };
                 }
                 const samplePoints = [0.08, 0.32, 0.68, 0.92].map((fraction) => [
                     Math.min(shot.width - 1, Math.floor(shot.width * fraction)),
@@ -302,7 +309,11 @@ check(
                 const animation = style(context);
                 return {
                     ready: shell.dataset.shellReady === "true" && shell.getAttribute("aria-hidden") === "false",
-                    flat: grounds.every((ground) => ground === "rgb(29, 32, 33)"),
+                    surfaceRoles:
+                        grounds.context === grounds.status &&
+                        grounds.view === grounds.canvas &&
+                        grounds.context !== grounds.timeline &&
+                        grounds.timeline !== grounds.canvas,
                     dividers:
                         noOuterBorder(context, null) &&
                         noOuterBorder(viewPane, "borderLeftWidth") &&
@@ -315,6 +326,7 @@ check(
                     gapValues,
                     clearMatch: clearMatches >= 3,
                     paneColor,
+                    canvasColor,
                     clearSamples: samples,
                     clearMatches,
                     animation: animation.animationName === "pane-enter" && animation.animationDuration === "0.18s",
@@ -322,7 +334,7 @@ check(
             });
             if (
                 !shellEvidence.ready ||
-                !shellEvidence.flat ||
+                !shellEvidence.surfaceRoles ||
                 !shellEvidence.dividers ||
                 !shellEvidence.gap ||
                 !shellEvidence.clearMatch ||

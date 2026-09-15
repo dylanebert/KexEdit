@@ -43,7 +43,7 @@
     let canvas: HTMLCanvasElement;
 
     // The grid comes from the manifest's `@dylanebert/shallot-grid` plugin and the scene's `<a grid />`. The
-    // boot row's grid evidence is the composited frame itself: bands over sRGB bytes on the `#1d2021` clear,
+    // boot row's grid evidence is the composited frame itself: bands over sRGB bytes on the derived `#171a1b` canvas clear,
     // with each axis band excluding the other two axes and the path's foreground and olive ticks. Axes are 1 px
     // from 0.1.2, so the Y axis reads about (107,157,101) at its centre column.
     const GRID_PROBES = (width: number, height: number): Record<string, PixelProbe> => ({
