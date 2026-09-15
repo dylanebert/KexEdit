@@ -89,11 +89,13 @@ export function zoomAtPixel(view: TimelineViewport, width: number, pixel: number
     return clampViewport({ ...view, start: anchor - fraction * newSpan, span: newSpan });
 }
 
-/** Normalize a wheel delta to the geometric exponent used by the viewport. */
-export function wheelZoomRatio(deltaY: number, deltaMode: number): number {
+/** Normalize a wheel delta to a bounded geometric exponent used by the viewport. */
+export function wheelZoomRatio(deltaY: number, deltaMode: number, modified = false): number {
     if (!Number.isFinite(deltaY)) throw new Error(`timeline wheel delta: expected finite, got ${deltaY}`);
     const unit = deltaMode === 1 ? 0.05 : deltaMode === 2 ? 1 : 0.002;
-    return 2 ** (deltaY * unit * 10);
+    const gain = modified ? 10 : 1;
+    const exponent = Math.min(0.25, Math.max(-0.25, deltaY * unit * gain));
+    return 2 ** exponent;
 }
 
 function niceStep(rawStep: number): number {

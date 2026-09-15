@@ -65,15 +65,21 @@
             if (!(width > 0)) return;
             const bounds = surface.getBoundingClientRect();
             const pixel = Math.min(width, Math.max(0, event.clientX - bounds.left));
-            if (event.ctrlKey || event.metaKey) {
-                viewport = zoomAtPixel(viewport, width, pixel, wheelZoomRatio(event.deltaY, event.deltaMode));
+            if (event.shiftKey) {
+                const dominant = Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+                if (dominant === 0) return;
+                const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? width : 1;
+                viewport = panByPixels(viewport, width, dominant * unit);
                 event.preventDefault();
                 return;
             }
-            if (event.shiftKey) {
-                const dominant = Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-                const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? width : 1;
-                viewport = panByPixels(viewport, width, dominant * unit);
+            if (event.deltaY !== 0) {
+                viewport = zoomAtPixel(
+                    viewport,
+                    width,
+                    pixel,
+                    wheelZoomRatio(event.deltaY, event.deltaMode, event.ctrlKey || event.metaKey),
+                );
                 event.preventDefault();
             }
         };
@@ -123,7 +129,6 @@
         const target = event.target instanceof Element ? event.target.closest('[data-region="ruler"]') : null;
         if (!target) return;
         gesture = { mode: "scrub", pointerId: event.pointerId, startClientX: event.clientX, startView: viewport, middle: false };
-        (target as HTMLElement).focus({ preventScroll: true });
         event.preventDefault();
         surface.setPointerCapture(event.pointerId);
         scrubAt(event);
@@ -217,50 +222,55 @@
 <svelte:window onkeydown={handleKeydown} onkeyup={handleKeyup} onblur={handleBlur} />
 
 <div class="transport" data-region="transport" data-playing={snapshot?.playing ?? false}>
-    <div class="transport-controls" data-region="transport-controls">
-        <div class="transport-playback" role="group" aria-label="Playback controls">
-            <button
-                class="transport-button transport-play"
-                type="button"
-                data-action="play-pause"
-                aria-label={snapshot?.playing ? "Pause" : "Play"}
-                aria-keyshortcuts="Space"
-                title={snapshot?.playing ? "Pause (Space)" : "Play (Space)"}
-                onclick={() => transport.togglePlaying()}
+    <div class="timeline-frame transport-controls" data-region="transport-controls">
+        <div class="timeline-gutter" aria-hidden="true"></div>
+        <div class="transport-control-viewport">
+            <div class="transport-playback" role="group" aria-label="Playback controls">
+                <button
+                    class="transport-button transport-play"
+                    type="button"
+                    data-action="play-pause"
+                    aria-label={snapshot?.playing ? "Pause" : "Play"}
+                    aria-keyshortcuts="Space"
+                    title={snapshot?.playing ? "Pause (Space)" : "Play (Space)"}
+                    onclick={() => transport.togglePlaying()}
+                >
+                    {#if snapshot?.playing}
+                        <Pause size={15} strokeWidth={2} />
+                    {:else}
+                        <Play size={15} strokeWidth={2} />
+                    {/if}
+                </button>
+            </div>
+            <output
+                class="transport-readout"
+                data-readout="time"
+                aria-label={snapshot ? `Time: ${format(snapshot.playhead / snapshot.headerRate)} / ${format(snapshot.length / snapshot.headerRate)} seconds` : "Time: 0 / 0 seconds"}
             >
-                {#if snapshot?.playing}
-                    <Pause size={15} strokeWidth={2} />
-                {:else}
-                    <Play size={15} strokeWidth={2} />
-                {/if}
-            </button>
+                <span class="transport-time-current">{snapshot ? format(snapshot.playhead / snapshot.headerRate) : "0"}</span>
+                <span class="transport-time-total">/ {snapshot ? format(snapshot.length / snapshot.headerRate) : "0"} s</span>
+            </output>
         </div>
-        <output
-            class="transport-readout"
-            data-readout="time"
-            aria-label={snapshot ? `Time: ${format(snapshot.playhead / snapshot.headerRate)} / ${format(snapshot.length / snapshot.headerRate)} seconds` : "Time: 0 / 0 seconds"}
-        >
-            <span class="transport-time-current">{snapshot ? format(snapshot.playhead / snapshot.headerRate) : "0"}</span>
-            <span class="transport-time-total">/ {snapshot ? format(snapshot.length / snapshot.headerRate) : "0"} s</span>
-        </output>
     </div>
 
-    <div
-        class="timeline-surface"
-        role="group"
-        aria-label="Timeline viewport"
-        data-region="timeline-surface"
-        data-gesture={gesture?.mode === "pan" ? "pan" : undefined}
-        data-view-start={viewport?.start ?? 0}
-        data-view-end={viewport ? viewport.start + viewport.span : 0}
-        data-view-span={viewport?.span ?? 0}
-        bind:this={surfaceElement}
-        onpointerdown={handlePointerDown}
-        onpointermove={handlePointerMove}
-        onpointerup={endGesture}
-        onpointercancel={endGesture}
-        onauxclick={handleAuxClick}
-    >
+    <div class="timeline-frame timeline-frame-body">
+        <div class="timeline-gutter" aria-hidden="true"></div>
+        <div
+            class="timeline-surface"
+            role="group"
+            aria-label="Timeline viewport"
+            data-region="timeline-surface"
+            data-gesture={gesture?.mode === "pan" ? "pan" : undefined}
+            data-view-start={viewport?.start ?? 0}
+            data-view-end={viewport ? viewport.start + viewport.span : 0}
+            data-view-span={viewport?.span ?? 0}
+            bind:this={surfaceElement}
+            onpointerdown={handlePointerDown}
+            onpointermove={handlePointerMove}
+            onpointerup={endGesture}
+            onpointercancel={endGesture}
+            onauxclick={handleAuxClick}
+        >
         <div
             class="timeline-ruler"
             data-region="ruler"
@@ -271,7 +281,7 @@
             aria-valuemax={snapshot?.length ?? 0}
             aria-valuenow={snapshot?.playhead ?? 0}
             aria-valuetext={snapshot ? `Time: ${format(snapshot.playhead / snapshot.headerRate)} seconds` : "Time: 0 seconds"}
-            title="Scrub · Ctrl/⌘ scroll zoom · Shift scroll pan · F frame all"
+            title="Scroll zoom · Shift scroll pan · F frame all"
         >
             <div class="timeline-ticks" aria-hidden="true">
                 {#each ticks as tick (tick.seconds)}
@@ -337,5 +347,6 @@
                 <span class="timeline-playhead-line" data-region="playhead-line"></span>
             </div>
         {/if}
+        </div>
     </div>
 </div>

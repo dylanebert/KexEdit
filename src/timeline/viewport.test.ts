@@ -7,6 +7,7 @@ import {
     timeToPixel,
     updateDomain,
     visibleTicks,
+    wheelZoomRatio,
     zoomAtPixel,
 } from "./viewport";
 
@@ -90,6 +91,33 @@ check(
         if (overscrolled.start !== 0) throw new Error(`pan did not return to the authored boundary ${overscrolled.start}`);
         const restored = frameAll(view.duration, 10);
         if (restored.start !== 0 || restored.span !== 20 || restored.duration !== view.duration) throw new Error("frame-all did not restore the full authored range");
+    },
+);
+
+check(
+    "wheel deltas are bounded continuous cursor zoom and normalized pan inputs",
+    { claim: "timeline wheel normalization reverses direction, jumps geometric scales, or loses mode and pan sign", budget: 250 },
+    () => {
+        const plain = wheelZoomRatio(100, 0);
+        if (!close(plain, 2 ** 0.2) || !close(wheelZoomRatio(-100, 0), 2 ** -0.2)) throw new Error("plain pixel wheel direction or ratio failed");
+        if (wheelZoomRatio(10_000, 0) !== 2 ** 0.25 || wheelZoomRatio(-10_000, 0) !== 2 ** -0.25) {
+            throw new Error("wheel exponent was not capped");
+        }
+        if (wheelZoomRatio(1, 1) !== 2 ** 0.05 || wheelZoomRatio(1, 2) !== 2 ** 0.25) throw new Error("line/page normalization failed");
+        if (wheelZoomRatio(0.01, 0, true) !== 2 ** 0.0002 || wheelZoomRatio(100, 0, true) !== 2 ** 0.25) throw new Error("modified gain failed");
+
+        const width = 1000;
+        const start = clampViewport({ ...frameAll(100, 10), start: 30, span: 20 });
+        const first = zoomAtPixel(start, width, 400, plain);
+        const second = zoomAtPixel(first, width, 400, plain);
+        if (!close(second.span / first.span, first.span / start.span)) throw new Error("equal wheel events were not continuous geometric increments");
+        if (second.span === Math.round(second.span)) throw new Error("wheel zoom was rounded to a ruler step");
+
+        const pan = panByPixels(start, width, 16);
+        if (!(pan.start > start.start) || pan.span !== start.span) throw new Error("positive normalized pan sign failed");
+        const page = panByPixels(start, width, width);
+        if (!close(page.start, start.start + start.span)) throw new Error("page pan was not viewport-width normalized");
+        if (panByPixels(start, width, -1e9).start !== 0 || panByPixels(start, width, 1e9).start !== 80) throw new Error("pan limits failed");
     },
 );
 
