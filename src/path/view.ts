@@ -35,12 +35,12 @@ import * as d from "typegpu/data";
 import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import { straight } from "./straight.fixture";
 import * as trajectoryFixtures from "../trajectory/fixtures.fixture";
-import { Train, RideHeader, Transport, createRideEntity, readRide, rides } from "../trajectory/ride";
+import { Train, RideHeader, Transport, createRideEntity, readRide, rides, type RideEntity } from "../trajectory/ride";
 import { type Input, type State as MarchState } from "../trajectory/integrator";
 import { run } from "../trajectory/policies";
 import { CHUNK, createRide, type Ride } from "../trajectory/execution";
 import { DEFAULT_SPACING } from "../trajectory/resample";
-import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_RATE, RIDE_START } from "../trajectory/ride.fixture";
+import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "../trajectory/ride.fixture";
 import { initialState, intentTable } from "../trajectory/train";
 import { advance, placeAt, scrub } from "../trajectory/transport";
 import type { RideConstants, Trajectory } from "../trajectory/trajectory";
@@ -109,7 +109,7 @@ const UNIFORM_BYTES = UNIFORM_FLOATS * FLOAT_BYTES;
 const PROBE_BYTES = Uint32Array.BYTES_PER_ELEMENT;
 const PROBE_ZERO = new Uint32Array([0]);
 
-export const PathFixture = { Straight: 0, Hill: 1, Ride: 2 } as const;
+export const PathFixture = { Straight: 0, Hill: 1, Ride: 2, Stalled: 3 } as const;
 
 /** What a ride marches: a start state and one input row per tick after it, at a rate under constants. */
 interface RideSource {
@@ -188,10 +188,11 @@ function attachRide(state: State, ride: Ride, length: number, rate: number): num
 }
 
 function createFixtureRide(state: State, fixture: PathFixtureValue): number {
-    if (fixture === PathFixture.Ride) {
+    if (fixture === PathFixture.Ride || fixture === PathFixture.Stalled) {
+        const intents = fixture === PathFixture.Stalled ? RIDE_INTENTS_STALLED : RIDE_INTENTS;
         return createRideEntity(state, {
-            length: RIDE_INTENTS.length,
-            intents: RIDE_INTENTS,
+            length: intents.length,
+            intents,
             initial: RIDE_START,
             rate: RIDE_RATE,
             constants: RIDE_CONSTANTS,
@@ -226,6 +227,7 @@ export function readTrain(state: State): {
     rideEid: number;
     header: { length: number; count: number; rate: number; endReason: string; endTick: number; generation: number };
     trajectory: Trajectory;
+    refusal?: RideEntity["refusal"];
     transport: { playhead: number; playing: boolean; rate: number; loop: boolean };
     offset: number;
     elapsed: number;
@@ -239,12 +241,90 @@ export function readTrain(state: State): {
             rideEid,
             header: ride.header,
             trajectory: ride.trajectory,
+            refusal: ride.refusal,
             transport: ride.transport,
             offset: Train.offset.get(eid),
             elapsed: state.time.elapsed,
         };
     }
     return null;
+}
+
+export interface TransportSnapshot {
+    playhead: number;
+    length: number;
+    headerRate: number;
+    playing: boolean;
+    rate: number;
+    loop: boolean;
+    endReason: string;
+    endTick: number;
+    refusal?: RideEntity["refusal"];
+    held: boolean;
+}
+
+type TransportListener = (snapshot: TransportSnapshot | null) => void;
+
+let transportState: State | null = null;
+let transportSnapshot: TransportSnapshot | null = null;
+const transportListeners = new Set<TransportListener>();
+
+function readTransportSnapshot(state: State): TransportSnapshot | null {
+    const train = readTrain(state);
+    if (!train) return null;
+    return {
+        playhead: train.transport.playhead,
+        length: train.header.length,
+        headerRate: train.header.rate,
+        playing: train.transport.playing,
+        rate: train.transport.rate,
+        loop: train.transport.loop,
+        endReason: train.header.endReason,
+        endTick: train.header.endTick,
+        refusal: train.refusal,
+        held: train.header.endReason !== "complete" && train.transport.playhead > train.header.endTick,
+    };
+}
+
+function publishTransport(state: State): void {
+    transportSnapshot = readTransportSnapshot(state);
+    for (const listener of transportListeners) listener(transportSnapshot);
+}
+
+function writeTransport(action: (state: State) => void): void {
+    if (!transportState) return;
+    action(transportState);
+    publishTransport(transportState);
+}
+
+/** The sole Svelte-to-ECS seam for transport state and controls. */
+export const transport = {
+    subscribe(listener: TransportListener): () => void {
+        transportListeners.add(listener);
+        listener(transportSnapshot);
+        return () => transportListeners.delete(listener);
+    },
+    snapshot: () => transportSnapshot,
+    togglePlaying: () => writeTransport((state) => setRidePlaying(state, !transportSnapshot?.playing)),
+    setPlaying: (playing: boolean) => writeTransport((state) => setRidePlaying(state, playing)),
+    setRate: (rate: number) => writeTransport((state) => setRideRate(state, rate)),
+    setLoop: (loop: boolean) => writeTransport((state) => {
+        const train = readTrain(state);
+        if (train) Transport.loop.set(train.rideEid, loop ? 1 : 0);
+    }),
+    scrub: (playhead: number) => writeTransport((state) => scrubRide(state, playhead)),
+};
+
+export function bindTransport(state: State): void {
+    transportState = state;
+    publishTransport(state);
+}
+
+function unbindTransport(state: State): void {
+    if (transportState !== state) return;
+    transportState = null;
+    transportSnapshot = null;
+    for (const listener of transportListeners) listener(null);
 }
 
 /** Harness seam for transport controls; the Svelte layer does not reach into ECS fields directly. */
@@ -291,6 +371,7 @@ export const TransportSystem: System = {
             Transport.playhead.set(eid, next.playhead);
             Transport.playing.set(eid, next.playing ? 1 : 0);
         }
+        publishTransport(state);
     },
 };
 
@@ -304,13 +385,14 @@ export const TrainSystem: System = {
             const rideEid = Train.ride.get(eid);
             const ride = rides.get(rideEid);
             if (!ride || !state.exists(rideEid)) continue;
-            const { position, rotation } = placeAt(
-                ride.trajectory(),
-                Transport.playhead.get(rideEid),
-                Train.offset.get(eid),
-            );
+            const playhead = Transport.playhead.get(rideEid);
+            const { position, rotation } = placeAt(ride.trajectory(), playhead, Train.offset.get(eid));
+            const header = RideHeader.endReason.get(rideEid);
+            const held = header !== 0 && playhead > RideHeader.endTick.get(rideEid);
+            const [r, g, b] = PATH_COLORS.chord;
             Transform.pos.set(eid, position[0], position[1], position[2], 0);
             Transform.rot.set(eid, rotation[0], rotation[1], rotation[2], rotation[3]);
+            Color.rgba.set(eid, r, g, b, held ? 0.34 : 1);
         }
     },
 };
@@ -575,17 +657,21 @@ export const PathPlugin: Plugin = {
             primitive: { topology: "triangle-list" },
         });
         for (const eid of state.query([PathView])) {
-            const fixture = PathView.fixture.get(eid) as PathFixtureValue;
-            if (!FIXTURES[fixture] && fixture !== PathFixture.Ride) {
+            const configured = PathView.fixture.get(eid) as PathFixtureValue;
+            const queryFixture = typeof location !== "undefined" && new URLSearchParams(location.search).get("fixture");
+            const fixture = queryFixture === "stalled" ? PathFixture.Stalled : configured;
+            if (!FIXTURES[fixture] && fixture !== PathFixture.Ride && fixture !== PathFixture.Stalled) {
                 throw new Error(`path-view fixture: no fixture ${fixture}`);
             }
             // The ride is an ECS entity. Its execution memory is the side-table value, and the train
             // points to that entity rather than retaining a module-level train singleton.
             const rideEid = [...state.query([RideHeader])][0] ?? createFixtureRide(state, fixture);
             trainFor(state, rideEid);
+            bindTransport(state);
         }
     },
     dispose(state: State) {
+        unbindTransport(state);
         for (const rideEid of state.query([RideHeader])) {
             void rides.get(rideEid)?.terminate();
             rides.delete(rideEid);
