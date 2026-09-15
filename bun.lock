@@ -5,7 +5,7 @@
     "": {
       "name": "kexedit",
       "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#70770cfc34d82fdd19cb705d8753bb6f093748d6",
+        "@dylanebert/shallot": "github:dylanebert/shallot#0664218f465224397b80aeb604b51178ac71cfb2",
         "@dylanebert/shallot-grid": "^0.1.2",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
@@ -45,7 +45,7 @@
 
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
-    "@dylanebert/shallot": ["@dylanebert/shallot@github:dylanebert/shallot#70770cf", { "dependencies": { "@babel/parser": "^8.0.4", "@types/node": "^26.2.0", "@webgpu/types": "^0.1.72", "unplugin-typegpu": "~0.12.3", "vite": "^8.3.0" }, "peerDependencies": { "bun-webgpu": ">=0.1.7", "playwright": "^1.0.0", "typegpu": "~0.12.5" }, "optionalPeers": ["bun-webgpu", "playwright"], "bin": { "shallot": "./bin/shallot.ts" } }, "dylanebert-shallot-70770cf", "sha512-D5BiR3BpI6Mq4ldaWrnb35evE6J1qU62VrKDCHgWPqAQyBxWwUi41Vi8TP4LI6V5BBTtGxuFKwXvJ6dLqmEqmQ=="],
+    "@dylanebert/shallot": ["@dylanebert/shallot@github:dylanebert/shallot#0664218f", { "dependencies": { "@babel/parser": "^8.0.4", "@types/node": "^26.2.0", "@webgpu/types": "^0.1.72", "unplugin-typegpu": "~0.12.3", "vite": "^8.3.0" }, "peerDependencies": { "bun-webgpu": ">=0.1.7", "playwright": "^1.0.0", "typegpu": "~0.12.5" }, "optionalPeers": ["bun-webgpu", "playwright"], "bin": { "shallot": "./bin/shallot.ts" } }, "dylanebert-shallot-0664218f", "sha512-tnyD1mOSycSqZMpgh04mCx6iC3l8AknEQ+xA2wDFK96ifD0n6Q5O9UxjFCFL8A7gagI21AFnB+m8T2qon7Qp8w=="],
 
     "@dylanebert/shallot-grid": ["@dylanebert/shallot-grid@0.1.2", "", { "peerDependencies": { "@dylanebert/shallot": ">=0.9.5", "typegpu": "~0.12.5" } }, "sha512-eMlqxPvkXNL/tnJxD0HDrU4euzERjgy5ThoFTououN5H3M4qN1qfxrCamyuz54448f/t/yQ0Ac5lPbMKBrR+kA=="],
 

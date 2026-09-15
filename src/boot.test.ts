@@ -80,14 +80,14 @@ check(
                         const samples: Array<{
                             opacity: number;
                             transform: string;
-                            splashPresent: boolean;
+                            loadingPresent: boolean;
                             entranceFrameReady: boolean;
                             entranceFrameAt: number;
                             entranceArmed: boolean;
                         }> = [];
                         let firstStart:
                             | {
-                                  splashPresent: boolean;
+                                  loadingPresent: boolean;
                                   shellReady: boolean;
                                   entranceFrameReady: boolean;
                                   entranceFrameAt: number;
@@ -98,10 +98,9 @@ check(
                             | undefined;
                         const identity = (transform: string) =>
                             transform === "none" || transform.replaceAll(" ", "") === "matrix(1,0,0,1,0,0)";
-                        const splashPresent = () =>
+                        const loadingPresent = () =>
                             [...document.body.children].some((candidate) => {
-                                const style = getComputedStyle(candidate);
-                                return style.zIndex === "10000" && candidate.querySelector("svg") !== null;
+                                return getComputedStyle(candidate).zIndex === "10000";
                             });
                         const sample = () => {
                             const pane = document.querySelector<HTMLElement>("[data-region=context]");
@@ -113,7 +112,7 @@ check(
                                     samples.push({
                                         opacity,
                                         transform: style.transform,
-                                        splashPresent: splashPresent(),
+                                        loadingPresent: loadingPresent(),
                                         entranceFrameReady: shell.dataset.entranceFrameReady === "true",
                                         entranceFrameAt: Number(shell.dataset.entranceFrameAt),
                                         entranceArmed: shell.dataset.entranceArmed === "true",
@@ -151,7 +150,7 @@ check(
                             if (!firstStart) {
                                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
                                 firstStart = {
-                                    splashPresent: splashPresent(),
+                                    loadingPresent: loadingPresent(),
                                     shellReady: shell?.dataset.shellReady === "true",
                                     entranceFrameReady: shell?.dataset.entranceFrameReady === "true",
                                     entranceFrameAt: Number(shell?.dataset.entranceFrameAt),
@@ -189,11 +188,16 @@ check(
                         rect.top === 0 &&
                         rect.width >= window.innerWidth &&
                         rect.height >= window.innerHeight,
-                    hasSplash: overlay?.querySelector("svg") !== null,
+                    hasProgressTrack:
+                        overlay !== undefined &&
+                        [...overlay.querySelectorAll("div")].some((element) => {
+                            const style = getComputedStyle(element);
+                            return style.height === "4px" && element.querySelector(":scope > div") !== null;
+                        }),
                     shellHidden: shell?.getAttribute("data-shell-ready") === "false",
                 };
             });
-            if (!bootEvidence.seen || !bootEvidence.fullPage || !bootEvidence.hasSplash || !bootEvidence.shellHidden) {
+            if (!bootEvidence.seen || !bootEvidence.fullPage || !bootEvidence.hasProgressTrack || !bootEvidence.shellHidden) {
                 throw new Error(`full-page Shallot splash handoff failed: ${JSON.stringify(bootEvidence)}`);
             }
             await page.waitForFunction(() => window.__harness?.ready === true, undefined, {
@@ -203,7 +207,7 @@ check(
                 startCount: number;
                 endCount: number;
                 firstStart?: {
-                    splashPresent: boolean;
+                    loadingPresent: boolean;
                     shellReady: boolean;
                     entranceFrameReady: boolean;
                     entranceFrameAt: number;
@@ -214,7 +218,7 @@ check(
                 inProgress: {
                     opacity: number;
                     transform: string;
-                    splashPresent: boolean;
+                    loadingPresent: boolean;
                     entranceArmed: boolean;
                 } | null;
                 sampleCount: number;
@@ -225,7 +229,7 @@ check(
             if (
                 temporal.startCount !== 4 ||
                 temporal.endCount !== 4 ||
-                temporal.firstStart?.splashPresent !== false ||
+                temporal.firstStart?.loadingPresent !== false ||
                 temporal.firstStart?.shellReady !== true ||
                 temporal.firstStart?.entranceFrameReady !== true ||
                 !Number.isFinite(temporal.firstStart?.entranceFrameAt) ||
@@ -236,7 +240,7 @@ check(
                 temporal.inProgress.opacity <= 0 ||
                 temporal.inProgress.opacity >= 1 ||
                 finalIdentity(temporal.inProgress.transform) ||
-                temporal.inProgress.splashPresent ||
+                temporal.inProgress.loadingPresent ||
                 !temporal.inProgress.entranceArmed ||
                 temporal.final.length !== 4 ||
                 temporal.final.some((pane) => pane.opacity !== 1 || !finalIdentity(pane.transform))
