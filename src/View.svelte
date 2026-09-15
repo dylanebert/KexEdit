@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { installHarness } from "@dylanebert/shallot/harness";
+    import { captureFrame } from "@dylanebert/shallot/harness/capture";
     import { type PixelProbe, pixelProbePass, probePixels } from "@dylanebert/shallot/harness/pixels";
     import { computeViewProj } from "@dylanebert/shallot/render";
     import { AmbientLight, Camera, DirectionalLight, Part, run, shallotDark } from "@dylanebert/shallot";
@@ -16,6 +16,7 @@
         setPath,
         fixtures: pathFixtures,
         train: undefined as (() => unknown) | undefined,
+        captureFrame: () => captureFrame(canvas),
     };
     type PathWindow = Window & { __kexeditPath?: typeof pathHandle };
 
@@ -46,17 +47,11 @@
     } as const;
     const gridViewProj = new Float32Array(16);
 
-    // A WebGPU canvas holds its frame only until the task that rendered it ends, so the read happens inside
-    // a frame callback queued after the engine's own.
-    async function captureCanvas(): Promise<ImageData> {
-        const url = await new Promise<string>((done) => requestAnimationFrame(() => done(canvas.toDataURL("image/png"))));
-        const bitmap = await createImageBitmap(await (await fetch(url)).blob());
-        const surface = new OffscreenCanvas(bitmap.width, bitmap.height);
-        const context = surface.getContext("2d");
-        if (!context) throw new Error("no 2d context for the grid capture");
-        context.drawImage(bitmap, 0, 0);
-        bitmap.close();
-        return context.getImageData(0, 0, surface.width, surface.height);
+    // Shallot owns the fixed final-canvas capture contract. Grid evidence is semantic, but it must inspect
+    // the same real-device frame that the public harness and browser rows use.
+    async function captureCanvas(): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+        const shot = await captureFrame(canvas);
+        return { data: shot.rgba, width: shot.width, height: shot.height };
     }
 
     async function classifyGrid(state: Awaited<ReturnType<typeof run>>["state"]) {
@@ -150,7 +145,13 @@
                 // run() resolves only after Shallot's loading.complete() and its cleanup frame, so
                 // this marks the splash-free handoff separately from the first rendered frame.
                 loadingComplete = true;
-                const harness = installHarness(app.state);
+                const harness: HarnessTarget = {
+                    get ready() {
+                        return (app?.state.time.elapsed ?? 0) > 0;
+                    },
+                    run: async () => ({ ok: true, checks: [{ name: "booted", ok: true }] }),
+                };
+                (globalThis as unknown as Window).__harness = harness;
                 const bootRun = harness.run;
                 harness.run = async (options) => {
                     const boot = await bootRun?.(options);

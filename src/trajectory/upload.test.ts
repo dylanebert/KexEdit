@@ -24,7 +24,7 @@ check(
         budget: 20_000,
     },
     async () => {
-        const browser = await chromium.launch({ headless: false, ...launch });
+        const browser = await chromium.launch({ headless: true, ...launch });
         try {
             const page = await browser.newPage();
             // an isolated origin with no server: the navigation is fulfilled in the browser

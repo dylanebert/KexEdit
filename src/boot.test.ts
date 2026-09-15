@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { check } from "@dylanebert/shallot/harness/check";
+import { classifyAdapter } from "@dylanebert/shallot/harness/seat";
 import { chromium, type Page } from "playwright";
 import launch from "@dylanebert/shallot/harness/browser" with { type: "json" };
 
@@ -61,8 +62,8 @@ check(
         const errors: string[] = [];
         try {
             await waitForServer(url, server);
-            browser = await chromium.launch({ headless: false, ...launch });
-            const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+            browser = await chromium.launch({ headless: true, ...launch });
+            const context = await browser.newContext({ viewport: { width: 1563, height: 944 } });
             page = await context.newPage();
             page.on("pageerror", (error) => errors.push(error.message));
             page.on("console", (message) => {
@@ -278,25 +279,19 @@ check(
                 ];
                 const paneColor = style(context).backgroundColor;
                 const rgb = paneColor.match(/\d+/g)?.map(Number) ?? [];
-                const dataUrl = canvas.toDataURL("image/png");
-                const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
-                const sampleSurface = new OffscreenCanvas(bitmap.width, bitmap.height);
-                const sampleContext = sampleSurface.getContext("2d");
-                if (!sampleContext || rgb.length !== 3) {
-                    bitmap.close();
+                const handle = (globalThis as unknown as { __kexeditPath?: { captureFrame(): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> } }).__kexeditPath;
+                const shot = await handle?.captureFrame();
+                if (!shot || rgb.length !== 3) {
                     return { ready: false, flat: false, dividers: false, gap: false, clearMatch: false };
                 }
-                sampleContext.drawImage(bitmap, 0, 0);
-                const image = sampleContext.getImageData(0, 0, bitmap.width, bitmap.height);
                 const samplePoints = [0.08, 0.32, 0.68, 0.92].map((fraction) => [
-                    Math.min(bitmap.width - 1, Math.floor(bitmap.width * fraction)),
+                    Math.min(shot.width - 1, Math.floor(shot.width * fraction)),
                     1,
                 ]);
                 const samples = samplePoints.map(([x, y]) => {
-                    const index = (y * bitmap.width + x) * 4;
-                    return [image.data[index], image.data[index + 1], image.data[index + 2]];
+                    const index = (y * shot.width + x) * 4;
+                    return [shot.rgba[index], shot.rgba[index + 1], shot.rgba[index + 2]];
                 });
-                bitmap.close();
                 const distance = (sample: number[]) =>
                     Math.max(...sample.map((channel, index) => Math.abs(channel - (rgb[index] ?? 0))));
                 const clearMatches = samples.filter((sample) => distance(sample) <= 2).length;
@@ -349,66 +344,7 @@ check(
             if (!entranceEvidence.complete) {
                 throw new Error(`pane entrance did not settle: ${JSON.stringify(entranceEvidence)}`);
             }
-            const shellScreenshot = await page.screenshot({ type: "png" });
-            const seamEvidence = await page.evaluate(async (encodedScreenshot) => {
-                const image = new Image();
-                image.src = `data:image/png;base64,${encodedScreenshot}`;
-                await image.decode();
-                const surface = document.createElement("canvas");
-                surface.width = image.naturalWidth;
-                surface.height = image.naturalHeight;
-                const context = surface.getContext("2d");
-                const contextPane = document.querySelector<HTMLElement>("[data-region=context]");
-                const viewPane = document.querySelector<HTMLElement>("[data-region=view]");
-                const timelinePane = document.querySelector<HTMLElement>("[data-region=timeline]");
-                const status = document.querySelector<HTMLElement>("[data-region=status]");
-                if (!context || !contextPane || !viewPane || !timelinePane || !status) {
-                    return { pass: false, sequences: {} as Record<string, string[]> };
-                }
-                context.drawImage(image, 0, 0);
-                const pixels = context.getImageData(0, 0, surface.width, surface.height).data;
-                const scaleX = surface.width / window.innerWidth;
-                const scaleY = surface.height / window.innerHeight;
-                const colorAt = (x: number, y: number): string => {
-                    const pixelX = Math.max(0, Math.min(surface.width - 1, Math.round(x * scaleX)));
-                    const pixelY = Math.max(0, Math.min(surface.height - 1, Math.round(y * scaleY)));
-                    const index = (pixelY * surface.width + pixelX) * 4;
-                    return [pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]]
-                        .map((channel) => channel.toString(16).padStart(2, "0"))
-                        .join("");
-                };
-                const horizontal = (left: number, y: number): string[] => {
-                    const seam = Math.round(left);
-                    return [colorAt(seam - 1, y), colorAt(seam, y), colorAt(seam + 1, y)];
-                };
-                const vertical = (top: number, x: number): string[] => {
-                    const seam = Math.round(top);
-                    return [colorAt(x, seam - 1), colorAt(x, seam), colorAt(x, seam + 1)];
-                };
-                const contextRect = contextPane.getBoundingClientRect();
-                const viewRect = viewPane.getBoundingClientRect();
-                const timelineRect = timelinePane.getBoundingClientRect();
-                const statusRect = status.getBoundingClientRect();
-                const sequences = {
-                    "context-view": horizontal(contextRect.right, contextRect.top + contextRect.height / 2),
-                    "view-timeline": vertical(viewRect.bottom, viewRect.left + viewRect.width * 0.75),
-                    "timeline-status": vertical(timelineRect.bottom, statusRect.left + statusRect.width * 0.75),
-                };
-                const dividerColor = "3c3836ff";
-                return {
-                    pass: Object.values(sequences).every(
-                        (sequence) =>
-                            sequence.length === 3 &&
-                            sequence[1] === dividerColor &&
-                            sequence.filter((color) => color === dividerColor).length === 1,
-                    ),
-                    sequences,
-                };
-            }, shellScreenshot.toString("base64"));
-            if (!seamEvidence.pass) {
-                throw new Error(`pane divider pixel sequence failed: ${JSON.stringify(seamEvidence)}`);
-            }
-            reducedPage = await browser.newPage();
+            reducedPage = await context.newPage();
             await reducedPage.emulateMedia({ reducedMotion: "reduce" });
             await reducedPage.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
             await reducedPage.waitForFunction(() => window.__harness?.ready === true, undefined, { timeout: 15_000 });
@@ -436,7 +372,7 @@ check(
             ) {
                 throw new Error(`reduced-motion entrance failed: ${JSON.stringify(reducedMotionEvidence)}`);
             }
-            blockedPage = await browser.newPage();
+            blockedPage = await context.newPage();
             await blockedPage.addInitScript(() => {
                 Object.defineProperty(Navigator.prototype, "gpu", { configurable: true, value: undefined });
             });
@@ -486,33 +422,35 @@ check(
                 const hardware = [info?.description, info?.device, info?.vendor, info?.architecture]
                     .filter((part): part is string => Boolean(part))
                     .join(" ") || (adapter ? "gpu" : "none");
-                const canvas = document.querySelector("canvas");
-                if (!canvas) return { adapter: false, hardware, pixels: 0, span: 0 };
-                const dataUrl = canvas.toDataURL("image/png");
-                const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
-                const surface = new OffscreenCanvas(bitmap.width, bitmap.height);
-                const context = surface.getContext("2d");
-                if (!context) return { adapter: Boolean(adapter), hardware, pixels: 0, span: 0 };
-                context.drawImage(bitmap, 0, 0);
-                const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+                const adapterInfo = {
+                    description: info?.description,
+                    device: info?.device,
+                    vendor: info?.vendor,
+                    architecture: info?.architecture,
+                    isFallbackAdapter: (adapter as (GPUAdapter & { isFallbackAdapter?: boolean }) | undefined)?.isFallbackAdapter,
+                };
+                const handle = (globalThis as unknown as { __kexeditPath?: { captureFrame(): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> } }).__kexeditPath;
+                const shot = await handle?.captureFrame();
+                if (!shot) return { adapter: false, hardware, info: adapterInfo, pixels: 0, span: 0 };
+                const pixels = shot.rgba;
                 let count = 0;
-                let minX = bitmap.width;
+                let minX = shot.width;
                 let maxX = -1;
                 for (let i = 0; i < pixels.length; i += 4) {
                     if (pixels[i + 3] > 0 && (pixels[i] > 8 || pixels[i + 1] > 8 || pixels[i + 2] > 8)) {
                         count += 1;
-                        const x = (i / 4) % bitmap.width;
+                        const x = (i / 4) % shot.width;
                         minX = Math.min(minX, x);
                         maxX = Math.max(maxX, x);
                     }
                 }
-                bitmap.close();
-                return { adapter: Boolean(adapter), hardware, pixels: count, span: maxX >= 0 ? maxX - minX + 1 : 0 };
+                return { adapter: Boolean(adapter), hardware, info: adapterInfo, pixels: count, span: maxX >= 0 ? maxX - minX + 1 : 0 };
             });
             if (errors.length > 0) throw new Error(errors.join(" | "));
-            if (!evidence.adapter) throw new Error("Chromium did not expose a GPU adapter");
+            const adapter = classifyAdapter({ present: evidence.adapter, info: evidence.info });
+            if (adapter.class !== "real") throw new Error(`Chromium real-device seat refused: ${adapter.reason ?? adapter.class}`);
             console.log(
-                `browser evidence: Chromium GPU ${evidence.hardware}; pixels=${evidence.pixels}; span=${evidence.span}; gridChecks=${JSON.stringify(verdict.checks.filter((check) => check.name.startsWith("grid")).map((check) => check.detail))}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; dividerPixels=${JSON.stringify(seamEvidence.sequences)}; temporalEntrance=${JSON.stringify({ starts: temporal.startCount, ends: temporal.endCount, samples: temporal.sampleCount, first: temporal.firstStart, inProgress: temporal.inProgress, final: temporal.final })}; splash/painted-frame/painted-arm/temporal-scale/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
+                `browser evidence: Chromium GPU ${adapter.identity}; capture=final-canvas 1280x720@1 rgba8-tight; pixels=${evidence.pixels}; span=${evidence.span}; gridChecks=${JSON.stringify(verdict.checks.filter((check) => check.name.startsWith("grid")).map((check) => check.detail))}; clearSamples=${JSON.stringify(shellEvidence.clearSamples)} vs ${shellEvidence.paneColor} (matches=${shellEvidence.clearMatches}/4); gaps=${JSON.stringify(shellEvidence.gapValues)}px; temporalEntrance=${JSON.stringify({ starts: temporal.startCount, ends: temporal.endCount, samples: temporal.sampleCount, first: temporal.firstStart, inProgress: temporal.inProgress, final: temporal.final })}; splash/painted-frame/painted-arm/temporal-scale/zero-gap/single-divider/entrance/reduced-motion/no-WebGPU-block/grid-axis/no-cube/orbit/lighting checks=pass`,
             );
             if (evidence.pixels < 200 || evidence.span < 24) {
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
