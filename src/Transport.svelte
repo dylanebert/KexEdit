@@ -23,6 +23,8 @@
 
     let snapshot = $state<TransportSnapshot | null>(transport.snapshot());
     let viewport = $state<TimelineViewport | null>(null);
+    let viewMode = $state<"fit" | "manual">("fit");
+    let fittedWidth = $state(0);
     let surfaceWidth = $state(0);
     let surfaceElement = $state<HTMLDivElement | null>(null);
     let gesture = $state<Gesture | null>(null);
@@ -35,15 +37,30 @@
             snapshot = next;
             if (!next) {
                 viewport = null;
-                return;
-            }
-            const duration = next.length / next.headerRate;
-            const minSpan = Math.min(duration, 1 / next.headerRate);
-            if (!viewport || viewport.duration !== duration || viewport.minSpan !== minSpan) {
-                viewport = viewport ? updateDomain(viewport, duration, next.headerRate) : frameAll(duration, next.headerRate);
+                viewMode = "fit";
+                fittedWidth = 0;
             }
         }),
     );
+
+    $effect(() => {
+        const next = snapshot;
+        const width = surfaceWidth;
+        if (!next || !(width > 0)) return;
+        const duration = next.length / next.headerRate;
+        const minSpan = Math.min(duration, 1 / next.headerRate);
+        if (!viewport) {
+            viewport = frameAll(duration, next.headerRate, width);
+            fittedWidth = width;
+            return;
+        }
+        if (viewMode === "fit" && (viewport.duration !== duration || viewport.minSpan !== minSpan || fittedWidth !== width)) {
+            viewport = frameAll(duration, next.headerRate, width);
+            fittedWidth = width;
+        } else if (viewMode === "manual" && (viewport.duration !== duration || viewport.minSpan !== minSpan)) {
+            viewport = updateDomain(viewport, duration, next.headerRate);
+        }
+    });
 
     $effect(() => {
         const surface = surfaceElement;
@@ -70,6 +87,7 @@
                 if (dominant === 0) return;
                 const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? width : 1;
                 viewport = panByPixels(viewport, width, dominant * unit);
+                viewMode = "manual";
                 event.preventDefault();
                 return;
             }
@@ -80,6 +98,7 @@
                     pixel,
                     wheelZoomRatio(event.deltaY, event.deltaMode, event.ctrlKey || event.metaKey),
                 );
+                viewMode = "manual";
                 event.preventDefault();
             }
         };
@@ -104,7 +123,8 @@
         if (!snapshot || !viewport) return;
         const width = widthForSurface();
         if (!(width > 0)) return;
-        const seconds = clamp(pixelToTime(viewport, width, rulerPixel(event)), viewport.start, viewport.start + viewport.span);
+        const duration = snapshot.length / snapshot.headerRate;
+        const seconds = clamp(pixelToTime(viewport, width, rulerPixel(event)), 0, duration);
         transport.scrub(seconds * snapshot.headerRate);
     }
 
@@ -113,6 +133,7 @@
         if (!surface || !viewport) return;
         if (event.button === 1) {
             gesture = { mode: "pan", pointerId: event.pointerId, startClientX: event.clientX, startView: viewport, middle: true };
+            viewMode = "manual";
             suppressMiddleAuxclick = false;
             event.preventDefault();
             surface.setPointerCapture(event.pointerId);
@@ -122,6 +143,7 @@
         if (spaceHeld) {
             spaceChordUsed = true;
             gesture = { mode: "pan", pointerId: event.pointerId, startClientX: event.clientX, startView: viewport, middle: false };
+            viewMode = "manual";
             event.preventDefault();
             surface.setPointerCapture(event.pointerId);
             return;
@@ -174,7 +196,12 @@
         }
         if (event.code === "KeyF" && !event.ctrlKey && !event.metaKey && !event.altKey && viewport) {
             event.preventDefault();
-            viewport = frameAll(viewport.duration, snapshot.headerRate);
+            const width = widthForSurface();
+            if (width > 0) {
+                viewport = frameAll(viewport.duration, snapshot.headerRate, width);
+                fittedWidth = width;
+                viewMode = "fit";
+            }
             return;
         }
         if (event.key === "Home") {

@@ -1,7 +1,9 @@
 import { check } from "@dylanebert/shallot/harness/check";
 import {
     clampViewport,
+    FIT_PADDING_PX,
     frameAll,
+    MAX_SPAN_RATIO,
     panByPixels,
     pixelToTime,
     timeToPixel,
@@ -28,24 +30,36 @@ check(
     "the timeline viewport keeps an affine bounded authored domain",
     { claim: "timeline viewport transforms overscroll or silently accept an invalid width or domain", budget: 250 },
     () => {
-        const view = frameAll(12, 100);
-        if (view.start !== 0 || view.span !== 12 || view.minSpan !== 0.01) throw new Error(`frame ${JSON.stringify(view)}`);
-        if (timeToPixel(view, 1200, 0) !== 0 || timeToPixel(view, 1200, 12) !== 1200) throw new Error("endpoint transform failed");
+        const narrow = frameAll(12, 100, 520);
+        const wide = frameAll(12, 100, 1323);
+        if (!close(timeToPixel(narrow, 520, 0), FIT_PADDING_PX) || !close(timeToPixel(narrow, 520, 12), 520 - FIT_PADDING_PX)) {
+            throw new Error(`narrow fit ${JSON.stringify(narrow)}`);
+        }
+        if (!close(timeToPixel(wide, 1323, 0), FIT_PADDING_PX) || !close(timeToPixel(wide, 1323, 12), 1323 - FIT_PADDING_PX)) {
+            throw new Error(`wide fit ${JSON.stringify(wide)}`);
+        }
+        if (!(narrow.span > 12 && wide.span > 12 && narrow.span !== wide.span && narrow.span < 24 && wide.span < 24)) {
+            throw new Error(`fit span policy failed: ${JSON.stringify({ narrow, wide })}`);
+        }
+        const view = narrow;
+        if (view.minSpan !== 0.01) throw new Error(`minimum span ${view.minSpan}`);
+        if (!close(timeToPixel(view, 520, 0), FIT_PADDING_PX) || !close(timeToPixel(view, 520, 12), 520 - FIT_PADDING_PX)) throw new Error("endpoint transform failed");
         for (const time of [0.25, 2, 6.5, 11.75]) {
             const pixel = timeToPixel(view, 1200, time);
             if (!close(pixelToTime(view, 1200, pixel), time)) throw new Error(`round trip at ${time}`);
         }
 
         const zoomed = clampViewport({ ...view, start: 9, span: 4 });
-        if (zoomed.start !== 8 || zoomed.span !== 4) throw new Error(`clamp order ${JSON.stringify(zoomed)}`);
-        const left = panByPixels(zoomed, 1200, -10_000);
-        const right = panByPixels(zoomed, 1200, 10_000);
-        if (left.start !== 0 || right.start !== right.duration - right.span) throw new Error("pan crossed an authored boundary");
+        if (zoomed.start !== 9 || zoomed.span !== 4) throw new Error(`clamp order ${JSON.stringify(zoomed)}`);
+        const left = panByPixels(zoomed, 520, -10_000);
+        const right = panByPixels(zoomed, 520, 10_000);
+        if (left.start !== -2 || right.start !== 10) throw new Error(`pan crossed the legal blank domain: ${JSON.stringify({ left, right })}`);
         const preserved = updateDomain(zoomed, 20, 10);
-        if (preserved.start !== 8 || preserved.span !== 4 || preserved.duration !== 20) throw new Error("domain update inferred or reset the interval");
+        if (preserved.start !== 9 || preserved.span !== 4 || preserved.duration !== 20) throw new Error("domain update inferred or reset the interval");
 
-        refuses(() => frameAll(0, 100));
-        refuses(() => frameAll(1, 0));
+        refuses(() => frameAll(0, 100, 520));
+        refuses(() => frameAll(1, 0, 520));
+        refuses(() => frameAll(1, 100, 96));
         refuses(() => timeToPixel(view, 0, 1));
         refuses(() => pixelToTime(view, Number.NaN, 1));
     },
@@ -55,7 +69,7 @@ check(
     "cursor anchored zoom respects span limits",
     { claim: "timeline zoom loses its cursor anchor or applies a requested span beyond the authored bounds", budget: 250 },
     () => {
-        const base = clampViewport({ ...frameAll(20, 10), start: 4, span: 8 });
+        const base = clampViewport({ ...frameAll(20, 10, 1000), start: 4, span: 8 });
         const width = 1000;
         for (const fraction of [0, 0.25, 0.7, 1]) {
             const pixel = width * fraction;
@@ -70,12 +84,21 @@ check(
         if (minimum.span !== minimum.minSpan) throw new Error(`minimum ${minimum.span}`);
         if (zoomAtPixel(minimum, width, 500, 0.01) !== minimum) throw new Error("minimum span changed after reaching its limit");
         const maximum = zoomAtPixel(base, width, 500, 1e12);
-        if (maximum.span !== maximum.duration) throw new Error(`maximum ${maximum.span}`);
+        if (maximum.span !== maximum.duration * MAX_SPAN_RATIO) throw new Error(`maximum ${maximum.span}`);
         if (zoomAtPixel(maximum, width, 500, 4) !== maximum) throw new Error("maximum span changed after reaching its limit");
 
-        const edge = clampViewport({ ...frameAll(20, 10), start: 17, span: 3 });
+        const edge = clampViewport({ ...frameAll(20, 10, 1000), start: 17, span: 3 });
         const framed = zoomAtPixel(edge, width, 500, 100);
-        if (framed.start !== 0 || framed.span !== 20) throw new Error(`edge zoom was not nearest legal view ${JSON.stringify(framed)}`);
+        if (!close(framed.start, -1.5) || framed.span !== 40) throw new Error(`edge zoom was not nearest legal view ${JSON.stringify(framed)}`);
+
+        const blank = clampViewport({ ...frameAll(20, 10, 1000), start: -10, span: 40 });
+        for (const fraction of [0, 0.25, 0.7, 1]) {
+            const pixel = width * fraction;
+            const before = pixelToTime(blank, width, pixel);
+            const after = zoomAtPixel(blank, width, pixel, 0.5);
+            const expectedStart = Math.min(after.duration - after.span / 2, Math.max(-after.span / 2, before - fraction * after.span));
+            if (after.start !== expectedStart) throw new Error(`blank edge clamp failed at ${fraction}`);
+        }
     },
 );
 
@@ -83,14 +106,20 @@ check(
     "timeline pan and frame-all stay on the authored seconds axis",
     { claim: "timeline pan uses the wrong sign or frame-all changes the transport domain", budget: 250 },
     () => {
-        const all = frameAll(20, 10);
+        const all = frameAll(20, 10, 1000);
         const view = clampViewport({ ...all, start: 5, span: 5 });
         if (panByPixels(view, 1000, 100).start <= view.start) throw new Error("positive wheel delta did not reveal later time");
         if (panByPixels(view, 1000, -100).start >= view.start) throw new Error("negative pointer delta did not reveal earlier time");
         const overscrolled = panByPixels(panByPixels(view, 1000, 1e9), 1000, -1e9);
-        if (overscrolled.start !== 0) throw new Error(`pan did not return to the authored boundary ${overscrolled.start}`);
-        const restored = frameAll(view.duration, 10);
-        if (restored.start !== 0 || restored.span !== 20 || restored.duration !== view.duration) throw new Error("frame-all did not restore the full authored range");
+        if (overscrolled.start !== -view.span / 2) throw new Error(`pan did not return to the left legal boundary ${overscrolled.start}`);
+        const right = panByPixels(view, 1000, 1e9);
+        if (right.start !== view.duration - view.span / 2) throw new Error(`pan did not reach the right legal boundary ${right.start}`);
+        const maximum = clampViewport({ ...view, span: 1e9 });
+        if (maximum.span !== 40 || maximum.start < -20 || maximum.start > 0) throw new Error(`maximum domain escaped ${JSON.stringify(maximum)}`);
+        const restored = frameAll(view.duration, 10, 1000);
+        if (!close(timeToPixel(restored, 1000, 0), FIT_PADDING_PX) || !close(timeToPixel(restored, 1000, 20), 1000 - FIT_PADDING_PX)) {
+            throw new Error("frame-all did not restore the padded authored range");
+        }
     },
 );
 
@@ -107,7 +136,7 @@ check(
         if (wheelZoomRatio(0.01, 0, true) !== 2 ** 0.0002 || wheelZoomRatio(100, 0, true) !== 2 ** 0.25) throw new Error("modified gain failed");
 
         const width = 1000;
-        const start = clampViewport({ ...frameAll(100, 10), start: 30, span: 20 });
+        const start = clampViewport({ ...frameAll(100, 10, 1000), start: 30, span: 20 });
         const first = zoomAtPixel(start, width, 400, plain);
         const second = zoomAtPixel(first, width, 400, plain);
         if (!close(second.span / first.span, first.span / start.span)) throw new Error("equal wheel events were not continuous geometric increments");
@@ -117,7 +146,7 @@ check(
         if (!(pan.start > start.start) || pan.span !== start.span) throw new Error("positive normalized pan sign failed");
         const page = panByPixels(start, width, width);
         if (!close(page.start, start.start + start.span)) throw new Error("page pan was not viewport-width normalized");
-        if (panByPixels(start, width, -1e9).start !== 0 || panByPixels(start, width, 1e9).start !== 80) throw new Error("pan limits failed");
+        if (panByPixels(start, width, -1e9).start !== -start.span / 2 || panByPixels(start, width, 1e9).start !== start.duration - start.span / 2) throw new Error("pan limits failed");
     },
 );
 
@@ -126,9 +155,9 @@ check(
     { claim: "timeline ruler ticks derive from total duration or emit marks outside the visible range", budget: 250 },
     () => {
         const ranges = [
-            { view: frameAll(120, 10), width: 960 },
-            { view: clampViewport({ ...frameAll(120, 10), start: 23, span: 4 }), width: 960 },
-            { view: clampViewport({ ...frameAll(120, 10), start: 30, span: 1 }), width: 480 },
+            { view: frameAll(120, 10, 960), width: 960 },
+            { view: clampViewport({ ...frameAll(120, 10, 960), start: 23, span: 4 }), width: 960 },
+            { view: clampViewport({ ...frameAll(120, 10, 480), start: 30, span: 1 }), width: 480 },
         ];
         let observedSteps = new Set<number>();
         for (const { view, width } of ranges) {
@@ -150,5 +179,11 @@ check(
             }
         }
         if (observedSteps.size < 2) throw new Error(`visible range did not adapt its step: ${[...observedSteps]}`);
+
+        const blank = clampViewport({ ...frameAll(12, 10, 520), start: -4, span: 20 });
+        const blankTicks = visibleTicks(blank, 520);
+        if (!blankTicks.some((tick) => tick.seconds < 0) || !blankTicks.some((tick) => tick.seconds > blank.duration)) {
+            throw new Error(`visible ticks were clipped to authored time: ${JSON.stringify(blankTicks)}`);
+        }
     },
 );

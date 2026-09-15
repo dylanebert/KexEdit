@@ -6,7 +6,7 @@ import { chromium } from "playwright";
 const ROOT = resolve(import.meta.dir, "..");
 
 type RideSample = {
-    header: { length: number; endReason: string; endTick: number };
+    header: { length: number; rate: number; endReason: string; endTick: number };
     transport: { playhead: number; playing: boolean };
 };
 
@@ -117,6 +117,21 @@ check(
                     return { accepted: surface.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
                 }, options);
             const initialView = await readView();
+            const initialFit = await full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                const ride = (globalThis as any).__kexeditPath.ride();
+                if (!surface || !ride) throw new Error("initial fit observables are missing");
+                const bounds = surface.getBoundingClientRect();
+                const duration = ride.header.length / ride.header.rate;
+                const x = (time: number) => bounds.left + ((time - Number(surface.dataset.viewStart)) * bounds.width) / Number(surface.dataset.viewSpan);
+                return { width: bounds.width, duration, zero: x(0) - bounds.left, end: bounds.right - x(duration), start: Number(surface.dataset.viewStart) };
+            });
+            if (!(initialFit.width > 96 && initialView.start < 0 && initialView.end > initialFit.duration && initialView.span < 2 * initialFit.duration)) {
+                throw new Error(`initial fit did not expose padded authored bounds: ${JSON.stringify({ initialView, initialFit })}`);
+            }
+            if (Math.abs(initialFit.zero - 24) > 1e-6 || Math.abs(initialFit.end - 24) > 1e-6) {
+                throw new Error(`initial fit padding was not 24 CSS px: ${JSON.stringify(initialFit)}`);
+            }
             const zoomWheel = await dispatchWheel({ deltaY: -40, ctrlKey: true });
             const zoomedView = await readView();
             if (zoomWheel.accepted || !zoomWheel.defaultPrevented || !(zoomedView.span < initialView.span)) {
@@ -231,8 +246,81 @@ check(
             await full.keyboard.press("f");
             const framed = await readView();
             const afterFramePlayhead = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
-            if (framed.start !== 0 || Math.abs(framed.end - initialView.end) > 1e-9 || afterFramePlayhead.transport.playhead !== beforeFramePlayhead) {
-                throw new Error(`F did not frame authored time without scrubbing: ${JSON.stringify({ framed, initialView, beforeFramePlayhead, afterFramePlayhead })}`);
+            const framedFit = await full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                const ride = (globalThis as any).__kexeditPath.ride();
+                if (!surface || !ride) throw new Error("frame-all observables are missing");
+                const bounds = surface.getBoundingClientRect();
+                const duration = ride.header.length / ride.header.rate;
+                const x = (time: number) => bounds.left + ((time - Number(surface.dataset.viewStart)) * bounds.width) / Number(surface.dataset.viewSpan);
+                return { width: bounds.width, duration, zero: x(0) - bounds.left, end: bounds.right - x(duration) };
+            });
+            if (!(framed.start < 0 && framed.end > framedFit.duration && framed.span < 2 * framedFit.duration) || Math.abs(framedFit.zero - 24) > 1e-6 || Math.abs(framedFit.end - 24) > 1e-6 || afterFramePlayhead.transport.playhead !== beforeFramePlayhead) {
+                throw new Error(`F did not frame padded authored time without scrubbing: ${JSON.stringify({ framed, framedFit, beforeFramePlayhead, afterFramePlayhead })}`);
+            }
+            const outwardBefore = await readView();
+            await dispatchWheel({ deltaY: 10_000 });
+            const outwardAfter = await readView();
+            if (!(outwardAfter.span > outwardBefore.span)) throw new Error(`outward zoom did not exceed frame-all: ${JSON.stringify({ outwardBefore, outwardAfter })}`);
+
+            await full.keyboard.press("f");
+            const fitResizeBefore = await full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                if (!surface) throw new Error("fit resize surface is missing");
+                return { width: surface.getBoundingClientRect().width, start: Number(surface.dataset.viewStart), span: Number(surface.dataset.viewSpan) };
+            });
+            await full.setViewportSize({ width: 1280, height: 944 });
+            await full.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+            const fitResizeAfter = await full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                const ride = (globalThis as any).__kexeditPath.ride();
+                if (!surface || !ride) throw new Error("fit resize observables are missing");
+                const bounds = surface.getBoundingClientRect();
+                const duration = ride.header.length / ride.header.rate;
+                const start = Number(surface.dataset.viewStart);
+                const span = Number(surface.dataset.viewSpan);
+                return { width: bounds.width, start, span, zero: ((0 - start) * bounds.width) / span, end: bounds.width - ((duration - start) * bounds.width) / span };
+            });
+            if (fitResizeAfter.width === fitResizeBefore.width || fitResizeAfter.start === fitResizeBefore.start || Math.abs(fitResizeAfter.zero - 24) > 1e-6 || Math.abs(fitResizeAfter.end - 24) > 1e-6) {
+                throw new Error(`fit resize did not recompute 24px frame: ${JSON.stringify({ fitResizeBefore, fitResizeAfter })}`);
+            }
+            const manualBefore = await dispatchWheel({ deltaY: -30 });
+            if (manualBefore.accepted || !manualBefore.defaultPrevented) throw new Error("manual resize setup wheel was not handled");
+            const manualResizeBefore = await readView();
+            await full.setViewportSize({ width: 1563, height: 944 });
+            await full.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+            const manualResizeAfter = await readView();
+            if (manualResizeAfter.start !== manualResizeBefore.start || manualResizeAfter.span !== manualResizeBefore.span) {
+                throw new Error(`manual resize reframed the inspection view: ${JSON.stringify({ manualResizeBefore, manualResizeAfter })}`);
+            }
+
+            const fullDuration = (await full.evaluate(() => {
+                const ride = (globalThis as any).__kexeditPath.ride();
+                return ride.header.length / ride.header.rate;
+            })) as number;
+            await full.keyboard.press("f");
+            for (let index = 0; index < 20; index += 1) await dispatchWheel({ deltaY: 10_000 });
+            const maximumView = await readView();
+            const maximumAgain = await dispatchWheel({ deltaY: 10_000 }).then(readView);
+            if (Math.abs(maximumView.span - 2 * fullDuration) > 1e-9 || JSON.stringify(maximumAgain) !== JSON.stringify(maximumView)) {
+                throw new Error(`maximum zoom did not stop at exactly 2x duration: ${JSON.stringify({ maximumView, maximumAgain, fullDuration })}`);
+            }
+            await dispatchWheel({ deltaY: -1_000_000, shiftKey: true });
+            const leftBlank = await readView();
+            await dispatchWheel({ deltaY: 1_000_000, shiftKey: true });
+            const rightBlank = await readView();
+            if (Math.abs(leftBlank.start + leftBlank.span / 2) > 1e-9 || Math.abs(rightBlank.start - (fullDuration - rightBlank.span / 2)) > 1e-9) {
+                throw new Error(`legal blank pan bounds failed: ${JSON.stringify({ leftBlank, rightBlank, fullDuration })}`);
+            }
+            await full.keyboard.press("f");
+            const blankRuler = await ruler.boundingBox();
+            if (!blankRuler) throw new Error("blank ruler has no bounds");
+            await full.mouse.click(blankRuler.x + 1, blankRuler.y + blankRuler.height / 2);
+            const leftScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.mouse.click(blankRuler.x + blankRuler.width - 1, blankRuler.y + blankRuler.height / 2);
+            const rightScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            if (leftScrub.transport.playhead !== 0 || rightScrub.transport.playhead !== rightScrub.header.length) {
+                throw new Error(`blank scrub escaped authored ticks: ${JSON.stringify({ leftScrub, rightScrub })}`);
             }
 
             const typography = await full.evaluate(() => {
@@ -452,11 +540,20 @@ check(
                 const tail = document.querySelector('[data-region="dead-tail"]')?.getBoundingClientRect();
                 const mark = document.querySelector('[data-region="end-mark"]')?.getBoundingClientRect();
                 const playhead = document.querySelector('[data-region="playhead"]')?.getBoundingClientRect();
-                if (!tail || !mark || !playhead) return null;
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                const ride = (globalThis as any).__kexeditPath.ride();
+                if (!tail || !mark || !playhead || !surface || !ride) return null;
+                const bounds = surface.getBoundingClientRect();
+                const start = Number(surface.dataset.viewStart);
+                const span = Number(surface.dataset.viewSpan);
+                const duration = ride.header.length / ride.header.rate;
                 return {
                     tailStart: tail.left,
+                    tailEnd: tail.right,
+                    authoredEnd: bounds.left + ((duration - start) * bounds.width) / span,
                     markCenter: mark.left + mark.width / 2,
                     playheadCenter: playhead.left + playhead.width / 2,
+                    blankTick: [...document.querySelectorAll<HTMLElement>('[data-region="ruler"] [data-tick-seconds]')].some((tick) => Number(tick.dataset.tickSeconds) > duration),
                 };
             });
             const states = await stalled.evaluate(() => {
@@ -514,6 +611,8 @@ check(
                 !held.held ||
                 !stalledGeometry ||
                 Math.abs(stalledGeometry.tailStart - stalledGeometry.markCenter) > 1 ||
+                Math.abs(stalledGeometry.tailEnd - stalledGeometry.authoredEnd) > 1 ||
+                !stalledGeometry.blankTick ||
                 stalledGeometry.playheadCenter <= stalledGeometry.markCenter ||
                 errors.length
             ) {
