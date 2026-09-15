@@ -251,6 +251,13 @@ check(
             // otherwise make a one-pixel divider appear displaced while the panes are scaling in.
             await page.waitForTimeout(260);
             const shellEvidence = await page.evaluate(async () => {
+                const parseComputedRgb = (color: string): number[] | undefined => {
+                    const legacy = color.match(/^rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)/);
+                    if (legacy) return legacy.slice(1, 4).map(Number);
+                    const srgb = color.match(/^color\(srgb\s+([\d.e+-]+)\s+([\d.e+-]+)\s+([\d.e+-]+)/);
+                    if (srgb) return srgb.slice(1, 4).map((channel) => Number(channel) * 255);
+                    return undefined;
+                };
                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
                 const context = document.querySelector<HTMLElement>("[data-region=context]");
                 const viewPane = document.querySelector<HTMLElement>("[data-region=view]");
@@ -289,10 +296,10 @@ check(
                 ];
                 const paneColor = grounds.context;
                 const canvasColor = grounds.canvas;
-                const rgb = canvasColor.match(/\d+/g)?.map(Number) ?? [];
+                const rgb = parseComputedRgb(canvasColor);
                 const handle = (globalThis as unknown as { __kexeditPath?: { captureFrame(): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> } }).__kexeditPath;
                 const shot = await handle?.captureFrame();
-                if (!shot || rgb.length !== 3) {
+                if (!shot || !rgb) {
                     return { ready: false, surfaceRoles: false, dividers: false, gap: false, clearMatch: false };
                 }
                 const samplePoints = [0.08, 0.32, 0.68, 0.92].map((fraction) => [
