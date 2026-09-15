@@ -15,6 +15,7 @@
     "dependencies": {
         "@dylanebert/shallot": "github:dylanebert/shallot#70770cfc34d82fdd19cb705d8753bb6f093748d6",
         "@dylanebert/shallot-grid": "^0.1.2",
+        "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.5"
     },
