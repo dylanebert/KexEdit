@@ -2,21 +2,36 @@
     import { Pause, Play, Repeat2 } from "@lucide/svelte";
     import { transport, type TransportSnapshot } from "./path/view";
 
+    type TimelineTick = { seconds: number; major: boolean };
+
     let snapshot = $state<TransportSnapshot | null>(transport.snapshot());
-    let draftRate = $state("1");
-    let editingRate = $state(false);
     let draggingRuler = $state(false);
-    let draggingRate = $state(false);
-    let dragRateStartX = 0;
-    let dragRateStartValue = 1;
 
     $effect(() => transport.subscribe((next) => (snapshot = next)));
-    $effect(() => {
-        if (!editingRate && !draggingRate && snapshot) draftRate = String(snapshot.rate);
-    });
 
     const format = (value: number): string => value.toFixed(2).replace(/\.00$/, "");
     const percent = (value: number, length: number): number => (length > 0 ? (value / length) * 100 : 0);
+
+    function timelineTicks(duration: number): TimelineTick[] {
+        if (!(Number.isFinite(duration) && duration > 0)) return [{ seconds: 0, major: true }];
+
+        const target = duration / 8;
+        const power = 10 ** Math.floor(Math.log10(target));
+        const candidates = [power, power * 2, power * 5, power * 10];
+        const majorStep = candidates.find((step) => step >= target) ?? power * 10;
+        const ticks: TimelineTick[] = [];
+        const epsilon = majorStep * 1e-9;
+
+        for (let major = 0; major * majorStep <= duration + epsilon; major += 1) {
+            const majorSeconds = major * majorStep;
+            ticks.push({ seconds: majorSeconds, major: true });
+            for (let subdivision = 1; subdivision < 5; subdivision += 1) {
+                const seconds = majorSeconds + (majorStep * subdivision) / 5;
+                if (seconds < duration - epsilon) ticks.push({ seconds, major: false });
+            }
+        }
+        return ticks;
+    }
 
     function scrubAt(event: PointerEvent): void {
         if (!snapshot) return;
@@ -38,46 +53,6 @@
 
     function endScrub(): void {
         draggingRuler = false;
-    }
-
-    function commitRate(): void {
-        const value = Number(draftRate);
-        if (Number.isFinite(value) && value >= 0) transport.setRate(value);
-        else if (snapshot) draftRate = String(snapshot.rate);
-        editingRate = false;
-        draggingRate = false;
-    }
-
-    function rateKeydown(event: KeyboardEvent): void {
-        if (event.key === "Enter") {
-            event.preventDefault();
-            commitRate();
-        } else if (event.key === "Escape") {
-            event.preventDefault();
-            if (snapshot) draftRate = String(snapshot.rate);
-            editingRate = false;
-            draggingRate = false;
-        }
-    }
-
-    function beginRateDrag(event: PointerEvent): void {
-        if (!snapshot) return;
-        event.preventDefault();
-        draggingRate = true;
-        editingRate = true;
-        dragRateStartX = event.clientX;
-        dragRateStartValue = snapshot.rate;
-        (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    }
-
-    function moveRateDrag(event: PointerEvent): void {
-        if (!draggingRate) return;
-        const value = Math.max(0, dragRateStartValue + (event.clientX - dragRateStartX) / 40);
-        draftRate = value.toFixed(2).replace(/\.00$/, "");
-    }
-
-    function endRateDrag(): void {
-        if (draggingRate) commitRate();
     }
 
     function handleKeydown(event: KeyboardEvent): void {
@@ -107,75 +82,90 @@
 
 <div class="transport" data-region="transport" data-playing={snapshot?.playing ?? false}>
     <div class="transport-controls" data-region="transport-controls">
-        <button
-            class="transport-button transport-play"
-            type="button"
-            data-action="play-pause"
-            aria-label={snapshot?.playing ? "Pause" : "Play"}
-            title={snapshot?.playing ? "Pause (Space)" : "Play (Space)"}
-            onclick={() => transport.togglePlaying()}
-        >
-            {#if snapshot?.playing}
-                <Pause size={15} strokeWidth={2} />
-            {:else}
-                <Play size={15} strokeWidth={2} />
-            {/if}
-        </button>
-        <button
-            class:transport-toggle-active={snapshot?.loop ?? false}
-            class="transport-button transport-loop"
-            type="button"
-            data-action="loop"
-            aria-pressed={snapshot?.loop ?? false}
-            aria-label="Loop"
-            title="Loop"
-            onclick={() => transport.setLoop(!(snapshot?.loop ?? false))}
-        >
-            <Repeat2 size={15} strokeWidth={2} />
-        </button>
-        <div class="transport-rate" data-field="rate">
-            <label
-                class="rate-label"
-                for="transport-rate"
-                title="Drag to change rate"
-                onpointerdown={beginRateDrag}
-                onpointermove={moveRateDrag}
-                onpointerup={endRateDrag}
-                onpointercancel={endRateDrag}
-            >rate</label>
-            <input
-                id="transport-rate"
-                class="rate-value"
-                type="text"
-                inputmode="decimal"
-                aria-label="Playback rate"
-                value={draftRate}
-                onfocus={() => (editingRate = true)}
-                oninput={(event) => (draftRate = (event.currentTarget as HTMLInputElement).value)}
-                onkeydown={rateKeydown}
-                onblur={commitRate}
-            />
-            <span class="rate-unit">×</span>
+        <div class="transport-playback" role="group" aria-label="Playback controls">
+            <button
+                class="transport-button transport-play"
+                type="button"
+                data-action="play-pause"
+                aria-label={snapshot?.playing ? "Pause" : "Play"}
+                aria-keyshortcuts="Space"
+                title={snapshot?.playing ? "Pause (Space)" : "Play (Space)"}
+                onclick={() => transport.togglePlaying()}
+            >
+                {#if snapshot?.playing}
+                    <Pause size={15} strokeWidth={2} />
+                {:else}
+                    <Play size={15} strokeWidth={2} />
+                {/if}
+            </button>
+            <button
+                class:transport-toggle-active={snapshot?.loop ?? false}
+                class="transport-button transport-loop"
+                type="button"
+                data-action="loop"
+                aria-pressed={snapshot?.loop ?? false}
+                aria-label="Loop"
+                title="Loop"
+                onclick={() => transport.setLoop(!(snapshot?.loop ?? false))}
+            >
+                <Repeat2 size={15} strokeWidth={2} />
+            </button>
         </div>
         <output class="transport-readout" data-readout="time" aria-label="Time">
             {snapshot ? `${format(snapshot.playhead / snapshot.headerRate)} / ${format(snapshot.length / snapshot.headerRate)} s` : "0 / 0 s"}
         </output>
     </div>
 
-    <div
-        class="timeline-ruler"
-        data-region="ruler"
-        role="slider"
-        tabindex="0"
-        aria-label="Timeline playhead"
-        aria-valuemin="0"
-        aria-valuemax={snapshot?.length ?? 0}
-        aria-valuenow={snapshot?.playhead ?? 0}
-        onpointerdown={beginScrub}
-        onpointermove={moveScrub}
-        onpointerup={endScrub}
-        onpointercancel={endScrub}
-    >
+    <div class="timeline-surface" data-region="timeline-surface">
+        <div
+            class="timeline-ruler"
+            data-region="ruler"
+            role="slider"
+            tabindex="0"
+            aria-label="Timeline playhead"
+            aria-valuemin="0"
+            aria-valuemax={snapshot?.length ?? 0}
+            aria-valuenow={snapshot?.playhead ?? 0}
+            onpointerdown={beginScrub}
+            onpointermove={moveScrub}
+            onpointerup={endScrub}
+            onpointercancel={endScrub}
+        >
+            {#if snapshot}
+                <div class="timeline-ticks" aria-hidden="true">
+                    {#each timelineTicks(snapshot.length / snapshot.headerRate) as tick (tick.seconds)}
+                        <span
+                            class="timeline-tick"
+                            data-tick-level={tick.major ? "major" : "minor"}
+                            data-tick-seconds={tick.seconds}
+                            style={`left: ${percent(tick.seconds, snapshot.length / snapshot.headerRate)}%`}
+                        >
+                            {#if tick.major}
+                                <span class="timeline-tick-label">{format(tick.seconds)}</span>
+                            {/if}
+                        </span>
+                    {/each}
+                </div>
+            {/if}
+        </div>
+
+        <div class="timeline-lanes" data-region="reserved-lanes" aria-label="Reserved timeline lanes">
+            {#each [0, 1, 2, 3] as lane}
+                <div class="timeline-lane" data-region="timeline-lane" data-lane={lane}></div>
+            {/each}
+            {#if snapshot}
+                <div class="timeline-lanes-grid" aria-hidden="true">
+                    {#each timelineTicks(snapshot.length / snapshot.headerRate) as tick (tick.seconds)}
+                        <span
+                            class="timeline-grid-line"
+                            data-tick-level={tick.major ? "major" : "minor"}
+                            style={`left: ${percent(tick.seconds, snapshot.length / snapshot.headerRate)}%`}
+                        ></span>
+                    {/each}
+                </div>
+            {/if}
+        </div>
+
         {#if snapshot}
             <div
                 class="timeline-state timeline-state-solved"
@@ -200,13 +190,11 @@
                 class="timeline-playhead"
                 data-region="playhead"
                 style={`left: ${percent(snapshot.playhead, snapshot.length)}%`}
-            ></div>
-            <div class="timeline-label timeline-label-start">0 s</div>
-            <div class="timeline-label timeline-label-end">{format(snapshot.length / snapshot.headerRate)} s</div>
+                aria-hidden="true"
+            >
+                <span class="timeline-playhead-head"></span>
+                <span class="timeline-playhead-line" data-region="playhead-line"></span>
+            </div>
         {/if}
-    </div>
-
-    <div class="timeline-lanes" data-region="reserved-lanes" aria-label="Reserved timeline lanes">
-        <span>reserved lanes</span>
     </div>
 </div>
