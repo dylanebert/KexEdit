@@ -6,6 +6,7 @@
     --shell-context-width: clamp(16rem, 18vw, 24rem);
     --shell-timeline-height: clamp(12rem, 18vh, 18rem);
     --shell-status-height: 2rem;
+    --timeline-gutter-width: 15rem;
     color: #ebdbb2;
     background: var(--pane-ground);
     font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -175,31 +176,48 @@ canvas {
 
 .transport {
     display: grid;
-    grid-template-rows: 2.25rem minmax(0, 1fr);
+    grid-template-rows: 2.5rem minmax(0, 1fr);
     width: 100%;
     height: 100%;
     min-height: 0;
     color: #ebdbb2;
 }
 
-.transport-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+.timeline-frame {
+    display: grid;
+    grid-template-columns: var(--timeline-gutter-width) minmax(0, 1fr);
     min-width: 0;
-    padding: 0 14px;
+}
+
+.timeline-gutter {
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--pane-border);
+}
+
+.transport-controls {
     border-bottom: 1px solid var(--pane-border);
 }
 
+.transport-control-viewport {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+}
+
 .transport-playback {
+    position: absolute;
+    top: 50%;
+    left: 50%;
     display: inline-flex;
     align-items: center;
+    transform: translate(-50%, -50%);
 }
 
 .transport-button {
     display: inline-grid;
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     place-items: center;
     border: 0;
     border-radius: 4px;
@@ -220,17 +238,25 @@ canvas {
 }
 
 .transport-readout {
+    position: absolute;
+    top: 50%;
+    right: 14px;
     display: inline-flex;
     align-items: baseline;
     gap: 4px;
     color: #ebdbb2;
-    font: 500 11px/1 "JetBrains Mono", ui-monospace, monospace;
+    font: 500 12px/1 "JetBrains Mono", ui-monospace, monospace;
     white-space: nowrap;
+    transform: translateY(-50%);
 }
 
 .transport-time-total {
     color: #928374;
     font-weight: 400;
+}
+
+.timeline-frame-body {
+    min-height: 0;
 }
 
 .timeline-surface {
@@ -239,7 +265,6 @@ canvas {
     grid-template-rows: 1.875rem minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
-    margin: 0 12px;
     overflow: hidden;
     user-select: none;
     touch-action: none;
@@ -274,23 +299,23 @@ canvas {
     position: absolute;
     bottom: 0;
     width: 1px;
-    height: 8px;
+    height: 5px;
     background: rgb(80 73 69 / 52%);
     pointer-events: none;
     transform: translateX(-0.5px);
 }
 
 .timeline-tick[data-tick-level="major"] {
-    height: 16px;
+    height: 10px;
     background: #bdae93;
 }
 
 .timeline-tick-label {
     position: absolute;
-    bottom: calc(100% + 3px);
+    bottom: calc(100% + 2px);
     left: 4px;
     color: #bdae93;
-    font: 10px/1 "JetBrains Mono", ui-monospace, monospace;
+    font: 11px/12px "JetBrains Mono", ui-monospace, monospace;
     white-space: nowrap;
 }
 
@@ -384,65 +409,8 @@ canvas {
     background: #ebdbb2;
 }
 
-.timeline-surface:has(.timeline-ruler:focus-visible) .timeline-playhead-head {
-    box-shadow: 0 0 0 2px #458588;
-}
-
-.timeline-surface:has(.timeline-ruler:focus-visible) .timeline-playhead-line {
-    background: #f2e5bc;
-}
-
-.transport:has(.timeline-ruler:focus-visible) .transport-time-current {
-    box-shadow: inset 0 -2px 0 #458588;
-}
 .status-line {
     grid-column: 1 / -1;
     grid-row: 3;
     border-top: 1px solid var(--pane-border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 12px;
-    color: #bdae93;
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 10px;
-}
-
-.diagnostics {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 8px;
-}
-
-.diagnostic-badge {
-    display: inline-grid;
-    min-width: 1.25rem;
-    height: 1.25rem;
-    place-items: center;
-    border: 1px solid #504945;
-    border-radius: 50%;
-    color: #bdae93;
-    font-size: 9px;
-}
-
-.diagnostic-entry {
-    display: inline-flex;
-    min-width: 0;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 5px;
-    border: 0;
-    color: #cc241d;
-    background: transparent;
-    font: inherit;
-    font-size: 10px;
-    text-align: left;
-    cursor: pointer;
-}
-
-.diagnostic-entry:hover,
-.diagnostic-entry:focus-visible {
-    background: #3c3836;
-    outline: none;
 }

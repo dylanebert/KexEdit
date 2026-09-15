@@ -157,12 +157,20 @@ check(
             }
             const ctrlShift = await dispatchWheel({ deltaY: -10, ctrlKey: true, shiftKey: true });
             const afterCtrlShift = await readView();
-            if (ctrlShift.accepted || !ctrlShift.defaultPrevented || !(afterCtrlShift.span < zoomAfterMeta.span)) throw new Error("Ctrl+Shift did not take the zoom branch");
-            const unchangedBefore = await readView();
+            if (ctrlShift.accepted || !ctrlShift.defaultPrevented || afterCtrlShift.span !== zoomAfterMeta.span || !(afterCtrlShift.start < zoomAfterMeta.start)) {
+                throw new Error(`Shift+Ctrl did not pan with Shift priority: ${JSON.stringify({ zoomAfterMeta, afterCtrlShift, ctrlShift })}`);
+            }
+            const ordinaryBefore = await readView();
             const ordinaryWheel = await dispatchWheel({ deltaY: 40 });
-            const unchangedAfter = await readView();
-            if (!ordinaryWheel.accepted || ordinaryWheel.defaultPrevented || JSON.stringify(unchangedBefore) !== JSON.stringify(unchangedAfter)) {
-                throw new Error(`ordinary wheel was claimed by the timeline: ${JSON.stringify({ ordinaryWheel, unchangedBefore, unchangedAfter })}`);
+            const ordinaryAfter = await readView();
+            if (ordinaryWheel.accepted || !ordinaryWheel.defaultPrevented || !(ordinaryAfter.span > ordinaryBefore.span)) {
+                throw new Error(`plain wheel did not zoom: ${JSON.stringify({ ordinaryWheel, ordinaryBefore, ordinaryAfter })}`);
+            }
+            const horizontalBefore = await readView();
+            const horizontalWheel = await dispatchWheel({ deltaX: 40 });
+            const horizontalAfter = await readView();
+            if (!horizontalWheel.accepted || horizontalWheel.defaultPrevented || JSON.stringify(horizontalBefore) !== JSON.stringify(horizontalAfter)) {
+                throw new Error(`pure horizontal wheel was claimed by the timeline: ${JSON.stringify({ horizontalWheel, horizontalBefore, horizontalAfter })}`);
             }
             const panBefore = await readView();
             const shiftWheel = await dispatchWheel({ deltaY: 24, shiftKey: true });
@@ -242,9 +250,12 @@ check(
                     totalWeight: getComputedStyle(total).fontWeight,
                     currentColor: getComputedStyle(current).color,
                     totalColor: getComputedStyle(total).color,
+                    readoutSize: getComputedStyle(readout).fontSize,
+                    labelSize: getComputedStyle(label).fontSize,
+                    labelLineHeight: getComputedStyle(label).lineHeight,
                 };
             });
-            if (!typography.body.includes("IBM Plex Sans") || !typography.readout.includes("JetBrains Mono") || !typography.tick.includes("JetBrains Mono") || typography.currentWeight === typography.totalWeight || typography.currentColor === typography.totalColor) {
+            if (!typography.body.includes("IBM Plex Sans") || !typography.readout.includes("JetBrains Mono") || !typography.tick.includes("JetBrains Mono") || typography.currentWeight === typography.totalWeight || typography.currentColor === typography.totalColor || typography.readoutSize !== "12px" || typography.labelSize !== "11px" || typography.labelLineHeight !== "12px") {
                 throw new Error(`timeline hierarchy failed: ${JSON.stringify(typography)}`);
             }
             const focusBefore = await full.evaluate(() => {
@@ -252,7 +263,7 @@ check(
                 const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
                 if (!ruler || !surface) throw new Error("focus geometry nodes missing");
                 const read = (rect: DOMRect) => [rect.left, rect.top, rect.width, rect.height];
-                return { ruler: read(ruler.getBoundingClientRect()), surface: read(surface.getBoundingClientRect()) };
+                return { ruler: read(ruler.getBoundingClientRect()), surface: read(surface.getBoundingClientRect()), pointerFocused: document.activeElement === ruler };
             });
             await ruler.focus();
             const focus = await full.evaluate(() => {
@@ -269,9 +280,21 @@ check(
                     currentShadow: getComputedStyle(current).boxShadow,
                 };
             });
-            if (focus.outline !== "none" || focus.headShadow === "none" || focus.currentShadow === "none" || JSON.stringify(focusBefore.ruler) !== JSON.stringify(focus.rulerRect) || JSON.stringify(focusBefore.surface) !== JSON.stringify(focus.surfaceRect)) {
-                throw new Error(`timeline focus is not local: ${JSON.stringify(focus)}`);
+            if (focusBefore.pointerFocused || focus.outline !== "none" || focus.headShadow !== "none" || focus.currentShadow !== "none" || JSON.stringify(focusBefore.ruler) !== JSON.stringify(focus.rulerRect) || JSON.stringify(focusBefore.surface) !== JSON.stringify(focus.surfaceRect)) {
+                throw new Error(`timeline focus has an unearned ornament or pointer focus: ${JSON.stringify({ focusBefore, focus })}`);
             }
+            await full.keyboard.press("Home");
+            const home = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("End");
+            const end = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("ArrowLeft");
+            const left = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("Shift+ArrowLeft");
+            const shiftedLeft = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("Space");
+            const keyboardPlaying = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("Space");
+            const keyboardPaused = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
 
             const rideBeforeWrap = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
             await full.evaluate((tick: number) => (globalThis as any).__kexeditPath.scrub(tick - 0.25), rideBeforeWrap.header.length);
@@ -295,8 +318,10 @@ check(
                         seconds: Number(mark.dataset.tickSeconds),
                         left: rect.left,
                         right: rect.right,
+                        top: rect.top,
                         height: rect.height,
                         label: mark.querySelector('.timeline-tick-label')?.textContent?.trim() ?? "",
+                        labelRect: mark.querySelector<HTMLElement>('.timeline-tick-label')?.getBoundingClientRect(),
                     };
                 });
                 const majors = marks.filter((mark) => mark.level === "major");
@@ -311,8 +336,12 @@ check(
                     labelsIncrease,
                     marksInBounds,
                     hasMinorBetweenMajors,
+                    rulerHeight: bounds.height,
                     majorHeight: majors[0]?.height ?? 0,
                     minorHeight: minors[0]?.height ?? 0,
+                    labelHeight: majors.find((mark) => mark.label)?.labelRect?.height ?? 0,
+                    labelLineGap: majors.find((mark) => mark.label)?.labelRect ? (majors.find((mark) => mark.label)?.labelRect!.bottom ?? 0) - (majors.find((mark) => mark.label)?.top ?? 0) : 0,
+                    labelOffset: majors.find((mark) => mark.label)?.labelRect && majors.find((mark) => mark.label)?.left ? (majors.find((mark) => mark.label)?.labelRect!.left ?? 0) - (majors.find((mark) => mark.label)?.left ?? 0) : 0,
                 };
             });
             const lanes = await full.evaluate(() => {
@@ -339,6 +368,12 @@ check(
                 !rulerGeometry.labelsIncrease ||
                 !rulerGeometry.marksInBounds ||
                 !rulerGeometry.hasMinorBetweenMajors ||
+                rulerGeometry.rulerHeight !== 30 ||
+                rulerGeometry.majorHeight !== 10 ||
+                rulerGeometry.minorHeight !== 5 ||
+                rulerGeometry.labelHeight !== 12 ||
+                Math.abs(rulerGeometry.labelOffset - 4) > 1 ||
+                Math.abs(rulerGeometry.labelLineGap + 2) > 1 ||
                 rulerGeometry.majorHeight <= rulerGeometry.minorHeight ||
                 lanes.count !== 4 ||
                 !lanes.empty ||
@@ -384,11 +419,25 @@ check(
                     playheadLeft: playhead.left,
                 };
             });
-            const fullStates = await full.evaluate(() => ({
-                deadTail: document.querySelectorAll('[data-region="dead-tail"]').length,
-                endMark: document.querySelectorAll('[data-region="end-mark"]').length,
-                badge: document.querySelector('[data-diagnostic-badge]')?.textContent,
-            }));
+            const fullStates = await full.evaluate(() => {
+                const status = document.querySelector<HTMLElement>('[data-region="status"]');
+                const gutters = [...document.querySelectorAll<HTMLElement>('.timeline-gutter')];
+                const controls = document.querySelector<HTMLElement>('.transport-control-viewport')?.getBoundingClientRect();
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]')?.getBoundingClientRect();
+                const ruler = document.querySelector<HTMLElement>('[data-region="ruler"]')?.getBoundingClientRect();
+                const lanes = [...document.querySelectorAll<HTMLElement>('[data-region="timeline-lane"]')].map((lane) => lane.getBoundingClientRect());
+                const play = document.querySelector<HTMLElement>('[data-action="play-pause"]')?.getBoundingClientRect();
+                const readout = document.querySelector<HTMLElement>('[data-readout="time"]')?.getBoundingClientRect();
+                const seam = status ? getComputedStyle(status).borderTopStyle : "";
+                return {
+                    deadTail: document.querySelectorAll('[data-region="dead-tail"]').length,
+                    endMark: document.querySelectorAll('[data-region="end-mark"]').length,
+                    statusEmpty: Boolean(status && status.childElementCount === 0 && status.textContent?.trim() === "" && status.getBoundingClientRect().height === 32 && seam === "solid"),
+                    gutters: gutters.map((gutter) => ({ width: gutter.getBoundingClientRect().width, right: gutter.getBoundingClientRect().right, empty: gutter.childElementCount === 0, text: gutter.textContent?.trim() ?? "", interactive: Boolean(gutter.querySelector("button,input,output")) })),
+                    controlBounds: controls && surface && ruler ? { controls, surface, ruler, lanes, play, readout } : null,
+                    obsolete: document.querySelector('[data-region="diagnostics"], [data-diagnostic-badge], [data-diagnostic-entry], .status-ready') !== null,
+                };
+            });
 
             const stalled = await openPage(`${root}/?fixture=stalled`, browser);
             stalled.on("pageerror", (error) => errors.push(error.message));
@@ -410,15 +459,21 @@ check(
                     playheadCenter: playhead.left + playhead.width / 2,
                 };
             });
-            const states = await stalled.evaluate(() => ({
-                tail: document.querySelector('[data-region="dead-tail"]') !== null,
-                endMark: document.querySelector('[data-region="end-mark"]') !== null,
-                status: document.querySelector('[data-diagnostic-entry]')?.textContent ?? "",
-                badge: document.querySelector('[data-diagnostic-badge]')?.textContent ?? "",
-            }));
-            await stalled.locator('[data-diagnostic-entry]').click();
-            const returned = (await stalled.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            const states = await stalled.evaluate(() => {
+                const status = document.querySelector<HTMLElement>('[data-region="status"]');
+                return {
+                    tail: document.querySelector('[data-region="dead-tail"]') !== null,
+                    endMark: document.querySelector('[data-region="end-mark"]') !== null,
+                    statusEmpty: Boolean(status && status.childElementCount === 0 && status.textContent?.trim() === ""),
+                    obsolete: document.querySelector('[data-region="diagnostics"], [data-diagnostic-badge], [data-diagnostic-entry], .status-ready') !== null,
+                };
+            });
 
+            const controlBounds = fullStates.controlBounds;
+            if (!controlBounds) throw new Error(`timeline control geometry is missing: ${JSON.stringify(fullStates)}`);
+            const playBounds = controlBounds.play;
+            const readoutBounds = controlBounds.readout;
+            if (!playBounds || !readoutBounds) throw new Error(`timeline controls are missing: ${JSON.stringify(fullStates)}`);
             if (
                 !playing.transport.playing ||
                 paused.transport.playing ||
@@ -434,23 +489,36 @@ check(
                 playheadGeometry.playheadLeft <= beforeScrubX ||
                 fullStates.deadTail !== 0 ||
                 fullStates.endMark !== 0 ||
-                fullStates.badge !== "0" ||
+                !fullStates.statusEmpty ||
+                fullStates.obsolete ||
+                fullStates.gutters.length !== 2 ||
+                fullStates.gutters.some((gutter) => gutter.width !== 240 || !gutter.empty || gutter.text !== "" || gutter.interactive) ||
+                Math.abs(fullStates.gutters[0].right - fullStates.gutters[1].right) > 1 ||
+                !fullStates.controlBounds ||
+                Math.abs((playBounds.left + playBounds.width / 2) - (controlBounds.controls.left + controlBounds.controls.width / 2)) > 1 ||
+                Math.abs(readoutBounds.right - (controlBounds.surface.right - 14)) > 1 ||
+                Math.abs(controlBounds.controls.left - controlBounds.ruler.left) > 1 ||
+                Math.abs(controlBounds.controls.right - controlBounds.ruler.right) > 1 ||
+                controlBounds.lanes.some((lane) => Math.abs(lane.left - controlBounds.ruler.left) > 1 || Math.abs(lane.right - controlBounds.ruler.right) > 1) ||
+                home.transport.playhead !== 0 ||
+                end.transport.playhead !== end.header.length ||
+                left.transport.playhead !== end.header.length - 1 ||
+                !(shiftedLeft.transport.playhead < left.transport.playhead) ||
+                !keyboardPlaying.transport.playing ||
+                keyboardPaused.transport.playing ||
                 stalledRide.header.endReason !== "stalled" ||
                 !states.tail ||
                 !states.endMark ||
-                !states.status.includes("stalled") ||
-                !states.status.includes("need") ||
-                !states.status.includes("have") ||
-                states.badge !== "1" ||
+                !states.statusEmpty ||
+                states.obsolete ||
                 !held.held ||
                 !stalledGeometry ||
                 Math.abs(stalledGeometry.tailStart - stalledGeometry.markCenter) > 1 ||
                 stalledGeometry.playheadCenter <= stalledGeometry.markCenter ||
-                returned.transport.playhead !== stalledRide.header.endTick ||
                 errors.length
             ) {
                 throw new Error(
-                    `transport UI failed: ${JSON.stringify({ playing, paused, scrubbed, fullStates, playheadGeometry, stalledRide, held, stalledGeometry, states, returned, errors })}`,
+                    `transport UI failed: ${JSON.stringify({ playing, paused, scrubbed, fullStates, playheadGeometry, stalledRide, held, stalledGeometry, states, errors })}`,
                 );
             }
         } finally {
