@@ -66,7 +66,16 @@ export interface Intent {
     energy: EnergyIntent;
 }
 
-export type Refusal = Exclude<EndReason, "complete">;
+export type RefusalReason = Exclude<EndReason, "complete">;
+
+export interface Refusal {
+    reason: RefusalReason;
+    tick: number;
+    lane: "forces" | "energy";
+    need: number;
+    have: number;
+}
+
 export type Policy = (history: History, intent: Intent) => Input | Refusal;
 
 /** |v| in m/s below which the force closure is unsatisfiable at 100 Hz; see the header. */
@@ -75,22 +84,30 @@ export const FORCE_FLOOR = 5;
 const last = (history: History): State => history.states[history.states.length - 1];
 const conjugate = (q: Quat): Quat => [-q[0], -q[1], -q[2], q[3]];
 
+const refusal = (
+    history: History,
+    reason: RefusalReason,
+    lane: Refusal["lane"],
+    need: number,
+    have: number,
+): Refusal => ({ reason, tick: history.states.length - 1, lane, need, have });
+
 export function forces(
     history: History,
     intent: Extract<ShapeIntent, { kind: "forces" }>,
     floor: number,
-): Vec3 | "unsatisfiable" {
+): Vec3 | Refusal {
     const { g, heartToCom: h } = history.constants;
     const { speed: v, rotation } = last(history);
-    if (!(Math.abs(v) >= floor)) return "unsatisfiable";
+    if (!(Math.abs(v) >= floor)) return refusal(history, "unsatisfiable", "forces", floor, Math.abs(v));
     const lift = rotate(conjugate(rotation), [0, g, 0]);
     const wz = -intent.roll;
     const c = g * intent.normal - lift[1] + h * wz * wz;
     const disc = v * v - 4 * h * c;
-    if (!(disc >= 0)) return "unsatisfiable";
+    if (!(disc >= 0)) return refusal(history, "unsatisfiable", "forces", floor, Math.abs(v));
     const pitch = (2 * c) / (v + Math.sign(v) * Math.sqrt(disc));
     const across = v - h * pitch;
-    if (!(across * v > 0)) return "unsatisfiable";
+    if (!(across * v > 0)) return refusal(history, "unsatisfiable", "forces", floor, Math.abs(v));
     return [pitch, (lift[0] - g * intent.lateral) / across, intent.roll];
 }
 
@@ -116,7 +133,7 @@ export const drag: Loss = (history, _omega, sign) => {
 
 export const LOSSES: readonly Loss[] = [coulomb, drag];
 
-export function freeRoll(history: History, omega: Vec3, losses: readonly Loss[]): number | "stalled" {
+export function freeRoll(history: History, omega: Vec3, losses: readonly Loss[]): number | Refusal {
     const { g, heartToCom: h } = history.constants;
     const { rate } = history;
     const state = last(history);
@@ -125,7 +142,7 @@ export function freeRoll(history: History, omega: Vec3, losses: readonly Loss[])
     const offset = h * (rotate(probe.rotation, [0, 1, 0])[1] - rotate(state.rotation, [0, 1, 0])[1]);
     const v0 = state.speed;
     const sign = v0 !== 0 ? Math.sign(v0) : -Math.sign(rise);
-    if (sign === 0) return "stalled";
+    if (sign === 0) return refusal(history, "stalled", "energy", 0, v0);
     let A = 2 * rate * rate;
     let B = g * rise - 2 * v0 * rate;
     for (const loss of losses) {
@@ -135,10 +152,10 @@ export function freeRoll(history: History, omega: Vec3, losses: readonly Loss[])
     }
     const C = g * offset;
     const disc = B * B - 4 * A * C;
-    if (!(disc >= 0)) return "stalled";
+    if (!(disc >= 0)) return refusal(history, "stalled", "energy", 0, v0);
     const travel = -(B + (B >= 0 ? 1 : -1) * Math.sqrt(disc)) / (2 * A);
     const v1 = 2 * travel * rate - v0;
-    if (!(v1 * sign > 0)) return "stalled";
+    if (!(v1 * sign > 0)) return refusal(history, "stalled", "energy", 0, v1);
     return (v1 - v0) * rate;
 }
 
@@ -146,9 +163,10 @@ export function policyWith(losses: readonly Loss[] = LOSSES, floor = FORCE_FLOOR
     return (history, intent) => {
         const { shape, energy } = intent;
         const omega = shape.kind === "rates" ? shape.omega : forces(history, shape, floor);
-        if (typeof omega === "string") return omega;
+        if (typeof omega !== "object") return omega;
+        if ("reason" in omega) return omega;
         const a = energy.kind === "driven" ? driven(history, energy) : freeRoll(history, omega, losses);
-        if (typeof a === "string") return a;
+        if (typeof a !== "number") return a;
         return { omega, a };
     };
 }
@@ -167,21 +185,22 @@ export function run(
     rate: number,
     constants: RideConstants,
     compose: Policy = policy,
-): { trajectory: Trajectory; history: History } {
+): { trajectory: Trajectory; history: History; refusal?: Refusal } {
     if (intents.length === 0) throw new Error("run intents: expected at least one intent");
     const states: State[] = [initial];
     const inputs: Input[] = [];
     const history: History = { rate, constants, states, inputs };
-    let endReason: EndReason = "complete";
+    let refusal: Refusal | undefined;
     for (const intent of intents) {
         const input = compose(history, intent);
-        if (typeof input === "string") {
-            endReason = input;
+        if ("reason" in input) {
+            refusal = input;
             break;
         }
         inputs.push(input);
         states.push(step(states[states.length - 1], input, 1 / rate));
     }
+    const endReason: EndReason = refusal?.reason ?? "complete";
     const count = states.length;
     const ticks = new Float32Array(count * TICK_FLOATS);
     for (let i = 0; i < count; i++) writeTick(ticks, i, states[i], inputs[Math.max(i - 1, 0)] ?? REST);
@@ -189,5 +208,5 @@ export function run(
         header: { version: TRAJECTORY_VERSION, count, rate, endReason, endTick: count - 1, constants },
         ticks,
     });
-    return { trajectory, history };
+    return { trajectory, history, refusal };
 }

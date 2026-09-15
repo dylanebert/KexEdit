@@ -24,6 +24,7 @@ import type { Input, State } from "./integrator";
 import { KERNEL_MAX_MEMORY, KERNEL_STACK_SIZE, KERNEL_WASM_BASE64 } from "./kernel.wasm";
 import { DEFAULT_SPACING } from "./resample";
 import {
+    type EndReason,
     type RideConstants,
     TICK_FLOATS,
     TICK_LANES,
@@ -98,7 +99,7 @@ export interface Ride {
     readonly workers: number;
     setInitial(state: State): void;
     /** Replace the whole input table; the trajectory becomes `inputs.length + 1` ticks. */
-    setInputs(inputs: readonly Input[]): void;
+    setInputs(inputs: readonly Input[], endReason?: EndReason, endTick?: number): void;
     /** Overwrite rows from `from` on, extending the table if they run past its end. */
     editInputs(from: number, inputs: readonly Input[]): void;
     /** The boundary chunk the next pass resumes from. */
@@ -224,6 +225,8 @@ function build(
     let count = 0;
     let pending = 0;
     let hasInitial = false;
+    let endReason: EndReason = "complete";
+    let endTick = 0;
 
     const restartChunk = () => restartFor(Math.min(pending, count), chunk);
 
@@ -275,10 +278,15 @@ function build(
             hasInitial = true;
             pending = 0;
         },
-        setInputs(rows) {
+        setInputs(rows, reason = "complete", lastTick = rows.length) {
+            if (!Number.isInteger(lastTick) || lastTick !== rows.length) {
+                throw new Error(`ride inputs: endTick ${lastTick} does not match count ${rows.length + 1}`);
+            }
             count = 0;
             ride.editInputs(0, rows);
             count = rows.length + 1;
+            endReason = reason;
+            endTick = lastTick;
         },
         editInputs(from, rows) {
             if (rows.length === 0) throw new Error("ride inputs: expected at least one row");
@@ -334,8 +342,8 @@ function build(
                 version: TRAJECTORY_VERSION,
                 count,
                 rate: options.rate,
-                endReason: "complete",
-                endTick: count - 1,
+                endReason,
+                endTick,
                 constants: options.constants,
             };
             return { header, ticks: ticks.subarray(0, count * TICK_FLOATS) };

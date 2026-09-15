@@ -1,7 +1,20 @@
+import { State } from "@dylanebert/shallot/ecs";
 import { check } from "@dylanebert/shallot/harness/check";
 import { rotate } from "../path/path";
-import { ride, RIDE_CONSTANTS, SEGMENTS, SPANS } from "./ride.fixture";
+import { createRideEntity, readRide } from "./ride";
+import { run } from "./policies";
+import {
+    ride,
+    RIDE_CONSTANTS,
+    RIDE_INTENTS,
+    RIDE_INTENTS_STALLED,
+    RIDE_RATE,
+    RIDE_START,
+    SEGMENTS,
+    SPANS,
+} from "./ride.fixture";
 import { feltForces, type TickState, tickAt } from "./trajectory";
+import { frameQuat } from "../path/path";
 
 const { g, heartToCom: h, friction, drag, mass } = RIDE_CONSTANTS;
 // ticks either side of a segment boundary where the stored input and the tick-start lift straddle two intents
@@ -27,6 +40,84 @@ function interior(name: string): number[] {
     if (ticks.length < 100) throw new Error(`ride segment ${name}: population is ${ticks.length} ticks`);
     return ticks;
 }
+
+check(
+    "the ride entity keeps authored length separate from its marched prefix",
+    { claim: "the ride entity infers length from a complete trajectory or loses the refusal end state", budget: 250 },
+    () => {
+        const state = new State();
+        const eid = createRideEntity(state, {
+            length: RIDE_INTENTS.length,
+            intents: RIDE_INTENTS,
+            initial: RIDE_START,
+            rate: RIDE_RATE,
+            constants: RIDE_CONSTANTS,
+        });
+        const record = readRide(state, eid);
+        if (
+            record.header.length !== RIDE_INTENTS.length ||
+            record.header.count !== RIDE_INTENTS.length + 1 ||
+            record.header.endReason !== "complete" ||
+            record.header.endTick !== RIDE_INTENTS.length
+        ) {
+            throw new Error(`header ${JSON.stringify(record.header)}`);
+        }
+        if (record.trajectory.header.count !== record.header.count) throw new Error("trajectory count diverged from header");
+    },
+);
+
+check(
+    "a stalled ride keeps its authored tail and records the energy lane",
+    { claim: "a stalled ride truncates its authored length or drops the structured energy refusal", budget: 250 },
+    () => {
+        const state = new State();
+        const eid = createRideEntity(state, {
+            length: RIDE_INTENTS_STALLED.length,
+            intents: RIDE_INTENTS_STALLED,
+            initial: RIDE_START,
+            rate: RIDE_RATE,
+            constants: RIDE_CONSTANTS,
+        });
+        const record = readRide(state, eid);
+        if (record.header.endReason !== "stalled" || !(record.header.endTick < record.header.length)) {
+            throw new Error(`header ${JSON.stringify(record.header)}`);
+        }
+        if (!record.refusal || record.refusal.reason !== "stalled" || record.refusal.lane !== "energy") {
+            throw new Error(`refusal ${JSON.stringify(record.refusal)}`);
+        }
+        if (record.header.count !== record.header.endTick + 1) throw new Error("stalled count is not the marched prefix");
+    },
+);
+
+check(
+    "a six-g force refusal names the floor and tick-start speed",
+    { claim: "a force refusal loses its lane or swaps the force floor and tick-start speed", budget: 250 },
+    () => {
+        const initial = {
+            position: [0, 0, 0] as [number, number, number],
+            rotation: frameQuat([0, 0, -1], [0, 1, 0]),
+            speed: 15,
+            distance: 0,
+        };
+        const intents = new Array(400).fill({
+            shape: { kind: "forces", normal: 6, lateral: 0, roll: 0 },
+            energy: { kind: "free" },
+        });
+        const result = run(initial, intents, RIDE_RATE, RIDE_CONSTANTS);
+        if (result.trajectory.header.endReason !== "unsatisfiable" || !result.refusal) {
+            throw new Error(`result ${result.trajectory.header.endReason}`);
+        }
+        if (
+            result.refusal.reason !== "unsatisfiable" ||
+            result.refusal.lane !== "forces" ||
+            result.refusal.need !== 5 ||
+            !(result.refusal.have < result.refusal.need)
+        ) {
+            throw new Error(`refusal ${JSON.stringify(result.refusal)}`);
+        }
+        if (result.refusal.tick !== result.trajectory.header.endTick) throw new Error("refusal tick is not the last good tick");
+    },
+);
 
 check(
     "the integrated ride marches to its authored end and stops",
