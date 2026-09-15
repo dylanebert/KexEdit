@@ -6,12 +6,14 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
-        "postinstall": "bun node_modules/@dylanebert/shallot/scripts/tooling.ts",
-        "test": "shallot test",
+        "postinstall": "bun run --cwd node_modules/@dylanebert/shallot prepack",
+        "list": "bun scripts/carrier.ts list",
+        "workflow": "shallot workflow",
+        "test": "bun scripts/carrier.ts test",
         "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#45a1e7bbcfd9bc032082019a573eddeda496d496",
+        "@dylanebert/shallot": "github:dylanebert/shallot#70770cfc34d82fdd19cb705d8753bb6f093748d6",
         "@dylanebert/shallot-grid": "^0.1.2",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.5"

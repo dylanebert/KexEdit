@@ -119,8 +119,8 @@ check(
         const errors: string[] = [];
         try {
             await waitForServer(url, server);
-            browser = await chromium.launch({ headless: false, ...launch });
-            const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+            browser = await chromium.launch({ headless: true, ...launch });
+            const page = await browser.newPage({ viewport: { width: 1563, height: 944 } });
             page.on("pageerror", (error) => errors.push(error.message));
             page.on("console", (message) => {
                 if (message.type() === "error") errors.push(message.text());

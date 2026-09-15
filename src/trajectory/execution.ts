@@ -18,14 +18,7 @@
 // word. Readers compare generations; the pass never writes the buffer a reader holds, so no reader sees
 // a half-written path. Single writer per region is the whole protocol.
 //
-// Shallot does not export its pool from the package, so `createPool` is reached by path into the
-// installed package; the export is a Shallot follow-up.
-
-import {
-    createPool,
-    maxWorkers,
-    type Pool,
-} from "../../node_modules/@dylanebert/shallot/src/standard/physics/kernel/pool";
+import { createPool, maxWorkers, type Pool } from "@dylanebert/shallot/physics";
 import { PATH_VERSION, type Path, POSE_FLOATS, POSE_LANES, readPath } from "../path/path";
 import type { Input, State } from "./integrator";
 import { KERNEL_MAX_MEMORY, KERNEL_STACK_SIZE, KERNEL_WASM_BASE64 } from "./kernel.wasm";

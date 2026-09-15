@@ -83,8 +83,8 @@ check(
         const errors: string[] = [];
         try {
             await waitForServer(url, server);
-            browser = await chromium.launch({ headless: false, ...launch });
-            const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+            browser = await chromium.launch({ headless: true, ...launch });
+            const page = await browser.newPage({ viewport: { width: 1563, height: 944 } });
             page.on("pageerror", (error) => errors.push(error.message));
             page.on("console", (message) => {
                 if (message.type() === "error") errors.push(message.text());
@@ -95,67 +95,54 @@ check(
                 undefined,
                 { timeout: 15_000 },
             );
+            // Let the accepted compositor entrance settle before the fixed capture contract is read.
+            await page.waitForTimeout(260);
             // Each step stages (or not) a path, lets two frames draw, then reads the fragment counter the
-            // shader incremented on the last drawn frame. The probe cannot see color, so the empty and helix
-            // steps also screenshot the canvas for the axis-color witness.
-            const step = (fixture: "empty" | "helix" | "straight") =>
-                page.evaluate(async (name) => {
-                    type Handle = {
-                        readPathProbe(): Promise<Probe>;
-                        setPath(path: unknown): void;
-                        fixtures: Record<string, { header: Record<string, unknown>; poses: Float32Array }>;
-                    };
-                    type Probe = { samples: number; drawn: boolean; count: number };
-                    const handle = (globalThis as unknown as { __kexeditPath: Handle }).__kexeditPath;
-                    const { helix } = handle.fixtures;
+            // shader incremented on the last drawn frame. The public capture contract supplies the semantic
+            // axis-color witness; this row does not own a screenshot transport. Keep the captures in-page so
+            // only compact verdict data crosses the driver boundary.
+            const { evidence, colors } = await page.evaluate(async () => {
+                type Handle = {
+                    readPathProbe(): Promise<Probe>;
+                    setPath(path: unknown): void;
+                    captureFrame(): Promise<{ rgba: Uint8ClampedArray; width: number; height: number; identity: unknown }>;
+                    fixtures: Record<string, { header: Record<string, unknown>; poses: Float32Array }>;
+                };
+                type Probe = { samples: number; drawn: boolean; count: number };
+                const handle = (globalThis as unknown as { __kexeditPath: Handle }).__kexeditPath;
+                const { helix } = handle.fixtures;
+                const step = async (name: "empty" | "helix" | "straight") => {
                     handle.setPath(
                         name === "empty"
                             ? { header: { ...helix.header, count: 0 }, poses: new Float32Array(0) }
                             : handle.fixtures[name],
                     );
                     await new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
-                    return handle.readPathProbe();
-                }, fixture) as Promise<Probe>;
-            const canvas = page.locator("[data-region=canvas]");
-            const empty = await step("empty");
-            const emptyShot = (await canvas.screenshot({ type: "png" })).toString("base64");
-            const helix = await step("helix");
-            const helixShot = (await canvas.screenshot({ type: "png" })).toString("base64");
-            const straight = await step("straight");
-            const evidence = { empty, helix, straight };
-            // A pixel counts only where the helix frame shows the axis color and the empty frame does not,
-            // so the grid's own red X axis cannot witness the lateral tick.
-            const colors = await page.evaluate(
-                async ([before, after]) => {
-                    const pixelsOf = async (encoded: string) => {
-                        const image = new Image();
-                        image.src = `data:image/png;base64,${encoded}`;
-                        await image.decode();
-                        const surface = document.createElement("canvas");
-                        surface.width = image.naturalWidth;
-                        surface.height = image.naturalHeight;
-                        const context = surface.getContext("2d");
-                        if (!context) throw new Error("no 2d context");
-                        context.drawImage(image, 0, 0);
-                        return context.getImageData(0, 0, surface.width, surface.height).data;
-                    };
-                    const a = await pixelsOf(before);
-                    const b = await pixelsOf(after);
-                    // #cc241d: red well above green and blue; #6b9d65: green well above red and blue.
-                    const red = (p: Uint8ClampedArray, i: number) =>
-                        p[i] >= 150 && p[i] - p[i + 1] >= 90 && p[i] - p[i + 2] >= 90;
-                    const green = (p: Uint8ClampedArray, i: number) =>
-                        p[i + 1] >= 120 && p[i + 1] - p[i] >= 40 && p[i + 1] - p[i + 2] >= 40;
-                    let reds = 0;
-                    let greens = 0;
-                    for (let i = 0; i < b.length; i += 4) {
-                        if (red(b, i) && !red(a, i)) reds++;
-                        if (green(b, i) && !green(a, i)) greens++;
-                    }
-                    return { reds, greens };
-                },
-                [emptyShot, helixShot] as const,
-            );
+                    return { probe: await handle.readPathProbe(), frame: await handle.captureFrame() };
+                };
+                const empty = await step("empty");
+                const helixStep = await step("helix");
+                const straight = await step("straight");
+                // A pixel counts only where the helix frame shows the axis color and the empty frame does not,
+                // so the grid's own red X axis cannot witness the lateral tick.
+                const a = empty.frame.rgba;
+                const b = helixStep.frame.rgba;
+                // #cc241d: red well above green and blue; #6b9d65: green well above red and blue.
+                const red = (p: Uint8ClampedArray, i: number) =>
+                    p[i] >= 150 && p[i] - p[i + 1] >= 90 && p[i] - p[i + 2] >= 90;
+                const green = (p: Uint8ClampedArray, i: number) =>
+                    p[i + 1] >= 120 && p[i + 1] - p[i] >= 40 && p[i + 1] - p[i + 2] >= 40;
+                let reds = 0;
+                let greens = 0;
+                for (let i = 0; i < b.length; i += 4) {
+                    if (red(b, i) && !red(a, i)) reds++;
+                    if (green(b, i) && !green(a, i)) greens++;
+                }
+                return {
+                    evidence: { empty: empty.probe, helix: helixStep.probe, straight: straight.probe },
+                    colors: { reds, greens },
+                };
+            });
             const harness = (await page.evaluate(() => window.__harness?.run?.())) as
                 | { ok: boolean; checks: { name: string; ok: boolean }[] }
                 | undefined;
