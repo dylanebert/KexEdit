@@ -76,6 +76,13 @@ export const RIDE_INTENTS: readonly Intent[] = SEGMENTS.flatMap(({ seconds, inte
     new Array<Intent>(Math.round(seconds * RIDE_RATE)).fill(intent),
 );
 
+/** A short lift followed by a free-roll climb, whose authored lift cannot carry the train to the crest. */
+export const RIDE_INTENTS_STALLED: readonly Intent[] = [
+    ...new Array<Intent>(Math.round(2.1 * RIDE_RATE)).fill(SEGMENTS[0].intent),
+    ...new Array<Intent>(Math.round(LIFT_TURN * RIDE_RATE)).fill(SEGMENTS[1].intent),
+    ...new Array<Intent>(400).fill({ shape: rates(0.3), energy: FREE }),
+];
+
 /** The ride as marched through `run`: its f64 history and the materialized trajectory. */
 export const marched = run(RIDE_START, RIDE_INTENTS, RIDE_RATE, RIDE_CONSTANTS);
 export const ride = marched.trajectory;

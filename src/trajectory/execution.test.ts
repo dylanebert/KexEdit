@@ -4,7 +4,7 @@ import { constants, RATE } from "./fixtures.fixture";
 import { CHUNK, createRide, editTick, type Ride, restartFor } from "./execution";
 import { type Input, march, type State, step } from "./integrator";
 import { resample } from "./resample";
-import { TICK_FLOATS } from "./trajectory";
+import { readTrajectory, TICK_FLOATS } from "./trajectory";
 
 const ROWS = 5000;
 // yawed and pitched so every rotation component is non-zero and has a tangential ulp to perturb
@@ -142,6 +142,41 @@ check(
                 throw new Error(`pose ${Math.floor(i / POSE_FLOATS)} float ${i % POSE_FLOATS}: ${path.poses[i]} vs ${want.poses[i]}`);
             }
         }
+    },
+);
+
+check(
+    "authored length capacity admits exactly length plus one ticks",
+    { claim: "ride capacity allocates from an inferred or one-row-short length", budget: 250 },
+    () => {
+        const length = CHUNK - 1;
+        const chunks = Math.ceil((length + 1) / CHUNK);
+        if (chunks !== 1) throw new Error(`capacity chunks ${chunks}`);
+        const r = createRide({ ticks: chunks, poses: 1, rate: RATE, constants });
+        r.setInitial(initial);
+        const rows = Array.from({ length: length + 1 }, () => ({ omega: [0, 0, 0] as [number, number, number], a: 0 }));
+        let refused = false;
+        try {
+            r.setInputs(rows);
+        } catch (error) {
+            refused = String(error).includes("exceed");
+        }
+        if (!refused) throw new Error("a table one row over tick capacity was accepted");
+    },
+);
+
+check(
+    "readTrajectory refuses an end tick that disagrees with the emitted count",
+    { claim: "a trajectory can publish an end tick other than count minus one", budget: 250 },
+    () => {
+        const trajectory = ride(baseInputs).trajectory();
+        let refused = false;
+        try {
+            readTrajectory({ ...trajectory, header: { ...trajectory.header, endTick: trajectory.header.endTick - 1 } });
+        } catch (error) {
+            refused = String(error).includes("trajectory endTick:");
+        }
+        if (!refused) throw new Error("end tick mismatch was accepted");
     },
 );
 
