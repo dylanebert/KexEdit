@@ -175,7 +175,7 @@ canvas {
 
 .transport {
     display: grid;
-    grid-template-rows: 2.25rem 3.25rem minmax(0, 1fr);
+    grid-template-rows: 2rem minmax(0, 1fr);
     width: 100%;
     height: 100%;
     min-height: 0;
@@ -186,10 +186,16 @@ canvas {
 .transport-controls {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 0;
     min-width: 0;
     padding: 0 10px;
     border-bottom: 1px solid var(--pane-border);
+}
+
+.transport-playback {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
 }
 
 .transport-button {
@@ -212,138 +218,162 @@ canvas {
     outline: none;
 }
 
-.transport-rate {
-    display: flex;
-    align-items: baseline;
-    gap: 5px;
-    margin-left: 8px;
-    color: #bdae93;
-    font-size: 10px;
-}
-
-.rate-label {
-    cursor: ew-resize;
-    user-select: none;
-}
-
-.rate-value {
-    width: 3.75rem;
-    padding: 2px 4px;
-    border: 0;
-    border-bottom: 1px solid #504945;
-    border-radius: 0;
-    color: #ebdbb2;
-    background: transparent;
-    font: inherit;
-    text-align: right;
-}
-
-.rate-value:focus {
-    border-bottom-color: #bdae93;
-    outline: none;
-}
-
-.rate-unit {
-    color: #928374;
-}
-
 .transport-readout {
-    margin-left: auto;
+    margin-left: 8px;
     color: #bdae93;
     font-size: 10px;
     white-space: nowrap;
 }
 
+.timeline-surface {
+    position: relative;
+    display: grid;
+    grid-template-rows: 1.75rem minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    margin: 0 12px;
+    overflow: hidden;
+    user-select: none;
+    touch-action: none;
+    cursor: default;
+}
+
 .timeline-ruler {
     position: relative;
-    height: 3.25rem;
-    margin: 0 12px;
+    z-index: 1;
+    min-width: 0;
+    min-height: 0;
     border-bottom: 1px solid #504945;
-    cursor: ew-resize;
-    touch-action: none;
-    user-select: none;
+    cursor: default;
 }
 
 .timeline-ruler:focus-visible {
+    z-index: 5;
     outline: 1px solid #bdae93;
     outline-offset: -1px;
 }
 
+.timeline-ticks {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.timeline-tick {
+    position: absolute;
+    bottom: 0;
+    width: 1px;
+    height: 7px;
+    background: #504945;
+    pointer-events: none;
+    transform: translateX(-0.5px);
+}
+
+.timeline-tick[data-tick-level="major"] {
+    height: 14px;
+    background: #bdae93;
+}
+
+.timeline-tick-label {
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 3px;
+    color: #bdae93;
+    font-size: 9px;
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.timeline-lanes {
+    position: relative;
+    display: grid;
+    grid-template-rows: repeat(4, minmax(0, 1fr));
+    min-width: 0;
+    min-height: 0;
+}
+
+.timeline-lane {
+    min-width: 0;
+    min-height: 0;
+    border-bottom: 1px solid #3c3836;
+}
+
+.timeline-lane:nth-of-type(4) {
+    border-bottom: 0;
+}
+
+.timeline-lanes-grid {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    pointer-events: none;
+}
+
+.timeline-grid-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgb(80 73 69 / 28%);
+    transform: translateX(-0.5px);
+}
+
+.timeline-grid-line[data-tick-level="major"] {
+    background: rgb(60 56 54 / 72%);
+}
+
 .timeline-state {
     position: absolute;
-    top: 17px;
-    height: 8px;
+    z-index: 2;
+    top: 0;
+    bottom: 0;
     pointer-events: none;
 }
 
 .timeline-state-solved {
     left: 0;
-    background: #bdae93;
+    background: transparent;
 }
 
 .timeline-state-unsolved {
-    background: #504945;
-    opacity: 0.55;
+    background: rgb(20 22 23 / 42%);
 }
 
 .timeline-state-offending {
-    top: 9px;
+    z-index: 3;
     width: 2px;
-    height: 24px;
     margin-left: -1px;
     background: #cc241d;
 }
 
 .timeline-playhead {
     position: absolute;
-    top: 4px;
+    z-index: 4;
+    top: 0;
     bottom: 0;
     width: 1px;
-    margin-left: -1px;
-    background: #ebdbb2;
+    margin-left: -0.5px;
     pointer-events: none;
 }
 
-.timeline-playhead::before {
+.timeline-playhead-head {
     position: absolute;
     top: 0;
-    left: -3px;
-    width: 7px;
-    height: 7px;
+    left: -4px;
+    width: 9px;
+    height: 9px;
     background: #ebdbb2;
-    content: "";
+    clip-path: polygon(0 0, 100% 0, 100% 58%, 50% 100%, 0 58%);
 }
 
-.timeline-label {
+.timeline-playhead-line {
     position: absolute;
-    top: 39px;
-    color: #928374;
-    font-size: 9px;
-    pointer-events: none;
-}
-
-.timeline-label-start {
+    top: 9px;
+    bottom: 0;
     left: 0;
-}
-
-.timeline-label-end {
-    right: 0;
-}
-
-.timeline-lanes {
-    position: relative;
-    min-height: 0;
-    margin: 0 12px;
-    color: #504945;
-    font-size: 9px;
-}
-
-.timeline-lanes span {
-    position: absolute;
-    top: 10px;
-    left: 0;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    width: 1px;
+    background: #ebdbb2;
 }
 
 .status-line {
