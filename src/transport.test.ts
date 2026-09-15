@@ -51,7 +51,7 @@ check(
         claim: "the timeline controls do not drive the ride or hide its solved and unsolved transport states",
         size: "integration",
         requires: ["chromium"],
-        subject: ["src/Transport.svelte", "src/Timeline.svelte", "src/Status.svelte", "src/View.svelte", "src/path/view.ts", "src/app.css"],
+        subject: ["src/Transport.svelte", "src/Timeline.svelte", "src/Status.svelte", "src/View.svelte", "src/path/view.ts", "src/timeline/viewport.ts", "src/app.css"],
         budget: 20_000,
     },
     async () => {
@@ -83,6 +83,207 @@ check(
             if (absence.rateField || absence.rateLabel) throw new Error("visible playback rate control remains");
 
             const ruler = full.locator('[data-region="ruler"]');
+            const noLoop = await full.evaluate(() => ({
+                action: document.querySelector('[data-action="loop"]'),
+                named: [...document.querySelectorAll("button")].some((button) => button.getAttribute("aria-label") === "Loop"),
+                reservedLoop: Boolean((globalThis as any).__kexeditPath.ride()?.transport.loop),
+            }));
+            if (noLoop.action || noLoop.named || !noLoop.reservedLoop) throw new Error(`loop surface failed: ${JSON.stringify(noLoop)}`);
+
+            const readView = () => full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                if (!surface) throw new Error("timeline surface is missing");
+                return {
+                    start: Number(surface.dataset.viewStart),
+                    end: Number(surface.dataset.viewEnd),
+                    span: Number(surface.dataset.viewSpan),
+                };
+            });
+            const dispatchWheel = (options: { deltaX?: number; deltaY?: number; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) =>
+                full.evaluate((input) => {
+                    const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                    if (!surface) throw new Error("timeline surface is missing");
+                    const bounds = surface.getBoundingClientRect();
+                    const event = new WheelEvent("wheel", {
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: bounds.left + bounds.width * 0.5,
+                        deltaX: input.deltaX ?? 0,
+                        deltaY: input.deltaY ?? 0,
+                        ctrlKey: input.ctrlKey ?? false,
+                        metaKey: input.metaKey ?? false,
+                        shiftKey: input.shiftKey ?? false,
+                    });
+                    return { accepted: surface.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
+                }, options);
+            const initialView = await readView();
+            const zoomWheel = await dispatchWheel({ deltaY: -40, ctrlKey: true });
+            const zoomedView = await readView();
+            if (zoomWheel.accepted || !zoomWheel.defaultPrevented || !(zoomedView.span < initialView.span)) {
+                throw new Error(`Ctrl-wheel did not zoom: ${JSON.stringify({ initialView, zoomedView, zoomWheel })}`);
+            }
+            const anchorProbe = await full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                if (!surface) throw new Error("timeline surface is missing");
+                const bounds = surface.getBoundingClientRect();
+                const start = Number(surface.dataset.viewStart);
+                const span = Number(surface.dataset.viewSpan);
+                return { time: start + span * 0.5, x: bounds.left + bounds.width * 0.5 };
+            });
+            const zoomBeforeAnchor = await readView();
+            const metaWheel = await full.evaluate((input) => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                if (!surface) throw new Error("timeline surface is missing");
+                const event = new WheelEvent("wheel", {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: input.x,
+                    deltaY: -20,
+                    ctrlKey: false,
+                    metaKey: true,
+                    shiftKey: false,
+                });
+                return { accepted: surface.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
+            }, anchorProbe);
+            const zoomAfterMeta = await readView();
+            const anchoredAfterMeta = await full.evaluate((x: number) => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                if (!surface) throw new Error("timeline surface is missing");
+                const bounds = surface.getBoundingClientRect();
+                return Number(surface.dataset.viewStart) + ((x - bounds.left) * Number(surface.dataset.viewSpan)) / bounds.width;
+            }, anchorProbe.x);
+            if (metaWheel.accepted || !metaWheel.defaultPrevented || !(zoomAfterMeta.span < zoomBeforeAnchor.span) || Math.abs(anchoredAfterMeta - anchorProbe.time) > zoomBeforeAnchor.span * 1e-3) {
+                throw new Error(`Meta-wheel anchor failed: ${JSON.stringify({ anchorProbe, zoomBeforeAnchor, zoomAfterMeta, metaWheel })}`);
+            }
+            const ctrlShift = await dispatchWheel({ deltaY: -10, ctrlKey: true, shiftKey: true });
+            const afterCtrlShift = await readView();
+            if (ctrlShift.accepted || !ctrlShift.defaultPrevented || !(afterCtrlShift.span < zoomAfterMeta.span)) throw new Error("Ctrl+Shift did not take the zoom branch");
+            const unchangedBefore = await readView();
+            const ordinaryWheel = await dispatchWheel({ deltaY: 40 });
+            const unchangedAfter = await readView();
+            if (!ordinaryWheel.accepted || ordinaryWheel.defaultPrevented || JSON.stringify(unchangedBefore) !== JSON.stringify(unchangedAfter)) {
+                throw new Error(`ordinary wheel was claimed by the timeline: ${JSON.stringify({ ordinaryWheel, unchangedBefore, unchangedAfter })}`);
+            }
+            const panBefore = await readView();
+            const shiftWheel = await dispatchWheel({ deltaY: 24, shiftKey: true });
+            const panAfter = await readView();
+            if (shiftWheel.accepted || !shiftWheel.defaultPrevented || panAfter.span !== panBefore.span || !(panAfter.start > panBefore.start)) {
+                throw new Error(`Shift-wheel did not pan horizontally: ${JSON.stringify({ panBefore, panAfter, shiftWheel })}`);
+            }
+            const panTicksBefore = await full.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-region="ruler"] [data-tick-level]')].map((mark) => ({ seconds: Number(mark.dataset.tickSeconds), left: mark.getBoundingClientRect().left })));
+            if (panTicksBefore.length < 2 || panTicksBefore.some((tick) => !Number.isFinite(tick.seconds))) throw new Error("visible ticks have no seconds observable");
+
+            const gestureBefore = await readView();
+            const gestureRideBefore = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            const laneBox = await full.locator('[data-region="timeline-lane"]').first().boundingBox();
+            if (!laneBox) throw new Error("timeline lane has no bounds");
+            const gestureX = laneBox.x + laneBox.width * 0.65;
+            await full.mouse.move(gestureX, laneBox.y + laneBox.height / 2);
+            await full.keyboard.down("Space");
+            await full.mouse.down();
+            await full.mouse.move(gestureX - 100, laneBox.y + laneBox.height / 2);
+            await full.mouse.up();
+            await full.keyboard.up("Space");
+            const gestureAfter = await readView();
+            const gestureRideAfter = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            if (gestureAfter.start === gestureBefore.start || gestureAfter.span !== gestureBefore.span || gestureRideAfter.transport.playhead !== gestureRideBefore.transport.playhead || gestureRideAfter.transport.playing) {
+                throw new Error(`Space-drag conflicted with scrub/playback: ${JSON.stringify({ gestureBefore, gestureAfter, gestureRideBefore, gestureRideAfter })}`);
+            }
+            await full.keyboard.press("Space");
+            const tappedPlaying = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("Space");
+            if (!tappedPlaying.transport.playing) throw new Error("Space tap after a pan did not toggle playback once");
+
+            const middleBefore = await readView();
+            const middleRideBefore = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.mouse.move(gestureX, laneBox.y + laneBox.height / 2);
+            await full.mouse.down({ button: "middle" });
+            await full.mouse.move(gestureX + 90, laneBox.y + laneBox.height / 2);
+            await full.mouse.up({ button: "middle" });
+            const middleAfter = await readView();
+            const middleRideAfter = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            if (middleAfter.start === middleBefore.start || middleAfter.span !== middleBefore.span || middleRideAfter.transport.playhead !== middleRideBefore.transport.playhead) {
+                throw new Error(`middle drag did not pan independently: ${JSON.stringify({ middleBefore, middleAfter, middleRideBefore, middleRideAfter })}`);
+            }
+
+            const ordinaryScrubView = await readView();
+            const scrubBox = await ruler.boundingBox();
+            if (!scrubBox) throw new Error("timeline ruler has no bounds");
+            await full.mouse.move(scrubBox.x + scrubBox.width * 0.2, scrubBox.y + scrubBox.height / 2);
+            await full.mouse.down();
+            await full.mouse.move(scrubBox.x + scrubBox.width * 0.7, scrubBox.y + scrubBox.height / 2);
+            await full.mouse.up();
+            const ordinaryScrubRide = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            const ordinaryScrubAfter = await readView();
+            if (ordinaryScrubAfter.start !== ordinaryScrubView.start || ordinaryScrubAfter.span !== ordinaryScrubView.span || ordinaryScrubRide.transport.playhead <= 0) {
+                throw new Error(`ordinary ruler scrub changed the viewport or did not move the playhead: ${JSON.stringify({ ordinaryScrubView, ordinaryScrubAfter, ordinaryScrubRide })}`);
+            }
+
+            const beforeFramePlayhead = ordinaryScrubRide.transport.playhead;
+            await full.keyboard.press("f");
+            const framed = await readView();
+            const afterFramePlayhead = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            if (framed.start !== 0 || Math.abs(framed.end - initialView.end) > 1e-9 || afterFramePlayhead.transport.playhead !== beforeFramePlayhead) {
+                throw new Error(`F did not frame authored time without scrubbing: ${JSON.stringify({ framed, initialView, beforeFramePlayhead, afterFramePlayhead })}`);
+            }
+
+            const typography = await full.evaluate(() => {
+                const transport = document.querySelector<HTMLElement>(".transport");
+                const readout = document.querySelector<HTMLElement>(".transport-readout");
+                const label = document.querySelector<HTMLElement>(".timeline-tick-label");
+                const current = document.querySelector<HTMLElement>(".transport-time-current");
+                const total = document.querySelector<HTMLElement>(".transport-time-total");
+                if (!transport || !readout || !label || !current || !total) throw new Error("timeline hierarchy nodes missing");
+                return {
+                    body: getComputedStyle(transport).fontFamily,
+                    readout: getComputedStyle(readout).fontFamily,
+                    tick: getComputedStyle(label).fontFamily,
+                    currentWeight: getComputedStyle(current).fontWeight,
+                    totalWeight: getComputedStyle(total).fontWeight,
+                    currentColor: getComputedStyle(current).color,
+                    totalColor: getComputedStyle(total).color,
+                };
+            });
+            if (!typography.body.includes("IBM Plex Sans") || !typography.readout.includes("JetBrains Mono") || !typography.tick.includes("JetBrains Mono") || typography.currentWeight === typography.totalWeight || typography.currentColor === typography.totalColor) {
+                throw new Error(`timeline hierarchy failed: ${JSON.stringify(typography)}`);
+            }
+            const focusBefore = await full.evaluate(() => {
+                const ruler = document.querySelector<HTMLElement>('[data-region="ruler"]');
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                if (!ruler || !surface) throw new Error("focus geometry nodes missing");
+                const read = (rect: DOMRect) => [rect.left, rect.top, rect.width, rect.height];
+                return { ruler: read(ruler.getBoundingClientRect()), surface: read(surface.getBoundingClientRect()) };
+            });
+            await ruler.focus();
+            const focus = await full.evaluate(() => {
+                const ruler = document.querySelector<HTMLElement>('[data-region="ruler"]');
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                const head = document.querySelector<HTMLElement>(".timeline-playhead-head");
+                const current = document.querySelector<HTMLElement>(".transport-time-current");
+                if (!ruler || !surface || !head || !current) throw new Error("focus affordances missing");
+                return {
+                    outline: getComputedStyle(ruler).outlineStyle,
+                    rulerRect: [ruler.getBoundingClientRect().left, ruler.getBoundingClientRect().top, ruler.getBoundingClientRect().width, ruler.getBoundingClientRect().height],
+                    surfaceRect: [surface.getBoundingClientRect().left, surface.getBoundingClientRect().top, surface.getBoundingClientRect().width, surface.getBoundingClientRect().height],
+                    headShadow: getComputedStyle(head).boxShadow,
+                    currentShadow: getComputedStyle(current).boxShadow,
+                };
+            });
+            if (focus.outline !== "none" || focus.headShadow === "none" || focus.currentShadow === "none" || JSON.stringify(focusBefore.ruler) !== JSON.stringify(focus.rulerRect) || JSON.stringify(focusBefore.surface) !== JSON.stringify(focus.surfaceRect)) {
+                throw new Error(`timeline focus is not local: ${JSON.stringify(focus)}`);
+            }
+
+            const rideBeforeWrap = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.evaluate((tick: number) => (globalThis as any).__kexeditPath.scrub(tick - 0.25), rideBeforeWrap.header.length);
+            await full.keyboard.press("Space");
+            await full.waitForFunction(() => {
+                const ride = (globalThis as any).__kexeditPath.ride();
+                return ride.transport.playing && ride.transport.playhead < ride.header.length - 1;
+            }, undefined, { timeout: 2_000 });
+            const wrapped = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.keyboard.press("Space");
+            if (!wrapped.transport.playing || wrapped.transport.playhead >= wrapped.header.length - 1) throw new Error(`playback did not unconditionally wrap: ${JSON.stringify(wrapped)}`);
+
             const rulerGeometry = await full.evaluate(() => {
                 const ruler = document.querySelector('[data-region="ruler"]');
                 if (!ruler) throw new Error("timeline ruler is missing");

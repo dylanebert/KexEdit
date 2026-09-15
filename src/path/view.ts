@@ -182,7 +182,8 @@ function attachRide(state: State, ride: Ride, length: number, rate: number): num
     Transport.playhead.set(eid, 0);
     Transport.playing.set(eid, 0);
     Transport.rate.set(eid, 1);
-    Transport.loop.set(eid, 0);
+    // Reserved compatibility data: playback is unconditionally looping in the timeline surface.
+    Transport.loop.set(eid, 1);
     rides.set(eid, ride);
     return eid;
 }
@@ -308,10 +309,6 @@ export const transport = {
     togglePlaying: () => writeTransport((state) => setRidePlaying(state, !transportSnapshot?.playing)),
     setPlaying: (playing: boolean) => writeTransport((state) => setRidePlaying(state, playing)),
     setRate: (rate: number) => writeTransport((state) => setRideRate(state, rate)),
-    setLoop: (loop: boolean) => writeTransport((state) => {
-        const train = readTrain(state);
-        if (train) Transport.loop.set(train.rideEid, loop ? 1 : 0);
-    }),
     scrub: (playhead: number) => writeTransport((state) => scrubRide(state, playhead)),
 };
 

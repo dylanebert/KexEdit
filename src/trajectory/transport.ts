@@ -32,12 +32,12 @@ export function advance(transport: TransportValue, header: TransportHeader, dt: 
     if (!transport.playing) return next;
 
     const raw = transport.playhead + dt * transport.rate * header.rate;
-    if (transport.loop && header.length > 0) {
+    if (header.length > 0) {
         next.playhead = ((raw % header.length) + header.length) % header.length;
         return next;
     }
-    next.playhead = Math.min(header.length, Math.max(0, raw));
-    if (next.playhead >= header.length) next.playing = false;
+    next.playhead = 0;
+    next.playing = false;
     return next;
 }
 

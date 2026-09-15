@@ -26,13 +26,15 @@ check(
 );
 
 check(
-    "transport wraps or stops at the authored end",
-    { claim: "transport crosses the authored end without wrapping or stopping", budget: 250 },
+    "transport always wraps at the authored end",
+    { claim: "transport makes its reserved loop bit an optional stop control", budget: 250 },
     () => {
-        const wrapped = advance(transport({ playhead: 95, loop: true }), header, 1);
-        const stopped = advance(transport({ playhead: 95 }), header, 1);
-        if (wrapped.playhead !== 5 || !wrapped.playing) throw new Error(`loop ${JSON.stringify(wrapped)}`);
-        if (stopped.playhead !== 100 || stopped.playing) throw new Error(`stop ${JSON.stringify(stopped)}`);
+        for (const loop of [false, true]) {
+            const exact = advance(transport({ playhead: 95, loop }), header, 0.5);
+            const multiple = advance(transport({ playhead: 95, loop }), header, 10.5);
+            if (exact.playhead !== 0 || !exact.playing) throw new Error(`exact wrap ${JSON.stringify(exact)}`);
+            if (multiple.playhead !== 0 || !multiple.playing) throw new Error(`multi-duration wrap ${JSON.stringify(multiple)}`);
+        }
     },
 );
 

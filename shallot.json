@@ -10,6 +10,7 @@
         { "file": "src/capability.test.ts" },
         { "file": "src/boot.test.ts" },
         { "file": "src/transport.test.ts" },
+        { "file": "src/timeline/viewport.test.ts" },
         { "file": "src/path/contract.test.ts" },
         { "file": "src/path/frame.test.ts" },
         { "file": "src/path/upload.test.ts" },
