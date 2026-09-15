@@ -8,7 +8,7 @@
 // The path drawn is a ride's: the scene's fixture names the integrated ride, whose intent table the
 // policies march into inputs, or a closed-form trajectory whose stored inputs are re-marched. Either is
 // marched on the calling thread, resampled, and uploaded whole from the ride's shared memory. A train
-// Part stands at the trajectory tick the scheduler clock names, set each frame before draw.
+// Part stands at the trajectory tick the ride transport names, set each frame before draw.
 //
 // The plugin takes the engine's draw-plugin shape: it owns its buffers and pipeline, runs in `draw`
 // after `ColorSystem` and before `GlazeSystem`, and counts fragments in an atomic probe.
@@ -34,13 +34,15 @@ import { hill } from "./hill.fixture";
 import * as d from "typegpu/data";
 import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import { straight } from "./straight.fixture";
-import { CHUNK, createRide, type Ride } from "../trajectory/execution";
-import * as rides from "../trajectory/fixtures.fixture";
-import type { Input, State as MarchState } from "../trajectory/integrator";
+import * as trajectoryFixtures from "../trajectory/fixtures.fixture";
+import { Train, RideHeader, Transport, createRideEntity, readRide, rides } from "../trajectory/ride";
+import { type Input, type State as MarchState } from "../trajectory/integrator";
 import { run } from "../trajectory/policies";
+import { CHUNK, createRide, type Ride } from "../trajectory/execution";
 import { DEFAULT_SPACING } from "../trajectory/resample";
 import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_RATE, RIDE_START } from "../trajectory/ride.fixture";
-import { initialState, intentTable, placeTrain } from "../trajectory/train";
+import { initialState, intentTable } from "../trajectory/train";
+import { advance, placeAt, scrub } from "../trajectory/transport";
 import type { RideConstants, Trajectory } from "../trajectory/trajectory";
 import { PATH_SHADER, PathUniform, UNIFORM_FLOATS } from "./shader";
 import { pathUploads } from "./upload";
@@ -135,8 +137,8 @@ function integrated(): RideSource {
 }
 
 const FIXTURES: Record<number, () => RideSource> = {
-    [PathFixture.Straight]: () => closedForm(rides.straight),
-    [PathFixture.Hill]: () => closedForm(rides.hill),
+    [PathFixture.Straight]: () => closedForm(trajectoryFixtures.straight),
+    [PathFixture.Hill]: () => closedForm(trajectoryFixtures.hill),
     [PathFixture.Ride]: integrated,
 };
 
@@ -146,13 +148,9 @@ export const PathView = { fixture: sparse(u8) };
 // Train scale along local X, Y and Z (forward is -Z); a stand-in with no look.
 const TRAIN_SCALE = [0.6, 0.4, 1.6] as const;
 
-type Train = { eid: number; ride: Ride; trajectory: Trajectory };
-let train: Train | null = null;
-
-/** March `source`'s inputs on the calling thread, resample, and publish one generation. */
+/** March a closed-form fixture into an execution ride for the legacy fixture selector. */
 function marchRide(source: RideSource): Ride {
     const count = source.inputs.length + 1;
-    // arclength is at most the travel at the fastest speed any row can reach from the start
     let speed = Math.abs(source.initial.speed);
     let length = 0;
     for (const { a } of source.inputs) {
@@ -161,7 +159,7 @@ function marchRide(source: RideSource): Ride {
     }
     const ride = createRide({
         ticks: Math.ceil((count + 1) / CHUNK),
-        poses: Math.ceil((length / DEFAULT_SPACING + 2) / CHUNK),
+        poses: Math.max(1, Math.ceil((length / DEFAULT_SPACING + 2) / CHUNK)),
         rate: source.rate,
         constants: source.constants,
     });
@@ -171,20 +169,149 @@ function marchRide(source: RideSource): Ride {
     return ride;
 }
 
-/** The train entity, its trajectory and the scheduler time of the last placement; null before boot. */
-export function readTrain(state: State): { eid: number; trajectory: Trajectory; elapsed: number } | null {
-    return train ? { eid: train.eid, trajectory: train.trajectory, elapsed: state.time.elapsed } : null;
+function attachRide(state: State, ride: Ride, length: number, rate: number): number {
+    const eid = state.create();
+    state.add(eid, RideHeader);
+    state.add(eid, Transport);
+    RideHeader.length.set(eid, length);
+    RideHeader.count.set(eid, ride.trajectory().header.count);
+    RideHeader.rate.set(eid, rate);
+    RideHeader.endReason.set(eid, 0);
+    RideHeader.endTick.set(eid, ride.trajectory().header.endTick);
+    RideHeader.generation.set(eid, 0);
+    Transport.playhead.set(eid, 0);
+    Transport.playing.set(eid, 0);
+    Transport.rate.set(eid, 1);
+    Transport.loop.set(eid, 0);
+    rides.set(eid, ride);
+    return eid;
 }
 
-// Place the train at the tick the scheduler clock names; runs before draw so the frame shows it.
-const TrainSystem: System = {
-    name: "kexedit-train",
+function createFixtureRide(state: State, fixture: PathFixtureValue): number {
+    if (fixture === PathFixture.Ride) {
+        return createRideEntity(state, {
+            length: RIDE_INTENTS.length,
+            intents: RIDE_INTENTS,
+            initial: RIDE_START,
+            rate: RIDE_RATE,
+            constants: RIDE_CONSTANTS,
+        });
+    }
+    const source = FIXTURES[fixture]();
+    return attachRide(state, marchRide(source), source.inputs.length, source.rate);
+}
+
+type PathFixtureValue = (typeof PathFixture)[keyof typeof PathFixture];
+
+function trainFor(state: State, rideEid: number): number {
+    for (const eid of state.query([Train, Transform])) {
+        if (Train.ride.get(eid) === rideEid) return eid;
+    }
+    const eid = state.create();
+    state.add(eid, Train);
+    state.add(eid, Transform);
+    state.add(eid, Part);
+    state.add(eid, Color);
+    Train.ride.set(eid, rideEid);
+    Train.offset.set(eid, 0);
+    Transform.scale.set(eid, TRAIN_SCALE[0], TRAIN_SCALE[1], TRAIN_SCALE[2], 0);
+    const [r, g, b] = PATH_COLORS.chord;
+    Color.rgba.set(eid, r, g, b, 1);
+    return eid;
+}
+
+/** Read the train entity and its ride's transport state; null before the plugin warm phase. */
+export function readTrain(state: State): {
+    eid: number;
+    rideEid: number;
+    header: { length: number; count: number; rate: number; endReason: string; endTick: number; generation: number };
+    trajectory: Trajectory;
+    transport: { playhead: number; playing: boolean; rate: number; loop: boolean };
+    offset: number;
+    elapsed: number;
+} | null {
+    for (const eid of state.query([Train, Transform])) {
+        const rideEid = Train.ride.get(eid);
+        if (!state.exists(rideEid) || !rides.has(rideEid)) continue;
+        const ride = readRide(state, rideEid);
+        return {
+            eid,
+            rideEid,
+            header: ride.header,
+            trajectory: ride.trajectory,
+            transport: ride.transport,
+            offset: Train.offset.get(eid),
+            elapsed: state.time.elapsed,
+        };
+    }
+    return null;
+}
+
+/** Harness seam for transport controls; the Svelte layer does not reach into ECS fields directly. */
+export function setRidePlaying(state: State, playing: boolean): boolean | null {
+    const train = readTrain(state);
+    if (!train) return null;
+    Transport.playing.set(train.rideEid, playing ? 1 : 0);
+    return playing;
+}
+
+export function setRideRate(state: State, rate: number): number | null {
+    if (!(Number.isFinite(rate) && rate >= 0)) throw new Error(`transport rate: expected finite >= 0, got ${rate}`);
+    const train = readTrain(state);
+    if (!train) return null;
+    Transport.rate.set(train.rideEid, rate);
+    return rate;
+}
+
+/** Harness seam for authored scrubbing; Svelte never reaches into ECS fields directly. */
+export function scrubRide(state: State, playhead: number): number | null {
+    const train = readTrain(state);
+    if (!train) return null;
+    const value = scrub(playhead, train.header);
+    Transport.playhead.set(train.rideEid, value);
+    return value;
+}
+
+/** The transport owns virtual time; the engine's pause and timescale remain untouched. */
+export const TransportSystem: System = {
+    name: "kexedit-transport",
     group: "simulation",
     update(state: State) {
-        if (!train || !state.exists(train.eid)) return;
-        const { position, rotation } = placeTrain(train.trajectory, state.time.elapsed);
-        Transform.pos.set(train.eid, position[0], position[1], position[2], 0);
-        Transform.rot.set(train.eid, rotation[0], rotation[1], rotation[2], rotation[3]);
+        for (const eid of state.query([RideHeader, Transport])) {
+            const next = advance(
+                {
+                    playhead: Transport.playhead.get(eid),
+                    playing: Transport.playing.get(eid) !== 0,
+                    rate: Transport.rate.get(eid),
+                    loop: Transport.loop.get(eid) !== 0,
+                },
+                { length: RideHeader.length.get(eid), rate: RideHeader.rate.get(eid) },
+                state.time.deltaTime,
+            );
+            Transport.playhead.set(eid, next.playhead);
+            Transport.playing.set(eid, next.playing ? 1 : 0);
+        }
+    },
+};
+
+/** Place every train at its ride's discrete transport tick, never beyond the marched prefix. */
+export const TrainSystem: System = {
+    name: "kexedit-train",
+    group: "simulation",
+    after: [TransportSystem],
+    update(state: State) {
+        for (const eid of state.query([Train, Transform])) {
+            const rideEid = Train.ride.get(eid);
+            const ride = rides.get(rideEid);
+            if (!ride || !state.exists(rideEid)) continue;
+            const { position, rotation } = placeAt(
+                ride.trajectory(),
+                Transport.playhead.get(rideEid),
+                Train.offset.get(eid),
+            );
+            Transform.pos.set(eid, position[0], position[1], position[2], 0);
+            Transform.rot.set(eid, rotation[0], rotation[1], rotation[2], rotation[3]);
+        }
     },
 };
 
@@ -358,7 +485,7 @@ export async function readPathProbe(): Promise<PathProbe> {
     return probeRead;
 }
 
-const PathSystem: System = {
+export const PathSystem: System = {
     name: "kexedit-path",
     group: "draw",
     after: [ColorSystem],
@@ -366,6 +493,17 @@ const PathSystem: System = {
     update(state: State) {
         const device = Compute.device;
         if (!device) return;
+        // A ride publishes a new shared-memory path atomically. The view records only the generation it
+        // has seen; the upload remains whole-buffer, while the ride and its header stay the source of truth.
+        for (const rideEid of state.query([RideHeader])) {
+            const ride = rides.get(rideEid);
+            if (!ride) continue;
+            const generation = ride.generation();
+            if (RideHeader.generation.get(rideEid) === generation) continue;
+            const published = ride.path();
+            setPath(published.path);
+            RideHeader.generation.set(rideEid, published.generation);
+        }
         flush(device);
         for (const eid of state.query([Camera])) {
             const view = Views.get(eid);
@@ -393,7 +531,7 @@ function release(): void {
 
 export const PathPlugin: Plugin = {
     name: "KexEditPath",
-    systems: [TrainSystem, PathSystem],
+    systems: [TransportSystem, TrainSystem, PathSystem],
     components: { PathView },
     traits: { PathView: { defaults: () => ({ fixture: PathFixture.Ride }), enums: { fixture: PathFixture } } },
     dependencies: [RenderPlugin, SearPlugin, GlazePlugin],
@@ -437,27 +575,21 @@ export const PathPlugin: Plugin = {
             primitive: { topology: "triangle-list" },
         });
         for (const eid of state.query([PathView])) {
-            const fixture = FIXTURES[PathView.fixture.get(eid)];
-            if (!fixture) throw new Error(`path-view fixture: no fixture ${PathView.fixture.get(eid)}`);
-            const ride = marchRide(fixture());
-            // whole-buffer upload of the published generation, straight from the ride's shared memory
-            setPath(ride.path().path);
-            void train?.ride.terminate();
-            const trainEid = train && state.exists(train.eid) ? train.eid : state.create();
-            if (!state.has(trainEid, Part)) {
-                state.add(trainEid, Transform);
-                state.add(trainEid, Part);
-                state.add(trainEid, Color);
+            const fixture = PathView.fixture.get(eid) as PathFixtureValue;
+            if (!FIXTURES[fixture] && fixture !== PathFixture.Ride) {
+                throw new Error(`path-view fixture: no fixture ${fixture}`);
             }
-            Transform.scale.set(trainEid, TRAIN_SCALE[0], TRAIN_SCALE[1], TRAIN_SCALE[2], 0);
-            const [r, g, b] = PATH_COLORS.chord;
-            Color.rgba.set(trainEid, r, g, b, 1);
-            train = { eid: trainEid, ride, trajectory: ride.trajectory() };
+            // The ride is an ECS entity. Its execution memory is the side-table value, and the train
+            // points to that entity rather than retaining a module-level train singleton.
+            const rideEid = [...state.query([RideHeader])][0] ?? createFixtureRide(state, fixture);
+            trainFor(state, rideEid);
         }
     },
-    dispose() {
-        void train?.ride.terminate();
-        train = null;
+    dispose(state: State) {
+        for (const rideEid of state.query([RideHeader])) {
+            void rides.get(rideEid)?.terminate();
+            rides.delete(rideEid);
+        }
         release();
         uploads.reset();
         PathUploadStats.lastFrameBytes = 0;

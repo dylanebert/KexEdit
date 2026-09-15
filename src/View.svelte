@@ -7,15 +7,28 @@
     import { onMount } from "svelte";
     import project from "virtual:project";
     import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
-    import { PathPlugin, pathFixtures, readPathProbe, readTrain, setPath } from "./path/view";
+    import {
+        PathPlugin,
+        pathFixtures,
+        readPathProbe,
+        readTrain,
+        scrubRide,
+        setPath,
+        setRidePlaying,
+        setRideRate,
+    } from "./path/view";
     import { Transform } from "@dylanebert/shallot";
 
-    // `train` reads the train's transform slab and the trajectory tick the scheduler clock names, for the placement row.
+    // `train` reads the train's transform slab and the discrete tick the ride transport names, for the placement row.
     const pathHandle = {
         readPathProbe,
         setPath,
         fixtures: pathFixtures,
         train: undefined as (() => unknown) | undefined,
+        ride: undefined as (() => unknown) | undefined,
+        scrub: undefined as ((playhead: number) => number | null) | undefined,
+        setPlaying: undefined as ((playing: boolean) => boolean | null) | undefined,
+        setRate: undefined as ((rate: number) => number | null) | undefined,
         captureFrame: () => captureFrame(canvas),
     };
     type PathWindow = Window & { __kexeditPath?: typeof pathHandle };
@@ -190,14 +203,29 @@
                         ],
                     };
                 };
+                pathHandle.ride = () => {
+                    const live = app ? readTrain(app.state) : null;
+                    if (!live) return null;
+                    return { eid: live.rideEid, header: live.header, transport: live.transport };
+                };
+                pathHandle.scrub = (playhead) => (app ? scrubRide(app.state, playhead) : null);
+                pathHandle.setPlaying = (playing) => (app ? setRidePlaying(app.state, playing) : null);
+                pathHandle.setRate = (rate) => (app ? setRideRate(app.state, rate) : null);
                 pathHandle.train = () => {
                     const live = app ? readTrain(app.state) : null;
                     if (!live) return null;
-                    const { eid, trajectory, elapsed } = live;
+                    const { eid, trajectory, elapsed, transport, header, offset } = live;
+                    const tick = Math.min(header.count - 1, Math.max(0, Math.floor(transport.playhead) + Math.floor(offset)));
                     return {
                         elapsed,
-                        rate: trajectory.header.rate,
-                        count: trajectory.header.count,
+                        playhead: transport.playhead,
+                        transportRate: transport.rate,
+                        playing: transport.playing,
+                        loop: transport.loop,
+                        rate: header.rate,
+                        count: header.count,
+                        offset,
+                        tick,
                         ticks: Array.from(trajectory.ticks),
                         pos: [Transform.pos.x.get(eid), Transform.pos.y.get(eid), Transform.pos.z.get(eid)],
                         rot: [

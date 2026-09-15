@@ -97,15 +97,27 @@ function freePort(): number {
     return port;
 }
 
-type Sample = { elapsed: number; rate: number; count: number; ticks: number[]; pos: number[]; rot: number[] };
+type Sample = {
+    elapsed: number;
+    playhead: number;
+    transportRate: number;
+    playing: boolean;
+    offset: number;
+    rate: number;
+    count: number;
+    tick: number;
+    ticks: number[];
+    pos: number[];
+    rot: number[];
+};
 
 check(
-    "in Chromium the train's transform is the trajectory tick for the scheduler's elapsed time",
+    "in Chromium the train transform follows the ride transport at rates one and two",
     {
-        claim: "the drawn train's transform departs from the trajectory tick the scheduler clock names",
+        claim: "the drawn train transform departs from the tick named by the ride transport after scrub or pause",
         size: "integration",
         requires: ["chromium"],
-        subject: ["src/trajectory/train.ts", "src/trajectory/execution.ts", "src/path/view.ts", "src/View.svelte"],
+        subject: ["src/trajectory/transport.ts", "src/trajectory/execution.ts", "src/path/view.ts", "src/View.svelte"],
         budget: 20_000,
     },
     async () => {
@@ -131,17 +143,28 @@ check(
                 undefined,
                 { timeout: 15_000 },
             );
-            // N frames apart, sampled between frames so the transform and the clock are the same frame's
             const sample = (frames: number) =>
                 page.evaluate(async (n) => {
                     for (let i = 0; i < n; i++) await new Promise<void>((done) => requestAnimationFrame(() => done()));
                     const handle = (globalThis as unknown as { __kexeditPath: { train(): unknown } }).__kexeditPath;
                     return handle.train();
                 }, frames) as Promise<Sample | null>;
-            const first = await sample(30);
-            const second = await sample(45);
-            if (!first || !second) throw new Error("the view placed no train");
-            const evidence = [first, second].map((s) => {
+            type Handle = {
+                scrub(playhead: number): number | null;
+                setPlaying(playing: boolean): boolean | null;
+                setRate(rate: number): number | null;
+            };
+            const control = (action: string, value: number | boolean) =>
+                page.evaluate(
+                    ({ action, value }) => {
+                        const handle = (globalThis as unknown as { __kexeditPath: Handle }).__kexeditPath;
+                        if (action === "scrub") return handle.scrub(value as number);
+                        if (action === "playing") return handle.setPlaying(value as boolean);
+                        return handle.setRate(value as number);
+                    },
+                    { action, value },
+                );
+            const checked = (s: Sample) => {
                 const trajectory: Trajectory = {
                     header: {
                         version: 1,
@@ -153,19 +176,51 @@ check(
                     },
                     ticks: Float32Array.from(s.ticks),
                 };
-                // the tick is derived here from elapsed and rate, independent of the view's read
-                const k = Math.floor(s.elapsed * s.rate + 1e-6) % s.count;
+                const k = Math.min(s.count - 1, Math.max(0, Math.floor(s.playhead) + Math.floor(s.offset)));
                 const want = tickAt(trajectory, k);
-                const exp = [...want.position, ...want.rotation];
                 const got = [...s.pos, ...s.rot];
-                const worst = Math.max(...got.map((v, i) => Math.abs(v - exp[i])));
-                return { elapsed: s.elapsed, k, worst, got, exp };
-            });
-            const moved = evidence[0].k !== evidence[1].k && evidence[0].elapsed < evidence[1].elapsed;
-            const distinct = first.ticks.length === first.count * TICK_FLOATS && first.count > 100;
-            const travels = Math.abs(first.ticks[(first.count - 1) * TICK_FLOATS + TICK_LANES.distance]) > 1;
-            if (!moved || !distinct || !travels || evidence.some((e) => !(e.elapsed > 0 && e.worst <= 1e-6)) || errors.length) {
-                throw new Error(`train placement failed: ${JSON.stringify({ moved, distinct, travels, evidence, errors })}`);
+                const exp = [...want.position, ...want.rotation];
+                return { ...s, k, worst: Math.max(...got.map((v, i) => Math.abs(v - exp[i]))) };
+            };
+
+            await control("playing", false);
+            await control("scrub", 10.25);
+            const scrubbed = checked((await sample(2))!);
+            await control("setRate", 1);
+            await control("playing", true);
+            const rateOne = checked((await sample(30))!);
+            await control("playing", false);
+            const pauseStart = checked((await sample(2))!);
+            const paused = checked((await sample(20))!);
+            await control("scrub", 20.5);
+            await control("setRate", 2);
+            await control("playing", true);
+            const rateTwo = checked((await sample(30))!);
+            const distinct = scrubbed.ticks.length === scrubbed.count * TICK_FLOATS && scrubbed.count > 100;
+            const travels = Math.abs(scrubbed.ticks[(scrubbed.count - 1) * TICK_FLOATS + TICK_LANES.distance]) > 1;
+            const movedAtOne = rateOne.playhead > scrubbed.playhead;
+            const heldWhilePaused = paused.playhead === pauseStart.playhead && paused.k === pauseStart.k;
+            const movedAtTwo = rateTwo.playhead > 20.5;
+            const rateScales = rateTwo.playhead - 20.5 > (rateOne.playhead - scrubbed.playhead) * 1.5;
+            if (
+                scrubbed.k !== 10 ||
+                !movedAtOne ||
+                !heldWhilePaused ||
+                !movedAtTwo ||
+                !rateScales ||
+                !distinct ||
+                !travels ||
+                [scrubbed, rateOne, paused, rateTwo].some((e) => e.worst > 1e-6) ||
+                errors.length
+            ) {
+                throw new Error(
+                    `train placement failed: ${JSON.stringify({
+                        samples: [scrubbed, rateOne, paused, rateTwo].map(({ ticks, pos, rot, ...sample }) => sample),
+                        distinct,
+                        travels,
+                        errors,
+                    })}`,
+                );
             }
         } finally {
             await browser?.close();

@@ -22,6 +22,7 @@
         { "file": "src/trajectory/resample.test.ts" },
         { "file": "src/trajectory/ride.test.ts" },
         { "file": "src/trajectory/train.test.ts" },
+        { "file": "src/trajectory/transport.test.ts" },
         { "file": "src/trajectory/upload.test.ts" }
     ]
 }
