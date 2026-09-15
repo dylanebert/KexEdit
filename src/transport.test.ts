@@ -116,6 +116,14 @@ check(
                     });
                     return { accepted: surface.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
                 }, options);
+            await full.evaluate(() => new Promise<void>((done) => {
+                let frames = 0;
+                const settle = () => {
+                    if (frames++ >= 15) done();
+                    else requestAnimationFrame(settle);
+                };
+                settle();
+            }));
             const initialView = await readView();
             const initialFit = await full.evaluate(() => {
                 const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
@@ -124,13 +132,26 @@ check(
                 const bounds = surface.getBoundingClientRect();
                 const duration = ride.header.length / ride.header.rate;
                 const x = (time: number) => bounds.left + ((time - Number(surface.dataset.viewStart)) * bounds.width) / Number(surface.dataset.viewSpan);
-                return { width: bounds.width, duration, zero: x(0) - bounds.left, end: bounds.right - x(duration), start: Number(surface.dataset.viewStart) };
+                const postEnd = document.querySelector<HTMLElement>('[data-region="post-end"]')?.getBoundingClientRect();
+                const postStyle = document.querySelector<HTMLElement>('[data-region="post-end"]');
+                return {
+                    width: bounds.width,
+                    duration,
+                    zero: x(0) - bounds.left,
+                    end: bounds.right - x(duration),
+                    start: Number(surface.dataset.viewStart),
+                    postEnd: postEnd ? { left: postEnd.left, right: postEnd.right, top: postEnd.top, bottom: postEnd.bottom } : null,
+                    postColor: postStyle ? getComputedStyle(postStyle).backgroundColor : "",
+                    postZ: postStyle ? getComputedStyle(postStyle).zIndex : "",
+                    surfaceTop: bounds.top,
+                    surfaceBottom: bounds.bottom,
+                };
             });
-            if (!(initialFit.width > 96 && initialView.start < 0 && initialView.end > initialFit.duration && initialView.span < 2 * initialFit.duration)) {
-                throw new Error(`initial fit did not expose padded authored bounds: ${JSON.stringify({ initialView, initialFit })}`);
+            if (!(initialFit.width > 96 && initialView.start === 0 && initialView.end > initialFit.duration && initialView.span < 2 * initialFit.duration)) {
+                throw new Error(`initial fit did not expose one-sided padded authored bounds: ${JSON.stringify({ initialView, initialFit })}`);
             }
-            if (Math.abs(initialFit.zero - 24) > 1e-6 || Math.abs(initialFit.end - 24) > 1e-6) {
-                throw new Error(`initial fit padding was not 24 CSS px: ${JSON.stringify(initialFit)}`);
+            if (Math.abs(initialFit.zero) > 1e-6 || Math.abs(initialFit.end - 24) > 1e-6 || !initialFit.postEnd || Math.abs(initialFit.postEnd.left - (initialFit.postEnd.right - 24)) > 1e-6 || Math.abs(initialFit.postEnd.right - (initialFit.postEnd.left + 24)) > 1e-6 || Math.abs(initialFit.postEnd.top - initialFit.surfaceTop) > 1 || Math.abs(initialFit.postEnd.bottom - initialFit.surfaceBottom) > 1 || initialFit.postColor !== "rgba(20, 22, 23, 0.24)" || initialFit.postZ !== "0") {
+                throw new Error(`initial fit did not expose the 24px post-end underlay: ${JSON.stringify(initialFit)}`);
             }
             const zoomWheel = await dispatchWheel({ deltaY: -40, ctrlKey: true });
             const zoomedView = await readView();
@@ -255,8 +276,8 @@ check(
                 const x = (time: number) => bounds.left + ((time - Number(surface.dataset.viewStart)) * bounds.width) / Number(surface.dataset.viewSpan);
                 return { width: bounds.width, duration, zero: x(0) - bounds.left, end: bounds.right - x(duration) };
             });
-            if (!(framed.start < 0 && framed.end > framedFit.duration && framed.span < 2 * framedFit.duration) || Math.abs(framedFit.zero - 24) > 1e-6 || Math.abs(framedFit.end - 24) > 1e-6 || afterFramePlayhead.transport.playhead !== beforeFramePlayhead) {
-                throw new Error(`F did not frame padded authored time without scrubbing: ${JSON.stringify({ framed, framedFit, beforeFramePlayhead, afterFramePlayhead })}`);
+            if (!(framed.start === 0 && framed.end > framedFit.duration && framed.span < 2 * framedFit.duration) || Math.abs(framedFit.zero) > 1e-6 || Math.abs(framedFit.end - 24) > 1e-6 || afterFramePlayhead.transport.playhead !== beforeFramePlayhead) {
+                throw new Error(`F did not frame one-sided padded authored time without scrubbing: ${JSON.stringify({ framed, framedFit, beforeFramePlayhead, afterFramePlayhead })}`);
             }
             const outwardBefore = await readView();
             await dispatchWheel({ deltaY: 10_000 });
@@ -281,8 +302,8 @@ check(
                 const span = Number(surface.dataset.viewSpan);
                 return { width: bounds.width, start, span, zero: ((0 - start) * bounds.width) / span, end: bounds.width - ((duration - start) * bounds.width) / span };
             });
-            if (fitResizeAfter.width === fitResizeBefore.width || fitResizeAfter.start === fitResizeBefore.start || Math.abs(fitResizeAfter.zero - 24) > 1e-6 || Math.abs(fitResizeAfter.end - 24) > 1e-6) {
-                throw new Error(`fit resize did not recompute 24px frame: ${JSON.stringify({ fitResizeBefore, fitResizeAfter })}`);
+            if (fitResizeAfter.width === fitResizeBefore.width || fitResizeAfter.span === fitResizeBefore.span || fitResizeAfter.start !== 0 || Math.abs(fitResizeAfter.zero) > 1e-6 || Math.abs(fitResizeAfter.end - 24) > 1e-6) {
+                throw new Error(`fit resize did not recompute one-sided 24px frame: ${JSON.stringify({ fitResizeBefore, fitResizeAfter })}`);
             }
             const manualBefore = await dispatchWheel({ deltaY: -30 });
             if (manualBefore.accepted || !manualBefore.defaultPrevented) throw new Error("manual resize setup wheel was not handled");
@@ -301,27 +322,35 @@ check(
             await full.keyboard.press("f");
             for (let index = 0; index < 20; index += 1) await dispatchWheel({ deltaY: 10_000 });
             const maximumView = await readView();
+            const maximumRegion = await full.evaluate(() => {
+                const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
+                const postEnd = document.querySelector<HTMLElement>('[data-region="post-end"]');
+                if (!surface || !postEnd) throw new Error("maximum post-end underlay is missing");
+                const surfaceBounds = surface.getBoundingClientRect();
+                const postBounds = postEnd.getBoundingClientRect();
+                return { surfaceLeft: surfaceBounds.left, surfaceWidth: surfaceBounds.width, postLeft: postBounds.left, postWidth: postBounds.width };
+            });
             const maximumAgain = await dispatchWheel({ deltaY: 10_000 }).then(readView);
-            if (Math.abs(maximumView.span - 2 * fullDuration) > 1e-9 || JSON.stringify(maximumAgain) !== JSON.stringify(maximumView)) {
-                throw new Error(`maximum zoom did not stop at exactly 2x duration: ${JSON.stringify({ maximumView, maximumAgain, fullDuration })}`);
+            if (Math.abs(maximumView.span - 2 * fullDuration) > 1e-9 || maximumView.start !== 0 || Math.abs(maximumAgain.span - maximumView.span) > 1e-9 || Math.abs(maximumAgain.start - maximumView.start) > 1e-9 || Math.abs(maximumRegion.postLeft - (maximumRegion.surfaceLeft + maximumRegion.surfaceWidth / 2)) > 1 || Math.abs(maximumRegion.postWidth - maximumRegion.surfaceWidth / 2) > 1) {
+                throw new Error(`maximum zoom or post-end region was not exact: ${JSON.stringify({ maximumView, maximumAgain, maximumRegion, fullDuration })}`);
             }
             await dispatchWheel({ deltaY: -1_000_000, shiftKey: true });
             const leftBlank = await readView();
             await dispatchWheel({ deltaY: 1_000_000, shiftKey: true });
             const rightBlank = await readView();
-            if (Math.abs(leftBlank.start + leftBlank.span / 2) > 1e-9 || Math.abs(rightBlank.start - (fullDuration - rightBlank.span / 2)) > 1e-9) {
-                throw new Error(`legal blank pan bounds failed: ${JSON.stringify({ leftBlank, rightBlank, fullDuration })}`);
+            if (Math.abs(leftBlank.start) > 1e-9 || Math.abs(rightBlank.start - (2 * fullDuration - rightBlank.span)) > 1e-9 || leftBlank.start < 0 || rightBlank.end > 2 * fullDuration) {
+                throw new Error(`legal post-end pan bounds failed: ${JSON.stringify({ leftBlank, rightBlank, fullDuration })}`);
+            }
+            const maximumRuler = await ruler.boundingBox();
+            if (!maximumRuler) throw new Error("maximum ruler has no bounds");
+            await full.mouse.click(maximumRuler.x + 1, maximumRuler.y + maximumRuler.height / 2);
+            const leftScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            await full.mouse.click(maximumRuler.x + maximumRuler.width * 0.75, maximumRuler.y + maximumRuler.height / 2);
+            const postEndScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
+            if (leftScrub.transport.playhead < 0 || leftScrub.transport.playhead >= leftScrub.header.length || postEndScrub.transport.playhead !== postEndScrub.header.length) {
+                throw new Error(`post-end scrub escaped authored ticks: ${JSON.stringify({ leftScrub, postEndScrub })}`);
             }
             await full.keyboard.press("f");
-            const blankRuler = await ruler.boundingBox();
-            if (!blankRuler) throw new Error("blank ruler has no bounds");
-            await full.mouse.click(blankRuler.x + 1, blankRuler.y + blankRuler.height / 2);
-            const leftScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
-            await full.mouse.click(blankRuler.x + blankRuler.width - 1, blankRuler.y + blankRuler.height / 2);
-            const rightScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
-            if (leftScrub.transport.playhead !== 0 || rightScrub.transport.playhead !== rightScrub.header.length) {
-                throw new Error(`blank scrub escaped authored ticks: ${JSON.stringify({ leftScrub, rightScrub })}`);
-            }
 
             const typography = await full.evaluate(() => {
                 const transport = document.querySelector<HTMLElement>(".transport");
@@ -519,6 +548,7 @@ check(
                 const seam = status ? getComputedStyle(status).borderTopStyle : "";
                 return {
                     deadTail: document.querySelectorAll('[data-region="dead-tail"]').length,
+                    postEnd: document.querySelectorAll('[data-region="post-end"]').length,
                     endMark: document.querySelectorAll('[data-region="end-mark"]').length,
                     statusEmpty: Boolean(status && status.childElementCount === 0 && status.textContent?.trim() === "" && status.getBoundingClientRect().height === 32 && seam === "solid"),
                     gutters: gutters.map((gutter) => ({ width: gutter.getBoundingClientRect().width, right: gutter.getBoundingClientRect().right, empty: gutter.childElementCount === 0, text: gutter.textContent?.trim() ?? "", interactive: Boolean(gutter.querySelector("button,input,output")) })),
@@ -538,21 +568,31 @@ check(
             const held = (await stalled.evaluate(() => (globalThis as any).__kexeditPath.train())) as TrainSample;
             const stalledGeometry = await stalled.evaluate(() => {
                 const tail = document.querySelector('[data-region="dead-tail"]')?.getBoundingClientRect();
+                const postEnd = document.querySelector('[data-region="post-end"]')?.getBoundingClientRect();
                 const mark = document.querySelector('[data-region="end-mark"]')?.getBoundingClientRect();
                 const playhead = document.querySelector('[data-region="playhead"]')?.getBoundingClientRect();
                 const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
                 const ride = (globalThis as any).__kexeditPath.ride();
-                if (!tail || !mark || !playhead || !surface || !ride) return null;
+                if (!tail || !postEnd || !mark || !playhead || !surface || !ride) return null;
                 const bounds = surface.getBoundingClientRect();
+                const postStyle = getComputedStyle(document.querySelector<HTMLElement>('[data-region="post-end"]')!);
+                const tailElement = document.querySelector<HTMLElement>('[data-region="dead-tail"]')!;
+                const tailStyle = getComputedStyle(tailElement);
                 const start = Number(surface.dataset.viewStart);
                 const span = Number(surface.dataset.viewSpan);
                 const duration = ride.header.length / ride.header.rate;
                 return {
                     tailStart: tail.left,
                     tailEnd: tail.right,
+                    postEndStart: postEnd.left,
+                    postEndTop: postEnd.top,
+                    postEndBottom: postEnd.bottom,
                     authoredEnd: bounds.left + ((duration - start) * bounds.width) / span,
                     markCenter: mark.left + mark.width / 2,
                     playheadCenter: playhead.left + playhead.width / 2,
+                    postEndColor: postStyle.backgroundColor,
+                    postEndZ: postStyle.zIndex,
+                    tailColor: tailStyle.backgroundColor,
                     blankTick: [...document.querySelectorAll<HTMLElement>('[data-region="ruler"] [data-tick-seconds]')].some((tick) => Number(tick.dataset.tickSeconds) > duration),
                 };
             });
@@ -585,6 +625,7 @@ check(
                 !playheadGeometry.lineAtLaneBottom ||
                 playheadGeometry.playheadLeft <= beforeScrubX ||
                 fullStates.deadTail !== 0 ||
+                fullStates.postEnd !== 1 ||
                 fullStates.endMark !== 0 ||
                 !fullStates.statusEmpty ||
                 fullStates.obsolete ||
@@ -612,6 +653,12 @@ check(
                 !stalledGeometry ||
                 Math.abs(stalledGeometry.tailStart - stalledGeometry.markCenter) > 1 ||
                 Math.abs(stalledGeometry.tailEnd - stalledGeometry.authoredEnd) > 1 ||
+                Math.abs(stalledGeometry.postEndStart - stalledGeometry.authoredEnd) > 1 ||
+                Math.abs(stalledGeometry.postEndTop - (await stalled.locator('[data-region="timeline-surface"]').boundingBox())!.y) > 1 ||
+                Math.abs(stalledGeometry.postEndBottom - ((await stalled.locator('[data-region="timeline-surface"]').boundingBox())!.y + (await stalled.locator('[data-region="timeline-surface"]').boundingBox())!.height)) > 1 ||
+                stalledGeometry.postEndColor !== "rgba(20, 22, 23, 0.24)" ||
+                stalledGeometry.postEndZ !== "0" ||
+                stalledGeometry.tailColor !== "rgba(20, 22, 23, 0.42)" ||
                 !stalledGeometry.blankTick ||
                 stalledGeometry.playheadCenter <= stalledGeometry.markCenter ||
                 errors.length
