@@ -121,7 +121,8 @@ export function createRideEntity(state: State, source: RideSource): number {
     Transport.playhead.set(eid, 0);
     Transport.playing.set(eid, 0);
     Transport.rate.set(eid, 1);
-    Transport.loop.set(eid, 0);
+    // Reserved compatibility data: playback is unconditionally looping in the timeline surface.
+    Transport.loop.set(eid, 1);
     rides.set(eid, ride);
     if (refusal) refusals.set(eid, refusal);
     return eid;
