@@ -11,6 +11,10 @@ export interface TimelineTick {
     label: string;
 }
 
+export const FIT_PADDING_PX = 24;
+export const MAX_SPAN_RATIO = 2;
+export const EDGE_OVERSCROLL_FRACTION = 0.5;
+
 const finitePositive = (value: number, name: string): void => {
     if (!(Number.isFinite(value) && value > 0)) throw new Error(`${name}: expected finite > 0, got ${value}`);
 };
@@ -24,14 +28,20 @@ function validateViewport(view: TimelineViewport): void {
     }
 }
 
-/** Construct the bounded authored domain, initially showing the whole ride. */
-export function frameAll(duration: number, headerRate: number): TimelineViewport {
+/** Fit the whole authored range inside a fixed screen-space inset. */
+export function frameAll(duration: number, headerRate: number, width: number): TimelineViewport {
     finitePositive(duration, "timeline duration");
     finitePositive(headerRate, "timeline header rate");
-    return { duration, minSpan: Math.min(duration, 1 / headerRate), start: 0, span: duration };
+    validateWidth(width);
+    if (!(width > 4 * FIT_PADDING_PX)) {
+        throw new Error(`timeline width: expected > ${4 * FIT_PADDING_PX}, got ${width}`);
+    }
+    const innerWidth = width - 2 * FIT_PADDING_PX;
+    const span = (duration * width) / innerWidth;
+    return { duration, minSpan: Math.min(duration, 1 / headerRate), start: (duration - span) / 2, span };
 }
 
-/** Preserve an existing interval when the authored domain changes, without creating overscroll. */
+/** Preserve an existing interval when the authored domain changes, applying the current legal bounds. */
 export function updateDomain(view: TimelineViewport, duration: number, headerRate: number): TimelineViewport {
     finitePositive(duration, "timeline duration");
     finitePositive(headerRate, "timeline header rate");
@@ -42,8 +52,8 @@ export function updateDomain(view: TimelineViewport, duration: number, headerRat
 /** Apply the load-bearing span-then-start clamp order. */
 export function clampViewport(view: TimelineViewport): TimelineViewport {
     validateViewport(view);
-    const span = Math.min(view.duration, Math.max(view.minSpan, view.span));
-    const start = Math.min(view.duration - span, Math.max(0, view.start));
+    const span = Math.min(view.duration * MAX_SPAN_RATIO, Math.max(view.minSpan, view.span));
+    const start = Math.min(view.duration - span * EDGE_OVERSCROLL_FRACTION, Math.max(-span * EDGE_OVERSCROLL_FRACTION, view.start));
     return { ...view, start, span };
 }
 
@@ -82,7 +92,7 @@ export function zoomAtPixel(view: TimelineViewport, width: number, pixel: number
     if (!Number.isFinite(pixel)) throw new Error(`timeline anchor: expected finite pixel, got ${pixel}`);
     finitePositive(ratio, "timeline zoom ratio");
     const boundedPixel = Math.min(width, Math.max(0, pixel));
-    const newSpan = Math.min(view.duration, Math.max(view.minSpan, view.span * ratio));
+    const newSpan = Math.min(view.duration * MAX_SPAN_RATIO, Math.max(view.minSpan, view.span * ratio));
     if (newSpan === view.span) return view;
     const anchor = pixelToTime(view, width, boundedPixel);
     const fraction = boundedPixel / width;
