@@ -3,6 +3,8 @@
     --pane-ground: #1d2021;
     --shell-ground: var(--pane-ground);
     --pane-border: #3c3836;
+    --timeline-dark-rgb: 20 22 23;
+    --timeline-post-end-ground: rgb(var(--timeline-dark-rgb) / 24%);
     --shell-context-width: clamp(16rem, 18vw, 24rem);
     --shell-timeline-height: clamp(12rem, 18vh, 18rem);
     --shell-status-height: 2rem;
@@ -275,6 +277,15 @@ canvas {
     cursor: grabbing;
 }
 
+.timeline-post-end {
+    position: absolute;
+    z-index: 0;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+    background: var(--timeline-post-end-ground);
+}
+
 .timeline-ruler {
     position: relative;
     z-index: 1;
@@ -321,6 +332,7 @@ canvas {
 
 .timeline-lanes {
     position: relative;
+    z-index: 1;
     display: grid;
     grid-template-rows: repeat(4, minmax(0, 1fr));
     min-width: 0;
@@ -370,7 +382,7 @@ canvas {
 }
 
 .timeline-state-unsolved {
-    background: rgb(20 22 23 / 42%);
+    background: rgb(var(--timeline-dark-rgb) / 42%);
 }
 
 .timeline-state-offending {

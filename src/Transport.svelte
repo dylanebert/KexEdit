@@ -2,10 +2,12 @@
     import { Pause, Play } from "@lucide/svelte";
     import { transport, type TransportSnapshot } from "./path/view";
     import {
+        FIT_PADDING_PX,
         frameAll,
         panByPixels,
         pixelToTime,
         timeToPixel,
+        timelineDomainEnd,
         updateDomain,
         visibleTicks,
         wheelZoomRatio,
@@ -46,7 +48,7 @@
     $effect(() => {
         const next = snapshot;
         const width = surfaceWidth;
-        if (!next || !(width > 0)) return;
+        if (!next || !(width > 2 * FIT_PADDING_PX)) return;
         const duration = next.length / next.headerRate;
         const minSpan = Math.min(duration, 1 / next.headerRate);
         if (!viewport) {
@@ -298,6 +300,13 @@
             onpointercancel={endGesture}
             onauxclick={handleAuxClick}
         >
+        {#if snapshot && viewport && intervalStyle(viewport.duration, timelineDomainEnd(viewport.duration))}
+            <div
+                class="timeline-post-end"
+                data-region="post-end"
+                style={intervalStyle(viewport.duration, timelineDomainEnd(viewport.duration)) ?? ""}
+            ></div>
+        {/if}
         <div
             class="timeline-ruler"
             data-region="ruler"
