@@ -13,7 +13,7 @@
         "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#70770cfc34d82fdd19cb705d8753bb6f093748d6",
+        "@dylanebert/shallot": "github:dylanebert/shallot#0664218f465224397b80aeb604b51178ac71cfb2",
         "@dylanebert/shallot-grid": "^0.1.2",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
