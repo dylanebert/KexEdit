@@ -148,7 +148,7 @@ check(
 
 check(
     "the shader's struct layouts come from the typegpu schemas",
-    { claim: "the path shader hand-authors a WGSL layout that can drift from its schema" },
+    { claim: "the resolved path shader's Pose field order or uniform size departs from its typegpu schema" },
     async () => {
         const { PATH_SHADER, PathUniform, UNIFORM_FLOATS } = await import("./shader");
         const body = /struct\s+Pose\s*\{([^}]*)\}/.exec(PATH_SHADER)?.[1];

@@ -6,8 +6,8 @@ import { PATH_COLORS } from "./view";
 type Probe = { samples: number; drawn: boolean; count: number };
 
 check(
-    "the path view uploads its sRGB bytes decoded to linear",
-    { claim: "the path view hands sRGB byte fractions to the linear scene target" },
+    "the path view's derived normal colour presents as #6b9d65",
+    { claim: "the path normal tick presents a colour other than #6b9d65" },
     () => {
         // The normal is derived, not a byte: the Gruvbox spectrum between neutral green and aqua read at 142°, #6b9d65.
         const normal = PATH_COLORS.normal;
