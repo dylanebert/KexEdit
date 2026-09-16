@@ -3,10 +3,10 @@ name: test-surface
 on:
   push:
     branches:
-      - main
+      - 1.0-beta
   pull_request:
     branches:
-      - main
+      - 1.0-beta
 
 concurrency:
   group: test-surface-${{ github.event.pull_request.number || github.sha }}
