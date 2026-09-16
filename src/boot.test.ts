@@ -200,7 +200,7 @@ check(
                 finalIdentity(temporal.inProgress.transform) ||
                 temporal.inProgress.loadingPresent ||
                 !temporal.inProgress.entranceArmed ||
-                temporal.final.length === 0 ||
+                temporal.final.length !== 4 ||
                 temporal.final.some((pane) => pane.opacity !== 1 || !finalIdentity(pane.transform))
             ) {
                 throw new Error(`temporal pane entrance handoff failed: ${JSON.stringify(temporal)}`);
@@ -315,7 +315,7 @@ check(
                 const identity = (transform: string) =>
                     transform === "none" || transform.replaceAll(" ", "") === "matrix(1,0,0,1,0,0)";
                 return {
-                    complete: elements.length > 0 && elements.every((element) => {
+                    complete: elements.length === 4 && elements.every((element) => {
                         const computed = getComputedStyle(element);
                         return computed.opacity === "1" && identity(computed.transform);
                     }),

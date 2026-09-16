@@ -7,7 +7,7 @@ type Probe = { samples: number; drawn: boolean; count: number };
 
 check(
     "the path view's derived normal colour presents as #6b9d65",
-    { claim: "the path normal tick presents a colour other than #6b9d65" },
+    { claim: "the path normal colour constant is not #6b9d65" },
     () => {
         // The normal is derived, not a byte: the Gruvbox spectrum between neutral green and aqua read at 142°, #6b9d65.
         const normal = PATH_COLORS.normal;
