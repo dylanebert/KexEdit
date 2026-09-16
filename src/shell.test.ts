@@ -74,7 +74,6 @@ check(
     "the compiled shell preserves four regions, one view canvas, and a quiet layout",
     {
         claim: "the shell drops a region, gives the view more than one canvas, or regresses its quiet layout",
-        budget: 250,
     },
     () => {
         const app = read("src/App.svelte");

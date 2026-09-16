@@ -21,7 +21,7 @@ const DIR = import.meta.dir;
 
 check(
     "the pose stride is the schema size",
-    { claim: "the path pose stride drifts from its typegpu schema", budget: 250 },
+    { claim: "the path pose stride drifts from its typegpu schema" },
     () => {
         if (d.sizeOf(Pose) !== 32) throw new Error(`Pose schema is ${d.sizeOf(Pose)} bytes`);
         if (POSE_BYTES !== d.sizeOf(Pose)) throw new Error(`POSE_BYTES ${POSE_BYTES} != schema`);
@@ -71,7 +71,7 @@ function refuses(label: string, field: string, run: () => unknown): void {
 
 check(
     "readPath refuses a wrong version and malformed streams",
-    { claim: "readPath admits a path of the wrong version or shape", budget: 250 },
+    { claim: "readPath admits a path of the wrong version or shape" },
     () => {
         readPath(helix);
         refuses("version", "version", () =>
@@ -93,7 +93,7 @@ check(
 
 check(
     "aux slots round-trip through name, row and lane",
-    { claim: "the path aux map loses a slot between name, row and lane", budget: 250 },
+    { claim: "the path aux map loses a slot between name, row and lane" },
     () => {
         const count = helix.header.count;
         for (const slots of [1, 4, 5]) {
@@ -127,7 +127,7 @@ check(
 
 check(
     "an empty aux map yields no aux stream",
-    { claim: "an empty path aux map still allocates an aux stream", budget: 250 },
+    { claim: "an empty path aux map still allocates an aux stream" },
     () => {
         const rows = [[], []];
         const aux = packAux([], rows);
@@ -141,7 +141,7 @@ check(
 
 check(
     "a stream that is not a Float32Array is refused by name",
-    { claim: "a path whose streams are not Float32Array reaches a consumer sized by byteLength", budget: 250 },
+    { claim: "a path whose streams are not Float32Array reaches a consumer sized by byteLength" },
     () => {
         const floats = Array.from(helix.poses);
         refuses("Float64Array poses", "poses", () =>
@@ -159,7 +159,7 @@ check(
 
 check(
     "the shader's struct layouts come from the typegpu schemas",
-    { claim: "the path shader hand-authors a WGSL layout that can drift from its schema", budget: 250 },
+    { claim: "the path shader hand-authors a WGSL layout that can drift from its schema" },
     async () => {
         for (const file of readdirSync(DIR).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))) {
             const text = readFileSync(resolve(DIR, file), "utf8");

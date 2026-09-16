@@ -78,7 +78,10 @@ const SUBSTEP = 1e-4;
 
 check(
     "the march converges to the RK4 oracle: exact on constant ω, order 2 on varying intent",
-    { claim: "kexedit-integrator-convergence", budget: 250 },
+    {
+        claim: "the march departs from the RK4 solution on constant ω or loses second-order convergence on varying intent",
+        budget: 200,
+    },
     () => {
         const initial: State = {
             position: [3, 1, -2],

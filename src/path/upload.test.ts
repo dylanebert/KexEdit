@@ -20,7 +20,7 @@ function recorder() {
 
 check(
     "path upload bytes equal the fixture streams on setPath and zero otherwise",
-    { claim: "the path view uploads more or less than one whole write per invalidated stream", budget: 250 },
+    { claim: "the path view uploads more or less than one whole write per invalidated stream" },
     () => {
         const names = ["velocity", "gForce", "heart", "section", "roll"];
         const rows = Array.from({ length: helix.header.count }, (_, i) => names.map((_, s) => i + s));
@@ -79,7 +79,7 @@ check(
 
 check(
     "caller mutation after setPath reaches neither the upload nor the live header",
-    { claim: "a validated path is mutated by its caller after setPath and the view draws the mutation", budget: 250 },
+    { claim: "a validated path is mutated by its caller after setPath and the view draws the mutation" },
     () => {
         const caller: Path = { header: { ...helix.header, aux: [] }, poses: helix.poses.slice() };
         const original = helix.poses.slice();
@@ -108,7 +108,7 @@ check(
 
 check(
     "reset clears the live and pending path",
-    { claim: "the path view reports a disposed path's count", budget: 250 },
+    { claim: "the path view reports a disposed path's count" },
     () => {
         const uploads = pathUploads();
         uploads.set(helix);

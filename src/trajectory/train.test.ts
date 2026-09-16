@@ -1,7 +1,5 @@
-import { resolve } from "node:path";
 import { check } from "@dylanebert/shallot/harness/check";
-import launch from "@dylanebert/shallot/harness/browser" with { type: "json" };
-import { chromium } from "playwright";
+import { openPage, waitForView, withApp } from "../browser.fixture";
 import type { Vec3 } from "../path/path";
 import { createRide } from "./execution";
 import { constants, helix, hill, RATE } from "./fixtures.fixture";
@@ -9,11 +7,9 @@ import { march } from "./integrator";
 import { clockTick, initialState, intentTable, placeTrain } from "./train";
 import { TICK_FLOATS, TICK_LANES, tickAt, type Trajectory } from "./trajectory";
 
-const ROOT = resolve(import.meta.dir, "../..");
-
 check(
     "the view places the train at the trajectory tick the scheduler clock names",
-    { claim: "the train pose for scheduler time k / rate is not the trajectory's tick k", budget: 250 },
+    { claim: "the train pose for scheduler time k / rate is not the trajectory's tick k" },
     () => {
         for (const fixture of [helix, hill]) {
             const { rate, count } = fixture.header;
@@ -75,28 +71,6 @@ check(
     },
 );
 
-async function waitForServer(url: string, server: ReturnType<typeof Bun.spawn>): Promise<void> {
-    const deadline = performance.now() + 15_000;
-    while (performance.now() < deadline) {
-        if (server.exitCode !== null) throw new Error(`vite exited with ${server.exitCode}`);
-        try {
-            const response = await fetch(url, { signal: AbortSignal.timeout(500) });
-            if (response.ok) return;
-        } catch {
-            // Vite is still starting.
-        }
-        await Bun.sleep(50);
-    }
-    throw new Error(`timed out waiting for Vite at ${url}`);
-}
-
-function freePort(): number {
-    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    const port = listener.port;
-    listener.stop();
-    return port;
-}
-
 type Sample = {
     elapsed: number;
     playhead: number;
@@ -118,31 +92,12 @@ check(
         size: "integration",
         requires: ["chromium"],
         subject: ["src/trajectory/transport.ts", "src/trajectory/execution.ts", "src/path/view.ts", "src/View.svelte"],
-        budget: 20_000,
     },
-    async () => {
-        const port = freePort();
-        const url = `http://127.0.0.1:${port}/`;
-        const server = Bun.spawn(
-            [process.execPath, "run", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
-            { cwd: ROOT, stdout: "ignore", stderr: "ignore" },
-        );
-        let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-        const errors: string[] = [];
-        try {
-            await waitForServer(url, server);
-            browser = await chromium.launch({ headless: true, ...launch });
-            const page = await browser.newPage({ viewport: { width: 1563, height: 944 } });
-            page.on("pageerror", (error) => errors.push(error.message));
-            page.on("console", (message) => {
-                if (message.type() === "error") errors.push(message.text());
-            });
-            await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
-            await page.waitForFunction(
-                () => window.__harness?.ready === true && "__kexeditPath" in globalThis,
-                undefined,
-                { timeout: 15_000 },
-            );
+    () =>
+        withApp(async ({ url, browser }) => {
+            const errors: string[] = [];
+            const page = await openPage(browser, url, errors);
+            await waitForView(page);
             const sample = (frames: number) =>
                 page.evaluate(async (n) => {
                     for (let i = 0; i < n; i++) await new Promise<void>((done) => requestAnimationFrame(() => done()));
@@ -222,10 +177,5 @@ check(
                     })}`,
                 );
             }
-        } finally {
-            await browser?.close();
-            server.kill();
-            await server.exited;
-        }
-    },
+        }),
 );

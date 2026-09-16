@@ -63,7 +63,7 @@ const nextUp = (x: number) => {
 
 check(
     "an edit re-marched from the last boundary equals the full march byte for byte",
-    { claim: "an incremental restart from a chunk boundary diverges from the full march of the same inputs", budget: 250 },
+    { claim: "an incremental restart from a chunk boundary diverges from the full march of the same inputs" },
     () => {
         // interior, boundary-touching (tick k on the grid needs the boundary before it), and row 0
         const cases = [
@@ -110,7 +110,7 @@ check(
 
 check(
     "the wasm march and resample agree with integrator.ts and resample.ts",
-    { claim: "the wasm march or resample kernel departs from the TypeScript integrator or resampler", budget: 250 },
+    { claim: "the wasm march or resample kernel departs from the TypeScript integrator or resampler" },
     () => {
         const r = ride(baseInputs);
         const bounds = r.boundaries();
@@ -147,7 +147,7 @@ check(
 
 check(
     "authored length capacity admits exactly length plus one ticks",
-    { claim: "ride capacity allocates from an inferred or one-row-short length", budget: 250 },
+    { claim: "ride capacity allocates from an inferred or one-row-short length" },
     () => {
         const length = CHUNK - 1;
         const chunks = Math.ceil((length + 1) / CHUNK);
@@ -167,7 +167,7 @@ check(
 
 check(
     "readTrajectory refuses an end tick that disagrees with the emitted count",
-    { claim: "a trajectory can publish an end tick other than count minus one", budget: 250 },
+    { claim: "a trajectory can publish an end tick other than count minus one" },
     () => {
         const trajectory = ride(baseInputs).trajectory();
         let refused = false;
@@ -182,7 +182,7 @@ check(
 
 check(
     "a pass writes the back path buffer, publishes it with the next generation and names its dirty chunks",
-    { claim: "a pass overwrites the path a reader holds, skips the generation, or uploads outside its dirty chunks", budget: 250 },
+    { claim: "a pass overwrites the path a reader holds, skips the generation, or uploads outside its dirty chunks" },
     () => {
         const r = ride(baseInputs);
         const first = r.path();
