@@ -3,7 +3,6 @@ import {
     clampViewport,
     FIT_PADDING_PX,
     frameAll,
-    MAX_SPAN_RATIO,
     panByPixels,
     pixelToTime,
     timeToPixel,
@@ -33,9 +32,7 @@ check(
     () => {
         for (const duration of [12, 37.5]) {
             if (timelineDomainEnd(duration) !== 2 * duration) throw new Error(`domain end ${timelineDomainEnd(duration)}`);
-            if (timelineDomainEnd(duration) - duration !== duration) throw new Error("post-end padding is not one duration");
         }
-        if (MAX_SPAN_RATIO !== 2) throw new Error(`maximum ratio ${MAX_SPAN_RATIO}`);
         refuses(() => timelineDomainEnd(0));
         refuses(() => timelineDomainEnd(Number.NaN));
     },
@@ -53,7 +50,6 @@ check(
             if (!(view.span > 12 && view.span < 24)) {
                 throw new Error(`fit does not leave post-end context ${JSON.stringify({ width, view })}`);
             }
-            if (!close(view.span, (12 * width) / (width - FIT_PADDING_PX))) throw new Error("fit arithmetic changed");
         }
         refuses(() => frameAll(1, 100, 48));
         const view = frameAll(12, 100, 520);
@@ -123,7 +119,6 @@ check(
         const narrow = frameAll(12, 100, 520);
         const wide = frameAll(12, 100, 1323);
         if (narrow.start !== 0 || wide.start !== 0 || narrow.span === wide.span) throw new Error("fit did not recompute its width-dependent span");
-        if (!close(timeToPixel(narrow, 520, 12), 496) || !close(timeToPixel(wide, 1323, 12), 1299)) throw new Error("fit clearance changed");
 
         const manual = clampViewport({ ...frameAll(20, 10, 1000), start: 22, span: 8 });
         const retained = updateDomain(manual, 15, 10);

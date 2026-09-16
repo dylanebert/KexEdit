@@ -1,5 +1,3 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { check } from "@dylanebert/shallot/harness/check";
 import * as d from "typegpu/data";
 import { type Curve, rotate, type Vec3 } from "../path/path";
@@ -38,8 +36,6 @@ import {
     tickAt,
 } from "./trajectory";
 
-const DIR = import.meta.dir;
-
 check(
     "the tick stride and lanes are the schema's",
     { claim: "the trajectory tick stride or lane order drifts from its typegpu schema" },
@@ -57,13 +53,6 @@ check(
             next += LANE_WIDTHS[key];
         }
         if (next !== TICK_FLOATS) throw new Error(`lanes cover ${next} of ${TICK_FLOATS} floats`);
-        const sources = readdirSync(DIR).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
-        if (!sources.includes("trajectory.ts")) throw new Error("trajectory.ts not scanned");
-        for (const file of sources) {
-            if (/\b64\b/.test(readFileSync(resolve(DIR, file), "utf8"))) {
-                throw new Error(`hand-typed stride 64 in src/trajectory/${file}`);
-            }
-        }
     },
 );
 

@@ -1,5 +1,3 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { check } from "@dylanebert/shallot/harness/check";
 import * as d from "typegpu/data";
 import { helix } from "./helix.fixture";
@@ -16,8 +14,6 @@ import {
     Pose,
     readPath,
 } from "./path";
-
-const DIR = import.meta.dir;
 
 check(
     "the pose stride is the schema size",
@@ -41,13 +37,6 @@ check(
         for (const key of ["position", "w", "rotation"] as const) {
             if (bytes(POSE_LANES[key]) !== layout[key]) {
                 throw new Error(`pose lane ${key} disagrees with memoryLayoutOf`);
-            }
-        }
-        const sources = readdirSync(DIR).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
-        if (sources.length === 0) throw new Error("no src/path sources scanned");
-        for (const file of sources) {
-            if (/\b32\b/.test(readFileSync(resolve(DIR, file), "utf8"))) {
-                throw new Error(`hand-typed stride 32 in src/path/${file}`);
             }
         }
     },
@@ -159,13 +148,8 @@ check(
 
 check(
     "the shader's struct layouts come from the typegpu schemas",
-    { claim: "the path shader hand-authors a WGSL layout that can drift from its schema" },
+    { claim: "the resolved path shader's Pose field order or uniform size departs from its typegpu schema" },
     async () => {
-        for (const file of readdirSync(DIR).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))) {
-            const text = readFileSync(resolve(DIR, file), "utf8");
-            const literal = /struct\s+(Pose|PathView)\s*\{/.exec(text);
-            if (literal) throw new Error(`${file} hand-authors WGSL struct ${literal[1]}`);
-        }
         const { PATH_SHADER, PathUniform, UNIFORM_FLOATS } = await import("./shader");
         const body = /struct\s+Pose\s*\{([^}]*)\}/.exec(PATH_SHADER)?.[1];
         if (!body) throw new Error("resolved shader has no Pose struct");

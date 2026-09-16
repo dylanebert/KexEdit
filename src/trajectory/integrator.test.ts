@@ -119,7 +119,7 @@ check(
 
 check(
     "the marched helix matches the closed-form helix trajectory",
-    { claim: "the marched helix trajectory departs from the S1 closed-form helix fixture" },
+    { claim: "the marched helix trajectory departs from the closed-form helix fixture" },
     () => {
         const input: Input = { omega: [0, (SPEED * HELIX_R) / HELIX_K2, (SPEED * HELIX_C) / HELIX_K2], a: 0 };
         const marched = march(start(helixCurve, SPEED), new Array(helix.header.count - 1).fill(input), RATE, constants);

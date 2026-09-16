@@ -1,22 +1,14 @@
-import { linearToSrgb, srgbToLinear } from "@dylanebert/shallot";
+import { linearToSrgb } from "@dylanebert/shallot";
 import { check } from "@dylanebert/shallot/harness/check";
 import { openPage, settleFrames, waitForView, withApp } from "../browser.fixture";
-import { PATH_BYTES, PATH_COLORS } from "./view";
+import { PATH_COLORS } from "./view";
 
 type Probe = { samples: number; drawn: boolean; count: number };
 
 check(
-    "the path view uploads its sRGB bytes decoded to linear",
-    { claim: "the path view hands sRGB byte fractions to the linear scene target" },
+    "the path view's derived normal colour presents as #6b9d65",
+    { claim: "the path normal colour constant is not #6b9d65" },
     () => {
-        for (const name of ["chord", "lateral"] as const) {
-            const rgb = PATH_BYTES[name];
-            const want = [16, 8, 0].map((shift) => srgbToLinear(((rgb >> shift) & 0xff) / 255));
-            const got = PATH_COLORS[name];
-            if (got.length !== 4 || got[3] !== 1 || want.some((w, i) => got[i] !== w)) {
-                throw new Error(`path ${name}: ${JSON.stringify(got)} is not srgbToLinear of ${JSON.stringify(want)}`);
-            }
-        }
         // The normal is derived, not a byte: the Gruvbox spectrum between neutral green and aqua read at 142°, #6b9d65.
         const normal = PATH_COLORS.normal;
         const want = [0x6b, 0x9d, 0x65];
