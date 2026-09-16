@@ -49,7 +49,7 @@ const ticksAlong = (curve: Curve) => Math.floor((curve.length * RATE) / SPEED);
 
 check(
     "the constant-speed helix integrates exactly at 100 Hz",
-    { claim: "the integrator step departs from the constant-ω helix at 100 Hz", budget: 250 },
+    { claim: "the integrator step departs from the constant-ω helix at 100 Hz" },
     () => {
         const input: Input = { omega: [0, (SPEED * HELIX_R) / HELIX_K2, (SPEED * HELIX_C) / HELIX_K2], a: 0 };
         const steps = ticksAlong(helixCurve);
@@ -61,7 +61,7 @@ check(
 
 check(
     "the constant-speed circle integrates exactly at 100 Hz",
-    { claim: "the integrator step departs from the constant-yaw circle at 100 Hz", budget: 250 },
+    { claim: "the integrator step departs from the constant-yaw circle at 100 Hz" },
     () => {
         const steps = ticksAlong(turnCurve);
         const where = worstGap(turnCurve, { omega: [0, SPEED / TURN_R, 0], a: 0 }, SPEED, steps, (t) => SPEED * t);
@@ -71,7 +71,7 @@ check(
 
 check(
     "straights at constant speed and constant acceleration integrate exactly",
-    { claim: "the integrator step departs from a straight at constant v or constant a", budget: 250 },
+    { claim: "the integrator step departs from a straight at constant v or constant a" },
     () => {
         const cruise = worstGap(straightCurve, { omega: [0, 0, 0], a: 0 }, SPEED, ticksAlong(straightCurve), (t) => SPEED * t);
         if (cruise) throw new Error(`constant-v straight departs beyond ${EXACT}: ${cruise}`);
@@ -84,7 +84,7 @@ check(
 
 check(
     "march stores each f64 step in f32 with the input that produced it",
-    { claim: "march drops, rounds wrongly, or misattributes a stepped state or its input", budget: 250 },
+    { claim: "march drops, rounds wrongly, or misattributes a stepped state or its input" },
     () => {
         const inputs: Input[] = Array.from({ length: 120 }, (_, i) => ({
             omega: [0.4 * Math.sin(i / 7), 0.9 * Math.cos(i / 11), -0.6 * Math.sin(i / 5)],
@@ -119,7 +119,7 @@ check(
 
 check(
     "the marched helix matches the closed-form helix trajectory",
-    { claim: "the marched helix trajectory departs from the S1 closed-form helix fixture", budget: 250 },
+    { claim: "the marched helix trajectory departs from the S1 closed-form helix fixture" },
     () => {
         const input: Input = { omega: [0, (SPEED * HELIX_R) / HELIX_K2, (SPEED * HELIX_C) / HELIX_K2], a: 0 };
         const marched = march(start(helixCurve, SPEED), new Array(helix.header.count - 1).fill(input), RATE, constants);

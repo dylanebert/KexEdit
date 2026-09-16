@@ -43,7 +43,7 @@ function interior(name: string): number[] {
 
 check(
     "the ride entity keeps authored length separate from its marched prefix",
-    { claim: "the ride entity infers length from a complete trajectory or loses the refusal end state", budget: 250 },
+    { claim: "the ride entity infers length from a complete trajectory or loses the refusal end state" },
     () => {
         const state = new State();
         const eid = createRideEntity(state, {
@@ -68,7 +68,7 @@ check(
 
 check(
     "a stalled ride keeps its authored tail and records the energy lane",
-    { claim: "a stalled ride truncates its authored length or drops the structured energy refusal", budget: 250 },
+    { claim: "a stalled ride truncates its authored length or drops the structured energy refusal" },
     () => {
         const state = new State();
         const eid = createRideEntity(state, {
@@ -91,7 +91,7 @@ check(
 
 check(
     "a six-g force refusal names the floor and tick-start speed",
-    { claim: "a force refusal loses its lane or swaps the force floor and tick-start speed", budget: 250 },
+    { claim: "a force refusal loses its lane or swaps the force floor and tick-start speed" },
     () => {
         const initial = {
             position: [0, 0, 0] as [number, number, number],
@@ -121,7 +121,7 @@ check(
 
 check(
     "the integrated ride marches to its authored end and stops",
-    { claim: "the view's integrated ride stalls, becomes unsatisfiable, overruns a minute or never comes to rest", budget: 250 },
+    { claim: "the view's integrated ride stalls, becomes unsatisfiable, overruns a minute or never comes to rest" },
     () => {
         const { endReason, count, rate } = ride.header;
         const rows = SPANS[SEGMENTS[SEGMENTS.length - 1].name][1];
@@ -134,7 +134,7 @@ check(
 
 check(
     "the ride's loop holds its authored COM normal g",
-    { claim: "the loop's felt normal at the COM departs from its authored g by more than 2% away from the entries", budget: 250 },
+    { claim: "the loop's felt normal at the COM departs from its authored g by more than 2% away from the entries" },
     () => {
         const want = authored("loop").normal;
         let turned = 0;
@@ -152,7 +152,7 @@ check(
 
 check(
     "the ride's banked turn is coordinated",
-    { claim: "the banked turn's felt lateral at the COM leaves zero by more than 0.02 g", budget: 250 },
+    { claim: "the banked turn's felt lateral at the COM leaves zero by more than 0.02 g" },
     () => {
         if (authored("turn").lateral !== 0) throw new Error("turn: authored lateral is not zero");
         let bank = 0;
@@ -169,7 +169,7 @@ check(
 
 check(
     "the ride's hill crest speed follows the energy balance from its base",
-    { claim: "free roll over the hill gains or loses speed the balance of COM height, rolling loss and drag does not name", budget: 250 },
+    { claim: "free roll over the hill gains or loses speed the balance of COM height, rolling loss and drag does not name" },
     () => {
         const start = SPANS["hill-up"][0];
         const end = SPANS["hill-out"][1];

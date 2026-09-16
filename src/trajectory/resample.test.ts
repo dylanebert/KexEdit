@@ -60,7 +60,7 @@ function chordGap(path: Path, curve: Curve): number {
 
 check(
     "the marched helix resamples onto the closed-form helix at every pose",
-    { claim: "a resampled pose departs from the closed-form helix at its arclength", budget: 250 },
+    { claim: "a resampled pose departs from the closed-form helix at its arclength" },
     () => {
         const trajectory = marchedHelix();
         const marchedLength = (trajectory.header.count - 1) * (SPEED / RATE);
@@ -89,7 +89,7 @@ check(
 
 check(
     "the resampled helix stays inside its spacing's chord bound and the error halves at half the spacing",
-    { claim: "the resampled path read as chords exceeds its spacing bound or does not converge with spacing", budget: 250 },
+    { claim: "the resampled path read as chords exceeds its spacing bound or does not converge with spacing" },
     () => {
         const trajectory = marchedHelix();
         const curvature = HELIX_R / HELIX_K2;
@@ -109,7 +109,7 @@ check(
 
 check(
     "a frame turning at v = 0 is dropped and a reversal walks back by arclength",
-    { claim: "the resampler keeps a v = 0 cusp or walks a reversal by signed distance", budget: 250 },
+    { claim: "the resampler keeps a v = 0 cusp or walks a reversal by signed distance" },
     () => {
         // at rest yaw left a quarter turn in 1 s, then a = 4 for 1 s, then a = -8 for 1 s: forward 3 m, back 1 m
         const inputs: Input[] = [
@@ -135,7 +135,7 @@ check(
 
 check(
     "a trajectory storing q or -q per tick resamples to the same path",
-    { claim: "the resampler interpolates rotation across a sign flip instead of along the short arc", budget: 250 },
+    { claim: "the resampler interpolates rotation across a sign flip instead of along the short arc" },
     () => {
         const trajectory = marchedHelix();
         const ticks = trajectory.ticks.slice();
@@ -157,7 +157,7 @@ check(
 
 check(
     "readPath accepts the resample of every trajectory fixture at every spacing",
-    { claim: "the resampler emits a path the path contract refuses", budget: 250 },
+    { claim: "the resampler emits a path the path contract refuses" },
     () => {
         const still = march(
             { position: [0, 0, 0], rotation: [0, 0, 0, 1], speed: 0, distance: 0 },

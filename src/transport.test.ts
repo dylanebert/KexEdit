@@ -1,9 +1,5 @@
-import { resolve } from "node:path";
 import { check } from "@dylanebert/shallot/harness/check";
-import launch from "@dylanebert/shallot/harness/browser" with { type: "json" };
-import { chromium } from "playwright";
-
-const ROOT = resolve(import.meta.dir, "..");
+import { openPage, settleFrames, waitForView, withApp } from "./browser.fixture";
 
 type RideSample = {
     header: { length: number; rate: number; endReason: string; endTick: number };
@@ -12,65 +8,20 @@ type RideSample = {
 
 type TrainSample = { tick: number; held: boolean; playhead: number };
 
-async function waitForServer(url: string, server: ReturnType<typeof Bun.spawn>): Promise<void> {
-    const deadline = performance.now() + 15_000;
-    while (performance.now() < deadline) {
-        if (server.exitCode !== null) throw new Error(`vite exited with ${server.exitCode}`);
-        try {
-            const response = await fetch(url, { signal: AbortSignal.timeout(500) });
-            if (response.ok) return;
-        } catch {
-            // Vite is still starting.
-        }
-        await Bun.sleep(50);
-    }
-    throw new Error(`timed out waiting for Vite at ${url}`);
-}
-
-function freePort(): number {
-    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    const port = listener.port;
-    listener.stop();
-    return port;
-}
-
-async function openPage(url: string, browser: Awaited<ReturnType<typeof chromium.launch>>) {
-    const page = await browser.newPage({ viewport: { width: 1563, height: 944 } });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
-    await page.waitForFunction(
-        () => window.__harness?.ready === true && "__kexeditPath" in globalThis,
-        undefined,
-        { timeout: 15_000 },
-    );
-    return page;
-}
-
 check(
     "in Chromium the timeline transport controls the ride and presents its refusal tail",
     {
         claim: "the timeline controls do not drive the ride or hide its solved and unsolved transport states",
         size: "integration",
         requires: ["chromium"],
+        host: "mac",
         subject: ["src/Transport.svelte", "src/Timeline.svelte", "src/Status.svelte", "src/View.svelte", "src/path/view.ts", "src/timeline/viewport.ts", "src/app.css"],
-        budget: 20_000,
     },
-    async () => {
-        const port = freePort();
-        const root = `http://127.0.0.1:${port}`;
-        const server = Bun.spawn(
-            [process.execPath, "run", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
-            { cwd: ROOT, stdout: "ignore", stderr: "ignore" },
-        );
-        const errors: string[] = [];
-        let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-        try {
-            await waitForServer(`${root}/`, server);
-            browser = await chromium.launch({ headless: true, ...launch });
-            const full = await openPage(`${root}/`, browser);
-            full.on("pageerror", (error) => errors.push(error.message));
-            full.on("console", (message) => {
-                if (message.type() === "error") errors.push(message.text());
-            });
+    () =>
+        withApp(async ({ url, browser }) => {
+            const errors: string[] = [];
+            const full = await openPage(browser, url, errors);
+            await waitForView(full);
 
             await full.keyboard.press("Space");
             const playing = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
@@ -116,14 +67,7 @@ check(
                     });
                     return { accepted: surface.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
                 }, options);
-            await full.evaluate(() => new Promise<void>((done) => {
-                let frames = 0;
-                const settle = () => {
-                    if (frames++ >= 15) done();
-                    else requestAnimationFrame(settle);
-                };
-                settle();
-            }));
+            await settleFrames(full);
             const initialView = await readView();
             const initialFit = await full.evaluate(() => {
                 const surface = document.querySelector<HTMLElement>('[data-region="timeline-surface"]');
@@ -150,7 +94,8 @@ check(
             if (!(initialFit.width > 96 && initialView.start === 0 && initialView.end > initialFit.duration && initialView.span < 2 * initialFit.duration)) {
                 throw new Error(`initial fit did not expose one-sided padded authored bounds: ${JSON.stringify({ initialView, initialFit })}`);
             }
-            if (Math.abs(initialFit.zero) > 1e-6 || Math.abs(initialFit.end - 24) > 1e-6 || !initialFit.postEnd || Math.abs(initialFit.postEnd.left - (initialFit.postEnd.right - 24)) > 1e-6 || Math.abs(initialFit.postEnd.right - (initialFit.postEnd.left + 24)) > 1e-6 || Math.abs(initialFit.postEnd.top - initialFit.surfaceTop) > 1 || Math.abs(initialFit.postEnd.bottom - initialFit.surfaceBottom) > 1 || initialFit.postColor !== "rgba(20, 22, 23, 0.24)" || initialFit.postZ !== "0") {
+            // Pixel edges carry half a pixel: the surface width is fractional wherever font metrics are (Linux, 1320.07px on the RTX 4090 seat), so a 24px underlay maps to 23.95px there and an exact equality proves the font, not the layout.
+            if (Math.abs(initialFit.zero) > 0.5 || Math.abs(initialFit.end - 24) > 0.5 || !initialFit.postEnd || Math.abs(initialFit.postEnd.right - initialFit.postEnd.left - 24) > 0.5 || Math.abs(initialFit.postEnd.top - initialFit.surfaceTop) > 1 || Math.abs(initialFit.postEnd.bottom - initialFit.surfaceBottom) > 1 || initialFit.postColor !== "rgba(20, 22, 23, 0.24)" || initialFit.postZ !== "0") {
                 throw new Error(`initial fit did not expose the 24px post-end underlay: ${JSON.stringify(initialFit)}`);
             }
             const zoomWheel = await dispatchWheel({ deltaY: -40, ctrlKey: true });
@@ -344,8 +289,10 @@ check(
             const maximumRuler = await ruler.boundingBox();
             if (!maximumRuler) throw new Error("maximum ruler has no bounds");
             await full.mouse.click(maximumRuler.x + 1, maximumRuler.y + maximumRuler.height / 2);
+            await settleFrames(full, 2);
             const leftScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
             await full.mouse.click(maximumRuler.x + maximumRuler.width * 0.75, maximumRuler.y + maximumRuler.height / 2);
+            await settleFrames(full, 2);
             const postEndScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
             if (leftScrub.transport.playhead < 0 || leftScrub.transport.playhead >= leftScrub.header.length || postEndScrub.transport.playhead !== postEndScrub.header.length) {
                 throw new Error(`post-end scrub escaped authored ticks: ${JSON.stringify({ leftScrub, postEndScrub })}`);
@@ -557,15 +504,13 @@ check(
                 };
             });
 
-            const stalled = await openPage(`${root}/?fixture=stalled`, browser);
-            stalled.on("pageerror", (error) => errors.push(error.message));
-            stalled.on("console", (message) => {
-                if (message.type() === "error") errors.push(message.text());
-            });
+            const stalled = await openPage(browser, `${url}?fixture=stalled`, errors);
+            await waitForView(stalled);
             const stalledRide = (await stalled.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
             await stalled.evaluate((tick: number) => (globalThis as any).__kexeditPath.scrub(tick + 2), stalledRide.header.endTick);
             await stalled.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
             const held = (await stalled.evaluate(() => (globalThis as any).__kexeditPath.train())) as TrainSample;
+            await settleFrames(stalled);
             const stalledGeometry = await stalled.evaluate(() => {
                 const tail = document.querySelector('[data-region="dead-tail"]')?.getBoundingClientRect();
                 const postEnd = document.querySelector('[data-region="post-end"]')?.getBoundingClientRect();
@@ -667,10 +612,5 @@ check(
                     `transport UI failed: ${JSON.stringify({ playing, paused, scrubbed, fullStates, playheadGeometry, stalledRide, held, stalledGeometry, states, errors })}`,
                 );
             }
-        } finally {
-            await browser?.close();
-            server.kill();
-            await server.exited;
-        }
-    },
+        }),
 );

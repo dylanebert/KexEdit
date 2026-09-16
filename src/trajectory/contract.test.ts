@@ -42,7 +42,7 @@ const DIR = import.meta.dir;
 
 check(
     "the tick stride and lanes are the schema's",
-    { claim: "the trajectory tick stride or lane order drifts from its typegpu schema", budget: 250 },
+    { claim: "the trajectory tick stride or lane order drifts from its typegpu schema" },
     () => {
         if (d.sizeOf(Tick) !== 64) throw new Error(`Tick schema is ${d.sizeOf(Tick)} bytes`);
         if (TICK_BYTES !== d.sizeOf(Tick) || TICK_FLOATS !== 16) throw new Error(`stride ${TICK_BYTES}/${TICK_FLOATS}`);
@@ -91,7 +91,7 @@ const withFloat = (tick: number, lane: number, value: number): Trajectory => {
 
 check(
     "readTrajectory refuses each malformed header field by name",
-    { claim: "readTrajectory admits a trajectory with a malformed header field", budget: 250 },
+    { claim: "readTrajectory admits a trajectory with a malformed header field" },
     () => {
         readTrajectory(helix);
         const count = helix.header.count;
@@ -116,7 +116,7 @@ check(
 
 check(
     "readTrajectory refuses each broken lane invariant by name",
-    { claim: "readTrajectory admits a tick stream that breaks a lane invariant", budget: 250 },
+    { claim: "readTrajectory admits a tick stream that breaks a lane invariant" },
     () => {
         const last = helix.header.count - 1;
         const floats = Array.from(helix.ticks);
@@ -165,7 +165,7 @@ const FIXTURES: [string, Trajectory, Curve][] = [
 
 check(
     "fixture ticks match their closed-form curves and their own rotation stream",
-    { claim: "a trajectory fixture's stored state or ω disagrees with its curve or its rotations", budget: 250 },
+    { claim: "a trajectory fixture's stored state or ω disagrees with its curve or its rotations" },
     () => {
         for (const [name, t, curve] of FIXTURES) {
             const count = t.header.count;
@@ -191,7 +191,7 @@ const rightOf = (tick: TickState) => rotate(tick.rotation, [1, 0, 0]);
 
 check(
     "each signed lane and read has Shallot's sign, fixed by geometry",
-    { claim: "an ω component, lateral, normal or roll carries a referent's sign instead of Shallot's frame", budget: 250 },
+    { claim: "an ω component, lateral, normal or roll carries a referent's sign instead of Shallot's frame" },
     () => {
         const mid = (t: Trajectory) => Math.floor(t.header.count / 2);
         const pair = (t: Trajectory) => [tickAt(t, mid(t)), tickAt(t, mid(t) + 1)] as const;
@@ -225,7 +225,7 @@ check(
 
 check(
     "feltForces and roll read the fixtures' closed forms",
-    { claim: "feltForces or roll misread a tick's state and input", budget: 250 },
+    { claim: "feltForces or roll misread a tick's state and input" },
     () => {
         const g = constants.g;
         const K = Math.hypot(HELIX_R, HELIX_C);

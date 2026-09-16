@@ -14,7 +14,7 @@ const transport = (overrides: Partial<Parameters<typeof advance>[0]> = {}) => ({
 
 check(
     "transport advances on scheduler delta and both rates",
-    { claim: "transport advances from elapsed or ignores either authored or playback rate", budget: 250 },
+    { claim: "transport advances from elapsed or ignores either authored or playback rate" },
     () => {
         const one = advance(transport(), header, 0.25);
         const slow = advance(transport({ rate: 0.25 }), header, 0.25);
@@ -27,7 +27,7 @@ check(
 
 check(
     "transport always wraps at the authored end",
-    { claim: "transport makes its reserved loop bit an optional stop control", budget: 250 },
+    { claim: "transport makes its reserved loop bit an optional stop control" },
     () => {
         for (const loop of [false, true]) {
             const exact = advance(transport({ playhead: 95, loop }), header, 0.5);
@@ -40,7 +40,7 @@ check(
 
 check(
     "scrub stays inside authored length",
-    { claim: "scrub writes a playhead outside the authored length", budget: 250 },
+    { claim: "scrub writes a playhead outside the authored length" },
     () => {
         if (scrub(-1, header) !== 0 || scrub(101, header) !== 100 || scrub(37.5, header) !== 37.5) {
             throw new Error("scrub did not clamp to the authored interval");
@@ -70,7 +70,7 @@ const trajectory = (): Trajectory => {
 
 check(
     "a train reads the transport tick and holds at a marched stall",
-    { claim: "train placement interpolates or leaves the marched prefix after a stall", budget: 250 },
+    { claim: "train placement interpolates or leaves the marched prefix after a stall" },
     () => {
         const ride = trajectory();
         const at = placeAt(ride, 3.9, 2);

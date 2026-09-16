@@ -29,7 +29,7 @@ function refuses(action: () => unknown): void {
 
 check(
     "the timeline domain uses a content-relative post-end pad",
-    { claim: "timeline domain padding is not exactly one authored duration", budget: 250 },
+    { claim: "timeline domain padding is not exactly one authored duration" },
     () => {
         for (const duration of [12, 37.5]) {
             if (timelineDomainEnd(duration) !== 2 * duration) throw new Error(`domain end ${timelineDomainEnd(duration)}`);
@@ -43,7 +43,7 @@ check(
 
 check(
     "one-sided frame-all keeps zero at the surface origin",
-    { claim: "timeline frame-all admits negative time or loses its fixed post-end clearance", budget: 250 },
+    { claim: "timeline frame-all admits negative time or loses its fixed post-end clearance" },
     () => {
         for (const width of [520, 1323]) {
             const view = frameAll(12, 100, width);
@@ -66,7 +66,7 @@ check(
 
 check(
     "the timeline maximum is a unique complete legal domain",
-    { claim: "timeline maximum or pan bounds expose time outside zero through twice the duration", budget: 250 },
+    { claim: "timeline maximum or pan bounds expose time outside zero through twice the duration" },
     () => {
         const fit = frameAll(20, 10, 1000);
         const view = clampViewport({ ...fit, start: 5, span: 5 });
@@ -90,7 +90,7 @@ check(
 
 check(
     "cursor zoom preserves interior anchors and clamps only at domain edges",
-    { claim: "timeline cursor zoom translates before clamping or exposes an illegal edge to preserve its anchor", budget: 250 },
+    { claim: "timeline cursor zoom translates before clamping or exposes an illegal edge to preserve its anchor" },
     () => {
         const width = 1000;
         const base = clampViewport({ ...frameAll(20, 10, width), start: 4, span: 8 });
@@ -118,7 +118,7 @@ check(
 
 check(
     "fit resize and domain changes preserve the intended presentation state",
-    { claim: "timeline fit resize or domain changes infer the wrong seconds interval", budget: 250 },
+    { claim: "timeline fit resize or domain changes infer the wrong seconds interval" },
     () => {
         const narrow = frameAll(12, 100, 520);
         const wide = frameAll(12, 100, 1323);
@@ -137,7 +137,7 @@ check(
 
 check(
     "visible ticks cover only the legal domain and retain adaptive 1-2-5 spacing",
-    { claim: "timeline ticks emit negative time, exceed the legal end, or clip visible post-end context", budget: 250 },
+    { claim: "timeline ticks emit negative time, exceed the legal end, or clip visible post-end context" },
     () => {
         const ranges = [
             { view: frameAll(120, 10, 960), width: 960 },
@@ -172,7 +172,7 @@ check(
 
 check(
     "wheel deltas retain direct manipulation direction and geometric increments",
-    { claim: "timeline wheel normalization reverses direction, jumps scales, or loses pan sign", budget: 250 },
+    { claim: "timeline wheel normalization reverses direction, jumps scales, or loses pan sign" },
     () => {
         const plain = wheelZoomRatio(100, 0);
         if (!close(plain, 2 ** 0.2) || !close(wheelZoomRatio(-100, 0), 2 ** -0.2)) throw new Error("pixel wheel direction or ratio failed");

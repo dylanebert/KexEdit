@@ -25,7 +25,7 @@ const cruise = (speed: number) => ({ kind: "driven", target: speed, accel: 1 }) 
 
 check(
     "a vertical loop at authored COM normal g closes on its analytic radius",
-    { claim: "the force closure or its heart-to-COM term departs from the analytic constant-speed loop", budget: 250 },
+    { claim: "the force closure or its heart-to-COM term departs from the analytic constant-speed loop", budget: 50 },
     () => {
         const v = 15;
         const R = 12;
@@ -50,7 +50,7 @@ check(
 
 check(
     "a banked turn at zero COM lateral g is the analytic level circle",
-    { claim: "the force closure's lateral or heart-to-COM term departs from the analytic coordinated turn", budget: 250 },
+    { claim: "the force closure's lateral or heart-to-COM term departs from the analytic coordinated turn", budget: 50 },
     () => {
         const bank = deg(40);
         const R = 30;
@@ -82,7 +82,7 @@ const coast = (ticks: number): Intent[] => new Array(ticks).fill({ shape: { kind
 
 check(
     "a coast down a known slope follows the energy balance",
-    { claim: "free roll departs from gravity, Coulomb loss or drag on a constant slope", budget: 250 },
+    { claim: "free roll departs from gravity, Coulomb loss or drag on a constant slope", budget: 50 },
     () => {
         const slope = deg(-30);
         const v0 = 5;
@@ -136,7 +136,7 @@ const ride: Intent[] = Array.from({ length: 900 }, (_, i) => ({
 
 check(
     "lossless free roll conserves speed against COM height over a rotating ride",
-    { claim: "free roll drifts from the energy balance or drops the heart-to-COM height", budget: 250 },
+    { claim: "free roll drifts from the energy balance or drops the heart-to-COM height", budget: 50 },
     () => {
         const lossless: RideConstants = { ...constants, friction: 0, drag: 0 };
         const h = lossless.heartToCom;
@@ -152,7 +152,7 @@ check(
 
 check(
     "a driven ramp reaches its target at the authored rate and holds it, backwards from rest",
-    { claim: "the driven policy overshoots, undershoots or mis-signs its ramp", budget: 250 },
+    { claim: "the driven policy overshoots, undershoots or mis-signs its ramp", budget: 50 },
     () => {
         const intents: Intent[] = new Array(400).fill({
             shape: { kind: "rates", omega: [0, 0.2, 0] },
@@ -168,7 +168,7 @@ check(
 
 check(
     "zero dissipation coefficients march byte-identical to dissipation absent",
-    { claim: "a zero friction or drag coefficient perturbs the free-roll march", budget: 250 },
+    { claim: "a zero friction or drag coefficient perturbs the free-roll march", budget: 50 },
     () => {
         const zero: RideConstants = { ...constants, friction: 0, drag: 0 };
         const lossy = run(start(8, deg(10)), ride, RATE, zero, policyWith(LOSSES)).history;
@@ -181,7 +181,7 @@ check(
 
 check(
     "mass moves free roll only through drag, measured at the prototype's coefficients",
-    { claim: "mass reaches free roll outside drag, or drag's mass effect vanishes or inverts", budget: 250 },
+    { claim: "mass reaches free roll outside drag, or drag's mass effect vanishes or inverts", budget: 50 },
     () => {
         const at = (mass: number, drag: number) =>
             run(start(5, deg(-30)), coast(1000), RATE, { ...constants, friction: 0.03, drag, mass }).history;
@@ -198,7 +198,7 @@ check(
 
 check(
     "free roll ends stalled at the tick whose step would reverse",
-    { claim: "free roll carries speed through zero or ends before it must", budget: 250 },
+    { claim: "free roll carries speed through zero or ends before it must", budget: 50 },
     () => {
         const { trajectory, history } = run(start(10, deg(60)), coast(400), RATE, { ...constants, drag: 0, heartToCom: 0 });
         const { header } = trajectory;
@@ -222,7 +222,7 @@ const departures = (history: History, normal: number) =>
 
 check(
     "a force-held climb that runs out of speed ends unsatisfiable at the measured floor",
-    { claim: "the force closure runs below its validity floor, or the floor is looser than its measurement", budget: 250 },
+    { claim: "the force closure runs below its validity floor, or the floor is looser than its measurement", budget: 50 },
     () => {
         const held: RideConstants = { ...constants, heartToCom: 0 };
         const intents: Intent[] = new Array(400).fill({

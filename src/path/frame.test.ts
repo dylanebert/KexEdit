@@ -19,7 +19,7 @@ const cross = (a: Vec3, b: Vec3): Vec3 => [
 
 check(
     "fixture poses are arclength-spaced and face their chords",
-    { claim: "a path fixture breaks uniform spacing or the -Z forward frame law", budget: 250 },
+    { claim: "a path fixture breaks uniform spacing or the -Z forward frame law" },
     () => {
         for (const [name, path] of Object.entries(FIXTURES)) {
             const { count, spacing, length } = path.header;
@@ -50,7 +50,7 @@ check(
 
 check(
     "fixture up is the orthonormal rider-up and the frame is right-handed",
-    { claim: "a path fixture rolls, flips its up, or builds a left-handed frame", budget: 250 },
+    { claim: "a path fixture rolls, flips its up, or builds a left-handed frame" },
     () => {
         const curves: Record<string, Curve> = { straight: straightCurve, hill: hillCurve, helix: helixCurve };
         for (const [name, curve] of Object.entries(curves)) {

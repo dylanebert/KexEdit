@@ -1,36 +1,6 @@
-import { resolve } from "node:path";
 import { check } from "@dylanebert/shallot/harness/check";
 import { classifyAdapter } from "@dylanebert/shallot/harness/seat";
-import { chromium, type Page } from "playwright";
-import launch from "@dylanebert/shallot/harness/browser" with { type: "json" };
-
-const ROOT = resolve(import.meta.dir, "..");
-
-async function waitForServer(url: string, server: ReturnType<typeof Bun.spawn>): Promise<void> {
-    const deadline = performance.now() + 15_000;
-    while (performance.now() < deadline) {
-        if (server.exitCode !== null) throw new Error(`vite exited with ${server.exitCode}`);
-        try {
-            const response = await fetch(url, { signal: AbortSignal.timeout(500) });
-            if (response.ok) return;
-        } catch {
-            // Vite is still starting.
-        }
-        await Bun.sleep(50);
-    }
-    throw new Error(`timed out waiting for Vite at ${url}`);
-}
-
-function freePort(): number {
-    const listener = Bun.listen({
-        hostname: "127.0.0.1",
-        port: 0,
-        socket: { data() {} },
-    });
-    const port = listener.port;
-    listener.stop();
-    return port;
-}
+import { openPage, settleFrames, withApp } from "./browser.fixture";
 
 check(
     "the KexEdit canvas boots in Chromium and reaches the final compositor",
@@ -38,6 +8,7 @@ check(
         claim: "the view fails to boot or leaves a blank canvas",
         size: "integration",
         requires: ["chromium"],
+        host: "mac",
         subject: [
             "src/App.svelte",
             "src/View.svelte",
@@ -46,30 +17,11 @@ check(
             "shallot.json",
             "public/scenes/scaffold.scene",
         ],
-        budget: 20_000,
     },
-    async () => {
-        const port = freePort();
-        const url = `http://127.0.0.1:${port}/`;
-        const server = Bun.spawn(
-            [process.execPath, "run", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
-            { cwd: ROOT, stdout: "ignore", stderr: "ignore" },
-        );
-        let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-        let page: Page | undefined;
-        let reducedPage: Page | undefined;
-        let blockedPage: Page | undefined;
-        const errors: string[] = [];
-        try {
-            await waitForServer(url, server);
-            browser = await chromium.launch({ headless: true, ...launch });
-            const context = await browser.newContext({ viewport: { width: 1563, height: 944 } });
-            page = await context.newPage();
-            page.on("pageerror", (error) => errors.push(error.message));
-            page.on("console", (message) => {
-                if (message.type() === "error") errors.push(message.text());
-            });
-            await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+    () =>
+        withApp(async ({ url, browser }) => {
+            const errors: string[] = [];
+            const page = await openPage(browser, url, errors);
             // Attach before the harness becomes ready. This records real compositor playback rather
             // than trusting a settled animation declaration or a timeout.
             const temporalEvidence = page.evaluate(
@@ -174,6 +126,14 @@ check(
                         document.addEventListener("animationend", onEnd);
                     }),
             );
+            // The splash is transient: sample it once it has mounted, or once the shell is ready without it.
+            await page.waitForFunction(
+                () =>
+                    [...document.body.children].some((candidate) => getComputedStyle(candidate).zIndex === "10000") ||
+                    document.querySelector("[data-shell-ready]")?.getAttribute("data-shell-ready") === "true",
+                undefined,
+                { timeout: 10_000 },
+            );
             const bootEvidence = await page.evaluate(() => {
                 const overlay = [...document.body.children].find(
                     (candidate) => getComputedStyle(candidate).zIndex === "10000",
@@ -249,7 +209,7 @@ check(
             }
             // Let the short compositor entrance settle before measuring seam geometry; transforms would
             // otherwise make a one-pixel divider appear displaced while the panes are scaling in.
-            await page.waitForTimeout(260);
+            await settleFrames(page);
             const shellEvidence = await page.evaluate(async () => {
                 const parseComputedRgb = (color: string): number[] | undefined => {
                     const legacy = color.match(/^rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)/);
@@ -349,7 +309,7 @@ check(
             ) {
                 throw new Error(`shell handoff/divider/zero-gap/clear-color/entrance failed: ${JSON.stringify(shellEvidence)}`);
             }
-            await page.waitForTimeout(260);
+            await settleFrames(page);
             const entranceEvidence = await page.evaluate(() => {
                 const elements = [
                     ...document.querySelectorAll<HTMLElement>("[data-region=context], [data-region=view], [data-region=timeline], [data-region=status]"),
@@ -367,9 +327,7 @@ check(
             if (!entranceEvidence.complete) {
                 throw new Error(`pane entrance did not settle: ${JSON.stringify(entranceEvidence)}`);
             }
-            reducedPage = await context.newPage();
-            await reducedPage.emulateMedia({ reducedMotion: "reduce" });
-            await reducedPage.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+            const reducedPage = await openPage(browser, url, null, (reduced) => reduced.emulateMedia({ reducedMotion: "reduce" }));
             await reducedPage.waitForFunction(() => window.__harness?.ready === true, undefined, { timeout: 15_000 });
             const reducedMotionEvidence = await reducedPage.evaluate(() => {
                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
@@ -395,11 +353,11 @@ check(
             ) {
                 throw new Error(`reduced-motion entrance failed: ${JSON.stringify(reducedMotionEvidence)}`);
             }
-            blockedPage = await context.newPage();
-            await blockedPage.addInitScript(() => {
-                Object.defineProperty(Navigator.prototype, "gpu", { configurable: true, value: undefined });
-            });
-            await blockedPage.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+            const blockedPage = await openPage(browser, url, null, (blocked) =>
+                blocked.addInitScript(() => {
+                    Object.defineProperty(Navigator.prototype, "gpu", { configurable: true, value: undefined });
+                }),
+            );
             await blockedPage.waitForSelector("[data-region=capability-block]", { timeout: 5_000 });
             const blockedEvidence = await blockedPage.evaluate(() => {
                 const shell = document.querySelector<HTMLElement>("[data-region=shell]");
@@ -479,13 +437,5 @@ check(
                 throw new Error(`canvas pixel gate failed: ${JSON.stringify(evidence)}`);
             }
             return { ok: true, checks: [{ name: "GPU canvas rendered", ok: true, data: evidence }] };
-        } finally {
-            await blockedPage?.close();
-            await reducedPage?.close();
-            await page?.close();
-            await browser?.close();
-            if (server.exitCode === null) server.kill();
-            await server.exited;
-        }
-    },
+        }),
 );
