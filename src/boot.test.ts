@@ -8,6 +8,7 @@ check(
         claim: "the view fails to boot or leaves a blank canvas",
         size: "integration",
         requires: ["chromium"],
+        host: "mac",
         subject: [
             "src/App.svelte",
             "src/View.svelte",

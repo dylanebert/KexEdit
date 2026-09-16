@@ -91,6 +91,7 @@ check(
         claim: "the drawn train transform departs from the tick named by the ride transport after scrub or pause",
         size: "integration",
         requires: ["chromium"],
+        host: "mac",
         subject: ["src/trajectory/transport.ts", "src/trajectory/execution.ts", "src/path/view.ts", "src/View.svelte"],
     },
     () =>

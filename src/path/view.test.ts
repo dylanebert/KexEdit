@@ -33,6 +33,7 @@ check(
         claim: "the path view draws nothing or ignores a new path",
         size: "integration",
         requires: ["chromium"],
+        host: "mac",
         subject: [
             "src/path/path.ts",
             "src/path/shader.ts",

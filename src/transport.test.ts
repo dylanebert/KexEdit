@@ -14,6 +14,7 @@ check(
         claim: "the timeline controls do not drive the ride or hide its solved and unsolved transport states",
         size: "integration",
         requires: ["chromium"],
+        host: "mac",
         subject: ["src/Transport.svelte", "src/Timeline.svelte", "src/Status.svelte", "src/View.svelte", "src/path/view.ts", "src/timeline/viewport.ts", "src/app.css"],
     },
     () =>
