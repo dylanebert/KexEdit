@@ -539,7 +539,9 @@ function drawPath(eid: number, view: View): void {
         pass.end();
     }
     // The fragment shader increments the counter itself, so a positive count cannot come from a flag.
-    encoder.copyBufferToBuffer(gpu.probe, 0, gpu.readback, 0, PROBE_BYTES);
+    // A frame that lands while `readPathProbe` holds the readback mapped must not copy into it: on a
+    // real adapter the map outlives a frame, and a submit into a mapped buffer is a validation error.
+    if (gpu.readback.mapState === "unmapped") encoder.copyBufferToBuffer(gpu.probe, 0, gpu.readback, 0, PROBE_BYTES);
 }
 
 export type PathProbe = { samples: number; drawn: boolean; count: number };
