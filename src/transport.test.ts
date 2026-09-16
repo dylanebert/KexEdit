@@ -94,7 +94,8 @@ check(
             if (!(initialFit.width > 96 && initialView.start === 0 && initialView.end > initialFit.duration && initialView.span < 2 * initialFit.duration)) {
                 throw new Error(`initial fit did not expose one-sided padded authored bounds: ${JSON.stringify({ initialView, initialFit })}`);
             }
-            if (Math.abs(initialFit.zero) > 1e-6 || Math.abs(initialFit.end - 24) > 1e-6 || !initialFit.postEnd || Math.abs(initialFit.postEnd.left - (initialFit.postEnd.right - 24)) > 1e-6 || Math.abs(initialFit.postEnd.right - (initialFit.postEnd.left + 24)) > 1e-6 || Math.abs(initialFit.postEnd.top - initialFit.surfaceTop) > 1 || Math.abs(initialFit.postEnd.bottom - initialFit.surfaceBottom) > 1 || initialFit.postColor !== "rgba(20, 22, 23, 0.24)" || initialFit.postZ !== "0") {
+            // Pixel edges carry half a pixel: the surface width is fractional wherever font metrics are (Linux, 1320.07px on the RTX 4090 seat), so a 24px underlay maps to 23.95px there and an exact equality proves the font, not the layout.
+            if (Math.abs(initialFit.zero) > 0.5 || Math.abs(initialFit.end - 24) > 0.5 || !initialFit.postEnd || Math.abs(initialFit.postEnd.right - initialFit.postEnd.left - 24) > 0.5 || Math.abs(initialFit.postEnd.top - initialFit.surfaceTop) > 1 || Math.abs(initialFit.postEnd.bottom - initialFit.surfaceBottom) > 1 || initialFit.postColor !== "rgba(20, 22, 23, 0.24)" || initialFit.postZ !== "0") {
                 throw new Error(`initial fit did not expose the 24px post-end underlay: ${JSON.stringify(initialFit)}`);
             }
             const zoomWheel = await dispatchWheel({ deltaY: -40, ctrlKey: true });
@@ -288,8 +289,10 @@ check(
             const maximumRuler = await ruler.boundingBox();
             if (!maximumRuler) throw new Error("maximum ruler has no bounds");
             await full.mouse.click(maximumRuler.x + 1, maximumRuler.y + maximumRuler.height / 2);
+            await settleFrames(full, 2);
             const leftScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
             await full.mouse.click(maximumRuler.x + maximumRuler.width * 0.75, maximumRuler.y + maximumRuler.height / 2);
+            await settleFrames(full, 2);
             const postEndScrub = (await full.evaluate(() => (globalThis as any).__kexeditPath.ride())) as RideSample;
             if (leftScrub.transport.playhead < 0 || leftScrub.transport.playhead >= leftScrub.header.length || postEndScrub.transport.playhead !== postEndScrub.header.length) {
                 throw new Error(`post-end scrub escaped authored ticks: ${JSON.stringify({ leftScrub, postEndScrub })}`);
@@ -507,6 +510,7 @@ check(
             await stalled.evaluate((tick: number) => (globalThis as any).__kexeditPath.scrub(tick + 2), stalledRide.header.endTick);
             await stalled.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
             const held = (await stalled.evaluate(() => (globalThis as any).__kexeditPath.train())) as TrainSample;
+            await settleFrames(stalled);
             const stalledGeometry = await stalled.evaluate(() => {
                 const tail = document.querySelector('[data-region="dead-tail"]')?.getBoundingClientRect();
                 const postEnd = document.querySelector('[data-region="post-end"]')?.getBoundingClientRect();

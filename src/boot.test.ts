@@ -126,6 +126,14 @@ check(
                         document.addEventListener("animationend", onEnd);
                     }),
             );
+            // The splash is transient: sample it once it has mounted, or once the shell is ready without it.
+            await page.waitForFunction(
+                () =>
+                    [...document.body.children].some((candidate) => getComputedStyle(candidate).zIndex === "10000") ||
+                    document.querySelector("[data-shell-ready]")?.getAttribute("data-shell-ready") === "true",
+                undefined,
+                { timeout: 10_000 },
+            );
             const bootEvidence = await page.evaluate(() => {
                 const overlay = [...document.body.children].find(
                     (candidate) => getComputedStyle(candidate).zIndex === "10000",

@@ -28,6 +28,17 @@ async function waitForServer(url: string, server: ReturnType<typeof Bun.spawn>):
 }
 
 /** Serves the app through Vite on a free port, launches Chromium, and tears both down after `body`. */
+
+/**
+ * Shallot's headless Chromium launch on every platform: the `chromium` seat is headless Chromium on a
+ * real adapter, and a headed launch is the `display` seat with its own contract, so this fixture never
+ * substitutes one for the other. On Omarchy headless Chromium reaches only a SwiftShader adapter, so the
+ * Chromium rows declare `host: "mac"` and report unrun here.
+ */
+export function seatLaunch(): Parameters<typeof chromium.launch>[0] {
+    return { headless: true, ...launch };
+}
+
 export async function withApp<T>(body: (app: { url: string; browser: Browser }) => Promise<T>): Promise<T> {
     const port = freePort();
     const url = `http://127.0.0.1:${port}/`;
@@ -38,7 +49,7 @@ export async function withApp<T>(body: (app: { url: string; browser: Browser }) 
     let browser: Browser | undefined;
     try {
         await waitForServer(url, server);
-        browser = await chromium.launch({ headless: true, ...launch });
+        browser = await chromium.launch(seatLaunch());
         return await body({ url, browser });
     } finally {
         await browser?.close();
