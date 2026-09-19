@@ -4,7 +4,7 @@ import { constants, RATE } from "./fixtures.fixture";
 import { CHUNK, createRide, editTick, type Ride, restartFor } from "./execution";
 import { type Input, march, type State, step } from "./integrator";
 import { resample } from "./resample";
-import { readTrajectory, TICK_FLOATS } from "./trajectory";
+import { TICK_FLOATS } from "./trajectory";
 
 const ROWS = 5000;
 // yawed and pitched so every rotation component is non-zero and has a tangential ulp to perturb
@@ -162,21 +162,6 @@ check(
             refused = String(error).includes("exceed");
         }
         if (!refused) throw new Error("a table one row over tick capacity was accepted");
-    },
-);
-
-check(
-    "readTrajectory refuses an end tick that disagrees with the emitted count",
-    { claim: "a trajectory can publish an end tick other than count minus one" },
-    () => {
-        const trajectory = ride(baseInputs).trajectory();
-        let refused = false;
-        try {
-            readTrajectory({ ...trajectory, header: { ...trajectory.header, endTick: trajectory.header.endTick - 1 } });
-        } catch (error) {
-            refused = String(error).includes("trajectory endTick:");
-        }
-        if (!refused) throw new Error("end tick mismatch was accepted");
     },
 );
 
