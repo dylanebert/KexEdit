@@ -110,8 +110,6 @@ export interface Ride {
     pass(): PassResult;
     /** Resample the current trajectory into the back buffer on one thread or the pool, unpublished. */
     resampleInto(buffer: 0 | 1, threaded: boolean): number;
-    /** One pool round over an empty job: the wake and join a threaded resample pays before any pose. */
-    idleDispatch(): void;
     generation(): number;
     trajectory(): Trajectory;
     /** The published path and its generation; `poses` is a subarray of the shared memory. */
@@ -330,12 +328,6 @@ function build(
             return { generation, restart, dirty };
         },
         resampleInto,
-        idleDispatch() {
-            if (!pool) throw new Error("ride dispatch: no pool");
-            const running = pool;
-            ex.setResampleJob(0, 0, 0, 0, 0, spacing, 0, 0, chunk, running.size + 1);
-            running.run(() => ex.workerMain(0));
-        },
         generation: () => Atomics.load(control, 0),
         trajectory() {
             const header: TrajectoryHeader = {
