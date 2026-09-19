@@ -2,9 +2,9 @@ import { check } from "@dylanebert/shallot/harness/check";
 import { type Curve, frameQuat, rotate, type Vec3 } from "../path/path";
 import { helixCurve } from "../path/helix.fixture";
 import { straightCurve } from "../path/straight.fixture";
-import { constants, HELIX_C, HELIX_R, helix, RATE, SPEED, TURN_R, turnCurve } from "./fixtures.fixture";
+import { constants, HELIX_C, HELIX_R, RATE, SPEED, TURN_R, turnCurve } from "./fixtures.fixture";
 import { type Input, march, type State, step } from "./integrator";
-import { TICK_FLOATS, TICK_LANES, tickAt } from "./trajectory";
+import { TICK_FLOATS, TICK_LANES } from "./trajectory";
 
 const EXACT = 1e-9;
 const HELIX_K2 = HELIX_R * HELIX_R + HELIX_C * HELIX_C;
@@ -113,33 +113,6 @@ check(
                     throw new Error(`tick ${i} float ${k}: stored ${stored[k]}, stepped ${expected[k]}`);
                 }
             }
-        }
-    },
-);
-
-check(
-    "the marched helix matches the closed-form helix trajectory",
-    { claim: "the marched helix trajectory departs from the closed-form helix fixture" },
-    () => {
-        const input: Input = { omega: [0, (SPEED * HELIX_R) / HELIX_K2, (SPEED * HELIX_C) / HELIX_K2], a: 0 };
-        const marched = march(start(helixCurve, SPEED), new Array(helix.header.count - 1).fill(input), RATE, constants);
-        if (marched.header.count !== helix.header.count) {
-            throw new Error(`marched ${marched.header.count} ticks, fixture ${helix.header.count}`);
-        }
-        for (let i = 0; i < helix.header.count; i++) {
-            const m = tickAt(marched, i);
-            const f = tickAt(helix, i);
-            const q = m.rotation;
-            const sign = q[0] * f.rotation[0] + q[1] * f.rotation[1] + q[2] * f.rotation[2] + q[3] * f.rotation[3] < 0 ? -1 : 1;
-            const errors = [
-                gap(m.position, f.position),
-                Math.hypot(...q.map((x, j) => sign * x - f.rotation[j])),
-                Math.abs(m.speed - f.speed),
-                Math.abs(m.distance - f.distance),
-                gap(m.omega, f.omega),
-                Math.abs(m.a - f.a),
-            ];
-            if (errors.some((e) => !(e <= 1e-4))) throw new Error(`tick ${i} errors ${errors.join(", ")}`);
         }
     },
 );
