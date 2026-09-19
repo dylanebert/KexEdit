@@ -21,7 +21,6 @@ export const UNIFORM_FLOATS = d.sizeOf(PathUniform) / Float32Array.BYTES_PER_ELE
 const BODY = /* wgsl */ `
 @group(0) @binding(0) var<uniform> path: PathView;
 @group(0) @binding(1) var<storage, read> poses: array<Pose>;
-@group(0) @binding(2) var<storage, read_write> pathProbe: atomic<u32>;
 
 struct VSOut {
     @builtin(position) position: vec4<f32>,
@@ -96,7 +95,6 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) iid: u32) -> VSOu
 fn fs(input: VSOut) -> @location(0) vec4<f32> {
     let w = fwidth(input.edge.x);
     let aa = 1.0 - smoothstep(input.edge.y - w, input.edge.y + w, abs(input.edge.x));
-    atomicAdd(&pathProbe, 1u);
     return vec4(input.color.rgb, input.color.a * aa);
 }
 `;

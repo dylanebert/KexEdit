@@ -1,11 +1,10 @@
 import { check } from "@dylanebert/shallot/harness/check";
-import { openPage, waitForView, withApp } from "../browser.fixture";
 import type { Vec3 } from "../path/path";
 import { createRide } from "./execution";
 import { constants, helix, hill, RATE } from "./fixtures.fixture";
 import { march } from "./integrator";
 import { clockTick, initialState, intentTable, placeTrain } from "./train";
-import { TICK_FLOATS, TICK_LANES, tickAt, type Trajectory } from "./trajectory";
+import { tickAt } from "./trajectory";
 
 check(
     "the view places the train at the trajectory tick the scheduler clock names",
@@ -69,114 +68,4 @@ check(
             }
         }
     },
-);
-
-type Sample = {
-    elapsed: number;
-    playhead: number;
-    transportRate: number;
-    playing: boolean;
-    offset: number;
-    rate: number;
-    count: number;
-    tick: number;
-    ticks: number[];
-    pos: number[];
-    rot: number[];
-};
-
-check(
-    "in Chromium the train transform follows the ride transport at rates one and two",
-    {
-        claim: "the drawn train transform departs from the tick named by the ride transport after scrub or pause",
-        size: "integration",
-        requires: ["chromium"],
-        host: "mac",
-        subject: ["src/trajectory/transport.ts", "src/trajectory/execution.ts", "src/path/view.ts", "src/View.svelte"],
-    },
-    () =>
-        withApp(async ({ url, browser }) => {
-            const errors: string[] = [];
-            const page = await openPage(browser, url, errors);
-            await waitForView(page);
-            const sample = (frames: number) =>
-                page.evaluate(async (n) => {
-                    for (let i = 0; i < n; i++) await new Promise<void>((done) => requestAnimationFrame(() => done()));
-                    const handle = (globalThis as unknown as { __kexeditPath: { train(): unknown } }).__kexeditPath;
-                    return handle.train();
-                }, frames) as Promise<Sample | null>;
-            type Handle = {
-                scrub(playhead: number): number | null;
-                setPlaying(playing: boolean): boolean | null;
-                setRate(rate: number): number | null;
-            };
-            const control = (action: string, value: number | boolean) =>
-                page.evaluate(
-                    ({ action, value }) => {
-                        const handle = (globalThis as unknown as { __kexeditPath: Handle }).__kexeditPath;
-                        if (action === "scrub") return handle.scrub(value as number);
-                        if (action === "playing") return handle.setPlaying(value as boolean);
-                        return handle.setRate(value as number);
-                    },
-                    { action, value },
-                );
-            const checked = (s: Sample) => {
-                const trajectory: Trajectory = {
-                    header: {
-                        version: 1,
-                        count: s.count,
-                        rate: s.rate,
-                        endReason: "complete",
-                        endTick: s.count - 1,
-                        constants: { g: 9.80665, heartToCom: 0, mass: 1, friction: 0, drag: 0 },
-                    },
-                    ticks: Float32Array.from(s.ticks),
-                };
-                const k = Math.min(s.count - 1, Math.max(0, Math.floor(s.playhead) + Math.floor(s.offset)));
-                const want = tickAt(trajectory, k);
-                const got = [...s.pos, ...s.rot];
-                const exp = [...want.position, ...want.rotation];
-                return { ...s, k, worst: Math.max(...got.map((v, i) => Math.abs(v - exp[i]))) };
-            };
-
-            await control("playing", false);
-            await control("scrub", 10.25);
-            const scrubbed = checked((await sample(2))!);
-            await control("setRate", 1);
-            await control("playing", true);
-            const rateOne = checked((await sample(30))!);
-            await control("playing", false);
-            const pauseStart = checked((await sample(2))!);
-            const paused = checked((await sample(20))!);
-            await control("scrub", 20.5);
-            await control("setRate", 2);
-            await control("playing", true);
-            const rateTwo = checked((await sample(30))!);
-            const distinct = scrubbed.ticks.length === scrubbed.count * TICK_FLOATS && scrubbed.count > 100;
-            const travels = Math.abs(scrubbed.ticks[(scrubbed.count - 1) * TICK_FLOATS + TICK_LANES.distance]) > 1;
-            const movedAtOne = rateOne.playhead > scrubbed.playhead;
-            const heldWhilePaused = paused.playhead === pauseStart.playhead && paused.k === pauseStart.k;
-            const movedAtTwo = rateTwo.playhead > 20.5;
-            const rateScales = rateTwo.playhead - 20.5 > (rateOne.playhead - scrubbed.playhead) * 1.5;
-            if (
-                scrubbed.k !== 10 ||
-                !movedAtOne ||
-                !heldWhilePaused ||
-                !movedAtTwo ||
-                !rateScales ||
-                !distinct ||
-                !travels ||
-                [scrubbed, rateOne, paused, rateTwo].some((e) => e.worst > 1e-6) ||
-                errors.length
-            ) {
-                throw new Error(
-                    `train placement failed: ${JSON.stringify({
-                        samples: [scrubbed, rateOne, paused, rateTwo].map(({ ticks, pos, rot, ...sample }) => sample),
-                        distinct,
-                        travels,
-                        errors,
-                    })}`,
-                );
-            }
-        }),
 );

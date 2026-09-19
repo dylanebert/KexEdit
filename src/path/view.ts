@@ -11,7 +11,7 @@
 // Part stands at the trajectory tick the ride transport names, set each frame before draw.
 //
 // The plugin takes the engine's draw-plugin shape: it owns its buffers and pipeline, runs in `draw`
-// after `ColorSystem` and before `GlazeSystem`, and counts fragments in an atomic probe.
+// after `ColorSystem` and before `GlazeSystem`.
 
 import {
     Camera,
@@ -29,11 +29,8 @@ import {
 import { GlazePlugin, GlazeSystem } from "@dylanebert/shallot/glaze";
 import { computeViewProj, Render, RenderPlugin, type View, Views } from "@dylanebert/shallot/render";
 import { ColorSystem, DEPTH_FORMAT, SearPlugin } from "@dylanebert/shallot/sear";
-import { helix } from "./helix.fixture";
-import { hill } from "./hill.fixture";
 import * as d from "typegpu/data";
 import { AUX_LANES, type Path, POSE_BYTES } from "./path";
-import { straight } from "./straight.fixture";
 import * as trajectoryFixtures from "../trajectory/fixtures.fixture";
 import { Train, RideHeader, Transport, createRideEntity, readRide, rides, type RideEntity } from "../trajectory/ride";
 import { type Input, type State as MarchState } from "../trajectory/integrator";
@@ -96,7 +93,7 @@ function spectrumGreen(): number[] {
     return oklch(l0 + (l1 - l0) * t, c0 + (c1 - c0) * t, AXIS_HUE);
 }
 /** the linear colors the uniform carries; the normal is the spectrum green at hue 142°, #6b9d65 */
-export const PATH_COLORS = {
+const PATH_COLORS = {
     chord: linear(PATH_BYTES.chord),
     lateral: linear(PATH_BYTES.lateral),
     normal: spectrumGreen(),
@@ -106,8 +103,6 @@ const VERTICES = 18;
 
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 const UNIFORM_BYTES = UNIFORM_FLOATS * FLOAT_BYTES;
-const PROBE_BYTES = Uint32Array.BYTES_PER_ELEMENT;
-const PROBE_ZERO = new Uint32Array([0]);
 
 export const PathFixture = { Straight: 0, Hill: 1, Ride: 2, Stalled: 3 } as const;
 
@@ -223,7 +218,7 @@ function trainFor(state: State, rideEid: number): number {
 }
 
 /** Read the train entity and its ride's transport state; null before the plugin warm phase. */
-export function readTrain(state: State): {
+function readTrain(state: State): {
     eid: number;
     rideEid: number;
     header: { length: number; count: number; rate: number; endReason: string; endTick: number; generation: number };
@@ -325,14 +320,14 @@ function unbindTransport(state: State): void {
 }
 
 /** Harness seam for transport controls; the Svelte layer does not reach into ECS fields directly. */
-export function setRidePlaying(state: State, playing: boolean): boolean | null {
+function setRidePlaying(state: State, playing: boolean): boolean | null {
     const train = readTrain(state);
     if (!train) return null;
     Transport.playing.set(train.rideEid, playing ? 1 : 0);
     return playing;
 }
 
-export function setRideRate(state: State, rate: number): number | null {
+function setRideRate(state: State, rate: number): number | null {
     if (!(Number.isFinite(rate) && rate >= 0)) throw new Error(`transport rate: expected finite >= 0, got ${rate}`);
     const train = readTrain(state);
     if (!train) return null;
@@ -341,7 +336,7 @@ export function setRideRate(state: State, rate: number): number | null {
 }
 
 /** Harness seam for authored scrubbing; Svelte never reaches into ECS fields directly. */
-export function scrubRide(state: State, playhead: number): number | null {
+function scrubRide(state: State, playhead: number): number | null {
     const train = readTrain(state);
     if (!train) return null;
     const value = scrub(playhead, train.header);
@@ -406,8 +401,6 @@ type PathGpu = {
     uniform: GPUBuffer | null;
     poses: GPUBuffer | null;
     aux: GPUBuffer | null;
-    probe: GPUBuffer | null;
-    readback: GPUBuffer | null;
     bindGroup: GPUBindGroup | null;
 };
 
@@ -417,8 +410,6 @@ const gpu: PathGpu = {
     uniform: null,
     poses: null,
     aux: null,
-    probe: null,
-    readback: null,
     bindGroup: null,
 };
 
@@ -441,7 +432,7 @@ const viewProj = new Float32Array(16);
 export const PathUploadStats = { lastFrameBytes: 0, totalBytes: 0 };
 
 /** Validate and stage a path; the next drawn frame writes each stream whole. */
-export function setPath(path: Path): void {
+function setPath(path: Path): void {
     uploads.set(path);
 }
 
@@ -498,10 +489,9 @@ function retract(name: string, buffer: GPUBuffer | null): void {
 function drawPath(eid: number, view: View): void {
     const device = Compute.device;
     const encoder = Render.encoder;
-    if (!device || !encoder || !gpu.pipeline || !gpu.layout || !gpu.uniform || !gpu.probe || !gpu.readback) return;
+    if (!device || !encoder || !gpu.pipeline || !gpu.layout || !gpu.uniform) return;
     if (!view.framebuffer || !view.depth || view.width === 0 || view.height === 0) return;
 
-    device.queue.writeBuffer(gpu.probe, 0, PROBE_ZERO);
     const live = uploads.path;
     const count = live?.header.count ?? 0;
     if (gpu.poses && count > 0) {
@@ -524,7 +514,6 @@ function drawPath(eid: number, view: View): void {
                 entries: [
                     { binding: 0, resource: { buffer: gpu.uniform } },
                     { binding: 1, resource: { buffer: gpu.poses } },
-                    { binding: 2, resource: { buffer: gpu.probe } },
                 ],
             });
         }
@@ -538,32 +527,6 @@ function drawPath(eid: number, view: View): void {
         pass.draw(VERTICES, count);
         pass.end();
     }
-    // The fragment shader increments the counter itself, so a positive count cannot come from a flag.
-    // A frame that lands while `readPathProbe` holds the readback mapped must not copy into it: on a
-    // real adapter the map outlives a frame, and a submit into a mapped buffer is a validation error.
-    if (gpu.readback.mapState === "unmapped") encoder.copyBufferToBuffer(gpu.probe, 0, gpu.readback, 0, PROBE_BYTES);
-}
-
-export type PathProbe = { samples: number; drawn: boolean; count: number };
-
-let probeRead: Promise<PathProbe> | null = null;
-
-export async function readPathProbe(): Promise<PathProbe> {
-    if (probeRead) return probeRead;
-    const readback = gpu.readback;
-    const device = Compute.device;
-    const count = uploads.path?.header.count ?? 0;
-    if (!readback || !device) return { samples: 0, drawn: false, count };
-    probeRead = (async () => {
-        await device.queue.onSubmittedWorkDone();
-        await readback.mapAsync(GPUMapMode.READ);
-        const samples = new Uint32Array(readback.getMappedRange())[0] ?? 0;
-        readback.unmap();
-        return { samples, drawn: samples > 0, count };
-    })().finally(() => {
-        probeRead = null;
-    });
-    return probeRead;
 }
 
 export const PathSystem: System = {
@@ -597,17 +560,12 @@ function release(): void {
     retract(PATH_POSES, gpu.poses);
     retract(PATH_AUX, gpu.aux);
     gpu.uniform?.destroy();
-    gpu.probe?.destroy();
-    gpu.readback?.destroy();
     gpu.poses = null;
     gpu.aux = null;
     gpu.uniform = null;
-    gpu.probe = null;
-    gpu.readback = null;
     gpu.pipeline = null;
     gpu.layout = null;
     gpu.bindGroup = null;
-    probeRead = null;
 }
 
 export const PathPlugin: Plugin = {
@@ -629,23 +587,12 @@ export const PathPlugin: Plugin = {
             entries: [
                 { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
                 { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
-                { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "storage" } },
             ],
         });
         gpu.uniform = device.createBuffer({
             label: "kexedit-path-uniform",
             size: UNIFORM_BYTES,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        gpu.probe = device.createBuffer({
-            label: "kexedit-path-probe",
-            size: PROBE_BYTES,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-        });
-        gpu.readback = device.createBuffer({
-            label: "kexedit-path-probe-readback",
-            size: PROBE_BYTES,
-            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
         });
         gpu.pipeline = await device.createRenderPipelineAsync({
             label: "kexedit-path",
@@ -681,7 +628,5 @@ export const PathPlugin: Plugin = {
         PathUploadStats.totalBytes = 0;
     },
 };
-
-export const pathFixtures = { straight, hill, helix } as const;
 
 export default PathPlugin;
