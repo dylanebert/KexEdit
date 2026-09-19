@@ -7,9 +7,9 @@
         "dev": "vite",
         "build": "vite build",
         "postinstall": "bun run --cwd node_modules/@dylanebert/shallot prepack",
-        "list": "bun scripts/carrier.ts list",
+        "list": "shallot list",
         "workflow": "shallot workflow",
-        "test": "bun scripts/carrier.ts test",
+        "test": "shallot test",
         "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
