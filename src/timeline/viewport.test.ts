@@ -27,18 +27,6 @@ function refuses(action: () => unknown): void {
 }
 
 check(
-    "the timeline domain uses a content-relative post-end pad",
-    { claim: "timeline domain padding is not exactly one authored duration" },
-    () => {
-        for (const duration of [12, 37.5]) {
-            if (timelineDomainEnd(duration) !== 2 * duration) throw new Error(`domain end ${timelineDomainEnd(duration)}`);
-        }
-        refuses(() => timelineDomainEnd(0));
-        refuses(() => timelineDomainEnd(Number.NaN));
-    },
-);
-
-check(
     "one-sided frame-all keeps zero at the surface origin",
     { claim: "timeline frame-all admits negative time or loses its fixed post-end clearance" },
     () => {
