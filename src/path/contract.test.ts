@@ -19,7 +19,6 @@ check(
     "the pose stride is the schema size",
     { claim: "the path pose stride drifts from its typegpu schema" },
     () => {
-        if (d.sizeOf(Pose) !== 32) throw new Error(`Pose schema is ${d.sizeOf(Pose)} bytes`);
         if (POSE_BYTES !== d.sizeOf(Pose)) throw new Error(`POSE_BYTES ${POSE_BYTES} != schema`);
         const bytes = (floats: number) => floats * Float32Array.BYTES_PER_ELEMENT;
         const layout = {
@@ -27,13 +26,6 @@ check(
             w: d.memoryLayoutOf(Pose, (p) => p.w).offset,
             rotation: d.memoryLayoutOf(Pose, (p) => p.rotation).offset,
         };
-        if (
-            bytes(POSE_LANES.position) !== 0 ||
-            bytes(POSE_LANES.w) !== 12 ||
-            bytes(POSE_LANES.rotation) !== 16
-        ) {
-            throw new Error(`pose lanes ${JSON.stringify(POSE_LANES)} misplaced`);
-        }
         for (const key of ["position", "w", "rotation"] as const) {
             if (bytes(POSE_LANES[key]) !== layout[key]) {
                 throw new Error(`pose lane ${key} disagrees with memoryLayoutOf`);

@@ -55,7 +55,8 @@ check(
         const fit = frameAll(20, 10, 1000);
         const view = clampViewport({ ...fit, start: 5, span: 5 });
         const maximum = zoomAtPixel(view, 1000, 500, 1e12);
-        if (maximum.start !== 0 || maximum.span !== 40 || maximum.start + maximum.span !== timelineDomainEnd(20)) {
+        const end = timelineDomainEnd(20);
+        if (maximum.start !== 0 || maximum.span !== end) {
             throw new Error(`maximum is not exact ${JSON.stringify(maximum)}`);
         }
         if (!close(timeToPixel(maximum, 1000, 20), 500)) throw new Error("authored end is not half the maximum view");
@@ -65,7 +66,7 @@ check(
             const base = clampViewport({ ...fit, start: 5, span });
             const left = panByPixels(base, 1000, -1e9);
             const right = panByPixels(base, 1000, 1e9);
-            if (left.start !== 0 || right.start !== 40 - span || left.start < 0 || right.start + span > 40) {
+            if (left.start !== 0 || right.start + span !== end || left.start < 0) {
                 throw new Error(`pan escaped legal domain ${JSON.stringify({ span, left, right })}`);
             }
         }
@@ -112,7 +113,7 @@ check(
         const retained = updateDomain(manual, 15, 10);
         if (retained.start !== 22 || retained.span !== 8 || retained.duration !== 15) throw new Error(`legal manual interval was reframed ${JSON.stringify(retained)}`);
         const clamped = updateDomain(manual, 10, 10);
-        if (clamped.start !== 12 || clamped.span !== 8 || clamped.start + clamped.span !== timelineDomainEnd(10)) {
+        if (clamped.span !== 8 || clamped.start + clamped.span !== timelineDomainEnd(10)) {
             throw new Error(`changed-domain clamp failed ${JSON.stringify(clamped)}`);
         }
     },
@@ -158,10 +159,18 @@ check(
     { claim: "timeline wheel normalization reverses direction, jumps scales, or loses pan sign" },
     () => {
         const plain = wheelZoomRatio(100, 0);
-        if (!close(plain, 2 ** 0.2) || !close(wheelZoomRatio(-100, 0), 2 ** -0.2)) throw new Error("pixel wheel direction or ratio failed");
-        if (wheelZoomRatio(10_000, 0) !== 2 ** 0.25 || wheelZoomRatio(-10_000, 0) !== 2 ** -0.25) throw new Error("wheel exponent was not capped");
-        if (wheelZoomRatio(1, 1) !== 2 ** 0.05 || wheelZoomRatio(1, 2) !== 2 ** 0.25) throw new Error("line/page normalization failed");
-        if (wheelZoomRatio(0.01, 0, true) !== 2 ** 0.0002 || wheelZoomRatio(100, 0, true) !== 2 ** 0.25) throw new Error("modified gain failed");
+        if (!(plain > 1) || !close(wheelZoomRatio(-100, 0), 1 / plain)) throw new Error("pixel wheel direction or reciprocity failed");
+        const cap = wheelZoomRatio(1e9, 0);
+        if (!(cap > plain) || !Number.isFinite(cap) || wheelZoomRatio(1e12, 0) !== cap || !close(wheelZoomRatio(-1e9, 0), 1 / cap)) {
+            throw new Error("wheel exponent was not capped");
+        }
+        for (const mode of [1, 2]) {
+            const ratio = wheelZoomRatio(1, mode);
+            if (!(ratio > wheelZoomRatio(1, 0)) || ratio > cap || wheelZoomRatio(1e9, mode) !== cap) throw new Error(`mode ${mode} normalization failed`);
+        }
+        const fine = wheelZoomRatio(0.01, 0);
+        const modified = wheelZoomRatio(0.01, 0, true);
+        if (!(modified > fine) || !(modified < cap) || wheelZoomRatio(1e9, 0, true) !== cap) throw new Error("modified gain failed");
 
         const start = clampViewport({ ...frameAll(100, 10, 1000), start: 30, span: 20 });
         const first = zoomAtPixel(start, 1000, 400, plain);

@@ -2,7 +2,7 @@ import { State } from "@dylanebert/shallot/ecs";
 import { check } from "@dylanebert/shallot/harness/check";
 import { rotate } from "../path/path";
 import { createRideEntity, readRide } from "./ride";
-import { run } from "./policies";
+import { FORCE_FLOOR, run } from "./policies";
 import {
     ride,
     RIDE_CONSTANTS,
@@ -110,7 +110,7 @@ check(
         if (
             result.refusal.reason !== "unsatisfiable" ||
             result.refusal.lane !== "forces" ||
-            result.refusal.need !== 5 ||
+            result.refusal.need !== FORCE_FLOOR ||
             !(result.refusal.have < result.refusal.need)
         ) {
             throw new Error(`refusal ${JSON.stringify(result.refusal)}`);

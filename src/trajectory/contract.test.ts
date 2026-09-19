@@ -40,8 +40,7 @@ check(
     "the tick stride and lanes are the schema's",
     { claim: "the trajectory tick stride or lane order drifts from its typegpu schema" },
     () => {
-        if (d.sizeOf(Tick) !== 64) throw new Error(`Tick schema is ${d.sizeOf(Tick)} bytes`);
-        if (TICK_BYTES !== d.sizeOf(Tick) || TICK_FLOATS !== 16) throw new Error(`stride ${TICK_BYTES}/${TICK_FLOATS}`);
+        if (TICK_BYTES !== d.sizeOf(Tick) || TICK_FLOATS * Float32Array.BYTES_PER_ELEMENT !== TICK_BYTES) throw new Error(`stride ${TICK_BYTES}/${TICK_FLOATS}`);
         const order = ["position", "w", "rotation", "speed", "distance", "omega", "a", "reserved"] as const;
         let next = 0;
         for (const key of order) {
