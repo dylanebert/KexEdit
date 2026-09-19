@@ -26,7 +26,7 @@ bun run workflow   # regenerate the hosted surface
 ## Tests
 
 - The installed `shallot` bin is the runner. `test` and `list` go through `scripts/carrier.ts`, which adds one rule the pinned runner lacks: an integration selection that matches no test fails, so the browser and GPU tests selected by a changed subject never pass as an empty run. Delete the wrapper when the runner refuses an empty selection itself.
-- Every test is listed once in the root `shallot.json`. A subject is a file or directory compared as its full token stream at both refs. A directory subject reads every file under it, so a test never names a tree containing its own file. A glob matches nothing.
+- Every `*.test.ts` and `*.oracle.ts` file is discovered by its name when the root `shallot.json` omits `check`. `.oracle.ts` files are named evidence and stay out of ordinary `test` and subject-selected integration sweeps; run one explicitly with `--oracle <claim>`.
 - Browser tests capture only through the installed `captureFrame` contract at a real, identified adapter with fixed driver geometry. A fallback adapter or missing identity fails. CPU path and trajectory properties stay unit tests; GPU buffer claims are separate probes.
 
 ## Shallot

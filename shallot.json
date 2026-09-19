@@ -4,25 +4,5 @@
     "plugins": {
         "Orbit": true,
         "Grid": "@dylanebert/shallot-grid"
-    },
-    "check": [
-        { "file": "src/boot.test.ts" },
-        { "file": "src/transport.test.ts" },
-        { "file": "src/timeline/viewport.test.ts" },
-        { "file": "src/path/contract.test.ts" },
-        { "file": "src/path/frame.test.ts" },
-        { "file": "src/path/upload.test.ts" },
-        { "file": "src/path/view.test.ts" },
-        { "file": "src/trajectory/contract.test.ts" },
-        { "file": "src/trajectory/convergence.oracle.ts" },
-        { "file": "src/trajectory/execution.oracle.ts" },
-        { "file": "src/trajectory/execution.test.ts" },
-        { "file": "src/trajectory/integrator.test.ts" },
-        { "file": "src/trajectory/policies.test.ts" },
-        { "file": "src/trajectory/pool.test.ts" },
-        { "file": "src/trajectory/resample.test.ts" },
-        { "file": "src/trajectory/ride.test.ts" },
-        { "file": "src/trajectory/train.test.ts" },
-        { "file": "src/trajectory/transport.test.ts" }
-    ]
+    }
 }
