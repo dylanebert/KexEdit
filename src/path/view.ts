@@ -34,7 +34,6 @@ import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import * as trajectoryFixtures from "../trajectory/fixtures.fixture";
 import { Train, RideHeader, Transport, createRideEntity, readRide, rides, type RideEntity } from "../trajectory/ride";
 import { type Input, type State as MarchState } from "../trajectory/integrator";
-import { run } from "../trajectory/policies";
 import { CHUNK, createRide, type Ride } from "../trajectory/execution";
 import { DEFAULT_SPACING } from "../trajectory/resample";
 import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "../trajectory/ride.fixture";
@@ -122,19 +121,9 @@ const closedForm = (fixture: Trajectory): RideSource => ({
     constants: fixture.header.constants,
 });
 
-// the integrated ride: the policies march the intent table, and the ride marches the inputs they emit
-function integrated(): RideSource {
-    const { history, trajectory } = run(RIDE_START, RIDE_INTENTS, RIDE_RATE, RIDE_CONSTANTS);
-    if (trajectory.header.endReason !== "complete") {
-        throw new Error(`path-view ride: intent table ended ${trajectory.header.endReason} at ${trajectory.header.endTick}`);
-    }
-    return { initial: RIDE_START, inputs: history.inputs, rate: RIDE_RATE, constants: RIDE_CONSTANTS };
-}
-
 const FIXTURES: Record<number, () => RideSource> = {
     [PathFixture.Straight]: () => closedForm(trajectoryFixtures.straight),
     [PathFixture.Hill]: () => closedForm(trajectoryFixtures.hill),
-    [PathFixture.Ride]: integrated,
 };
 
 /** a scene handle naming the fixture whose intent the view's ride marches at boot */
