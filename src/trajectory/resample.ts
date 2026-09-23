@@ -8,8 +8,7 @@
 // and rotation is the slerp of the tick rotations.
 //
 // Spacing is a geometric error bound, never a bare constant. The path is read as chords between poses,
-// so at curvature κ it departs from the curve by at most κ·spacing²/8, the sagitta; `spacingFor` inverts
-// that for a tolerance. The default is 0.5 m (NoLimits 2's export default; 0.25 m is track-recording
+// so at curvature κ it departs from the curve by at most κ·spacing²/8, the sagitta. The default is 0.5 m (NoLimits 2's export default; 0.25 m is track-recording
 // practice).
 
 import { PATH_VERSION, type Path, POSE_FLOATS, POSE_LANES, type Quat, readPath, rotate, type Vec3 } from "../path/path";
@@ -20,11 +19,6 @@ export const DEFAULT_SPACING = 0.5;
 /** Worst chord deviation, m, of poses `spacing` apart on a curve of curvature `curvature` (1/m). */
 export function chordError(spacing: number, curvature: number): number {
     return (curvature * spacing * spacing) / 8;
-}
-
-/** The largest spacing whose chord deviation at `curvature` stays within `tolerance` m. */
-export function spacingFor(tolerance: number, curvature: number): number {
-    return curvature > 0 ? Math.sqrt((8 * tolerance) / curvature) : Number.POSITIVE_INFINITY;
 }
 
 const FORWARD: Vec3 = [0, 0, -1];
