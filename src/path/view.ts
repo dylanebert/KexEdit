@@ -219,29 +219,16 @@ function trainFor(state: State, rideEid: number): number {
 
 /** Read the train entity and its ride's transport state; null before the plugin warm phase. */
 function readTrain(state: State): {
-    eid: number;
     rideEid: number;
     header: { length: number; count: number; rate: number; endReason: string; endTick: number; generation: number };
-    trajectory: Trajectory;
     refusal?: RideEntity["refusal"];
     transport: { playhead: number; playing: boolean; rate: number; loop: boolean };
-    offset: number;
-    elapsed: number;
 } | null {
     for (const eid of state.query([Train, Transform])) {
         const rideEid = Train.ride.get(eid);
         if (!state.exists(rideEid) || !rides.has(rideEid)) continue;
         const ride = readRide(state, rideEid);
-        return {
-            eid,
-            rideEid,
-            header: ride.header,
-            trajectory: ride.trajectory,
-            refusal: ride.refusal,
-            transport: ride.transport,
-            offset: Train.offset.get(eid),
-            elapsed: state.time.elapsed,
-        };
+        return { rideEid, header: ride.header, refusal: ride.refusal, transport: ride.transport };
     }
     return null;
 }
