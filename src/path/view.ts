@@ -27,8 +27,8 @@ import {
     unpackColor,
 } from "@dylanebert/shallot";
 import { GlazePlugin, GlazeSystem } from "@dylanebert/shallot/glaze";
-import { computeViewProj, Render, RenderPlugin, type View, Views } from "@dylanebert/shallot/render";
-import { ColorSystem, DEPTH_FORMAT, SearPlugin } from "@dylanebert/shallot/sear";
+import { computeViewProj, Render, RenderPlugin, type View, Views } from "@dylanebert/shallot/rendering";
+import { ColorSystem, DEPTH_FORMAT, SearPlugin } from "@dylanebert/shallot/standard/rendering";
 import * as d from "typegpu/data";
 import { AUX_LANES, type Path, POSE_BYTES } from "./path";
 import * as trajectoryFixtures from "../trajectory/fixtures.fixture";

@@ -15,9 +15,9 @@ Layout is view right, context panel left, timeline bottom, one reserved status l
 ```bash
 bun run dev        # vite
 bun run build      # vite build
-bun run check      # shallot check and svelte-check
+bun run check      # shallot test --list and svelte-check
 bun run test       # every test
-bun run list       # what the same selectors would run
+bun run list       # what the same selectors would run (`shallot test --list`)
 ```
 
 ## Tests
@@ -27,4 +27,4 @@ bun run list       # what the same selectors would run
 
 ## Shallot
 
-The pinned Shallot is a full SHA in `package.json` and `bun.lock`. Local co-development is `bun link` in the engine and `bun link @dylanebert/shallot --no-save` here, never committed. Leaving it is a frozen install from an empty cache, with the manifest and lockfile byte-identical afterward. Short refs, moving refs, `link:` or `file:` paths and local packs are never committed. Every command uses the installed runner, never a path into `node_modules` or a checkout. Vite dedupes Shallot and typegpu; `@dylanebert/shallot-grid` stays the registry plugin, and `vite.config.ts` excludes it from prebundling because a prebundled copy carries its own engine and never draws.
+The pinned Shallot is a full SHA in `package.json` and `bun.lock`. Local co-development is `bun link` in the engine and `bun link @dylanebert/shallot --no-save` here, never committed. Leaving it is a frozen install from an empty cache, with the manifest and lockfile byte-identical afterward. Short refs, moving refs, `link:` or `file:` paths and local packs are never committed. Every command uses the installed runner, never a path into `node_modules` or a checkout. Vite dedupes Shallot and typegpu; `@dylanebert/shallot-grid` stays pinned by full git SHA, and `vite.config.ts` excludes it from prebundling because a prebundled copy carries its own engine and never draws.

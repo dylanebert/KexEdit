@@ -154,6 +154,6 @@ check(
         if (UNIFORM_FLOATS * Float32Array.BYTES_PER_ELEMENT !== d.sizeOf(PathUniform)) {
             throw new Error(`UNIFORM_FLOATS ${UNIFORM_FLOATS} != schema ${d.sizeOf(PathUniform)} bytes`);
         }
-        if (!/struct\s+PathView\s*\{/.test(PATH_SHADER)) throw new Error("resolved shader has no PathView struct");
+        if (!/struct\s+PathUniform\s*\{/.test(PATH_SHADER)) throw new Error("resolved shader has no PathUniform struct");
     },
 );

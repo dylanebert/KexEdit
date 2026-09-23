@@ -19,7 +19,7 @@ export const PathUniform = d.struct({
 export const UNIFORM_FLOATS = d.sizeOf(PathUniform) / Float32Array.BYTES_PER_ELEMENT;
 
 const BODY = /* wgsl */ `
-@group(0) @binding(0) var<uniform> path: PathView;
+@group(0) @binding(0) var<uniform> path: PathUniform;
 @group(0) @binding(1) var<storage, read> poses: array<Pose>;
 
 struct VSOut {
@@ -99,4 +99,4 @@ fn fs(input: VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
-export const PATH_SHADER = tgpu.resolve({ template: BODY, externals: { Pose, PathView: PathUniform } });
+export const PATH_SHADER = tgpu.resolve({ template: BODY, externals: { Pose, PathUniform } });
