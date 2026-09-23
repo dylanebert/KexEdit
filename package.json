@@ -8,12 +8,11 @@
         "build": "vite build",
         "postinstall": "bun run --cwd node_modules/@dylanebert/shallot prepack",
         "list": "shallot list",
-        "workflow": "shallot workflow",
         "test": "shallot test",
         "check": "shallot check && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#0664218f465224397b80aeb604b51178ac71cfb2",
+        "@dylanebert/shallot": "github:dylanebert/shallot#9eb73dac332293c1c29d313f97974612f2379552",
         "@dylanebert/shallot-grid": "^0.1.2",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",

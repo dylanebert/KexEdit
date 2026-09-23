@@ -18,7 +18,6 @@ bun run build      # vite build
 bun run check      # shallot check and svelte-check
 bun run test       # every test
 bun run list       # what the same selectors would run
-bun run workflow   # regenerate the hosted surface
 ```
 
 ## Tests
