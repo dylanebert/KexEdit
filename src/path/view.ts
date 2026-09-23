@@ -404,9 +404,6 @@ const U = {
 };
 const viewProj = new Float32Array(16);
 
-/** bytes the last frame's flush uploaded; zero on a frame with no invalidation */
-export const PathUploadStats = { lastFrameBytes: 0, totalBytes: 0 };
-
 /** Validate and stage a path; the next drawn frame writes each stream whole. */
 function setPath(path: Path): void {
     uploads.set(path);
@@ -437,7 +434,7 @@ function ensure(
 }
 
 function flush(device: GPUDevice): void {
-    const bytes = uploads.flush({
+    uploads.flush({
         poses(data) {
             gpu.poses = ensure(device, gpu.poses, PATH_POSES, Math.max(data.byteLength, POSE_BYTES));
             device.queue.writeBuffer(gpu.poses, 0, data.buffer, data.byteOffset, data.byteLength);
@@ -453,8 +450,6 @@ function flush(device: GPUDevice): void {
             device.queue.writeBuffer(gpu.aux, 0, data.buffer, data.byteOffset, data.byteLength);
         },
     });
-    PathUploadStats.lastFrameBytes = bytes;
-    PathUploadStats.totalBytes += bytes;
 }
 
 function retract(name: string, buffer: GPUBuffer | null): void {
@@ -600,8 +595,6 @@ export const PathPlugin: Plugin = {
         }
         release();
         uploads.reset();
-        PathUploadStats.lastFrameBytes = 0;
-        PathUploadStats.totalBytes = 0;
     },
 };
 
