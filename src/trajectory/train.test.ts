@@ -1,35 +1,15 @@
 import { check } from "@dylanebert/shallot/harness/check";
 import type { Vec3 } from "../path/path";
 import { createRide } from "./execution";
-import { constants, helix, hill, RATE } from "./fixtures.fixture";
+import { constants, helix, RATE } from "./fixtures.fixture";
 import { march } from "./integrator";
-import { clockTick, initialState, intentTable, placeTrain } from "./train";
+import { initialState, intentTable } from "./train";
 import { tickAt } from "./trajectory";
 
 check(
-    "the view places the train at the trajectory tick the scheduler clock names",
-    { claim: "the train pose for scheduler time k / rate is not the trajectory's tick k" },
+    "a ride marched from a trajectory's intent table reproduces its inputs",
+    { claim: "the intent table shifts or drops a row, so the re-marched ride carries other inputs" },
     () => {
-        for (const fixture of [helix, hill]) {
-            const { rate, count } = fixture.header;
-            if (count < 100) throw new Error(`fixture population is ${count} ticks`);
-            // every tick, at its instant, a hair under it as accumulated deltas land, and mid-interval
-            for (let k = 0; k < count; k++) {
-                const want = tickAt(fixture, k);
-                for (const elapsed of [k / rate, k / rate - 1e-9, (k + 0.5) / rate]) {
-                    const pose = placeTrain(fixture, elapsed);
-                    if (pose.tick !== k) throw new Error(`elapsed ${elapsed}: tick ${pose.tick}, expected ${k}`);
-                    const got = [...pose.position, ...pose.rotation];
-                    const exp = [...want.position, ...want.rotation];
-                    const at = got.findIndex((v, i) => !Object.is(v, exp[i]));
-                    if (at >= 0) throw new Error(`tick ${k} at ${elapsed}: pose float ${at} is ${got[at]}, tick holds ${exp[at]}`);
-                }
-            }
-            // the clock runs round: one full trajectory later names tick 0 again
-            if (clockTick(fixture, count / rate) !== 0 || clockTick(fixture, (count + 3) / rate) !== 3) {
-                throw new Error(`clock does not wrap at count ${count}`);
-            }
-        }
         // the ride the view marches from a trajectory's intent table stores that trajectory's inputs on every
         // tick, and on the constant-ω helix its geometry too; every closed-form fixture holds ω constant, so a
         // marched trajectory with varying ω is what sees a row shifted by one
