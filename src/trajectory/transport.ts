@@ -42,23 +42,15 @@ export function advance(transport: TransportValue, header: TransportHeader, dt: 
 }
 
 /** Set a transport playhead directly on the authored tick axis, clamped to the authored length. */
-export function scrub(playhead: number, header: Pick<RideHeaderValue, "length"> | number): number;
-export function scrub(transport: TransportValue, header: Pick<RideHeaderValue, "length">, playhead: number): TransportValue;
-export function scrub(
-    value: number | TransportValue,
-    header: Pick<RideHeaderValue, "length"> | number,
-    requested?: number,
-): number | TransportValue {
-    const playhead = typeof value === "number" ? value : requested;
-    const length = typeof header === "number" ? header : header.length;
-    if (playhead === undefined || !Number.isFinite(playhead)) {
+export function scrub(playhead: number, header: Pick<RideHeaderValue, "length">): number {
+    const { length } = header;
+    if (!Number.isFinite(playhead)) {
         throw new Error(`transport scrub: expected finite playhead, got ${playhead}`);
     }
     if (!(Number.isFinite(length) && length >= 0)) {
         throw new Error(`transport length: expected finite >= 0, got ${length}`);
     }
-    const next = clamp(playhead, 0, length);
-    return typeof value === "number" ? next : { ...value, playhead: next };
+    return clamp(playhead, 0, length);
 }
 
 /** Read the discrete pose named by a playhead plus a train's authored tick offset. */
