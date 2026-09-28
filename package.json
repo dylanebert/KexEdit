@@ -6,13 +6,12 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
-        "list": "shallot test --list",
-        "test": "shallot test",
-        "check": "shallot test --list && svelte-check --tsconfig ./tsconfig.json"
+        "test": "bun test --timeout=250",
+        "check": "bun run test && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#69f12a06438d8ce80aa1ab9e4b34de5b58820e15",
-        "@dylanebert/shallot-grid": "github:dylanebert/shallot-grid#f952565f8ca2ed708596b7d9448b228e28cb7601",
+        "@dylanebert/shallot": "github:dylanebert/shallot#49fbfcbe4b8d00673b2798c96ae25bbefa5f6060",
+        "@dylanebert/shallot-grid": "github:dylanebert/shallot-grid#c6e0f17eec9526bcd853866cb92f344aa3a103ef",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.5"
@@ -26,7 +25,6 @@
         "@webgpu/types": "^0.1.72",
         "svelte-check": "^4.7.6",
         "typescript": "~6",
-        "unplugin-typegpu": "~0.12.3",
         "vite": "^8.3.0"
     }
 }

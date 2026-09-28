@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { type Curve, frameQuat, type Path, poseAt, readPath, rotate, type Vec3 } from "../path/path";
 import { helix as helixPath, helixCurve } from "../path/helix.fixture";
 import { constants, corkscrew, HELIX_C, HELIX_R, helix, hill, RATE, SPEED, straight, turn } from "./fixtures.fixture";
@@ -58,9 +58,8 @@ function chordGap(path: Path, curve: Curve): number {
     return worst;
 }
 
-check(
-    "the marched helix resamples onto the closed-form helix at every pose",
-    { claim: "a resampled pose departs from the closed-form helix at its arclength" },
+test(
+    "a resampled pose departs from the closed-form helix at its arclength",
     () => {
         const trajectory = marchedHelix();
         const marchedLength = (trajectory.header.count - 1) * (SPEED / RATE);
@@ -84,12 +83,11 @@ check(
                 throw new Error(`pose ${i} departs from helix.fixture`);
             }
         }
-    },
+    }
 );
 
-check(
-    "the resampled helix stays inside its spacing's chord bound and the error halves at half the spacing",
-    { claim: "the resampled path read as chords exceeds its spacing bound or does not converge with spacing" },
+test(
+    "the resampled path read as chords exceeds its spacing bound or does not converge with spacing",
     () => {
         const trajectory = marchedHelix();
         const curvature = HELIX_R / HELIX_K2;
@@ -104,12 +102,11 @@ check(
             throw new Error(`0.25 m exceeds bound ${chordError(0.25, curvature)}: ${report}`);
         }
         if (!(fine <= 0.5 * coarse)) throw new Error(`error does not halve: ${report}`);
-    },
+    }
 );
 
-check(
-    "a frame turning at v = 0 is dropped and a reversal walks back by arclength",
-    { claim: "the resampler keeps a v = 0 cusp or walks a reversal by signed distance" },
+test(
+    "the resampler keeps a v = 0 cusp or walks a reversal by signed distance",
     () => {
         // at rest yaw left a quarter turn in 1 s, then a = 4 for 1 s, then a = -8 for 1 s: forward 3 m, back 1 m
         const inputs: Input[] = [
@@ -130,12 +127,11 @@ check(
             const df = gap(rotate(pose.rotation, [0, 0, -1]), forward);
             if (!(dp <= 1e-4 && df <= 1e-5)) throw new Error(`pose ${i} at ${s} m: position ${dp}, forward ${df}`);
         }
-    },
+    }
 );
 
-check(
-    "a trajectory storing q or -q per tick resamples to the same path",
-    { claim: "the resampler interpolates rotation across a sign flip instead of along the short arc" },
+test(
+    "the resampler interpolates rotation across a sign flip instead of along the short arc",
     () => {
         const trajectory = marchedHelix();
         const ticks = trajectory.ticks.slice();
@@ -152,12 +148,11 @@ check(
                 throw new Error(`pose ${i}: rotation ${quatGap(a.rotation, b.rotation)}`);
             }
         }
-    },
+    }
 );
 
-check(
-    "readPath accepts the resample of every trajectory fixture at every spacing",
-    { claim: "the resampler emits a path the path contract refuses" },
+test(
+    "the resampler emits a path the path contract refuses",
     () => {
         const still = march(
             { position: [0, 0, 0], rotation: [0, 0, 0, 1], speed: 0, distance: 0 },
@@ -176,5 +171,5 @@ check(
             }
         }
         if (resample(still).header.count !== 1) throw new Error("a trajectory with no travel is not one pose");
-    },
+    }
 );

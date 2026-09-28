@@ -5,8 +5,8 @@
     "": {
       "name": "kexedit",
       "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#69f12a06438d8ce80aa1ab9e4b34de5b58820e15",
-        "@dylanebert/shallot-grid": "github:dylanebert/shallot-grid#f952565f8ca2ed708596b7d9448b228e28cb7601",
+        "@dylanebert/shallot": "github:dylanebert/shallot#49fbfcbe4b8d00673b2798c96ae25bbefa5f6060",
+        "@dylanebert/shallot-grid": "github:dylanebert/shallot-grid#c6e0f17eec9526bcd853866cb92f344aa3a103ef",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
         "typegpu": "~0.12.5",
@@ -20,7 +20,6 @@
         "@webgpu/types": "^0.1.72",
         "svelte-check": "^4.7.6",
         "typescript": "~6",
-        "unplugin-typegpu": "~0.12.3",
         "vite": "^8.3.0",
       },
     },
@@ -44,9 +43,9 @@
 
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
-    "@dylanebert/shallot": ["@dylanebert/shallot@github:dylanebert/shallot#69f12a0", { "dependencies": { "@babel/parser": "^8.0.4", "@types/node": "^26.2.0", "@webgpu/types": "^0.1.72", "unplugin-typegpu": "~0.12.3", "vite": "^8.3.0" }, "peerDependencies": { "bun-webgpu": ">=0.1.7", "playwright": "^1.0.0", "typegpu": "~0.12.5" }, "optionalPeers": ["bun-webgpu", "playwright"], "bin": { "shallot": "./bin/shallot.ts" } }, "dylanebert-shallot-69f12a0", "sha512-d0r0T4OfBxofwoGgtewH+I9/I6TQSAK2PWw5qy8gJ4s96AEhHHp2DH4/MGeMQchq6sJUWuOYzqARyD/KUxF+ag=="],
+    "@dylanebert/shallot": ["@dylanebert/shallot@github:dylanebert/shallot#49fbfcb", { "dependencies": { "@babel/parser": "^8.0.4", "@types/node": "^26.2.0", "@webgpu/types": "^0.1.72", "unplugin-typegpu": "~0.12.3", "vite": "^8.3.0" }, "peerDependencies": { "bun-webgpu": ">=0.1.7", "playwright": "^1.0.0", "typegpu": "~0.12.5" }, "optionalPeers": ["bun-webgpu", "playwright"], "bin": { "shallot": "./bin/shallot.ts" } }, "dylanebert-shallot-49fbfcb", "sha512-YRn+FDpS0Wav2gvgBxJinZvqUz6YyzSnARTKyhVsEubev09vF/k+Orjls3W268EQcG+rkimBOaFITz9yM5iKcg=="],
 
-    "@dylanebert/shallot-grid": ["@dylanebert/shallot-grid@github:dylanebert/shallot-grid#f952565", { "peerDependencies": { "@dylanebert/shallot": "^0.10.0", "typegpu": "~0.12.5" } }, "dylanebert-shallot-grid-f952565", "sha512-wZjFBvzfTHowI06mj/ifjt+C7l/8isgG1nFcG7Lg6NnUyoYMXfUM6alhE3hK+cigG2RD5aJNGhTpiVnHM8Dt9g=="],
+    "@dylanebert/shallot-grid": ["@dylanebert/shallot-grid@github:dylanebert/shallot-grid#c6e0f17", { "peerDependencies": { "@dylanebert/shallot": "^0.10.0", "typegpu": "~0.12.5" } }, "dylanebert-shallot-grid-c6e0f17", "sha512-aZkEUyL1vt9lgnv156pqDtO6XbF2iRDQbBWJT2rcLPKXImbDyR4OH/ghPr01X9BGo5HlaVmG5gmYpVlHcZPSeQ=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

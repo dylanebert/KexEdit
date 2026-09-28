@@ -4,7 +4,7 @@
 // midpoint. Constant-ω intent must match to 1e-9; varying intent must converge at order 2 across 100,
 // 200 and 400 Hz, the rate held by `strategy/kexedit.md`.
 
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { frameQuat, rotate, type Vec3 } from "../path/path";
 import { HELIX_C, HELIX_R, SPEED } from "./fixtures.fixture";
 import { type Input, type State, step } from "./integrator";
@@ -76,12 +76,8 @@ function error(a: State, b: State): number {
 const DURATION = 2;
 const SUBSTEP = 1e-4;
 
-check(
-    "the march converges to the RK4 oracle: exact on constant ω, order 2 on varying intent",
-    {
-        claim: "the march departs from the RK4 solution on constant ω or loses second-order convergence on varying intent",
-        budget: 200,
-    },
+test(
+    "the march departs from the RK4 solution on constant ω or loses second-order convergence on varying intent",
     () => {
         const initial: State = {
             position: [3, 1, -2],
@@ -111,4 +107,5 @@ check(
             if (!(order >= 1.8 && order <= 2.2)) throw new Error(`observed order ${order} is not 2`);
         }
     },
+    { timeout: 200 }
 );

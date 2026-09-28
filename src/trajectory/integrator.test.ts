@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { type Curve, frameQuat, rotate, type Vec3 } from "../path/path";
 import { helixCurve } from "../path/helix.fixture";
 import { straightCurve } from "../path/straight.fixture";
@@ -47,31 +47,28 @@ function worstGap(curve: Curve, input: Input, speed: number, steps: number, arcl
 
 const ticksAlong = (curve: Curve) => Math.floor((curve.length * RATE) / SPEED);
 
-check(
-    "the constant-speed helix integrates exactly at 100 Hz",
-    { claim: "the integrator step departs from the constant-ω helix at 100 Hz" },
+test(
+    "the integrator step departs from the constant-ω helix at 100 Hz",
     () => {
         const input: Input = { omega: [0, (SPEED * HELIX_R) / HELIX_K2, (SPEED * HELIX_C) / HELIX_K2], a: 0 };
         const steps = ticksAlong(helixCurve);
         if (steps < 400) throw new Error(`helix population is ${steps} ticks`);
         const where = worstGap(helixCurve, input, SPEED, steps, (t) => SPEED * t);
         if (where) throw new Error(`helix departs beyond ${EXACT}: ${where}`);
-    },
+    }
 );
 
-check(
-    "the constant-speed circle integrates exactly at 100 Hz",
-    { claim: "the integrator step departs from the constant-yaw circle at 100 Hz" },
+test(
+    "the integrator step departs from the constant-yaw circle at 100 Hz",
     () => {
         const steps = ticksAlong(turnCurve);
         const where = worstGap(turnCurve, { omega: [0, SPEED / TURN_R, 0], a: 0 }, SPEED, steps, (t) => SPEED * t);
         if (where) throw new Error(`circle departs beyond ${EXACT}: ${where}`);
-    },
+    }
 );
 
-check(
-    "straights at constant speed and constant acceleration integrate exactly",
-    { claim: "the integrator step departs from a straight at constant v or constant a" },
+test(
+    "the integrator step departs from a straight at constant v or constant a",
     () => {
         const cruise = worstGap(straightCurve, { omega: [0, 0, 0], a: 0 }, SPEED, ticksAlong(straightCurve), (t) => SPEED * t);
         if (cruise) throw new Error(`constant-v straight departs beyond ${EXACT}: ${cruise}`);
@@ -79,12 +76,11 @@ check(
         const a = 3;
         const launch = worstGap(straightCurve, { omega: [0, 0, 0], a }, v0, 250, (t) => v0 * t + 0.5 * a * t * t);
         if (launch) throw new Error(`constant-a straight departs beyond ${EXACT}: ${launch}`);
-    },
+    }
 );
 
-check(
-    "march stores each f64 step in f32 with the input that produced it",
-    { claim: "march drops, rounds wrongly, or misattributes a stepped state or its input" },
+test(
+    "march drops, rounds wrongly, or misattributes a stepped state or its input",
     () => {
         const inputs: Input[] = Array.from({ length: 120 }, (_, i) => ({
             omega: [0.4 * Math.sin(i / 7), 0.9 * Math.cos(i / 11), -0.6 * Math.sin(i / 5)],
@@ -114,5 +110,5 @@ check(
                 }
             }
         }
-    },
+    }
 );

@@ -1,15 +1,10 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { POSE_FLOATS } from "../path/path";
 import { CHUNK } from "./execution";
 import { boundRide } from "./pool.fixture";
 
-check(
-    "the threaded resample on Shallot's pool writes the single-thread bytes",
-    {
-        claim: "the pooled resample leaves a stripe unwritten or writes other bytes than the single-thread resample",
-        subject: ["src/trajectory/execution.ts", "src/trajectory/kernel.wasm.ts"],
-        budget: 250,
-    },
+test(
+    "the pooled resample leaves a stripe unwritten or writes other bytes than the single-thread resample",
     async () => {
         const ride = await boundRide();
         try {
@@ -30,4 +25,5 @@ check(
             await ride.terminate();
         }
     },
+    { timeout: 250 }
 );

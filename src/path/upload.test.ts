@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { helix } from "./helix.fixture";
 import { AUX_LANES, auxRows, packAux, PATH_VERSION, type Path, POSE_BYTES, readPath } from "./path";
 import { straight } from "./straight.fixture";
@@ -18,9 +18,8 @@ function recorder() {
     };
 }
 
-check(
-    "path upload bytes equal the fixture streams on setPath and zero otherwise",
-    { claim: "the path view uploads more or less than one whole write per invalidated stream" },
+test(
+    "the path view uploads more or less than one whole write per invalidated stream",
     () => {
         const names = ["velocity", "gForce", "heart", "section", "roll"];
         const rows = Array.from({ length: helix.header.count }, (_, i) => names.map((_, s) => i + s));
@@ -74,12 +73,11 @@ check(
         }
         const after = recorder();
         if (!threw || uploads.flush(after.sink) !== 0) throw new Error("a malformed path reached the upload");
-    },
+    }
 );
 
-check(
-    "caller mutation after setPath reaches neither the upload nor the live header",
-    { claim: "a validated path is mutated by its caller after setPath and the view draws the mutation" },
+test(
+    "a validated path is mutated by its caller after setPath and the view draws the mutation",
     () => {
         const caller: Path = { header: { ...helix.header, aux: [] }, poses: helix.poses.slice() };
         const original = helix.poses.slice();
@@ -103,12 +101,11 @@ check(
         uploads.set(caller);
         caller.poses.fill(0);
         if (uploads.path?.poses.some((v, i) => v !== original[i])) throw new Error("live poses alias the caller");
-    },
+    }
 );
 
-check(
-    "reset clears the live and pending path",
-    { claim: "the path view reports a disposed path's count" },
+test(
+    "the path view reports a disposed path's count",
     () => {
         const uploads = pathUploads();
         uploads.set(helix);
@@ -117,5 +114,5 @@ check(
         uploads.reset();
         if (uploads.path !== null) throw new Error("live path survived reset");
         if (uploads.flush({ poses: () => {}, aux: () => {} }) !== 0) throw new Error("pending path survived reset");
-    },
+    }
 );

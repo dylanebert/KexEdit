@@ -1,5 +1,5 @@
 import { State } from "@dylanebert/shallot/ecs";
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { rotate } from "../path/path";
 import { createRideEntity, readRide } from "./ride";
 import { FORCE_FLOOR, run } from "./policies";
@@ -41,9 +41,8 @@ function interior(name: string): number[] {
     return ticks;
 }
 
-check(
-    "the ride entity keeps authored length separate from its marched prefix",
-    { claim: "the ride entity infers length from a complete trajectory or loses the refusal end state" },
+test(
+    "the ride entity infers length from a complete trajectory or loses the refusal end state",
     () => {
         const state = new State();
         const eid = createRideEntity(state, {
@@ -63,12 +62,11 @@ check(
             throw new Error(`header ${JSON.stringify(record.header)}`);
         }
         if (record.trajectory.header.count !== record.header.count) throw new Error("trajectory count diverged from header");
-    },
+    }
 );
 
-check(
-    "a stalled ride keeps its authored tail and records the energy lane",
-    { claim: "a stalled ride truncates its authored length or drops the structured energy refusal" },
+test(
+    "a stalled ride truncates its authored length or drops the structured energy refusal",
     () => {
         const state = new State();
         const eid = createRideEntity(state, {
@@ -86,12 +84,11 @@ check(
             throw new Error(`refusal ${JSON.stringify(record.refusal)}`);
         }
         if (record.header.count !== record.header.endTick + 1) throw new Error("stalled count is not the marched prefix");
-    },
+    }
 );
 
-check(
-    "a six-g force refusal names the floor and tick-start speed",
-    { claim: "a force refusal loses its lane or swaps the force floor and tick-start speed" },
+test(
+    "a force refusal loses its lane or swaps the force floor and tick-start speed",
     () => {
         const initial = {
             position: [0, 0, 0] as [number, number, number],
@@ -116,12 +113,11 @@ check(
             throw new Error(`refusal ${JSON.stringify(result.refusal)}`);
         }
         if (result.refusal.tick !== result.trajectory.header.endTick) throw new Error("refusal tick is not the last good tick");
-    },
+    }
 );
 
-check(
-    "the integrated ride marches to its authored end and stops",
-    { claim: "the view's integrated ride stalls, becomes unsatisfiable, overruns a minute or never comes to rest" },
+test(
+    "the view's integrated ride stalls, becomes unsatisfiable, overruns a minute or never comes to rest",
     () => {
         const { endReason, count, rate } = ride.header;
         const rows = SPANS[SEGMENTS[SEGMENTS.length - 1].name][1];
@@ -129,12 +125,11 @@ check(
         if (endReason !== "complete" || count !== rows + 1) throw new Error(`ride ended ${endReason} at ${count} of ${rows + 1}`);
         if (!(Math.abs(last.speed) < 0.1)) throw new Error(`ride ends at ${last.speed} m/s`);
         if (!(count / rate < 60)) throw new Error(`ride lasts ${count / rate} s`);
-    },
+    }
 );
 
-check(
-    "the ride's loop holds its authored COM normal g",
-    { claim: "the loop's felt normal at the COM departs from its authored g by more than 2% away from the entries" },
+test(
+    "the loop's felt normal at the COM departs from its authored g by more than 2% away from the entries",
     () => {
         const want = authored("loop").normal;
         let turned = 0;
@@ -147,12 +142,11 @@ check(
         for (let t = start + 1; t <= end; t++) turned += tickAt(ride, t).omega[0] / ride.header.rate;
         // the population is a loop, not a bump: the pitch rate turns the frame all the way round
         if (!(Math.abs(turned - 2 * Math.PI) < 0.05)) throw new Error(`loop turns ${turned} rad`);
-    },
+    }
 );
 
-check(
-    "the ride's banked turn is coordinated",
-    { claim: "the banked turn's felt lateral at the COM leaves zero by more than 0.02 g" },
+test(
+    "the banked turn's felt lateral at the COM leaves zero by more than 0.02 g",
     () => {
         if (authored("turn").lateral !== 0) throw new Error("turn: authored lateral is not zero");
         let bank = 0;
@@ -164,12 +158,11 @@ check(
         }
         // non-vacuity: a level unbanked frame reads zero lateral without turning
         if (!(bank > 0.5)) throw new Error(`turn never banks: |right.y| ${bank}`);
-    },
+    }
 );
 
-check(
-    "the ride's hill crest speed follows the energy balance from its base",
-    { claim: "free roll over the hill gains or loses speed the balance of COM height, rolling loss and drag does not name" },
+test(
+    "free roll over the hill gains or loses speed the balance of COM height, rolling loss and drag does not name",
     () => {
         const start = SPANS["hill-up"][0];
         const end = SPANS["hill-out"][1];
@@ -191,5 +184,5 @@ check(
         const want = Math.sqrt(base.speed * base.speed - 2 * (g * (comY(top) - comY(base)) + lost));
         if (!(top.speed < base.speed)) throw new Error(`crest ${top.speed} m/s is not below base ${base.speed}`);
         if (!(Math.abs(top.speed - want) <= 0.01 * want)) throw new Error(`crest ${top.speed} m/s, balance ${want}`);
-    },
+    }
 );

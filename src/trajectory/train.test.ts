@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import type { Vec3 } from "../path/path";
 import { createRide } from "./execution";
 import { constants, helix, RATE } from "./fixtures.fixture";
@@ -6,9 +6,8 @@ import { march } from "./integrator";
 import { initialState, intentTable } from "./train";
 import { tickAt } from "./trajectory";
 
-check(
-    "a ride marched from a trajectory's intent table reproduces its inputs",
-    { claim: "the intent table shifts or drops a row, so the re-marched ride carries other inputs" },
+test(
+    "the intent table shifts or drops a row, so the re-marched ride carries other inputs",
     () => {
         // the ride the view marches from a trajectory's intent table stores that trajectory's inputs on every
         // tick, and on the constant-ω helix its geometry too; every closed-form fixture holds ω constant, so a
@@ -47,5 +46,5 @@ check(
                 }
             }
         }
-    },
+    }
 );

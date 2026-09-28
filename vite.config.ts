@@ -1,10 +1,7 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { shallot } from "@dylanebert/shallot/vite";
 import { defineConfig } from "vite";
-import typegpu from "unplugin-typegpu/vite";
-import { projectPlugin } from "@dylanebert/shallot/vite";
 
 export default defineConfig({
-    plugins: [svelte(), typegpu(), projectPlugin(".")],
-    optimizeDeps: { exclude: ["@dylanebert/shallot", "@dylanebert/shallot-grid", "typegpu"] },
-    resolve: { dedupe: ["@dylanebert/shallot", "typegpu"] },
+    plugins: [svelte(), shallot()],
 });

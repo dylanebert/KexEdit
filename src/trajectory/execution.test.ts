@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { frameQuat, POSE_FLOATS, readPath } from "../path/path";
 import { constants, RATE } from "./fixtures.fixture";
 import { CHUNK, createRide, editTick, type Ride, restartFor } from "./execution";
@@ -61,9 +61,8 @@ const nextUp = (x: number) => {
     return f[0];
 };
 
-check(
-    "an edit re-marched from the last boundary equals the full march byte for byte",
-    { claim: "an incremental restart from a chunk boundary diverges from the full march of the same inputs" },
+test(
+    "an incremental restart from a chunk boundary diverges from the full march of the same inputs",
     () => {
         // interior, boundary-touching (tick k on the grid needs the boundary before it), and row 0
         const cases = [
@@ -105,12 +104,11 @@ check(
             }
             if (seen === 0) throw new Error(`row ${row}: no one-ulp boundary perturbation reached the comparison`);
         }
-    },
+    }
 );
 
-check(
-    "the wasm march and resample agree with integrator.ts and resample.ts",
-    { claim: "the wasm march or resample kernel departs from the TypeScript integrator or resampler" },
+test(
+    "the wasm march or resample kernel departs from the TypeScript integrator or resampler",
     () => {
         const r = ride(baseInputs);
         const bounds = r.boundaries();
@@ -142,12 +140,11 @@ check(
                 throw new Error(`pose ${Math.floor(i / POSE_FLOATS)} float ${i % POSE_FLOATS}: ${path.poses[i]} vs ${want.poses[i]}`);
             }
         }
-    },
+    }
 );
 
-check(
-    "authored length capacity admits exactly length plus one ticks",
-    { claim: "ride capacity allocates from an inferred or one-row-short length" },
+test(
+    "ride capacity allocates from an inferred or one-row-short length",
     () => {
         const length = CHUNK - 1;
         const chunks = Math.ceil((length + 1) / CHUNK);
@@ -162,12 +159,11 @@ check(
             refused = String(error).includes("exceed");
         }
         if (!refused) throw new Error("a table one row over tick capacity was accepted");
-    },
+    }
 );
 
-check(
-    "a pass writes the back path buffer, publishes it with the next generation and names its dirty chunks",
-    { claim: "a pass overwrites the path a reader holds, skips the generation, or uploads outside its dirty chunks" },
+test(
+    "a pass overwrites the path a reader holds, skips the generation, or uploads outside its dirty chunks",
     () => {
         const r = ride(baseInputs);
         const first = r.path();
@@ -200,5 +196,5 @@ check(
             throw new Error(`dirty ${JSON.stringify(dirty)} does not start at pose ${firstChanged}'s chunk`);
         }
         if (dirty.end !== Math.ceil(poses / CHUNK)) throw new Error(`dirty ${JSON.stringify(dirty)} for ${poses} poses`);
-    },
+    }
 );

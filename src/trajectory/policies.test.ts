@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import { frameQuat, rotate, type Vec3 } from "../path/path";
 import { constants, RATE } from "./fixtures.fixture";
 import type { Input, State } from "./integrator";
@@ -23,9 +23,8 @@ function start(speed: number, pitch = 0, bank = 0): State {
 
 const cruise = (speed: number) => ({ kind: "driven", target: speed, accel: 1 }) as const;
 
-check(
-    "a vertical loop at authored COM normal g closes on its analytic radius",
-    { claim: "the force closure or its heart-to-COM term departs from the analytic constant-speed loop", budget: 50 },
+test(
+    "the force closure or its heart-to-COM term departs from the analytic constant-speed loop",
     () => {
         const v = 15;
         const R = 12;
@@ -46,11 +45,11 @@ check(
             }
         });
     },
+    { timeout: 50 }
 );
 
-check(
-    "a banked turn at zero COM lateral g is the analytic level circle",
-    { claim: "the force closure's lateral or heart-to-COM term departs from the analytic coordinated turn", budget: 50 },
+test(
+    "the force closure's lateral or heart-to-COM term departs from the analytic coordinated turn",
     () => {
         const bank = deg(40);
         const R = 30;
@@ -76,13 +75,13 @@ check(
             }
         });
     },
+    { timeout: 50 }
 );
 
 const coast = (ticks: number): Intent[] => new Array(ticks).fill({ shape: { kind: "rates", omega: [0, 0, 0] }, energy: { kind: "free" } });
 
-check(
-    "a coast down a known slope follows the energy balance",
-    { claim: "free roll departs from gravity, Coulomb loss or drag on a constant slope", budget: 50 },
+test(
+    "free roll departs from gravity, Coulomb loss or drag on a constant slope",
     () => {
         const slope = deg(-30);
         const v0 = 5;
@@ -109,6 +108,7 @@ check(
             throw new Error(`drag errors ${errors.join(", ")} give orders ${orders.join(", ")}`);
         }
     },
+    { timeout: 50 }
 );
 
 const identical = (a: History, b: History): string => {
@@ -134,9 +134,8 @@ const ride: Intent[] = Array.from({ length: 900 }, (_, i) => ({
     energy: { kind: "free" },
 }));
 
-check(
-    "lossless free roll conserves speed against COM height over a rotating ride",
-    { claim: "free roll drifts from the energy balance or drops the heart-to-COM height", budget: 50 },
+test(
+    "free roll drifts from the energy balance or drops the heart-to-COM height",
     () => {
         const lossless: RideConstants = { ...constants, friction: 0, drag: 0 };
         const h = lossless.heartToCom;
@@ -148,11 +147,11 @@ check(
             if (!(Math.abs(energy(s) - e0) <= 1e-9 * e0)) throw new Error(`tick ${i} energy ${energy(s)}, start ${e0}`);
         });
     },
+    { timeout: 50 }
 );
 
-check(
-    "a driven ramp reaches its target at the authored rate and holds it, backwards from rest",
-    { claim: "the driven policy overshoots, undershoots or mis-signs its ramp", budget: 50 },
+test(
+    "the driven policy overshoots, undershoots or mis-signs its ramp",
     () => {
         const intents: Intent[] = new Array(400).fill({
             shape: { kind: "rates", omega: [0, 0.2, 0] },
@@ -164,11 +163,11 @@ check(
             if (!(Math.abs(s.speed - v) <= 1e-12)) throw new Error(`tick ${i} speed ${s.speed}, ramp ${v}`);
         });
     },
+    { timeout: 50 }
 );
 
-check(
-    "zero dissipation coefficients march byte-identical to dissipation absent",
-    { claim: "a zero friction or drag coefficient perturbs the free-roll march", budget: 50 },
+test(
+    "a zero friction or drag coefficient perturbs the free-roll march",
     () => {
         const zero: RideConstants = { ...constants, friction: 0, drag: 0 };
         const lossy = run(start(8, deg(10)), ride, RATE, zero, policyWith(LOSSES)).history;
@@ -177,11 +176,11 @@ check(
         const where = identical(lossy, absent);
         if (where) throw new Error(`zero-coefficient march differs from dissipation absent at ${where}`);
     },
+    { timeout: 50 }
 );
 
-check(
-    "mass moves free roll only through drag, measured at the prototype's coefficients",
-    { claim: "mass reaches free roll outside drag, or drag's mass effect vanishes or inverts", budget: 50 },
+test(
+    "mass reaches free roll outside drag, or drag's mass effect vanishes or inverts",
     () => {
         const at = (mass: number, drag: number) =>
             run(start(5, deg(-30)), coast(1000), RATE, { ...constants, friction: 0.03, drag, mass }).history;
@@ -194,11 +193,11 @@ check(
         console.log(`mass effect over a 10 s coast down 30° from 5 m/s: ${vLight} m/s at 500 kg, ${vHeavy} m/s at 50000 kg, Δ ${vHeavy - vLight}`);
         if (!(vHeavy > vLight)) throw new Error(`heavier train is not faster: ${vHeavy} vs ${vLight}`);
     },
+    { timeout: 50 }
 );
 
-check(
-    "free roll ends stalled at the tick whose step would reverse",
-    { claim: "free roll carries speed through zero or ends before it must", budget: 50 },
+test(
+    "free roll carries speed through zero or ends before it must",
     () => {
         const { trajectory, history } = run(start(10, deg(60)), coast(400), RATE, { ...constants, drag: 0, heartToCom: 0 });
         const { header } = trajectory;
@@ -208,6 +207,7 @@ check(
         if (!(end.speed > 0 && end.speed - decel / RATE <= 0)) throw new Error(`stalled at speed ${end.speed}`);
         if (!history.states.every((s) => s.speed > 0)) throw new Error("an emitted speed is not positive");
     },
+    { timeout: 50 }
 );
 
 /** Authored normal minus the normal realized over each tick: midpoint speed times ωx plus the mean lift. */
@@ -220,9 +220,8 @@ const departures = (history: History, normal: number) =>
         return { speed: Math.abs(s0.speed), departure: Math.abs(realized - normal) };
     });
 
-check(
-    "a force-held climb that runs out of speed ends unsatisfiable at the measured floor",
-    { claim: "the force closure runs below its validity floor, or the floor is looser than its measurement", budget: 50 },
+test(
+    "the force closure runs below its validity floor, or the floor is looser than its measurement",
     () => {
         const held: RideConstants = { ...constants, heartToCom: 0 };
         const intents: Intent[] = new Array(400).fill({
@@ -244,4 +243,5 @@ check(
             throw new Error(`a floor of ${FORCE_FLOOR - 0.5} m/s still holds 0.01 g, so the floor is not the measurement`);
         }
     },
+    { timeout: 50 }
 );

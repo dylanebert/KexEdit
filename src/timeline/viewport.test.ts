@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import {
     clampViewport,
     FIT_PADDING_PX,
@@ -26,9 +26,8 @@ function refuses(action: () => unknown): void {
     if (!refused) throw new Error("expected invalid viewport input to refuse");
 }
 
-check(
-    "one-sided frame-all keeps zero at the surface origin",
-    { claim: "timeline frame-all admits negative time or loses its fixed post-end clearance" },
+test(
+    "timeline frame-all admits negative time or loses its fixed post-end clearance",
     () => {
         for (const width of [520, 1323]) {
             const view = frameAll(12, 100, width);
@@ -45,12 +44,11 @@ check(
             const pixel = timeToPixel(view, 1200, time);
             if (!close(pixelToTime(view, 1200, pixel), time)) throw new Error(`round trip at ${time}`);
         }
-    },
+    }
 );
 
-check(
-    "the timeline maximum is a unique complete legal domain",
-    { claim: "timeline maximum or pan bounds expose time outside zero through twice the duration" },
+test(
+    "timeline maximum or pan bounds expose time outside zero through twice the duration",
     () => {
         const fit = frameAll(20, 10, 1000);
         const view = clampViewport({ ...fit, start: 5, span: 5 });
@@ -70,12 +68,11 @@ check(
                 throw new Error(`pan escaped legal domain ${JSON.stringify({ span, left, right })}`);
             }
         }
-    },
+    }
 );
 
-check(
-    "cursor zoom preserves interior anchors and clamps only at domain edges",
-    { claim: "timeline cursor zoom translates before clamping or exposes an illegal edge to preserve its anchor" },
+test(
+    "timeline cursor zoom translates before clamping or exposes an illegal edge to preserve its anchor",
     () => {
         const width = 1000;
         const base = clampViewport({ ...frameAll(20, 10, width), start: 4, span: 8 });
@@ -98,12 +95,11 @@ check(
 
         const minimum = zoomAtPixel(base, width, 500, 1e-12);
         if (minimum.span !== minimum.minSpan || zoomAtPixel(minimum, width, 500, 0.01) !== minimum) throw new Error("minimum no-op failed");
-    },
+    }
 );
 
-check(
-    "fit resize and domain changes preserve the intended presentation state",
-    { claim: "timeline fit resize or domain changes infer the wrong seconds interval" },
+test(
+    "timeline fit resize or domain changes infer the wrong seconds interval",
     () => {
         const narrow = frameAll(12, 100, 520);
         const wide = frameAll(12, 100, 1323);
@@ -116,12 +112,11 @@ check(
         if (clamped.span !== 8 || clamped.start + clamped.span !== timelineDomainEnd(10)) {
             throw new Error(`changed-domain clamp failed ${JSON.stringify(clamped)}`);
         }
-    },
+    }
 );
 
-check(
-    "visible ticks cover only the legal domain and retain adaptive 1-2-5 spacing",
-    { claim: "timeline ticks emit negative time, exceed the legal end, or clip visible post-end context" },
+test(
+    "timeline ticks emit negative time, exceed the legal end, or clip visible post-end context",
     () => {
         const ranges = [
             { view: frameAll(120, 10, 960), width: 960 },
@@ -151,12 +146,11 @@ check(
             throw new Error(`post-end ticks were clipped or illegal ${JSON.stringify(postEndTicks)}`);
         }
         if (observedSteps.size < 2) throw new Error(`visible range did not adapt its step: ${[...observedSteps]}`);
-    },
+    }
 );
 
-check(
-    "wheel deltas retain direct manipulation direction and geometric increments",
-    { claim: "timeline wheel normalization reverses direction, jumps scales, or loses pan sign" },
+test(
+    "timeline wheel normalization reverses direction, jumps scales, or loses pan sign",
     () => {
         const plain = wheelZoomRatio(100, 0);
         if (!(plain > 1) || !close(wheelZoomRatio(-100, 0), 1 / plain)) throw new Error("pixel wheel direction or reciprocity failed");
@@ -178,5 +172,5 @@ check(
         if (!close(second.span / first.span, first.span / start.span) || second.span === Math.round(second.span)) throw new Error("wheel zoom was not continuous");
         const pan = panByPixels(start, 1000, 16);
         if (!(pan.start > start.start) || pan.span !== start.span) throw new Error("positive pan sign failed");
-    },
+    }
 );

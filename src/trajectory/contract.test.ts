@@ -1,4 +1,4 @@
-import { check } from "@dylanebert/shallot/harness/check";
+import { test } from "bun:test";
 import * as d from "typegpu/data";
 import { type Curve, rotate, type Vec3 } from "../path/path";
 import { helixCurve } from "../path/helix.fixture";
@@ -36,9 +36,8 @@ import {
     tickAt,
 } from "./trajectory";
 
-check(
-    "the tick stride and lanes are the schema's",
-    { claim: "the trajectory tick stride or lane order drifts from its typegpu schema" },
+test(
+    "the trajectory tick stride or lane order drifts from its typegpu schema",
     () => {
         if (TICK_BYTES !== d.sizeOf(Tick) || TICK_FLOATS * Float32Array.BYTES_PER_ELEMENT !== TICK_BYTES) throw new Error(`stride ${TICK_BYTES}/${TICK_FLOATS}`);
         const order = ["position", "w", "rotation", "speed", "distance", "omega", "a", "reserved"] as const;
@@ -52,7 +51,7 @@ check(
             next += LANE_WIDTHS[key];
         }
         if (next !== TICK_FLOATS) throw new Error(`lanes cover ${next} of ${TICK_FLOATS} floats`);
-    },
+    }
 );
 
 function refuses(label: string, field: string, run: () => unknown): void {
@@ -77,9 +76,8 @@ const withFloat = (tick: number, lane: number, value: number): Trajectory => {
     return { ...helix, ticks };
 };
 
-check(
-    "readTrajectory refuses each malformed header field by name",
-    { claim: "readTrajectory admits a trajectory with a malformed header field" },
+test(
+    "readTrajectory admits a trajectory with a malformed header field",
     () => {
         readTrajectory(helix);
         const count = helix.header.count;
@@ -99,12 +97,11 @@ check(
             ["drag", "drag", withConstant({ drag: -1e-6 })],
         ];
         for (const [label, field, t] of rows) refuses(label, field, () => readTrajectory(t));
-    },
+    }
 );
 
-check(
-    "readTrajectory refuses each broken lane invariant by name",
-    { claim: "readTrajectory admits a tick stream that breaks a lane invariant" },
+test(
+    "readTrajectory admits a tick stream that breaks a lane invariant",
     () => {
         const last = helix.header.count - 1;
         const floats = Array.from(helix.ticks);
@@ -123,7 +120,7 @@ check(
             ["NaN a", "a", withFloat(last, TICK_LANES.a, Number.NaN)],
         ];
         for (const [label, field, t] of rows) refuses(label, field, () => readTrajectory(t));
-    },
+    }
 );
 
 const near = (label: string, got: number, want: number, tol: number) => {
@@ -151,9 +148,8 @@ const FIXTURES: [string, Trajectory, Curve][] = [
     ["corkscrew", corkscrew, corkscrewCurve],
 ];
 
-check(
-    "fixture ticks match their closed-form curves and their own rotation stream",
-    { claim: "a trajectory fixture's stored state or ω disagrees with its curve or its rotations" },
+test(
+    "a trajectory fixture's stored state or ω disagrees with its curve or its rotations",
     () => {
         for (const [name, t, curve] of FIXTURES) {
             const count = t.header.count;
@@ -171,15 +167,14 @@ check(
                 for (const k of [0, 1, 2]) near(`${name} ${i} omega ${k}`, tick.omega[k], rate[k], 2e-3);
             }
         }
-    },
+    }
 );
 
 const forwardOf = (tick: TickState) => rotate(tick.rotation, [0, 0, -1]);
 const rightOf = (tick: TickState) => rotate(tick.rotation, [1, 0, 0]);
 
-check(
-    "each signed lane and read has Shallot's sign, fixed by geometry",
-    { claim: "an ω component, lateral, normal or roll carries a referent's sign instead of Shallot's frame" },
+test(
+    "an ω component, lateral, normal or roll carries a referent's sign instead of Shallot's frame",
     () => {
         const mid = (t: Trajectory) => Math.floor(t.header.count / 2);
         const pair = (t: Trajectory) => [tickAt(t, mid(t)), tickAt(t, mid(t) + 1)] as const;
@@ -208,12 +203,11 @@ check(
         near("helix pitch rate", x.omega[0], 0, 1e-6);
         if (!(x.omega[1] > 0)) throw new Error(`helix yaw ${x.omega[1]} is not positive for a left turn`);
         if (!(x.omega[2] > 0)) throw new Error(`helix roll rate ${x.omega[2]} is not positive`);
-    },
+    }
 );
 
-check(
-    "feltForces and roll read the fixtures' closed forms",
-    { claim: "feltForces or roll misread a tick's state and input" },
+test(
+    "feltForces or roll misread a tick's state and input",
     () => {
         const g = constants.g;
         const K = Math.hypot(HELIX_R, HELIX_C);
@@ -232,5 +226,5 @@ check(
         near("helix longitudinal", spiral.longitudinal, HELIX_C / K, 1e-5);
         const braking = { ...tickAt(straight, 0), a: -g / 2 };
         near("braking longitudinal", feltForces(braking, constants).longitudinal, -0.5, 1e-6);
-    },
+    }
 );
