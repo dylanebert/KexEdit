@@ -1,0 +1,2 @@
+stage: 7
+finding: CONTRIBUTING.md still says Shallot and shallot-grid are pinned by full Git SHA and names the old SHAs, but this HEAD's package.json and bun.lock use registry prerelease ranges. Contributors are directed to a dependency state this migration removed; update the project guidance to the released/staged/live commands.
