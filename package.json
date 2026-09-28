@@ -10,18 +10,17 @@
         "check": "bun run test && svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "github:dylanebert/shallot#49fbfcbe4b8d00673b2798c96ae25bbefa5f6060",
-        "@dylanebert/shallot-grid": "github:dylanebert/shallot-grid#c6e0f17eec9526bcd853866cb92f344aa3a103ef",
+        "@dylanebert/shallot": "^0.10.0-next.1",
+        "@dylanebert/shallot-grid": "^0.1.2",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
-        "typegpu": "~0.12.5"
+        "typegpu": "~0.12.6"
     },
     "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.3.0",
         "@tsconfig/svelte": "^5.0.8",
         "@types/bun": "^1.4.2",
         "@types/node": "^26.2.0",
-        "@typescript/native": "npm:typescript@7",
         "@webgpu/types": "^0.1.72",
         "svelte-check": "^4.7.6",
         "typescript": "~6",
