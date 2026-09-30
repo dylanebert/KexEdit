@@ -7,7 +7,6 @@ declare module "virtual:project" {
         capacity: number | null;
         pixelRatio: number | "auto" | null;
         plugins: Plugin[];
-        scene: string | null;
     };
 
     export default project;

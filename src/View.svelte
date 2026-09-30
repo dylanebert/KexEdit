@@ -4,6 +4,7 @@
     import project from "virtual:project";
     import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
     import { PathPlugin } from "./path/view";
+    import { ViewWorld } from "./world";
 
     let {
         onCapability,
@@ -27,8 +28,7 @@
             return run({
                 capacity: project.capacity ?? undefined,
                 pixelRatio: project.pixelRatio ?? undefined,
-                plugins: [...project.plugins, PathPlugin],
-                scene: project.scene ?? undefined,
+                plugins: [...project.plugins, PathPlugin, ViewWorld],
                 // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
                 loading: shallotDark(document.body),
             }).then(
