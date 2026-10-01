@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { run, shallotDark } from "@dylanebert/shallot";
+    import { OrbitPlugin, run, shallotDark } from "@dylanebert/shallot";
+    import { GridPlugin } from "@dylanebert/shallot-grid";
     import { onMount } from "svelte";
-    import project from "virtual:project";
     import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
     import { PathPlugin } from "./path/view";
     import { ViewWorld } from "./world";
@@ -26,9 +26,7 @@
             if (capability.status === "block") return;
 
             return run({
-                capacity: project.capacity ?? undefined,
-                pixelRatio: project.pixelRatio ?? undefined,
-                plugins: [...project.plugins, PathPlugin, ViewWorld],
+                plugins: [OrbitPlugin, GridPlugin, PathPlugin, ViewWorld],
                 // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
                 loading: shallotDark(document.body),
             }).then(

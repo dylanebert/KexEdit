@@ -1,13 +1,1 @@
 /// <reference types="vite/client" />
-
-declare module "virtual:project" {
-    import type { Plugin } from "@dylanebert/shallot";
-
-    const project: {
-        capacity: number | null;
-        pixelRatio: number | "auto" | null;
-        plugins: Plugin[];
-    };
-
-    export default project;
-}

@@ -4,7 +4,7 @@ For anyone changing KexEdit, person or agent. Each API's contract is the JSDoc b
 
 ## Layout
 
-KexEdit is a Vite and Svelte app using Shallot as a library. The project owns `index.html`, `vite.config.ts` and `shallot.json`; Vite's `shallot()` plugin reads the project data. The view pane owns the one canvas: `View.svelte` starts Shallot when it mounts and disposes the app when it unmounts. There is one canvas, one engine and no iframe.
+KexEdit is a Vite and Svelte app using Shallot as a library. The project owns `index.html` and `vite.config.ts`; `View.svelte` imports the plugins it runs. The view pane owns the one canvas: `View.svelte` starts Shallot when it mounts and disposes the app when it unmounts. There is one canvas, one engine and no iframe.
 
 `src/path/` is the one artifact every later layer produces or consumes. Its frame is Shallot's: right-handed, `-Z` forward, `+Y` up, `+X` right. A rotation is a unit quaternion stored `(x, y, z, w)`; roll is derived, never stored. Strides and WGSL structs come from the typegpu schemas, never typed by hand. Every check compares a record to its closed-form curve, not to the builder's arithmetic.
 
