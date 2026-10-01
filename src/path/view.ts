@@ -543,7 +543,7 @@ export const PathPlugin: Plugin = {
     name: "KexEditPath",
     systems: [TransportSystem, TrainSystem, PathSystem],
     components: { PathView },
-    traits: { PathView: { defaults: () => ({ fixture: PathFixture.Ride }), enums: { fixture: PathFixture } } },
+    traits: { PathView: { defaults: () => ({ fixture: PathFixture.Ride }) } },
     dependencies: [RenderPlugin, SearPlugin, GlazePlugin],
     async warm(state: State) {
         const device = Compute.device;
