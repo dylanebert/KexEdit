@@ -19,6 +19,7 @@ import {
     Compute,
     Part,
     type Plugin,
+    registration,
     type State,
     type System,
     sparse,
@@ -542,8 +543,9 @@ function release(): void {
 export const PathPlugin: Plugin = {
     name: "KexEditPath",
     systems: [TransportSystem, TrainSystem, PathSystem],
-    components: { PathView },
-    traits: { PathView: { defaults: () => ({ fixture: PathFixture.Ride }) } },
+    components: [
+        registration("PathView", PathView, { defaults: () => ({ fixture: PathFixture.Ride }) }),
+    ],
     dependencies: [RenderPlugin, SearPlugin, GlazePlugin],
     async warm(state: State) {
         const device = Compute.device;
