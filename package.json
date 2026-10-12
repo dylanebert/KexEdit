@@ -9,6 +9,7 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
+        "preview": "vite preview",
         "test": "bun test --timeout=250",
         "typecheck": "svelte-check --tsconfig ./tsconfig.json"
     },
