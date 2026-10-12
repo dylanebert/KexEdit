@@ -13,10 +13,11 @@ Layout is view right, context panel left, timeline bottom, one reserved status l
 ## Commands
 
 ```bash
-bun run dev        # vite
-bun run build      # vite build
-bun run test       # Bun's cheap test tier
-bun run check      # tests and svelte-check
+bun run dev             # vite
+bun run build           # vite build
+bun run test            # Bun's cheap test tier
+bun check               # TypeScript
+bun run typecheck       # Svelte diagnostics
 ```
 
 ## Tests
