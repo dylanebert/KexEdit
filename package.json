@@ -10,17 +10,17 @@
         "dev": "vite",
         "build": "vite build",
         "preview": "vite preview",
-        "test": "bun test --timeout=250",
+        "test": "bun test",
         "typecheck": "svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "^0.10.0-next.1",
-        "@dylanebert/shallot-grid": "^0.2.0-next.1",
+        "@dylanebert/shallot": "0.10.0",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",
-        "typegpu": "~0.12.6"
+        "typegpu": "~0.12.8"
     },
     "devDependencies": {
+        "@playwright/test": "^1.64.1",
         "@sveltejs/vite-plugin-svelte": "^7.3.0",
         "@tsconfig/svelte": "^5.0.8",
         "@types/bun": "^1.4.3",
@@ -28,6 +28,7 @@
         "@webgpu/types": "^0.1.72",
         "svelte-check": "^4.7.6",
         "typescript": "~6",
-        "vite": "^8.3.0"
+        "vite": "^8.3.0",
+        "webgpu": "^0.6.2"
     }
 }

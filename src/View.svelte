@@ -1,69 +1,71 @@
 <script lang="ts">
-    import { OrbitPlugin, run, shallotDark } from "@dylanebert/shallot";
-    import { GridPlugin } from "@dylanebert/shallot-grid";
-    import { onMount } from "svelte";
+    import { createApp, runApp, shallotDark, type App } from "@dylanebert/shallot";
+    import { attachCanvas } from "@dylanebert/shallot/rendering";
+    import { getContext, onMount } from "svelte";
     import { assessWebGpu, blockCapability, type CapabilityOutcome } from "./capability";
-    import { PathPlugin } from "./path/view";
-    import { ViewWorld } from "./world";
+    import { TRANSPORT_CONTEXT, type EditorTransport } from "./transport";
+    import { EditorScene, editorWorld } from "./world";
+    import { pageSubject } from "./page-subject";
 
-    let {
-        onCapability,
-        onReady,
-    }: {
-        onCapability: (outcome: CapabilityOutcome) => void;
-        onReady: () => void;
+    let { onCapability, onReady }: {
+        onCapability: (outcome: CapabilityOutcome) => void; onReady: () => void;
     } = $props();
+    const transport = getContext<EditorTransport>(TRANSPORT_CONTEXT);
+    let canvas: HTMLCanvasElement;
 
     onMount(() => {
         let disposed = false;
-        let revealFrame = 0;
-        let loadingComplete = false;
-        let app: Awaited<ReturnType<typeof run>> | undefined;
-
-        void assessWebGpu().then((capability) => {
+        let app: App | undefined;
+        const scene = editorWorld(new URLSearchParams(location.search).get("fixture") === "stalled");
+        const stepped = pageSubject !== undefined;
+        const firstFrame = { create: () => ({ waiting: false }) };
+        const fail = (error: unknown) => {
+            if (disposed) return;
+            onCapability(blockCapability("Shallot failed to initialize. WebGPU may be unavailable."));
+            console.error("KexEdit failed to boot Shallot", error);
+        };
+        void (async () => {
+            const capability = await assessWebGpu();
             if (disposed) return;
             onCapability(capability);
             if (capability.status === "block") return;
-
-            return run({
-                plugins: [OrbitPlugin, GridPlugin, PathPlugin, ViewWorld],
-                // The engine's existing splash is mounted on body so it covers the shell, not just this view pane.
-                loading: shallotDark(document.body),
-            }).then(
-                (next) => {
-                if (disposed) {
-                    next.dispose();
-                    return;
-                }
-                app = next;
-                // run() resolves only after Shallot's loading.complete() and its cleanup frame, so
-                // this marks the splash-free handoff separately from the first rendered frame.
-                loadingComplete = true;
-                const revealWhenReady = () => {
-                    if (disposed) return;
-                    if (loadingComplete && (app?.state.time.elapsed ?? 0) > 0) {
-                        onReady();
-                        return;
-                    }
-                    revealFrame = requestAnimationFrame(revealWhenReady);
-                };
-                revealFrame = requestAnimationFrame(revealWhenReady);
-                },
-                (error: unknown) => {
-                    onCapability(blockCapability("Shallot failed to initialize. WebGPU may be unavailable."));
-                    console.error("KexEdit failed to boot Shallot", error);
-                },
-            );
-        });
-
+            const next = await (stepped ? createApp : runApp)({
+                plugins: [scene, {
+                    name: "KexEditHost", dependencies: [scene],
+                    initialize(world) {
+                        attachCanvas(world, world.resource(EditorScene).camera, canvas);
+                        transport.bind(world);
+                    },
+                    systems: [{
+                        name: "KexEditFirstFrame", group: "draw", update(world) {
+                            const state = world.resource(firstFrame);
+                            if (state.waiting) return;
+                            state.waiting = true;
+                            world.onFrameSubmit(() => {
+                                const fence = world.frameFence;
+                                if (!fence) { fail(new Error("The editor's first frame has no GPU fence")); return; }
+                                void fence.then(() => { if (!disposed) onReady(); }).catch(fail);
+                            });
+                        },
+                    }],
+                }],
+                pixelRatio: 1,
+                loading: shallotDark({ container: document.body }),
+            });
+            if (disposed) { next.dispose(); return; }
+            app = next;
+            if (pageSubject) pageSubject.app = next;
+            if (stepped) next.world.step(0);
+            await next.world.frameFence;
+        })().catch(fail);
         return () => {
             disposed = true;
-            cancelAnimationFrame(revealFrame);
             app?.dispose();
+            if (pageSubject && pageSubject.app === app) pageSubject.app = undefined;
         };
     });
 </script>
 
 <div class="view-surface" data-region="view-surface">
-    <canvas aria-label="KexEdit 3D view" data-region="canvas"></canvas>
+    <canvas bind:this={canvas} aria-label="KexEdit 3D view" data-region="canvas"></canvas>
 </div>

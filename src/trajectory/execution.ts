@@ -1,5 +1,5 @@
 // Execution: the march and resample kernels (`kernel/lib.rs`, wasm-simd128) over one shared memory,
-// on Shallot's pool.
+// on the calling thread.
 //
 // One ride owns one `WebAssembly.Memory`, laid out once at creation and never grown: the f64 input
 // table, the f32 trajectory, the f64 boundary stream, the resample's arclength and span scratch, two
@@ -7,21 +7,20 @@
 // `subarray` of that memory, so the trajectory and the path reach the main thread and the GPU without
 // a copy.
 //
-// The chunk grid is one unit for everything: CHUNK ticks is the march's restart unit, CHUNK poses the
-// resample's parallel unit and the upload's dirty set. The march stores its f64 state at every chunk's
+// CHUNK ticks is the march's restart unit; CHUNK poses is the capacity and dirty-range unit.
+// The march stores its f64 state at every chunk's
 // first tick, so an edit that first changes tick k re-marches from the last boundary whose state it
 // cannot reach and reproduces the full march byte for byte. The march is sequential; the resample
-// stripes pose chunks over the pool.
+// runs on the calling thread.
 //
 // Generations. A pass (march from the restart boundary, resample into the back path buffer) ends by
 // publishing the back buffer as front and adding one to the generation, in that order, atomically per
 // word. Readers compare generations; the pass never writes the buffer a reader holds, so no reader sees
 // a half-written path. Single writer per region is the whole protocol.
 //
-import { createPool, maxWorkers, type Pool } from "@dylanebert/shallot/physics";
 import { PATH_VERSION, type Path, POSE_FLOATS, POSE_LANES, readPath } from "../path/path";
 import type { Input, State } from "./integrator";
-import { KERNEL_MAX_MEMORY, KERNEL_STACK_SIZE, KERNEL_WASM_BASE64 } from "./kernel.wasm";
+import { KERNEL_MAX_MEMORY, KERNEL_WASM_BASE64 } from "./kernel.wasm";
 import { DEFAULT_SPACING } from "./resample";
 import {
     type EndReason,
@@ -40,13 +39,12 @@ const PAGE = 65536;
 const INPUT_FLOATS = 4;
 
 interface KernelExports {
-    __stack_pointer: WebAssembly.Global;
     __heap_base: WebAssembly.Global;
     setLayout(...lanes: number[]): void;
     boundaryFloats(): number;
     march(inputs: number, ticks: number, bounds: number, fromChunk: number, count: number, dt: number, chunk: number): void;
     resamplePrepare(ticks: number, count: number, sigma: number, spans: number): number;
-    setResampleJob(
+    resample(
         ticks: number,
         sigma: number,
         spans: number,
@@ -55,11 +53,7 @@ interface KernelExports {
         spacing: number,
         length: number,
         poseCount: number,
-        chunk: number,
-        threads: number,
     ): void;
-    resampleRange(start: number, end: number): void;
-    workerMain(worker: number): void;
 }
 
 let compiled: WebAssembly.Module | undefined;
@@ -95,8 +89,6 @@ export interface PassResult {
 export interface Ride {
     readonly memory: WebAssembly.Memory;
     readonly chunk: number;
-    /** Worker count of the pool the resample runs on; 0 is single-threaded. */
-    readonly workers: number;
     setInitial(state: State): void;
     /** Replace the whole input table; the trajectory becomes `inputs.length + 1` ticks. */
     setInputs(inputs: readonly Input[], endReason?: EndReason, endTick?: number): void;
@@ -108,8 +100,6 @@ export interface Ride {
     march(): number;
     /** March from the restart boundary, resample into the back buffer, publish it. */
     pass(): PassResult;
-    /** Resample the current trajectory into the back buffer on one thread or the pool, unpublished. */
-    resampleInto(buffer: 0 | 1, threaded: boolean): number;
     generation(): number;
     trajectory(): Trajectory;
     /** The published path and its generation; `poses` is a subarray of the shared memory. */
@@ -117,7 +107,6 @@ export interface Ride {
     /** The path in `buffer` as last written, for comparing buffers. */
     pathIn(buffer: 0 | 1): Path;
     boundaries(): Float64Array;
-    terminate(): Promise<void>;
 }
 
 /** The first tick whose content an edit of input row `row` changes: tick 0 carries row 0 too. */
@@ -126,26 +115,8 @@ export const editTick = (row: number) => (row === 0 ? 0 : row + 1);
 /** The last boundary whose f64 state an edit first reaching tick `k` cannot have changed. */
 export const restartFor = (k: number, chunk = CHUNK) => (k === 0 ? 0 : Math.floor((k - 1) / chunk));
 
-/** A ride on the calling thread only: the CLI, the checks and the non-isolated fallback. */
+/** Execute the WASM march and resample on the calling thread. */
 export function createRide(options: RideOptions): Ride {
-    return build(options, null);
-}
-
-/** A ride whose resample runs on `threads` pool workers plus the caller, capped by the stack slices. */
-export async function createPooledRide(options: RideOptions, threads: number): Promise<Ride> {
-    let pool: Pool | null = null;
-    const ride = build(options, async (module, memory, stackTop) => {
-        pool = await createPool(module, memory, Math.min(threads, maxWorkers(KERNEL_STACK_SIZE)), stackTop, KERNEL_STACK_SIZE);
-        return pool;
-    });
-    await ride.ready;
-    return ride.ride;
-}
-
-function build(
-    options: RideOptions,
-    spawn: ((module: WebAssembly.Module, memory: WebAssembly.Memory, stackTop: number) => Promise<Pool>) | null,
-): Ride & { ride: Ride; ready: Promise<void> } {
     const chunk = options.chunk ?? CHUNK;
     const spacing = options.spacing ?? DEFAULT_SPACING;
     const tickCap = options.ticks * chunk;
@@ -219,7 +190,6 @@ function build(
         { count: 0, length: 0 },
     ];
 
-    let pool: Pool | null = null;
     let count = 0;
     let pending = 0;
     let hasInitial = false;
@@ -228,14 +198,13 @@ function build(
 
     const restartChunk = () => restartFor(Math.min(pending, count), chunk);
 
-    const resampleInto = (target: 0 | 1, threaded: boolean): number => {
+    const resampleInto = (target: 0 | 1): number => {
         if (count < 2) throw new Error("ride resample: nothing marched");
         const spanCount = ex.resamplePrepare(offsets.ticks, count, offsets.sigma, offsets.spans);
         const length = sigma[count - 1];
         const poseCount = Math.ceil(length / spacing) + 1;
         if (poseCount > poseCap) throw new Error(`ride capacity: ${poseCount} poses exceed ${poseCap}`);
-        const threads = threaded && pool ? pool.size + 1 : 1;
-        ex.setResampleJob(
+        ex.resample(
             offsets.ticks,
             offsets.sigma,
             offsets.spans,
@@ -244,15 +213,7 @@ function build(
             spacing,
             length,
             poseCount,
-            chunk,
-            threads,
         );
-        if (threads > 1 && pool) {
-            const running = pool;
-            running.run(() => ex.workerMain(0));
-        } else {
-            ex.resampleRange(0, poseCount);
-        }
         pathHeaders[target] = { count: poseCount, length };
         return poseCount;
     };
@@ -268,9 +229,6 @@ function build(
     const ride: Ride = {
         memory,
         chunk,
-        get workers() {
-            return pool?.size ?? 0;
-        },
         setInitial(state) {
             bounds.set([...state.position, ...state.rotation, state.speed, state.distance], 0);
             hasInitial = true;
@@ -317,7 +275,7 @@ function build(
             const planned = restartChunk();
             const cleanTo = planned === 0 ? 0 : sigma[planned * chunk];
             const restart = ride.march();
-            const poses = resampleInto(back, pool !== null);
+            const poses = resampleInto(back);
             const firstPose = previous === null || cleanTo <= 0 ? 0 : Math.floor(cleanTo / spacing);
             const dirty = {
                 first: Math.floor(firstPose / chunk),
@@ -327,7 +285,6 @@ function build(
             const generation = Atomics.add(control, 0, 1) + 1;
             return { generation, restart, dirty };
         },
-        resampleInto,
         generation: () => Atomics.load(control, 0),
         trajectory() {
             const header: TrajectoryHeader = {
@@ -347,15 +304,7 @@ function build(
         },
         pathIn,
         boundaries: () => bounds,
-        async terminate() {
-            await pool?.terminate();
-        },
     };
 
-    const ready = spawn
-        ? spawn(module, memory, ex.__stack_pointer.value as number).then((p) => {
-              pool = p;
-          })
-        : Promise.resolve();
-    return Object.assign(ride, { ride, ready });
+    return ride;
 }

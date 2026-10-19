@@ -1,13 +1,14 @@
 <script lang="ts">
     import type { CapabilityOutcome } from "./capability";
+    import { setContext } from "svelte";
+    import { createTransport, TRANSPORT_CONTEXT } from "./transport";
+    setContext(TRANSPORT_CONTEXT, createTransport());
     import Panel from "./Panel.svelte";
     import Status from "./Status.svelte";
     import Timeline from "./Timeline.svelte";
     import View from "./View.svelte";
 
     let shellReady = $state(false);
-    let entranceFrameReady = $state(false);
-    let entranceFrameAt = $state<number | null>(null);
     let entranceArmed = $state(false);
     let capability = $state<CapabilityOutcome | null>(null);
 
@@ -17,8 +18,6 @@
         if (!shellReady) return;
         let cleanupArm = () => {};
         const visibleFrame = requestAnimationFrame(() => {
-            entranceFrameAt = performance.now();
-            entranceFrameReady = true;
             const armFrame = requestAnimationFrame(() => {
                 entranceArmed = true;
             });
@@ -39,9 +38,6 @@
     class={`shell${shellReady ? "" : " shell-booting"}${entranceArmed ? " shell-entrance-armed" : ""}`}
     data-region="shell"
     data-shell-ready={shellReady}
-    data-entrance-frame-ready={entranceFrameReady}
-    data-entrance-frame-at={entranceFrameAt ?? ""}
-    data-entrance-armed={entranceArmed}
     data-capability={capability?.status ?? "checking"}
     aria-hidden={!shellReady}
 >

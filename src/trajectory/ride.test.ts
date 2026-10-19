@@ -1,4 +1,4 @@
-import { State } from "@dylanebert/shallot/ecs";
+import { World } from "@dylanebert/shallot/ecs";
 import { test } from "bun:test";
 import { rotate } from "../path/path";
 import { createRideEntity, readRide } from "./ride";
@@ -44,7 +44,7 @@ function interior(name: string): number[] {
 test(
     "the ride entity infers length from a complete trajectory or loses the refusal end state",
     () => {
-        const state = new State();
+        const state = new World();
         const eid = createRideEntity(state, {
             length: RIDE_INTENTS.length,
             intents: RIDE_INTENTS,
@@ -68,7 +68,7 @@ test(
 test(
     "a stalled ride truncates its authored length or drops the structured energy refusal",
     () => {
-        const state = new State();
+        const state = new World();
         const eid = createRideEntity(state, {
             length: RIDE_INTENTS_STALLED.length,
             intents: RIDE_INTENTS_STALLED,

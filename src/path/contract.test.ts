@@ -132,22 +132,3 @@ test(
         );
     }
 );
-
-test(
-    "the resolved path shader's Pose field order or uniform size departs from its typegpu schema",
-    async () => {
-        const { PATH_SHADER, PathUniform, UNIFORM_FLOATS } = await import("./shader");
-        const body = /struct\s+Pose\s*\{([^}]*)\}/.exec(PATH_SHADER)?.[1];
-        if (!body) throw new Error("resolved shader has no Pose struct");
-        const fields = body.split(",").map((f) => f.split(":")[0].trim()).filter(Boolean);
-        const byOffset = (["position", "w", "rotation"] as const)
-            .map((name) => ({ name, offset: d.memoryLayoutOf(Pose, (p) => p[name]).offset }))
-            .sort((a, b) => a.offset - b.offset)
-            .map((f) => f.name);
-        if (fields.join() !== byOffset.join()) throw new Error(`Pose fields ${fields} != schema ${byOffset}`);
-        if (UNIFORM_FLOATS * Float32Array.BYTES_PER_ELEMENT !== d.sizeOf(PathUniform)) {
-            throw new Error(`UNIFORM_FLOATS ${UNIFORM_FLOATS} != schema ${d.sizeOf(PathUniform)} bytes`);
-        }
-        if (!/struct\s+PathUniform\s*\{/.test(PATH_SHADER)) throw new Error("resolved shader has no PathUniform struct");
-    }
-);

@@ -1,6 +1,8 @@
 <script lang="ts">
     import { Pause, Play } from "@lucide/svelte";
-    import { transport, type TransportSnapshot } from "./path/view";
+    import { getContext } from "svelte";
+    import { TRANSPORT_CONTEXT, type EditorTransport, type TransportSnapshot } from "./transport";
+    const transport = getContext<EditorTransport>(TRANSPORT_CONTEXT);
     import {
         FIT_PADDING_PX,
         frameAll,

@@ -2,16 +2,9 @@
 //! `integrator.ts` `step`/`march` and `resample.ts` `resample`, in f64 with f32 storage.
 //!
 //! Nothing here allocates or owns layout. `execution.ts` lays every region out above `__heap_base` once,
-//! before any worker wakes, and hands the kernels pointers; the tick and pose lanes arrive through
+//! and hands the kernels pointers; the tick and pose lanes arrive through
 //! `setLayout` from the typegpu schemas, so no stride is authored twice. The f64 boundary stream is
 //! this module's own format: `BOUNDARY_FLOATS` per chunk, position, rotation, speed, distance.
-//!
-//! Threads. Shallot's pool (`createPool`) boots each worker against this module and calls
-//! `workerMain(index)`, index 0 being the calling thread. A resample job is a fixed pose-chunk grid
-//! striped by chunk index modulo the thread count: every chunk costs the same, so the stripes balance
-//! with no claim counter, and every pose reads only the trajectory and writes only its own bytes, so
-//! the output is the same bytes on any thread count. Nothing spins, so `workerFault` has nothing to
-//! release.
 
 #![no_std]
 
@@ -55,7 +48,6 @@ static mut LAYOUT: Layout = Layout {
     pose_rotation: 0,
 };
 
-#[derive(Clone, Copy)]
 struct Job {
     ticks: *const f32,
     sigma: *const f64,
@@ -65,22 +57,7 @@ struct Job {
     spacing: f64,
     length: f64,
     pose_count: usize,
-    chunk: usize,
-    threads: usize,
 }
-
-static mut JOB: Job = Job {
-    ticks: core::ptr::null(),
-    sigma: core::ptr::null(),
-    spans: core::ptr::null(),
-    span_count: 0,
-    poses: core::ptr::null_mut(),
-    spacing: 0.0,
-    length: 0.0,
-    pose_count: 0,
-    chunk: 1,
-    threads: 1,
-};
 
 fn layout() -> Layout {
     unsafe { LAYOUT }
@@ -121,15 +98,6 @@ pub extern "C" fn setLayout(
 pub extern "C" fn boundaryFloats() -> u32 {
     BOUNDARY_FLOATS as u32
 }
-
-/// The pool's boot probe calls this once per worker; there is no per-thread scratch.
-#[no_mangle]
-pub extern "C" fn scratchPtr() -> u32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn workerFault() {}
 
 type Vec3 = [f64; 3];
 type Quat = [f64; 4];
@@ -317,9 +285,8 @@ fn slerp(p: Quat, q: Quat, u: f64) -> Quat {
     [r[0] / norm, r[1] / norm, r[2] / norm, r[3] / norm]
 }
 
-/// Resample poses `[start, end)` of the job: `resample.ts` pose by pose, with the walk's span found by
-/// binary search at `start` so any range runs alone.
-unsafe fn resample_range(job: &Job, start: usize, end: usize) {
+/// Walk the nonzero-distance spans in order, resampling the whole path on the caller.
+unsafe fn resample_all(job: &Job) {
     let l = layout();
     let tf = l.tick_floats;
     let vec3 = |i: usize, lane: usize| {
@@ -343,29 +310,15 @@ unsafe fn resample_range(job: &Job, start: usize, end: usize) {
             *o.add(l.pose_rotation + c) = q[c] as f32;
         }
     };
-    if start >= end {
-        return;
-    }
     if job.span_count == 0 {
-        for i in start..end {
+        for i in 0..job.pose_count {
             write(i, vec3(0, l.position), quat(0));
         }
         return;
     }
     let last = job.span_count - 1;
-    let first_s = (start as f64 * job.spacing).min(job.length);
-    // the first k in [0, last) whose interval ends at or past s, else last: where the linear walk stops
-    let (mut lo, mut hi) = (0usize, last);
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if end_sigma(mid) < first_s {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    let mut k = lo;
-    for i in start..end {
+    let mut k = 0;
+    for i in 0..job.pose_count {
         let s = (i as f64 * job.spacing).min(job.length);
         while k < last && end_sigma(k) < s {
             k += 1;
@@ -396,9 +349,9 @@ unsafe fn resample_range(job: &Job, start: usize, end: usize) {
     }
 }
 
-/// Stage a resample job for `workerMain`. Runs on the calling thread before the pool wakes.
+/// Resample the prepared spans into the caller's complete pose buffer.
 #[no_mangle]
-pub unsafe extern "C" fn setResampleJob(
+pub unsafe extern "C" fn resample(
     ticks: *const f32,
     sigma: *const f64,
     spans: *const u32,
@@ -407,10 +360,8 @@ pub unsafe extern "C" fn setResampleJob(
     spacing: f64,
     length: f64,
     pose_count: u32,
-    chunk: u32,
-    threads: u32,
 ) {
-    *addr_of_mut!(JOB) = Job {
+    let job = Job {
         ticks,
         sigma,
         spans,
@@ -419,27 +370,6 @@ pub unsafe extern "C" fn setResampleJob(
         spacing,
         length,
         pose_count: pose_count as usize,
-        chunk: chunk as usize,
-        threads: threads as usize,
     };
-}
-
-/// Resample poses `[start, end)` of the staged job on the calling thread.
-#[no_mangle]
-pub unsafe extern "C" fn resampleRange(start: u32, end: u32) {
-    let job = JOB;
-    resample_range(&job, start as usize, (end as usize).min(job.pose_count));
-}
-
-/// One thread's stripe of the staged job: every pose chunk whose index is `worker` modulo the threads.
-#[no_mangle]
-pub unsafe extern "C" fn workerMain(worker: u32) {
-    let job = JOB;
-    let chunks = job.pose_count.div_ceil(job.chunk);
-    let mut c = worker as usize;
-    while c < chunks {
-        let start = c * job.chunk;
-        resample_range(&job, start, (start + job.chunk).min(job.pose_count));
-        c += job.threads;
-    }
+    resample_all(&job);
 }
