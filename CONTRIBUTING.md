@@ -6,7 +6,7 @@ For anyone changing KexEdit, person or agent. Each API's contract is the JSDoc b
 
 KexEdit is a Vite and Svelte app using Shallot as a library. The project owns `index.html` and `vite.config.ts`; `View.svelte` imports the plugins it runs. The view pane owns the one canvas: `View.svelte` starts Shallot when it mounts and disposes the app when it unmounts. There is one canvas, one engine and no iframe.
 
-`src/path/` is the one artifact every later layer produces or consumes. Its frame is Shallot's: right-handed, `-Z` forward, `+Y` up, `+X` right. A rotation is a unit quaternion stored `(x, y, z, w)`; roll is derived, never stored. Strides and WGSL structs come from the typegpu schemas, never typed by hand. Physics correctness is established with analytic fixtures and independent RK4 integration, not agreement with the march.
+`src/path/` is the one artifact every later layer produces or consumes. Its frame is Shallot's: right-handed, `-Z` forward, `+Y` up, `+X` right. A rotation is a unit quaternion stored `(x, y, z, w)`; roll is derived, never stored. Strides and WGSL structs come from the typegpu schemas, never typed by hand. Check physics against analytic fixtures or independent integration, not the march's own arithmetic.
 
 Layout is view right, context panel left, timeline bottom, one reserved status line.
 
