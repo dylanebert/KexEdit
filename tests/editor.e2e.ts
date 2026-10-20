@@ -81,6 +81,13 @@ test("built stepped page presents the editor, accepts transport, timeline and or
     const after = await canvasPixels(page);
     expect(after.rgba.filter((v, i) => Math.abs(v - before.rgba[i]) > 8).length).toBeGreaterThan(100);
 
+    await page.mouse.wheel(0, -300);
+    await step(page, 1 / 60);
+    const zoomed = await canvasPixels(page);
+    expect(zoomed.rgba.filter((v, i) => Math.abs(v - after.rgba[i]) > 8).length).toBeGreaterThan(100);
+    await page.screenshot({ path: testInfo.outputPath("editor-orbit-zoom.png") });
+    await testInfo.attach("editor-orbit-zoom", { path: testInfo.outputPath("editor-orbit-zoom.png"), contentType: "image/png" });
+
     await page.evaluate(() => window.kexeditSubject!.unmount());
     await expect(canvas).toHaveCount(0);
     expect(await page.evaluate(() => window.kexeditSubject!.app === undefined)).toBe(true);

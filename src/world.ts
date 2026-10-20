@@ -4,7 +4,7 @@ import {
     Tonemapping, TonemappingMethod, Transform, unpackColor, type World,
 } from "@dylanebert/shallot";
 import { Gizmo, GizmoAsset, Orbit, OrbitPlugin, registerGizmo } from "@dylanebert/shallot/extras";
-import { GroundGrid, GridPlugin } from "./grid";
+import { Grid, GridPlugin } from "@dylanebert/shallot-grid";
 import { PathGeometry, PathPlugin, pathGizmo, PATH_BYTES, TrainAppearance } from "./path/view";
 import { createRideEntity, readRide, Train } from "./trajectory/ride";
 import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./trajectory/ride.fixture";
@@ -39,9 +39,7 @@ export function editorWorld(stalled = false): Plugin {
             scene.path = gizmo(world, asset);
             world.resource(PathGeometry).set(scene.ride, { asset, generation: published.generation });
             scene.grid = world.create();
-            world.add(scene.grid, Transform, { translation: [0, -0.002, 0], scale: [20000, 0.002, 20000] });
-            world.add(scene.grid, MeshInstance);
-            world.add(scene.grid, MeshMaterial, world.resource(GroundGrid).add({ color: [0.045, 0.045, 0.045] }, { alphaMode: AlphaMode.Blend }));
+            world.add(scene.grid, Grid);
             const { r, g, b } = unpackColor(PATH_BYTES.chord);
             const materials = world.resource(Materials);
             const appearance = world.resource(TrainAppearance);
