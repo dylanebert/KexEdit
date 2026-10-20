@@ -390,12 +390,12 @@ canvas {
 }
 
 .timeline-state-solved {
-    background: rgb(184 187 38 / 16%);
-    border-inline: 1px solid rgb(184 187 38 / 36%);
+    background: rgb(255 255 255 / 5%);
+    border-inline: 1px solid rgb(255 255 255 / 14%);
 }
 
 .timeline-state-unsolved {
-    background: repeating-linear-gradient(135deg, rgb(204 36 29 / 13%) 0 1px, transparent 1px 8px), rgb(29 32 33 / 55%);
+    background: repeating-linear-gradient(135deg, rgb(255 255 255 / 7%) 0 1px, transparent 1px 8px), rgb(29 32 33 / 55%);
 }
 
 .timeline-state-offending {

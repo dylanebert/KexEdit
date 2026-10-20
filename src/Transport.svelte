@@ -261,6 +261,7 @@
                     class="transport-button transport-play"
                     type="button"
                     data-action="play-pause"
+                    tabindex="-1"
                     aria-label={snapshot?.playing ? "Pause" : "Play"}
                     aria-keyshortcuts="Space"
                     title={snapshot?.playing ? "Pause (Space)" : "Play (Space)"}
@@ -313,7 +314,7 @@
             class="timeline-ruler"
             data-region="ruler"
             role="slider"
-            tabindex="0"
+            tabindex="-1"
             aria-label="Timeline playhead"
             aria-valuemin="0"
             aria-valuemax={snapshot?.length ?? 0}

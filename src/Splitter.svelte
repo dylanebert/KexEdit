@@ -43,7 +43,7 @@
 <!-- Focusable separators implement the APG Window Splitter keyboard pattern. -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div bind:this={element} class="splitter splitter-{orientation}" class:dragging={drag !== null}
-    role="separator" tabindex="0" aria-label={label} aria-controls={controls}
+    role="separator" tabindex="-1" aria-label={label} aria-controls={controls}
     aria-orientation={orientation} aria-valuemin={Math.round(min)} aria-valuemax={Math.round(max)}
     aria-valuenow={Math.round(value)} aria-valuetext={`${Math.round(value)} pixels`}
     onpointerdown={down} onpointermove={move} onpointerup={finish}

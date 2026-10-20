@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('splitters resize without replacing the canvas or disturbing transport; chrome retains keyboard access', async ({ page }) => {
+test('splitters resize without replacing the canvas or disturbing transport; chrome stays outside sequential keyboard navigation', async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('/?stepped');
@@ -84,8 +84,28 @@ test('splitters resize without replacing the canvas or disturbing transport; chr
     const play = page.locator('[data-action="play-pause"]');
     await play.click();
     expect(await play.evaluate(el => el.matches(':focus-visible'))).toBe(false);
-    await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
-    expect(await play.evaluate(el => el.matches(':focus-visible'))).toBe(true);
+    // Bracket the editor with focusable sentinels so real traversal proves that
+    // neither direction stops on Play, the ruler, or either divider.
+    await page.evaluate(() => {
+        for (const edge of ['before', 'after']) {
+            const button = document.createElement('button');
+            button.id = `tab-${edge}`;
+            button.textContent = edge;
+            if (edge === 'before') document.body.prepend(button);
+            else document.body.append(button);
+        }
+    });
+    await page.locator('#tab-before').focus();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#tab-after')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('#tab-before')).toBeFocused();
+    await page.locator('#tab-before').evaluate(el => el.remove());
+    await page.locator('#tab-after').evaluate(el => el.remove());
+    // Pointer-focused controls still accept deliberate keyboard manipulation.
+    await play.click();
+    await page.keyboard.press('Space');
+    await expect(play).toHaveAccessibleName('Pause');
     await page.keyboard.press('Space');
     await expect(play).toHaveAccessibleName('Play');
     expect(errors).toEqual([]);
