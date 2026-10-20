@@ -1,4 +1,4 @@
-import { MeshInstance, type App } from "@dylanebert/shallot";
+import { DirectionalLight, GlobalAmbientLight, Materials, MeshInstance, Tonemapping, type App } from "@dylanebert/shallot";
 import { Gizmo, Orbit } from "@dylanebert/shallot/extras";
 import { Grid } from "@dylanebert/shallot-grid";
 import { attachTexture, captureTexture } from "@dylanebert/shallot/rendering";
@@ -6,7 +6,7 @@ import { openGpuApp } from "@dylanebert/shallot/testing/gpu";
 import { TIMEOUT } from "@dylanebert/shallot/testing";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { EditorScene, editorWorld } from "./world";
-import { PathGeometry } from "./path/view";
+import { PathGeometry, TrainAppearance } from "./path/view";
 import { readRide } from "./trajectory/ride";
 import { RIDE_START } from "./trajectory/ride.fixture";
 
@@ -38,6 +38,26 @@ function different(a: Uint8ClampedArray, b: Uint8ClampedArray) {
     for (let i = 0; i < a.length; i += 4) if (delta(a, b, i) > 8) count++;
     return count;
 }
+
+test("editor uses minimal welcome lighting and gold for both train states with default presentation", () => {
+    const { world } = app, scene = world.resource(EditorScene);
+    const ambient = world.resource(GlobalAmbientLight);
+    expect([ambient.color, ambient.brightness]).toEqual([0xd8e4ff, 380]);
+    const lights = world.storage(DirectionalLight);
+    const suns = [...world.query([DirectionalLight])];
+    expect(suns).toHaveLength(1);
+    expect([lights.color.get(suns[0]), lights.illuminance.get(suns[0]), lights.shadowMapsEnabled.get(suns[0])]).toEqual([0xffe8cc, 6000, 1]);
+    expect(world.has(scene.camera, Tonemapping)).toBe(false);
+    const appearance = world.resource(TrainAppearance);
+    for (const [handle, alpha] of [[appearance.normal, 1], [appearance.held, 0.34]] as const) {
+        const material = world.resource(Materials).get(handle!)!;
+        expect(material.baseColor.x).toBeCloseTo(0.72);
+        expect(material.baseColor.y).toBeCloseTo(0.4);
+        expect(material.baseColor.z).toBeCloseTo(0.05);
+        expect(material.baseColor.w).toBeCloseTo(alpha);
+        expect(material.perceptualRoughness).toBeCloseTo(0.38);
+    }
+});
 
 test("Dawn draws integrated path chords and both orientation axes into the camera", async () => {
     const { world } = app, scene = world.resource(EditorScene);
