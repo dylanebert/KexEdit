@@ -268,7 +268,7 @@
                     onclick={() => transport.togglePlaying()}
                 >
                     {#if snapshot?.playing}
-                        <Pause size={15} strokeWidth={2} />
+                        <Pause size={15} fill="currentColor" strokeWidth={0} />
                     {:else}
                         <Play size={15} fill="currentColor" strokeWidth={0} />
                     {/if}

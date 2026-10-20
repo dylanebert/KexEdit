@@ -51,9 +51,15 @@ test("built stepped page presents the editor, accepts transport, timeline and or
     await testInfo.attach("editor", { path: testInfo.outputPath("editor.png"), contentType: "image/png" });
 
     const ruler = page.getByRole("slider", { name: "Timeline playhead" });
+    const playIcon = page.getByRole("button", { name: "Play", exact: true }).locator("svg");
+    await expect(playIcon).toHaveAttribute("fill", "currentColor");
+    await expect(playIcon).toHaveAttribute("stroke-width", "0");
     await page.getByRole("button", { name: "Play", exact: true }).click();
     await step(page, 0.05);
     await expect(ruler).toHaveAttribute("aria-valuenow", "5");
+    const pauseIcon = page.getByRole("button", { name: "Pause", exact: true }).locator("svg");
+    await expect(pauseIcon).toHaveAttribute("fill", "currentColor");
+    await expect(pauseIcon).toHaveAttribute("stroke-width", "0");
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     await step(page, 0.05);
     await expect(ruler).toHaveAttribute("aria-valuenow", "5");
