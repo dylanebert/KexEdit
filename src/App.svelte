@@ -1,12 +1,34 @@
 <script lang="ts">
     import type { CapabilityOutcome } from "./capability";
-    import { setContext } from "svelte";
+    import { onMount, setContext } from "svelte";
+    import Splitter from "./Splitter.svelte";
     import { createTransport, TRANSPORT_CONTEXT } from "./transport";
     setContext(TRANSPORT_CONTEXT, createTransport());
     import Panel from "./Panel.svelte";
     import Status from "./Status.svelte";
     import Timeline from "./Timeline.svelte";
     import View from "./View.svelte";
+
+    let shell: HTMLElement;
+    let width = $state(1280);
+    let height = $state(800);
+    let contextWidth = $state(256);
+    let timelineHeight = $state(192);
+    let dragging = $state<"vertical" | "horizontal" | null>(null);
+    const contextMax = $derived(Math.max(192, Math.min(480, width - 400)));
+    const timelineMax = $derived(Math.max(160, height - 272));
+    const resizeContext = (value: number) => contextWidth = Math.min(contextMax, Math.max(192, value));
+    const resizeTimeline = (value: number) => timelineHeight = Math.min(timelineMax, Math.max(160, value));
+    onMount(() => {
+        const observer = new ResizeObserver(([entry]) => {
+            width = entry!.contentRect.width;
+            height = entry!.contentRect.height;
+            resizeContext(contextWidth);
+            resizeTimeline(timelineHeight);
+        });
+        observer.observe(shell);
+        return () => observer.disconnect();
+    });
 
     let shellReady = $state(false);
     let entranceArmed = $state(false);
@@ -35,6 +57,9 @@
 </svelte:head>
 
 <main
+    bind:this={shell}
+    style={`--shell-context-width: ${contextWidth}px; --shell-timeline-height: ${timelineHeight}px`}
+    data-resizing={dragging}
     class={`shell${shellReady ? "" : " shell-booting"}${entranceArmed ? " shell-entrance-armed" : ""}`}
     data-region="shell"
     data-shell-ready={shellReady}
@@ -53,6 +78,12 @@
     <Panel title="Timeline" region="timeline">
         <Timeline />
     </Panel>
+    <Splitter orientation="vertical" value={contextWidth} min={192} max={contextMax}
+        label="Context width" controls="pane-context" onresize={resizeContext}
+        ondrag={(active) => dragging = active ? "vertical" : null} />
+    <Splitter orientation="horizontal" value={timelineHeight} min={160} max={timelineMax}
+        label="Timeline height" controls="pane-timeline" onresize={resizeTimeline}
+        ondrag={(active) => dragging = active ? "horizontal" : null} />
     <Status />
 </main>
 

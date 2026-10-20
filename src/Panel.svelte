@@ -12,7 +12,7 @@
     } = $props();
 </script>
 
-<section class={`panel panel-${region}`} data-region={region} aria-label={title}>
+<section id={`pane-${region}`} class={`panel panel-${region}`} data-region={region} aria-label={title}>
     <div class="panel-content">
         {@render children()}
     </div>

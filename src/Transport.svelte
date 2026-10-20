@@ -186,7 +186,7 @@
     }
 
     function isIgnoredKeyTarget(target: EventTarget | null): boolean {
-        return target instanceof HTMLElement && (target.matches("button, input, textarea, select") || target.isContentEditable);
+        return target instanceof HTMLElement && (target.matches('button, input, textarea, select, [role="separator"]') || target.isContentEditable);
     }
 
     function handleKeydown(event: KeyboardEvent): void {
@@ -269,7 +269,7 @@
                     {#if snapshot?.playing}
                         <Pause size={15} strokeWidth={2} />
                     {:else}
-                        <Play size={15} strokeWidth={2} />
+                        <Play size={15} fill="currentColor" strokeWidth={0} />
                     {/if}
                 </button>
             </div>
