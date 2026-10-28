@@ -5,7 +5,7 @@
 // policies read only the last tick. Shape and energy compose: the shape policy picks ω from the tick-start
 // state, then the energy policy picks a knowing ω.
 //
-// Shape. Rates pass ω through and have no floor. Forces solve the felt specific force at the centre of
+// Shape. Rates pass ω through and have no floor. Forces solve the felt specific force at the center of
 // mass, which sits `heartToCom` along local +Y. With body velocity (0, 0, -v) and body rate
 // ω = (ωx, ωy, ωz) where ωz = -roll, the heart accelerates (-v ωy, v ωx, -a) in the body and the COM adds
 // ω × (ω × r) = h (ωx ωy, -(ωx² + ωz²), ωy ωz); ω̇ × r is dropped because input is constant over a tick.
@@ -24,8 +24,8 @@
 // Energy. Driven ramps speed toward a target at no more than `accel`. Free roll is an energy balance over
 // the tick's travel T, exact for gravity at any step: ½(v1² - v0²) = a T = -g Δy_com - losses, with
 // Δy_com = rise T + h Δup_y from the rotation the step produces, and v1 = 2 T / dt - v0. Coulomb rolling
-// loss is friction · g · |felt force across the track| at the heart per metre; mass cancels. Drag is
-// drag · v0 v1 / mass per metre, a second-order stand-in for v² that keeps the balance quadratic in T;
+// loss is friction · g · |felt force across the track| at the heart per meter; mass cancels. Drag is
+// drag · v0 v1 / mass per meter, a second-order stand-in for v² that keeps the balance quadratic in T;
 // mass appears nowhere else. Each loss adds to the quadratic's coefficients, so a zero coefficient adds a
 // signed zero and the march is byte-identical to one with the loss absent. Free roll ends `stalled` at the
 // tick whose step would carry v through zero; nothing clamps.

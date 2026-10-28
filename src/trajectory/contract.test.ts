@@ -193,7 +193,7 @@ test(
         if (!(c0.omega[2] > 0)) throw new Error(`corkscrew roll rate ${c0.omega[2]} is not positive`);
         if (!(roll(c1) > roll(c0) && roll(c0) > 0)) throw new Error(`corkscrew roll ${roll(c0)} -> ${roll(c1)}`);
         near("corkscrew roll", roll(c0), (mid(corkscrew) * ROLL_RATE) / corkscrew.header.rate, 1e-5);
-        // lateral: a flat left turn's specific force points at the centre, -X
+        // lateral: a flat left turn's specific force points at the center, -X
         near("turn lateral", feltForces(t0, constants).lateral, -(SPEED * SPEED) / (TURN_R * constants.g), 1e-5);
         near("turn normal", feltForces(t0, constants).normal, 1, 1e-5);
         // helix: the rider-up frame never banks, climbs nose up and turns left, so roll is zero, pitch

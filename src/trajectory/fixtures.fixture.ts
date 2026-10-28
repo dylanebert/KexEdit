@@ -25,7 +25,7 @@ const HELIX_K2 = HELIX_R * HELIX_R + HELIX_C * HELIX_C;
 
 export const constants: RideConstants = { g: 9.80665, heartToCom: -0.9, mass: 5000, friction: 0.03, drag: 2e-5 };
 
-/** Level left turn from the origin along -Z about the centre (-R, 0, 0). */
+/** Level left turn from the origin along -Z about the center (-R, 0, 0). */
 export const turnCurve: Curve = {
     length: Math.PI * TURN_R,
     position: (s) => {

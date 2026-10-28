@@ -54,7 +54,7 @@ test(
         const bank = deg(40);
         const R = 30;
         const h = constants.heartToCom;
-        // the COM sits h sin(bank) toward the centre; zero lateral means tan(bank) = W² (R - h sin bank) / g
+        // the COM sits h sin(bank) toward the center; zero lateral means tan(bank) = W² (R - h sin bank) / g
         const comRadius = R - h * Math.sin(bank);
         const W2 = (G * Math.tan(bank)) / comRadius;
         const v = Math.sqrt(W2) * R;
@@ -67,7 +67,7 @@ test(
         const { trajectory, history } = run(start(v, 0, bank), intents, RATE, constants);
         if (trajectory.header.endReason !== "complete") throw new Error(`turn ended ${trajectory.header.endReason}`);
         history.states.forEach((s, i) => {
-            // a right-side-down bank turns right, about the centre at +X
+            // a right-side-down bank turns right, about the center at +X
             const r = Math.hypot(s.position[0] - R, s.position[2]);
             const b = roll({ ...s, omega: [0, 0, 0], a: 0 });
             if (!(Math.abs(r - R) <= 1e-6 && Math.abs(s.position[1]) <= 1e-9 && Math.abs(b - bank) <= 1e-9)) {

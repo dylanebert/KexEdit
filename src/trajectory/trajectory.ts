@@ -82,7 +82,7 @@ export type EndReason = (typeof END_REASONS)[number];
 export interface RideConstants {
     /** Gravitational acceleration, m/s², > 0. */
     g: number;
-    /** Heart to centre of mass along local +Y, m. Negative puts the COM below the heart. */
+    /** Heart to center of mass along local +Y, m. Negative puts the COM below the heart. */
     heartToCom: number;
     /** Train mass, kg, > 0. Only drag reads it. */
     mass: number;

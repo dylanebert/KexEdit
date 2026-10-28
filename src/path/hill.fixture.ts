@@ -1,5 +1,5 @@
 // Hill: a circular crest of radius R in the YZ plane, entering climbing and leaving falling. Angle
-// `a = s / R - SPAN` runs from -SPAN to +SPAN; the crest is at the origin and the centre is at
+// `a = s / R - SPAN` runs from -SPAN to +SPAN; the crest is at the origin and the center is at
 // (0, -R, 0). Up is the outward radial, so the frame pitches and never rolls.
 
 import { type Curve, sampleCurve } from "./path";
