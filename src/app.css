@@ -51,7 +51,6 @@ body {
 .shell {
     cursor: default;
     position: relative;
-    user-select: none;
     display: grid;
     width: 100%;
     height: 100%;
@@ -247,15 +246,10 @@ canvas {
     cursor: pointer;
 }
 
-.transport-button:hover,
-.transport-button:focus-visible {
+.transport-button:hover {
     color: #ebdbb2;
     background: #3c3836;
     outline: none;
-}
-
-.transport-button:focus-visible {
-    box-shadow: 0 0 0 2px #458588;
 }
 
 .transport-readout {
@@ -313,12 +307,6 @@ canvas {
     min-height: 0;
     border-bottom: 1px solid #504945;
     cursor: default;
-}
-
-.timeline-ruler:focus-visible {
-    z-index: 5;
-    outline: 2px solid #458588;
-    outline-offset: -2px;
 }
 
 .timeline-ticks {
@@ -450,7 +438,7 @@ canvas {
 }
 
 /* Chrome is not a document; authored text and diagnostics still are. */
-.shell :is(input:not([readonly]):not(:disabled):is(:not([type]), [type="text"], [type="search"], [type="email"], [type="url"], [type="tel"], [type="password"], [type="number"]), textarea:not([readonly]):not(:disabled), [contenteditable="true"], [contenteditable="true"] *, [role="alert"], [role="alert"] *, pre, pre *, code) {
+.shell :is(input:not(:disabled):is(:not([type]), [type="text"], [type="search"], [type="email"], [type="url"], [type="tel"], [type="password"], [type="number"]), textarea:not(:disabled), [contenteditable="true"], [contenteditable="true"] *, [contenteditable=""], [contenteditable=""] *, [contenteditable="plaintext-only"], [contenteditable="plaintext-only"] *, [role="alert"], [role="alert"] *, pre, pre *, code) {
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;
@@ -482,9 +470,9 @@ canvas {
     cursor: row-resize;
 }
 .splitter-horizontal::after { top: 5px; left: 0; right: 0; height: 1px; }
-.splitter:is(:hover, :focus-visible, .dragging)::after { background: #a89984; }
-.splitter-vertical:is(:hover, :focus-visible, .dragging)::after { width: 3px; left: 4px; }
-.splitter-horizontal:is(:hover, :focus-visible, .dragging)::after { height: 3px; top: 4px; }
-.splitter:is(:focus-visible, .dragging)::after { background: #83a598; }
+.splitter:is(:hover, .dragging)::after { background: #a89984; }
+.splitter-vertical:is(:hover, .dragging)::after { width: 3px; left: 4px; }
+.splitter-horizontal:is(:hover, .dragging)::after { height: 3px; top: 4px; }
+.splitter.dragging::after { background: #83a598; }
 .shell[data-resizing="vertical"], .shell[data-resizing="vertical"] * { cursor: col-resize !important; }
 .shell[data-resizing="horizontal"], .shell[data-resizing="horizontal"] * { cursor: row-resize !important; }
