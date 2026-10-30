@@ -20,6 +20,20 @@
     const resizeContext = (value: number) => contextWidth = Math.min(contextMax, Math.max(192, value));
     const resizeTimeline = (value: number) => timelineHeight = Math.min(timelineMax, Math.max(160, value));
     onMount(() => {
+        const editable = (target: EventTarget | null) => target instanceof HTMLElement &&
+            (target.isContentEditable || target.matches('textarea:not([readonly]):not(:disabled), input:not([readonly]):not(:disabled):is(:not([type]), [type="text"], [type="search"], [type="email"], [type="url"], [type="tel"], [type="password"], [type="number"])'));
+        const preventFocus = (event: PointerEvent) => {
+            if (event.target instanceof Element && !editable(event.target) &&
+                event.target.closest('button, input, select, [tabindex], canvas')) {
+                event.preventDefault();
+                if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+            }
+        };
+        const releaseFocus = (event: FocusEvent) => {
+            if (event.target instanceof HTMLElement && !editable(event.target)) event.target.blur();
+        };
+        shell.addEventListener('pointerdown', preventFocus, true);
+        shell.addEventListener('focusin', releaseFocus);
         const observer = new ResizeObserver(([entry]) => {
             width = entry!.contentRect.width;
             height = entry!.contentRect.height;
@@ -27,7 +41,11 @@
             resizeTimeline(timelineHeight);
         });
         observer.observe(shell);
-        return () => observer.disconnect();
+        return () => {
+            observer.disconnect();
+            shell.removeEventListener('pointerdown', preventFocus, true);
+            shell.removeEventListener('focusin', releaseFocus);
+        };
     });
 
     let shellReady = $state(false);

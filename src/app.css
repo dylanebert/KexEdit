@@ -40,7 +40,16 @@ body {
     background: var(--surface-pane);
 }
 
+.shell, .shell * {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-drag: none;
+}
+
 .shell {
+    cursor: default;
     position: relative;
     user-select: none;
     display: grid;
@@ -441,8 +450,10 @@ canvas {
 }
 
 /* Chrome is not a document; authored text and diagnostics still are. */
-.shell :is(input, textarea, [contenteditable="true"], [role="alert"], pre, code) {
+.shell :is(input:not([readonly]):not(:disabled):is(:not([type]), [type="text"], [type="search"], [type="email"], [type="url"], [type="tel"], [type="password"], [type="number"]), textarea:not([readonly]):not(:disabled), [contenteditable="true"], [contenteditable="true"] *, [role="alert"], [role="alert"] *, pre, pre *, code) {
+    -webkit-user-select: text;
     user-select: text;
+    -webkit-touch-callout: default;
 }
 .splitter {
     position: absolute;

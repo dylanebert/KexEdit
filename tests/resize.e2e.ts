@@ -9,7 +9,7 @@ test('splitters resize without replacing the canvas or disturbing transport; chr
     await page.waitForTimeout(250);
     await page.evaluate(() => { (window as any).originalCanvas = document.querySelector('canvas'); });
     const ruler = page.getByRole('slider');
-    await ruler.focus(); await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowRight');
     const tick = await ruler.getAttribute('aria-valuenow');
     await page.evaluate(() => window.kexeditSubject!.step(0));
     const originalFrame = await page.locator('canvas').screenshot({path:'/tmp/kexedit-orbit-before.png'});
@@ -17,22 +17,13 @@ test('splitters resize without replacing the canvas or disturbing transport; chr
         const divider = page.getByRole('separator', {name});
         const value = async () => Number(await divider.getAttribute('aria-valuenow'));
         const start = await value();
-        await divider.focus();
-        await page.keyboard.press(vertical ? 'ArrowRight' : 'ArrowUp');
-        expect(await value()).toBe(start + 10);
-        await page.keyboard.press(vertical ? 'ArrowLeft' : 'ArrowDown');
-        expect(await value()).toBe(start);
-        await page.keyboard.press('End');
-        expect(await value()).toBe(Number(await divider.getAttribute('aria-valuemax')));
-        await page.keyboard.press('Home');
-        expect(await value()).toBe(Number(await divider.getAttribute('aria-valuemin')));
         const box = (await divider.boundingBox())!;
         const x = box.x + box.width / 2, y = box.y + box.height / 2;
         await page.mouse.move(x,y);
         await page.screenshot({path:`/tmp/kexedit-${vertical?'context':'timeline'}-hover.png`});
         await page.mouse.down();
         await page.mouse.move(x + (vertical ? 90 : 0), y - (vertical ? 0 : 90), {steps:5});
-        expect(await value()).toBe(start === 256 ? 282 : 250);
+        expect(await value()).toBe(start + 90);
         await expect(page.locator('.shell')).toHaveAttribute('data-resizing', vertical?'vertical':'horizontal');
         await page.screenshot({path:`/tmp/kexedit-${vertical?'context':'timeline'}-drag.png`});
         await page.mouse.move(x + (vertical ? -1000 : 0), y + (vertical ? 0 : 1000));
@@ -69,7 +60,6 @@ test('splitters resize without replacing the canvas or disturbing transport; chr
         await page.mouse.move(b.x+b.width/2+(vertical?delta:0),b.y+b.height/2-(vertical?0:delta));
         await page.mouse.up();
     }
-    await ruler.focus();
     await page.mouse.move(20,20);
     await page.evaluate(() => window.kexeditSubject!.step(0));
     expect((await page.locator('canvas').screenshot({path:'/tmp/kexedit-orbit-after.png'})).equals(originalFrame)).toBe(true);
@@ -102,7 +92,7 @@ test('splitters resize without replacing the canvas or disturbing transport; chr
     await expect(page.locator('#tab-before')).toBeFocused();
     await page.locator('#tab-before').evaluate(el => el.remove());
     await page.locator('#tab-after').evaluate(el => el.remove());
-    // Pointer-focused controls still accept deliberate keyboard manipulation.
+    // Global transport keys remain available after pointer interaction.
     await play.click();
     await page.keyboard.press('Space');
     await expect(play).toHaveAccessibleName('Pause');

@@ -63,7 +63,6 @@ test("built stepped page presents the editor, accepts transport, timeline and or
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     await step(page, 0.05);
     await expect(ruler).toHaveAttribute("aria-valuenow", "5");
-    await ruler.focus();
     await page.keyboard.press("Home");
     await expect(ruler).toHaveAttribute("aria-valuenow", "0");
     await page.keyboard.press("Shift+ArrowRight");
@@ -75,7 +74,7 @@ test("built stepped page presents the editor, accepts transport, timeline and or
     const span = Number(await surface.getAttribute("data-view-span"));
     await page.mouse.wheel(0, -300);
     await expect.poll(async () => Number(await surface.getAttribute("data-view-span"))).toBeLessThan(span);
-    await ruler.focus(); await page.keyboard.press("f");
+    await page.keyboard.press("f");
     await expect.poll(async () => Number(await surface.getAttribute("data-view-span"))).toBeCloseTo(span, 3);
 
     await page.keyboard.press("Home"); await step(page);
@@ -113,7 +112,7 @@ test("built refused ride shows its unsolved tail and keeps the authored timeline
     await expect(page.locator('[data-region="dead-tail"]')).toBeVisible();
     await expect(page.locator('[data-region="end-mark"]')).toBeVisible();
     const ruler = page.getByRole("slider", { name: "Timeline playhead" });
-    await ruler.focus(); await page.keyboard.press("End"); await step(page);
+    await page.keyboard.press("End"); await step(page);
     expect(await ruler.getAttribute("aria-valuenow")).toBe(await ruler.getAttribute("aria-valuemax"));
     expect(errors).toEqual([]);
 });
