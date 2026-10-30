@@ -14,7 +14,7 @@
         "typecheck": "svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "@dylanebert/shallot": "0.10.0",
+        "@dylanebert/shallot": "0.10.2",
         "@dylanebert/shallot-grid": "0.2.0",
         "@lucide/svelte": "^1.46.0",
         "svelte": "^5.56.10",

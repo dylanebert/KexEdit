@@ -63,8 +63,7 @@ export const TrainSystem: System = {
             if (material) {
                 const fields = world.storage(MeshMaterial);
                 if (fields.material.get(eid) !== material.material || fields.type.get(eid) !== material.type) {
-                    fields.type.set(eid, material.type);
-                    fields.material.set(eid, material.material);
+                    world.add(eid, MeshMaterial, material);
                 }
             }
         }
