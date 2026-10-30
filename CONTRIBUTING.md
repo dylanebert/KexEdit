@@ -10,7 +10,7 @@ KexEdit is a Vite and Svelte app using Shallot as a library. The project owns `i
 
 Layout is view right, context panel left, timeline bottom, one reserved status line.
 
-Chrome and canvas are not page content: no text selection, tap highlight, drag, long-press callout or keyboard focus. Editor bindings own keyboard access; pointer controls never keep its keys. Editable text keeps focus and selection; copyable content such as diagnostics keeps selection.
+Chrome and canvas are not page content: no text selection, tap highlight, drag, long-press callout or keyboard focus. Passive chrome uses the default cursor. Editor bindings own keyboard access. Enabled text fields, including readonly fields, retain focus and selection; other copyable content, such as diagnostics, retains selection.
 
 ## Commands
 
