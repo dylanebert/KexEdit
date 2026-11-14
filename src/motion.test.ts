@@ -1,8 +1,8 @@
-import { createApp, Transform } from "@dylanebert/shallot";
+import { createApp, MeshMaterial, Transform } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
 import { PathGeometry, PathSyncSystem, pathGizmo } from "./path/view";
 import { RideHeader } from "./ride";
-import { TrainAppearanceSystem } from "./presentation";
+import { TrainAppearance, TrainAppearanceSystem } from "./presentation";
 import { MotionPlugin } from "./playback";
 import { createTransport, TransportObservationPlugin } from "./transport";
 import { createRideEntity, readRide, RideExecutions, Train } from "./ride";
@@ -11,7 +11,7 @@ import { RIDE_CONSTANTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./t
 async function straightEditor(presentation = true) {
     const transport = createTransport();
     let ride = -1, train = -1;
-    const app = await createApp({ defaults: false, plugins: [TransportObservationPlugin, { name: "CpuPresentation", systems: presentation ? [PathSyncSystem, TrainAppearanceSystem] : [] }, {
+    const app = await createApp({ defaults: false, plugins: [TransportObservationPlugin, { name: "CpuPresentation", components: [MeshMaterial], systems: presentation ? [PathSyncSystem, TrainAppearanceSystem] : [] }, {
         name: "AnalyticStraight", dependencies: [MotionPlugin], initialize(world) {
             ride = createRideEntity(world, { length: 100, rate: 100, constants: RIDE_CONSTANTS,
                 initial: { ...RIDE_START, speed: 2 },
@@ -55,9 +55,13 @@ test("CPU presentation enabled or removed cannot change published motion", async
     try {
         const execution = readRide(shown.world, shown.ride).ride;
         // Exercise a retained path asset, not just an empty drawing query.
-        shown.world.resource(PathGeometry).set(shown.ride, {
-            asset: pathGizmo(execution.path().path), generation: execution.generation(),
-        });
+        const asset = pathGizmo(execution.path().path);
+        asset.segments.count = 0;
+        const view = { asset, generation: execution.generation() - 1 };
+        shown.world.resource(PathGeometry).set(shown.ride, view);
+        shown.world.resource(TrainAppearance).normal = {
+            type: 1, material: 7, alphaMode: 0, alphaCutoff: 0.5, cullMode: 0,
+        };
         const before = structuredClone({ trajectory: execution.trajectory(), path: execution.path() });
         for (const app of [shown, bare]) {
             expect(app.world.gpuIfAvailable).toBeUndefined();
@@ -65,6 +69,10 @@ test("CPU presentation enabled or removed cannot change published motion", async
             app.transport.setPlaying(true);
             app.world.step(0.1);
         }
+        expect(view.generation).toBe(execution.generation());
+        expect(asset.segments.count).toBeGreaterThan(0);
+        expect(shown.world.storage(MeshMaterial).material.get(shown.train)).toBe(7);
+        expect(bare.world.has(bare.train, MeshMaterial)).toBe(false);
         for (const app of [shown, bare]) {
             const ride = readRide(app.world, app.ride).ride;
             expect(ride.trajectory()).toEqual(before.trajectory);
