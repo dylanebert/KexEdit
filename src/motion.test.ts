@@ -2,15 +2,16 @@ import { createApp, Transform } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
 import { PathGeometry, PathSyncSystem, pathGizmo } from "./path/view";
 import { RideHeader } from "./ride";
+import { TrainAppearanceSystem } from "./presentation";
 import { MotionPlugin } from "./playback";
 import { createTransport, TransportObservationPlugin } from "./transport";
 import { createRideEntity, readRide, RideExecutions, Train } from "./ride";
 import { RIDE_CONSTANTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./trajectory/ride.fixture";
 
-async function straightEditor() {
+async function straightEditor(presentation = true) {
     const transport = createTransport();
     let ride = -1, train = -1;
-    const app = await createApp({ defaults: false, plugins: [TransportObservationPlugin, { name: "CpuPathDrawing", systems: [PathSyncSystem] }, {
+    const app = await createApp({ defaults: false, plugins: [TransportObservationPlugin, { name: "CpuPresentation", systems: presentation ? [PathSyncSystem, TrainAppearanceSystem] : [] }, {
         name: "AnalyticStraight", dependencies: [MotionPlugin], initialize(world) {
             ride = createRideEntity(world, { length: 100, rate: 100, constants: RIDE_CONSTANTS,
                 initial: { ...RIDE_START, speed: 2 },
@@ -47,6 +48,29 @@ test("transport steps authored ticks and places a constant-speed straight analyt
         expect(app.transport.snapshot()?.playhead).toBeCloseTo(3, 4);
         expect(() => app.transport.setRate(-1)).toThrow();
     } finally { app.dispose(); }
+});
+
+test("CPU presentation enabled or removed cannot change published motion", async () => {
+    const shown = await straightEditor(), bare = await straightEditor(false);
+    try {
+        const execution = readRide(shown.world, shown.ride).ride;
+        // Exercise a retained path asset, not just an empty drawing query.
+        shown.world.resource(PathGeometry).set(shown.ride, {
+            asset: pathGizmo(execution.path().path), generation: execution.generation(),
+        });
+        const before = structuredClone({ trajectory: execution.trajectory(), path: execution.path() });
+        for (const app of [shown, bare]) {
+            expect(app.world.gpuIfAvailable).toBeUndefined();
+            app.transport.scrub(25);
+            app.transport.setPlaying(true);
+            app.world.step(0.1);
+        }
+        for (const app of [shown, bare]) {
+            const ride = readRide(app.world, app.ride).ride;
+            expect(ride.trajectory()).toEqual(before.trajectory);
+            expect(ride.path()).toEqual(before.path);
+        }
+    } finally { shown.dispose(); bare.dispose(); }
 });
 
 test("path drawing consumes a new publication and synchronizes the world generation", async () => {

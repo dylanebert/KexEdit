@@ -37,7 +37,7 @@ test("tick-zero force refusal retains the existing empty-input publication limit
         .toThrow("ride inputs: expected at least one row");
 });
 
-test("motion entry's transitive imports contain only motion, path data and TypeGPU schemas", () => {
+test("motion entry and headless example import only motion, path data and TypeGPU schemas", () => {
     const root = resolve(import.meta.dir, "..");
     const allowed = new Set(["path/path.ts"]);
     const seen = new Set<string>();
@@ -54,4 +54,5 @@ test("motion entry's transitive imports contain only motion, path data and TypeG
         }
     }
     visit(resolve(import.meta.dir, "ride.ts"));
+    visit(resolve(import.meta.dir, "headless.example.ts"));
 });

@@ -4,6 +4,9 @@ import { type Intent, run } from "./policies";
 import type { State as MotionState } from "./integrator";
 import type { RideConstants } from "./trajectory";
 
+/** Plain motion input: one intent per authored tick, an initial state and physical constants.
+ * Rate is ticks per second; optional spacing is the derived path's sample spacing.
+ */
 export interface RideSource {
     length: number;
     intents: readonly Intent[];
@@ -12,7 +15,12 @@ export interface RideSource {
     constants: RideConstants;
     spacing?: number;
 }
-/** Evaluate sequential motion and publish its last-good prefix in shared execution memory.
+/** Scene-free motion entry, shared by headless consumers and world attachment in `src/ride.ts`.
+ * Evaluates sequential intents and publishes the last-good trajectory and resampled path in
+ * caller-owned shared execution memory. No world, playback or presentation is initialized.
+ * Returns the execution handle, policy trajectory, structured refusal (if any), and authored
+ * tick length (not the solved prefix length). Stalled/unsatisfiable tails remain unsolved.
+ * Throws for invalid authored length/rate or invalid lower-level motion/publication inputs.
  * Tick-zero refusals retain the execution API's empty-input error; no path can be published.
  */
 export function evaluateRide(source: RideSource) {
