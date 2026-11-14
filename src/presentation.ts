@@ -1,7 +1,7 @@
-import { MeshMaterial, type Plugin, type System } from "@dylanebert/shallot";
+import { MeshMaterial, type Plugin, type System, Transform } from "@dylanebert/shallot";
 import type { MaterialHandle } from "@dylanebert/shallot/standard/rendering";
 import { MotionPlugin, TrainSystem } from "./playback";
-import { readRide, Train } from "./ride";
+import { readRide, RideExecutions, Train } from "./ride";
 import { PathPlugin } from "./path/view";
 
 export const TrainAppearance = { create: () => ({
@@ -9,14 +9,15 @@ export const TrainAppearance = { create: () => ({
     held: undefined as MaterialHandle | undefined,
 }) };
 
-const TrainAppearanceSystem: System = {
+export const TrainAppearanceSystem: System = {
     name: "KexEditTrainAppearance", group: "simulation", after: [TrainSystem],
     update(world) {
         const trains = world.storage(Train);
         const handles = world.resource(TrainAppearance);
-        for (const eid of world.query([Train, MeshMaterial])) {
+        for (const eid of world.query([Train, Transform])) {
             const rideEid = trains.ride.get(eid);
-            if (!world.exists(rideEid)) continue;
+            const record = world.resource(RideExecutions).get(rideEid);
+            if (!record || !world.exists(rideEid)) continue;
             const ride = readRide(world, rideEid);
             const held = ride.header.endReason !== "complete" && ride.transport.playhead > ride.header.endTick;
             const material = held ? handles.held : handles.normal;
