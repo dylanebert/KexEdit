@@ -6,7 +6,7 @@ For anyone changing KexEdit, person or agent. Each API's contract is the JSDoc b
 
 KexEdit is a Vite and Svelte app using Shallot as a library. The project owns `index.html` and `vite.config.ts`; `View.svelte` imports the plugins it runs. The view pane owns the one canvas: `View.svelte` starts Shallot when it mounts and disposes the app when it unmounts. There is one canvas, one engine and no iframe.
 
-`src/trajectory/ride.ts` is the scene-free motion entry; its runnable consumer is `src/trajectory/headless.example.ts`. `src/ride.ts` attaches results to world entities, `src/playback.ts` advances transport and places the train, and `src/world.ts` composes the scene. Appearance and path drawing live in `src/presentation.ts` and `src/path/view.ts`; the UI bridge lives in `src/transport.ts`. Presentation reads motion outputs, never writes them.
+`src/trajectory/ride.ts` evaluates motion without a scene. `src/ride.ts` attaches results to world entities, `src/playback.ts` advances transport and places the train, and `src/world.ts` composes the scene. Appearance and path drawing live in `src/presentation.ts` and `src/path/view.ts`; the UI bridge lives in `src/transport.ts`. Presentation reads motion outputs, never writes them.
 
 `src/path/path.ts` defines the derived spatial artifact. Its frame is Shallot's: right-handed, `-Z` forward, `+Y` up, `+X` right. A rotation is a unit quaternion stored `(x, y, z, w)`; roll is derived, never stored. Strides and WGSL structs come from the typegpu schemas, never typed by hand. Check physics against analytic fixtures or independent integration, not the march's own arithmetic.
 
