@@ -2,7 +2,7 @@ import { DEFAULT_SPACING } from "./resample";
 import { CHUNK, createRide } from "./execution";
 import { type Intent, run } from "./policies";
 import type { State as MotionState } from "./integrator";
-import type { EndReason, RideConstants } from "./trajectory";
+import type { RideConstants } from "./trajectory";
 
 export interface RideSource {
     length: number;
@@ -33,7 +33,3 @@ export function evaluateRide(source: RideSource) {
     return { ride, trajectory, refusal, length: source.length };
 }
 
-export interface RideHeaderValue {
-    length: number; count: number; rate: number; endReason: EndReason; endTick: number; generation: number;
-}
-export interface TransportValue { playhead: number; playing: boolean; rate: number; loop: boolean }

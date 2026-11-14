@@ -1,12 +1,7 @@
-import {
-    MeshMaterial, type Plugin, type System, Transform, TransformPlugin,
-} from "@dylanebert/shallot";
-import type { MaterialHandle } from "@dylanebert/shallot/standard/rendering";
+import { type Plugin, type System } from "@dylanebert/shallot";
 import { drawLine, GizmoAsset, LinesPlugin } from "@dylanebert/shallot/extras";
 import { poseAt, readPath, rotate, type Path } from "./path";
-import { RideExecutions, readRide, RideHeader, RidePlugin, Train, Transport } from "../ride";
-import { advance, placeAt } from "../trajectory/transport";
-import { TransportObservers } from "../transport";
+import { RideExecutions, RideHeader, RidePlugin } from "../ride";
 
 export const PATH_BYTES = { chord: 0xebdbb2, lateral: 0xcc241d, normal: 0x6b9d65 } as const;
 
@@ -30,53 +25,9 @@ export function pathGizmo(source: Path, asset = new GizmoAsset()): GizmoAsset {
     return asset;
 }
 
-export const TransportSystem: System = {
-    name: "KexEditTransport", group: "simulation",
-    update(world) {
-        const transport = world.storage(Transport);
-        for (const eid of world.query([RideHeader, Transport])) {
-            const ride = readRide(world, eid);
-            const next = advance(ride.transport, ride.header, world.time.deltaTime);
-            transport.playhead.set(eid, next.playhead);
-            transport.playing.set(eid, +next.playing);
-        }
-        for (const publish of world.resource(TransportObservers)) publish();
-    },
-};
-
-/** Place at the discrete transport tick, holding the last good pose beyond a refusal. */
-export const TrainSystem: System = {
-    name: "KexEditTrain", group: "simulation", after: [TransportSystem],
-    update(world) {
-        const trains = world.storage(Train), transforms = world.storage(Transform);
-        for (const eid of world.query([Train, Transform])) {
-            const rideEid = trains.ride.get(eid);
-            const record = world.resource(RideExecutions).get(rideEid);
-            if (!record || !world.exists(rideEid)) continue;
-            const ride = readRide(world, rideEid);
-            const { position, rotation } = placeAt(record.ride.trajectory(), ride.transport.playhead, trains.offset.get(eid));
-            transforms.translation.set(eid, ...position);
-            transforms.rotation.set(eid, ...rotation);
-            const handles = world.resource(TrainAppearance);
-            const held = ride.header.endReason !== "complete" && ride.transport.playhead > ride.header.endTick;
-            const material = held ? handles.held : handles.normal;
-            if (material) {
-                const fields = world.storage(MeshMaterial);
-                if (fields.material.get(eid) !== material.material || fields.type.get(eid) !== material.type) {
-                    world.add(eid, MeshMaterial, material);
-                }
-            }
-        }
-    },
-};
-export const TrainAppearance = { create: () => ({
-    normal: undefined as MaterialHandle | undefined,
-    held: undefined as MaterialHandle | undefined,
-}) };
-
 export const PathGeometry = { create: () => new Map<number, { asset: GizmoAsset; generation: number }>() };
-const PathSyncSystem: System = {
-    name: "KexEditPathSync", group: "simulation", after: [TrainSystem],
+export const PathSyncSystem: System = {
+    name: "KexEditPathSync", group: "simulation",
     update(world) {
         for (const [eid, view] of world.resource(PathGeometry)) {
             const execution = world.resource(RideExecutions).get(eid);
@@ -88,10 +39,6 @@ const PathSyncSystem: System = {
         }
     },
 };
-/** CPU transport and placement can be composed without a GPU. */
-export const MotionPlugin: Plugin = {
-    name: "KexEditMotion", dependencies: [RidePlugin, TransformPlugin], systems: [TransportSystem, TrainSystem],
-};
 export const PathPlugin: Plugin = {
-    name: "KexEditPath", dependencies: [MotionPlugin, LinesPlugin], systems: [PathSyncSystem],
+    name: "KexEditPath", dependencies: [RidePlugin, LinesPlugin], systems: [PathSyncSystem],
 };

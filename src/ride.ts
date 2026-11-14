@@ -1,8 +1,9 @@
 import { component, entity, f32, type Plugin, type World, u8, u32 } from "@dylanebert/shallot";
 import type { Ride as ExecutionRide } from "./trajectory/execution";
 import type { Refusal } from "./trajectory/policies";
-import { evaluateRide, type RideHeaderValue, type TransportValue, type RideSource } from "./trajectory/ride";
-import { END_REASONS, type Trajectory } from "./trajectory/trajectory";
+import { evaluateRide, type RideSource } from "./trajectory/ride";
+import type { TransportValue } from "./trajectory/transport";
+import { END_REASONS, type EndReason, type Trajectory } from "./trajectory/trajectory";
 
 /** Authored tick length and derived last-good prefix, never a length inferred from geometry. */
 export const RideHeader = component("KexEditRide", {
@@ -21,6 +22,10 @@ export const RideExecutions = { create(world: World) {
     return records;
 } };
 export const RidePlugin: Plugin = { name: "KexEditRide", components: [RideHeader, Transport, Train] };
+
+export interface RideHeaderValue {
+    length: number; count: number; rate: number; endReason: EndReason; endTick: number; generation: number;
+}
 
 export interface RideEntity {
     eid: number; header: RideHeaderValue; transport: TransportValue;

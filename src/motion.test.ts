@@ -1,14 +1,16 @@
 import { createApp, Transform } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
-import { MotionPlugin } from "./path/view";
-import { createTransport } from "./transport";
+import { PathGeometry, PathSyncSystem, pathGizmo } from "./path/view";
+import { RideHeader } from "./ride";
+import { MotionPlugin } from "./playback";
+import { createTransport, TransportObservationPlugin } from "./transport";
 import { createRideEntity, readRide, RideExecutions, Train } from "./ride";
 import { RIDE_CONSTANTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./trajectory/ride.fixture";
 
 async function straightEditor() {
     const transport = createTransport();
     let ride = -1, train = -1;
-    const app = await createApp({ defaults: false, plugins: [MotionPlugin, {
+    const app = await createApp({ defaults: false, plugins: [TransportObservationPlugin, { name: "CpuPathDrawing", systems: [PathSyncSystem] }, {
         name: "AnalyticStraight", dependencies: [MotionPlugin], initialize(world) {
             ride = createRideEntity(world, { length: 100, rate: 100, constants: RIDE_CONSTANTS,
                 initial: { ...RIDE_START, speed: 2 },
@@ -47,6 +49,23 @@ test("transport steps authored ticks and places a constant-speed straight analyt
     } finally { app.dispose(); }
 });
 
+test("path drawing consumes a new publication and synchronizes the world generation", async () => {
+    const app = await straightEditor();
+    try {
+        const ride = readRide(app.world, app.ride).ride;
+        const published = ride.path();
+        const asset = pathGizmo(published.path);
+        const view = { asset, generation: published.generation };
+        app.world.resource(PathGeometry).set(app.ride, view);
+        ride.setInitial({ ...RIDE_START, speed: 2, position: [2, 0, 0] });
+        ride.pass();
+        app.world.step(0);
+        expect(view.generation).toBe(published.generation + 1);
+        expect(app.world.storage(RideHeader).generation.get(app.ride)).toBe(view.generation);
+        expect(view.asset).toBe(asset);
+    } finally { app.dispose(); }
+});
+
 test("coexisting editors isolate coincident eids, execution memory, transport and disposal", async () => {
     const a = await straightEditor(), b = await straightEditor();
     try {
@@ -68,7 +87,7 @@ test("coexisting editors isolate coincident eids, execution memory, transport an
 test("a refused ride keeps its authored tail and holds the last good train pose", async () => {
     let ride = -1, train = -1;
     const transport = createTransport();
-    const app = await createApp({ defaults: false, plugins: [MotionPlugin, {
+    const app = await createApp({ defaults: false, plugins: [TransportObservationPlugin, {
         name: "RefusedRide", dependencies: [MotionPlugin], initialize(world) {
             ride = createRideEntity(world, { length: RIDE_INTENTS_STALLED.length, intents: RIDE_INTENTS_STALLED,
                 initial: RIDE_START, rate: RIDE_RATE, constants: RIDE_CONSTANTS });

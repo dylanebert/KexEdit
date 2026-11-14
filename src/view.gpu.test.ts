@@ -6,7 +6,8 @@ import { openGpuApp } from "@dylanebert/shallot/testing/gpu";
 import { TIMEOUT } from "@dylanebert/shallot/testing";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { EditorScene, editorWorld } from "./world";
-import { PathGeometry, TrainAppearance } from "./path/view";
+import { PathGeometry } from "./path/view";
+import { TrainAppearance } from "./presentation";
 import { readRide } from "./ride";
 import { RIDE_START } from "./trajectory/ride.fixture";
 

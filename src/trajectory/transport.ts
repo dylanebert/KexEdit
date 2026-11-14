@@ -1,11 +1,11 @@
 // Transport and train placement stay on the authored tick axis. The scheduler supplies the virtual
 // delta; no function here reads elapsed or derives time from geometry.
 
-import type { RideHeaderValue, TransportValue } from "./ride";
 import { tickAt, type Trajectory } from "./trajectory";
 import type { Quat, Vec3 } from "../path/path";
 
-export type TransportHeader = Pick<RideHeaderValue, "length" | "rate">;
+export interface TransportHeader { length: number; rate: number }
+export interface TransportValue { playhead: number; playing: boolean; rate: number; loop: boolean }
 
 export interface TrainPose {
     tick: number;
@@ -42,7 +42,7 @@ export function advance(transport: TransportValue, header: TransportHeader, dt: 
 }
 
 /** Set a transport playhead directly on the authored tick axis, clamped to the authored length. */
-export function scrub(playhead: number, header: Pick<RideHeaderValue, "length">): number {
+export function scrub(playhead: number, header: Pick<TransportHeader, "length">): number {
     const { length } = header;
     if (!Number.isFinite(playhead)) {
         throw new Error(`transport scrub: expected finite playhead, got ${playhead}`);

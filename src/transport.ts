@@ -1,6 +1,7 @@
-import type { World } from "@dylanebert/shallot";
+import type { Plugin, System, World } from "@dylanebert/shallot";
 import { readRide, RideHeader, Transport, type RideEntity } from "./ride";
 import { scrub } from "./trajectory/transport";
+import { MotionPlugin, TrainSystem } from "./playback";
 
 export interface TransportSnapshot {
     playhead: number; length: number; headerRate: number; playing: boolean; rate: number;
@@ -8,6 +9,15 @@ export interface TransportSnapshot {
 }
 type Listener = (snapshot: TransportSnapshot | null) => void;
 export const TransportObservers = { create: () => new Set<() => void>() };
+const TransportObservationSystem: System = {
+    name: "KexEditTransportObservation", group: "simulation", after: [TrainSystem],
+    update(world) {
+        for (const publish of world.resource(TransportObservers)) publish();
+    },
+};
+export const TransportObservationPlugin: Plugin = {
+    name: "KexEditTransportObservation", dependencies: [MotionPlugin], systems: [TransportObservationSystem],
+};
 export const TRANSPORT_CONTEXT = Symbol("KexEdit transport");
 
 /** One editor's UI bridge. Disposal releases its World; no app shares state or subscriptions. */

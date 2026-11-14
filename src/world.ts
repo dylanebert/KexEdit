@@ -5,7 +5,9 @@ import {
 } from "@dylanebert/shallot";
 import { Gizmo, GizmoAsset, Orbit, OrbitPlugin, registerGizmo } from "@dylanebert/shallot/extras";
 import { Grid, GridPlugin } from "@dylanebert/shallot-grid";
-import { PathGeometry, PathPlugin, pathGizmo, TrainAppearance } from "./path/view";
+import { PathGeometry, pathGizmo } from "./path/view";
+import { PresentationPlugin, TrainAppearance } from "./presentation";
+import { TransportObservationPlugin } from "./transport";
 import { createRideEntity, readRide, Train } from "./ride";
 import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./trajectory/ride.fixture";
 
@@ -21,7 +23,7 @@ function gizmo(world: World, asset: GizmoAsset): number {
 /** The retained editor scene: integrated motion, frame ticks, a box train and an orbit camera. */
 export function editorWorld(stalled = false): Plugin {
     return {
-        name: "KexEditView", dependencies: [PathPlugin, OrbitPlugin, GridPlugin],
+        name: "KexEditView", dependencies: [PresentationPlugin, TransportObservationPlugin, OrbitPlugin, GridPlugin],
         initialize(world) {
             const scene = world.resource(EditorScene);
             const ambient = world.resource(GlobalAmbientLight);
