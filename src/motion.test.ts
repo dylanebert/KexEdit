@@ -2,7 +2,7 @@ import { createApp, Transform } from "@dylanebert/shallot";
 import { expect, test } from "bun:test";
 import { MotionPlugin } from "./path/view";
 import { createTransport } from "./transport";
-import { createRideEntity, readRide, RideExecutions, Train } from "./trajectory/ride";
+import { createRideEntity, readRide, RideExecutions, Train } from "./ride";
 import { RIDE_CONSTANTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./trajectory/ride.fixture";
 
 async function straightEditor() {

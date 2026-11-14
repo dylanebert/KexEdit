@@ -1,7 +1,7 @@
 import { World } from "@dylanebert/shallot/ecs";
 import { test } from "bun:test";
 import { rotate } from "../path/path";
-import { createRideEntity, readRide } from "./ride";
+import { createRideEntity, readRide } from "../ride";
 import { FORCE_FLOOR, run } from "./policies";
 import {
     ride,

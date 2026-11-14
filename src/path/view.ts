@@ -4,7 +4,7 @@ import {
 import type { MaterialHandle } from "@dylanebert/shallot/standard/rendering";
 import { drawLine, GizmoAsset, LinesPlugin } from "@dylanebert/shallot/extras";
 import { poseAt, readPath, rotate, type Path } from "./path";
-import { RideExecutions, readRide, RideHeader, RidePlugin, Train, Transport } from "../trajectory/ride";
+import { RideExecutions, readRide, RideHeader, RidePlugin, Train, Transport } from "../ride";
 import { advance, placeAt } from "../trajectory/transport";
 import { TransportObservers } from "../transport";
 

@@ -1,5 +1,5 @@
 import type { World } from "@dylanebert/shallot";
-import { readRide, RideHeader, Transport, type RideEntity } from "./trajectory/ride";
+import { readRide, RideHeader, Transport, type RideEntity } from "./ride";
 import { scrub } from "./trajectory/transport";
 
 export interface TransportSnapshot {

@@ -7,7 +7,7 @@ import { TIMEOUT } from "@dylanebert/shallot/testing";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { EditorScene, editorWorld } from "./world";
 import { PathGeometry, TrainAppearance } from "./path/view";
-import { readRide } from "./trajectory/ride";
+import { readRide } from "./ride";
 import { RIDE_START } from "./trajectory/ride.fixture";
 
 let app: App;

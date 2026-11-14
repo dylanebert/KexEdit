@@ -6,7 +6,7 @@ import {
 import { Gizmo, GizmoAsset, Orbit, OrbitPlugin, registerGizmo } from "@dylanebert/shallot/extras";
 import { Grid, GridPlugin } from "@dylanebert/shallot-grid";
 import { PathGeometry, PathPlugin, pathGizmo, TrainAppearance } from "./path/view";
-import { createRideEntity, readRide, Train } from "./trajectory/ride";
+import { createRideEntity, readRide, Train } from "./ride";
 import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./trajectory/ride.fixture";
 
 export const EditorScene = { create: () => ({ camera: -1, ride: -1, train: -1, path: -1, grid: -1 }) };
