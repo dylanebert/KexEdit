@@ -68,13 +68,19 @@ export interface Intent {
 
 export type RefusalReason = Exclude<EndReason, "complete">;
 
-export interface Refusal {
+/** For forces, `need` is the threshold and `have` the observed value of `quantity`:
+ * - speed magnitude (m/s) must be at least the force floor;
+ * - normal discriminant (m²/s²) must be nonnegative;
+ * - lateral denominator × speed (m²/s²) must be strictly positive, so the denominator has the sign of travel.
+ */
+type ForceQuantity = "speed magnitude" | "normal discriminant" | "lateral denominator × speed";
+
+export type Refusal = {
     reason: RefusalReason;
     tick: number;
-    lane: "forces" | "energy";
     need: number;
     have: number;
-}
+} & ({ lane: "forces"; quantity: ForceQuantity } | { lane: "energy" });
 
 export type Policy = (history: History, intent: Intent) => Input | Refusal;
 
@@ -87,10 +93,9 @@ const conjugate = (q: Quat): Quat => [-q[0], -q[1], -q[2], q[3]];
 const refusal = (
     history: History,
     reason: RefusalReason,
-    lane: Refusal["lane"],
     need: number,
     have: number,
-): Refusal => ({ reason, tick: history.states.length - 1, lane, need, have });
+) => ({ reason, tick: history.states.length - 1, need, have });
 
 export function forces(
     history: History,
@@ -99,15 +104,18 @@ export function forces(
 ): Vec3 | Refusal {
     const { g, heartToCom: h } = history.constants;
     const { speed: v, rotation } = last(history);
-    if (!(Math.abs(v) >= floor)) return refusal(history, "unsatisfiable", "forces", floor, Math.abs(v));
+    const reject = (quantity: ForceQuantity, need: number, have: number): Refusal => ({
+        ...refusal(history, "unsatisfiable", need, have), lane: "forces", quantity,
+    });
+    if (!(Math.abs(v) >= floor)) return reject("speed magnitude", floor, Math.abs(v));
     const lift = rotate(conjugate(rotation), [0, g, 0]);
     const wz = -intent.roll;
     const c = g * intent.normal - lift[1] + h * wz * wz;
     const disc = v * v - 4 * h * c;
-    if (!(disc >= 0)) return refusal(history, "unsatisfiable", "forces", floor, Math.abs(v));
+    if (!(disc >= 0)) return reject("normal discriminant", 0, disc);
     const pitch = (2 * c) / (v + Math.sign(v) * Math.sqrt(disc));
     const across = v - h * pitch;
-    if (!(across * v > 0)) return refusal(history, "unsatisfiable", "forces", floor, Math.abs(v));
+    if (!(across * v > 0)) return reject("lateral denominator × speed", 0, across * v);
     return [pitch, (lift[0] - g * intent.lateral) / across, intent.roll];
 }
 
@@ -142,7 +150,8 @@ export function freeRoll(history: History, omega: Vec3, losses: readonly Loss[])
     const offset = h * (rotate(probe.rotation, [0, 1, 0])[1] - rotate(state.rotation, [0, 1, 0])[1]);
     const v0 = state.speed;
     const sign = v0 !== 0 ? Math.sign(v0) : -Math.sign(rise);
-    if (sign === 0) return refusal(history, "stalled", "energy", 0, v0);
+    const stall = (have: number): Refusal => ({ ...refusal(history, "stalled", 0, have), lane: "energy" });
+    if (sign === 0) return stall(v0);
     let A = 2 * rate * rate;
     let B = g * rise - 2 * v0 * rate;
     for (const loss of losses) {
@@ -152,10 +161,10 @@ export function freeRoll(history: History, omega: Vec3, losses: readonly Loss[])
     }
     const C = g * offset;
     const disc = B * B - 4 * A * C;
-    if (!(disc >= 0)) return refusal(history, "stalled", "energy", 0, v0);
+    if (!(disc >= 0)) return stall(v0);
     const travel = -(B + (B >= 0 ? 1 : -1) * Math.sqrt(disc)) / (2 * A);
     const v1 = 2 * travel * rate - v0;
-    if (!(v1 * sign > 0)) return refusal(history, "stalled", "energy", 0, v1);
+    if (!(v1 * sign > 0)) return stall(v1);
     return (v1 - v0) * rate;
 }
 

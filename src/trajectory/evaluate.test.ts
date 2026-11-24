@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { poseAt } from "../path/path";
 import { evaluateRide, type RideSource } from "./ride";
 import { tickAt } from "./trajectory";
 import { run, type Intent } from "./policies";
@@ -53,9 +54,33 @@ test("level driven straight below the force floor refuses at tick zero without p
     const { ride, trajectory, refusal, length } = evaluateRide({ ...straight, initial: { ...straight.initial, speed: 2 } });
     expect(ride).toBeUndefined();
     expect(length).toBe(100);
-    expect(refusal).toEqual({ reason: "unsatisfiable", lane: "forces", tick: 0, need: 5, have: 2 });
+    expect(refusal).toEqual({
+        reason: "unsatisfiable", lane: "forces", tick: 0, quantity: "speed magnitude", need: 5, have: 2,
+    });
     expect(trajectory.header).toMatchObject({ endReason: "unsatisfiable", endTick: 0, count: 1 });
     expect(tickAt(trajectory, 0)).toMatchObject({ position: [0, 0, 0], rotation: [0, 0, 0, 1], speed: 2, distance: 0 });
+});
+
+test("negative normal discriminant refuses row 25 and publishes only the solved straight", () => {
+    const intents = straight.intents.slice();
+    intents[25] = { ...intents[25], shape: { kind: "forces", normal: -1, lateral: 0, roll: 0 } };
+    const { ride, trajectory, refusal, length } = evaluateRide({ ...straight, intents });
+    expect(length).toBe(100);
+    expect(refusal).toMatchObject({
+        reason: "unsatisfiable", lane: "forces", tick: 25, quantity: "normal discriminant", need: 0,
+    });
+    expect(refusal?.have).toBeCloseTo(-34.632, 9);
+    const end = { endReason: "unsatisfiable", endTick: 25, count: 26 };
+    const pose: ReturnType<typeof poseAt> = { position: [0, 0, -1.5], rotation: [0, 0, 0, 1] };
+    expect(trajectory.header).toMatchObject(end);
+    expect(tickAt(trajectory, 25)).toMatchObject({ ...pose, speed: 6, distance: 1.5 });
+    if (!ride) throw new Error("expected a published prefix");
+    const published = ride.trajectory();
+    expect(published.header).toMatchObject(end);
+    expect(tickAt(published, 25)).toMatchObject({ ...pose, speed: 6, distance: 1.5 });
+    const { path } = ride.path();
+    expect(path.header.length).toBeCloseTo(1.5, 6);
+    expect(poseAt(path, path.header.count - 1)).toEqual(pose);
 });
 
 test("malformed source is rejected rather than returned as a policy refusal", () => {
