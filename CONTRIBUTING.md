@@ -25,15 +25,18 @@ bun run typecheck       # Svelte diagnostics
 bun src/trajectory/headless.example.ts # scene-free motion
 ```
 
-Solve the saved straight, then write a separate file with a −1 g normal-force hold key at tick 25 in span index 0:
+Solve the saved straight, then solve a copy with a −1 g normal-force key at tick 25. `set-key` takes a zero-based span index and writes the edited ride to stdout.
 
 ```bash
 bun src/authoring/cli.ts solve src/authoring/straight.ride.json
-bun src/authoring/cli.ts set-key src/authoring/straight.ride.json 0 normal 25 -1 hold > /tmp/straight-edited.ride.json
-bun src/authoring/cli.ts solve /tmp/straight-edited.ride.json
+edited=$(mktemp)
+bun src/authoring/cli.ts set-key src/authoring/straight.ride.json 0 normal 25 -1 hold > "$edited"
+bun src/authoring/cli.ts solve "$edited"
 ```
 
-The original completes at tick 100 at `(0, 0, −6)` m. The edit keeps the authored length at 100 ticks but refuses at tick 25 at `(0, 0, −1.5)` m, with a normal discriminant of −34.632. Both are JSON solve results. File or argument errors exit with status 1; evaluation errors exit with status 2. Both print a diagnostic to stderr instead of a solve result.
+The original completes at tick 100 at `(0, 0, −6)` m. The edited ride retains its 100-tick authored length. Its solve result ends at tick 25 at `(0, 0, −1.5)` m and reports a refusal with a normal discriminant of −34.632.
+
+`solve` prints JSON and exits 0 for completion or a physical refusal. File or argument errors exit 1; evaluation errors exit 2. Errors print a diagnostic to stderr instead of a solve result.
 
 ## Tests
 

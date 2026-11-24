@@ -35,7 +35,9 @@ async function run([verb, file, ...args]: string[]): Promise<Result> {
         const source = openRide(await Bun.file(file).text());
         return { stdout: saveRide(setKey(source, command).document) };
     }
-    throw new Error("usage: solve FILE | set-key FILE SPAN_INDEX PROPERTY TICK VALUE hold|linear");
+    throw new Error(`usage:
+  bun src/authoring/cli.ts solve FILE
+  bun src/authoring/cli.ts set-key FILE SPAN_INDEX PROPERTY TICK VALUE EASE`);
 }
 
 function errorMessage(error: unknown): string {
