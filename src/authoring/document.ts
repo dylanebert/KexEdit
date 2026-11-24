@@ -6,7 +6,11 @@ import type { RideConstants } from "../trajectory/trajectory";
 const RATE = 100;
 // Only the parameters of the v1 force/driven witness, not a motion channel registry.
 const parameters = ["normal", "lateral", "roll", "target", "accel"] as const;
-type Parameter = typeof parameters[number];
+export type Parameter = typeof parameters[number];
+
+export function isParameter(value: string): value is Parameter {
+    return parameters.some(name => name === value);
+}
 
 export interface RideKey {
     tick: number;
@@ -122,7 +126,8 @@ function readV1(value: unknown): RideDocument {
     return { version: 1, initial: { position, rotation, speed }, constants, spans };
 }
 
-function validate(value: unknown): RideDocument {
+/** Validate authored data and return a document in canonical member order. */
+export function validateRide(value: unknown): RideDocument {
     switch (object(value, "root").version) {
         case 1: return readV1(value);
         default: return invalid("version", "unsupported version; expected 1");
@@ -137,12 +142,12 @@ export function openRide(text: string): RideDocument {
     } catch {
         invalid("JSON", "malformed JSON text");
     }
-    return validate(value);
+    return validateRide(value);
 }
 
 /** Validate and serialize only authored data, in schema order with two-space indent and final LF. */
 export function saveRide(document: RideDocument): string {
-    return `${JSON.stringify(validate(document), null, 2)}\n`;
+    return `${JSON.stringify(validateRide(document), null, 2)}\n`;
 }
 
 // Called at increasing ticks inside one span. A key at end can be the right endpoint only.

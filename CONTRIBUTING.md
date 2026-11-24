@@ -25,6 +25,16 @@ bun run typecheck       # Svelte diagnostics
 bun src/trajectory/headless.example.ts # scene-free motion
 ```
 
+Solve the saved straight, then write a separate file with a −1 g normal-force hold key at tick 25 in span index 0:
+
+```bash
+bun src/authoring/cli.ts solve src/authoring/straight.ride.json
+bun src/authoring/cli.ts set-key src/authoring/straight.ride.json 0 normal 25 -1 hold > /tmp/straight-edited.ride.json
+bun src/authoring/cli.ts solve /tmp/straight-edited.ride.json
+```
+
+The original completes at tick 100 at `(0, 0, −6)` m. The edit keeps the authored length at 100 ticks but refuses at tick 25 at `(0, 0, −1.5)` m, with a normal discriminant of −34.632. Both are JSON solve results. File or argument errors exit with status 1; evaluation errors exit with status 2. Both print a diagnostic to stderr instead of a solve result.
+
 ## Tests
 
 - `bun run test` runs cheap and GPU checks using Shallot's testing timeouts
