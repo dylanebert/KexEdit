@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "initial": {
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "rotation": [
+      0,
+      0,
+      0,
+      1
+    ],
+    "speed": 6
+  },
+  "constants": {
+    "g": 9.81,
+    "heartToCom": -0.9,
+    "mass": 500,
+    "friction": 0.03,
+    "drag": 0.00002
+  },
+  "spans": [
+    {
+      "start": 0,
+      "end": 100,
+      "normal": [
+        {
+          "tick": 0,
+          "value": 1,
+          "ease": "hold"
+        }
+      ],
+      "lateral": [
+        {
+          "tick": 0,
+          "value": 0,
+          "ease": "hold"
+        }
+      ],
+      "roll": [
+        {
+          "tick": 0,
+          "value": 0,
+          "ease": "hold"
+        }
+      ],
+      "target": [
+        {
+          "tick": 0,
+          "value": 6,
+          "ease": "hold"
+        }
+      ],
+      "accel": [
+        {
+          "tick": 0,
+          "value": 1,
+          "ease": "hold"
+        }
+      ]
+    }
+  ]
+}
