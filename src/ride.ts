@@ -35,6 +35,7 @@ export interface RideEntity {
 /** March named motion intents and attach their execution and last-good prefix to an entity. */
 export function createRideEntity(world: World, source: RideSource): number {
     const { ride, trajectory, refusal } = evaluateRide(source);
+    if (!ride) throw new Error("ride inputs: expected at least one row");
     const eid = world.create();
     world.add(eid, RideHeader, {
         length: source.length, count: trajectory.header.count, rate: source.rate,

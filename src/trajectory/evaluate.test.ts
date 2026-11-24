@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { evaluateRide } from "./ride";
+import { evaluateRide, type RideSource } from "./ride";
+import { tickAt } from "./trajectory";
 import { run, type Intent } from "./policies";
 import { createRide, CHUNK } from "./execution";
 import { RIDE_CONSTANTS, RIDE_INTENTS, RIDE_INTENTS_STALLED, RIDE_RATE, RIDE_START } from "./ride.fixture";
@@ -23,18 +24,43 @@ for (const [reason, intents, initial] of [
     independent.setInitial(initial);
     independent.setInputs(expected.history.inputs, expected.trajectory.header.endReason, expected.trajectory.header.endTick);
     independent.pass();
+    if (!actual.ride) throw new Error(`expected ${reason} fixture to publish a path`);
     expect(actual.ride.trajectory()).toEqual(independent.trajectory());
     expect(actual.ride.path()).toEqual(independent.path());
     expect(actual.ride.memory.buffer).toBeInstanceOf(SharedArrayBuffer);
 });
 
-test("tick-zero force refusal retains the existing empty-input publication limitation", () => {
-    const initial = { ...RIDE_START, speed: 0 };
-    const result = run(initial, [force], RIDE_RATE, RIDE_CONSTANTS);
-    expect(result.trajectory.header.endTick).toBe(0);
-    expect(result.refusal?.reason).toBe("unsatisfiable");
-    expect(() => evaluateRide({ length: 1, intents: [force], initial, rate: RIDE_RATE, constants: RIDE_CONSTANTS }))
-        .toThrow("ride inputs: expected at least one row");
+const straight: RideSource = {
+    length: 100, rate: RIDE_RATE, constants: RIDE_CONSTANTS,
+    initial: { ...RIDE_START, speed: 6 },
+    intents: new Array<Intent>(100).fill({
+        shape: { kind: "forces", normal: 1, lateral: 0, roll: 0 },
+        energy: { kind: "driven", target: 6, accel: 1 },
+    }),
+};
+
+test("level driven straight travels six metres in one second", () => {
+    const { ride, trajectory, refusal } = evaluateRide(straight);
+    expect(ride).toBeDefined();
+    expect(refusal).toBeUndefined();
+    expect(trajectory.header).toMatchObject({ endReason: "complete", endTick: 100, count: 101 });
+    const last = tickAt(trajectory, 100);
+    expect(last.position).toEqual([0, 0, -6]);
+    expect(last.speed).toBe(6);
+});
+
+test("level driven straight below the force floor refuses at tick zero without publication", () => {
+    const { ride, trajectory, refusal, length } = evaluateRide({ ...straight, initial: { ...straight.initial, speed: 2 } });
+    expect(ride).toBeUndefined();
+    expect(length).toBe(100);
+    expect(refusal).toEqual({ reason: "unsatisfiable", lane: "forces", tick: 0, need: 5, have: 2 });
+    expect(trajectory.header).toMatchObject({ endReason: "unsatisfiable", endTick: 0, count: 1 });
+    expect(tickAt(trajectory, 0)).toMatchObject({ position: [0, 0, 0], rotation: [0, 0, 0, 1], speed: 2, distance: 0 });
+});
+
+test("malformed source is rejected rather than returned as a policy refusal", () => {
+    expect(() => evaluateRide({ ...straight, intents: [] }))
+        .toThrow("ride source: expected one intent per authored tick and a positive integer length");
 });
 
 test("motion entry and headless example import only motion, path data and TypeGPU schemas", () => {

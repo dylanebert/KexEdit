@@ -21,13 +21,14 @@ export interface RideSource {
  * Returns the execution handle, policy trajectory, structured refusal (if any), and authored
  * tick length (not the solved prefix length). Stalled/unsatisfiable tails remain unsolved.
  * Throws for invalid authored length/rate or invalid lower-level motion/publication inputs.
- * Tick-zero refusals retain the execution API's empty-input error; no path can be published.
+ * With no solved rows, returns the initial-only trajectory and refusal without an execution handle.
  */
 export function evaluateRide(source: RideSource) {
     if (!Number.isInteger(source.length) || source.length < 1 || source.intents.length !== source.length)
         throw new Error("ride source: expected one intent per authored tick and a positive integer length");
     if (!(source.rate > 0 && Number.isFinite(source.rate))) throw new Error("ride source: expected finite positive rate");
     const { trajectory, history, refusal } = run(source.initial, source.intents, source.rate, source.constants);
+    if (history.inputs.length === 0) return { ride: undefined, trajectory, refusal, length: source.length };
     const spacing = source.spacing ?? DEFAULT_SPACING;
     const length = Math.abs(history.states[history.states.length - 1].distance);
     const ride = createRide({

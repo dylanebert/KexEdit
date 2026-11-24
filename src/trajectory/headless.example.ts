@@ -12,6 +12,7 @@ const { ride, trajectory, refusal } = evaluateRide({
         energy: { kind: "driven", target: 2, accel: 1 },
     })),
 });
+if (!ride) throw new Error("expected the headless example to publish a path");
 console.log(JSON.stringify({ endReason: trajectory.header.endReason,
     endTick: trajectory.header.endTick, pathPoses: ride.path().path.header.count,
     refusal: refusal ?? null }));
